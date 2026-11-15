@@ -198,6 +198,8 @@ function launchResult(value) {
   if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') return { ok: false, error: 'Agent Inbox did not answer.' }
   const out = { ok: value.ok }
   if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  // #586: a launch that worked in Terminal because the chosen app could not be opened
+  if (typeof value.notice === 'string') out.notice = value.notice.slice(0, 500)
   if (typeof value.launch === 'string' && LAUNCH_ID.test(value.launch)) out.launch = value.launch
   if (value.cancelled === true) out.cancelled = true
   if (typeof value.status === 'string') out.status = value.status
@@ -227,6 +229,8 @@ function launchAvailability(value) {
   const root = worktreeRootOf(value.worktreeRoot)
   if (out.available && root) out.worktreeRoot = root
   if (out.available && isSessionCap(value.maxSessions)) out.maxSessions = value.maxSessions
+  // #586: which terminal the Terminal buttons open, for their titles
+  if (out.available && TERMINAL_IDS.has(value.terminal)) out.terminal = value.terminal
   return out
 }
 

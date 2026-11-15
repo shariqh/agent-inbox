@@ -19,6 +19,7 @@
 // the confirmation, and sends them in the spec; the driver creates it.
 const path = require('node:path')
 const { isRepositoryTop, planWorktree, worktreeProblem, worktreeRootProblem } = require('./session-worktree.cjs')
+const { openInTerminal, terminalId, terminalName } = require('./terminal-launch.cjs')
 
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // step 5: the ACP session a terminal resumes, as Copilot names it
@@ -272,25 +273,28 @@ function budgetConfirmation({ launch, folder, add }) {
 
 // Take over in Terminal (step 5, §3.5): what main shows before the launch leaves Agent Inbox for
 // good. `state` is what the launch is now: running (its turn is cancelled), parked, or already handed
-// off (Terminal is opened on it again).
-function takeOverConfirmation({ project, folder, state }) {
+// off (the terminal is opened on it again). `app` is the terminal the Settings name (#586), and
+// the text is the same as it always was while that is Terminal.
+function takeOverConfirmation({ project, folder, state, app = 'Terminal' }) {
   if (state === 'handed_off') {
     return {
-      message: `Open Terminal on the session of ${displayLine(project)} again?`,
+      message: `Open ${app} on the session of ${displayLine(project)} again?`,
       detail: [
         `Folder: ${displayLine(folder)}`,
-        'Terminal runs copilot --resume there, with the session’s history.',
-        'If it is still open in another Terminal window, use that one instead: two Copilots must never work in one session.',
+        `${app} runs copilot --resume there, with the session’s history.`,
+        `If it is still open in another ${app} window, use that one instead: two Copilots must never work in one session.`,
       ].join('\n'),
-      buttons: ['Open Terminal', 'Cancel'],
+      buttons: [`Open ${app}`, 'Cancel'],
     }
   }
   return {
-    message: `Take over the session of ${displayLine(project)} in Terminal?`,
+    message: `Take over the session of ${displayLine(project)} in ${app}?`,
     detail: [
       `Folder: ${displayLine(folder)}`,
       ...(state === 'running' ? ['Agent Inbox stops driving it first: its current turn and any approval it waits on are cancelled.'] : []),
-      'Terminal then runs copilot --resume there, with the session’s history, and you answer it in Terminal.',
+      `${app} then runs copilot --resume there, with the session’s history, and you answer it in ${app}.`,
+      // iTerm2 asks before it runs a script it is handed (#586)
+      ...(app === 'iTerm2' ? ['iTerm2 may first ask whether to run the script: answer OK there.'] : []),
       'Agent Inbox does not resume it, push messages to it or approve for it again. Messages it has not read yet stay with the old session.',
     ].join('\n'),
     buttons: ['Take over', 'Cancel'],
@@ -394,7 +398,7 @@ function createLaunchController(deps) {
   const {
     platform, isEnabled, keys, viewer, captureEnv, confirm, chooseFolder, driverRuntime, startDriver, hubPath, driverEnv,
     randomUUID, realDirectory, processStart, kill, worktreeSettings, chooseWorktreeFolder,
-    runWorktree, ask, openTerminal, sessionCap, writeScript,
+    runWorktree, ask, terminal, sessionCap, writeScript,
     // step 5: how Take over waits for a running launch's driver, injected for tests
     wait = sleep, handOffWaitMs = HAND_OFF_WAIT_MS,
     // #432 PR 5: what a start is doing now, for the New session dialog, and how long each step took
@@ -474,6 +478,27 @@ function createLaunchController(deps) {
     // runtime: the key, the cap and the runtime's verification; driver: its start to its first phase
     try { log(`launch ${launchId.slice(0, 8)} ${result.ok ? 'started' : 'did not start'}: ${times.map(([name, ms]) => `${name} ${ms} ms`).join(', ')}`) } catch { /* a report */ }
     return result
+  }
+
+  // #586: the terminal the Settings name; main's store is read on every use, and a value off the
+  // fixed list, or one that cannot be read, is Terminal
+  async function chosenTerminal() {
+    try {
+      return terminalId(await terminal.read())
+    } catch {
+      return 'terminal'
+    }
+  }
+
+  // What opening `target` came to, for the page: a fallback to Terminal is still a launch that worked,
+  // so it carries a notice and not an error. `failure` is the sentence for when nothing opened.
+  async function openTerminalOn(chosen, kind, target, failure) {
+    const opened = await openInTerminal({
+      terminal: chosen, kind, target,
+      run: (command) => Promise.resolve(terminal.run(command)),
+    })
+    if (!opened.ok) return refused(failure(opened.fellBackFrom ? `${terminalName(opened.fellBackFrom)} and Terminal` : terminalName(opened.used)))
+    return opened.fellBackFrom ? { ok: true, notice: `${terminalName(opened.fellBackFrom)} could not be opened, so Terminal was opened instead.` } : { ok: true }
   }
 
   async function maxSessions() {
@@ -668,6 +693,11 @@ function createLaunchController(deps) {
     },
 
     /** #432: the folder session worktrees go under, read only with the switch on. */
+    // #586: the terminal Open in Terminal and Take over use, for the buttons' titles; null while blocked
+    async terminalChoice() {
+      return blocked() ? null : chosenTerminal()
+    },
+
     async worktreeRoot() {
       return blocked() ? null : worktreeRoot()
     },
@@ -772,7 +802,7 @@ function createLaunchController(deps) {
       const launch = await viewer.getJson(`/api/launches/${id}`)
       if (!launch || typeof launch.worktree_path !== 'string' || launch.worktree_removed_at) return refused('This session has no worktree to open.')
       if (realDirectory(launch.worktree_path) !== launch.worktree_path) return refused('Its worktree is not there any more.')
-      return (await openTerminal(launch.worktree_path)) ? { ok: true } : refused('Terminal could not be opened.')
+      return openTerminalOn(await chosenTerminal(), 'folder', launch.worktree_path, (what) => `${what} could not be opened.`)
     },
 
     // Take over in Terminal (step 5, §3.5): after main's own confirmation, the launch is handed off
@@ -807,7 +837,9 @@ function createLaunchController(deps) {
             ? `The session’s folder does not exist any more. Its branch ${launch.branch} is still in your repository.`
             : 'The session’s folder does not exist any more.')
         }
-        if (!(await confirm(takeOverConfirmation({ project: launch.project, folder, state })))) return refused('Not taken over.', { cancelled: true })
+        // read once: the terminal the dialog names is the one that opens (#586)
+        const chosen = await chosenTerminal()
+        if (!(await confirm(takeOverConfirmation({ project: launch.project, folder, state, app: terminalName(chosen) })))) return refused('Not taken over.', { cancelled: true })
         const late = blocked()
         if (late) return late
         // One loop, ending in exactly one of: the launch handed off (Terminal is opened below), or no
@@ -875,7 +907,7 @@ function createLaunchController(deps) {
         if (!script) return refused('The session could not be handed off.')
         const file = path.join(path.dirname(hubPath), 'launches', id, 'take-over.command')
         if (!(await writeScript(file, script))) return refused('Agent Inbox could not write the Terminal script.')
-        return (await openTerminal(file)) ? { ok: true } : refused('The session is handed off, but Terminal could not be opened. Try Resume in Terminal.')
+        return openTerminalOn(chosen, 'script', file, (what) => `The session is handed off, but ${what} could not be opened. Try Resume in Terminal.`)
       } catch {
         return refused('The session could not be handed off.')
       } finally {

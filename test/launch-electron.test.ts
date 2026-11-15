@@ -314,6 +314,10 @@ function rig(over: Json = {}) {
     answer: 'Remove',
     cap: null as number | null,
     capReads: 0,
+    // #586: what the stored terminal setting reads as (an Error throws), how often it was read, and how each open ends
+    terminal: null as unknown,
+    terminalReads: 0,
+    opens: undefined as undefined | ((command: { args: string[] }) => { ok: boolean; missing?: boolean; timedOut?: boolean }),
   }
   const keyStore = launchKeys.createLaunchKeys({ safeStorage: fakeSafeStorage(), filePath: join(scratchDir('controller-'), 'k') })
   const posted: Array<[string, unknown]> = []
@@ -368,7 +372,10 @@ function rig(over: Json = {}) {
       return args.verb === 'inspect' ? { ok: true, ...state.inspected } : { ok: true }
     },
     ask: async (text: { buttons: string[] }) => { calls.push('ask'); spawned.push({ removal: text }); return text.buttons.indexOf(state.answer) },
-    openTerminal: async (folder: string) => { calls.push(`openTerminal ${folder}`); return true },
+    terminal: {
+      read: async () => { state.terminalReads += 1; if (state.terminal instanceof Error) throw state.terminal; return state.terminal },
+      run: async (command: { args: string[] }) => { calls.push(`open ${command.args.join(' ')}`); return state.opens?.(command) ?? { ok: true } },
+    },
     // #432 §5: counted apart from `calls`, whose exact order the start tests pin
     sessionCap: {
       read: async () => { state.capReads += 1; return state.cap },
@@ -975,14 +982,74 @@ describe('a session in its own worktree (#432)', () => {
       const r = rig()
       r.state.launches[ID] = { ...ENDED, status: 'running' }
       expect(await r.controller.openWorktree(ID)).toEqual({ ok: true })
-      expect(r.calls).toContain('openTerminal /w/alpha/fix-22222222')
+      expect(r.calls).toContain('open -b com.apple.Terminal -- /w/alpha/fix-22222222')
       for (const over of [{ worktree_removed_at: '2026-11-03T12:00:00.000Z' }, { worktree_path: '/missing/x' }, { worktree_path: null }]) {
         const refusedRig = rig()
         refusedRig.state.launches[ID] = { ...ENDED, ...over }
         expect(await refusedRig.controller.openWorktree(ID)).toMatchObject({ ok: false })
-        expect(refusedRig.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+        expect(refusedRig.calls.filter((c) => c.startsWith('open '))).toEqual([])
       }
       expect(await r.controller.openWorktree('../x')).toMatchObject({ ok: false })
+    })
+
+    // #586: Open in Terminal follows the Terminal setting, through terminal-launch.cjs
+    it('opens the worktree in iTerm2 when it is chosen, and reads anything else as Terminal (#586)', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...ENDED, status: 'running' }
+      r.state.terminal = 'iterm2'
+      expect(await r.controller.openWorktree(ID)).toEqual({ ok: true })
+      expect(r.calls.filter((c) => c.startsWith('open '))).toEqual(['open -b com.googlecode.iterm2 -- /w/alpha/fix-22222222'])
+      for (const value of ['Hyper', 'iTerm2', 7, { x: 1 }, new Error('unreadable')]) {
+        const odd = rig()
+        odd.state.launches[ID] = { ...ENDED, status: 'running' }
+        odd.state.terminal = value
+        expect(await odd.controller.openWorktree(ID)).toEqual({ ok: true })
+        expect(odd.calls.filter((c) => c.startsWith('open '))).toEqual(['open -b com.apple.Terminal -- /w/alpha/fix-22222222'])
+      }
+    })
+
+    it('falls back to Terminal once when iTerm2 is missing, and says so (#586)', async () => {
+      const r = rig()
+      r.state.launches[ID] = { ...ENDED, status: 'running' }
+      r.state.terminal = 'iterm2'
+      r.state.opens = (c) => (c.args.includes('com.googlecode.iterm2') ? { ok: false, missing: true } : { ok: true })
+      expect(await r.controller.openWorktree(ID)).toEqual({ ok: true, notice: 'iTerm2 could not be opened, so Terminal was opened instead.' })
+      expect(r.calls.filter((c) => c.startsWith('open '))).toEqual([
+        'open -b com.googlecode.iterm2 -- /w/alpha/fix-22222222', 'open -b com.apple.Terminal -- /w/alpha/fix-22222222',
+      ])
+    })
+
+    it('names the app that could not be opened, and tries nothing else after a timeout (#586)', async () => {
+      const plain = rig()
+      plain.state.launches[ID] = { ...ENDED, status: 'running' }
+      plain.state.opens = () => ({ ok: false, missing: true })
+      expect(await plain.controller.openWorktree(ID)).toEqual({ ok: false, error: 'Terminal could not be opened.' })
+      const both = rig()
+      both.state.launches[ID] = { ...ENDED, status: 'running' }
+      both.state.terminal = 'iterm2'
+      both.state.opens = () => ({ ok: false, missing: true })
+      expect(await both.controller.openWorktree(ID)).toEqual({ ok: false, error: 'iTerm2 and Terminal could not be opened.' })
+      expect(both.calls.filter((c) => c.startsWith('open '))).toHaveLength(2)
+      const slow = rig()
+      slow.state.launches[ID] = { ...ENDED, status: 'running' }
+      slow.state.terminal = 'iterm2'
+      slow.state.opens = () => ({ ok: false, timedOut: true })
+      expect(await slow.controller.openWorktree(ID)).toEqual({ ok: false, error: 'iTerm2 could not be opened.' })
+      expect(slow.calls.filter((c) => c.startsWith('open '))).toEqual(['open -b com.googlecode.iterm2 -- /w/alpha/fix-22222222'])
+    })
+
+    it('names the chosen terminal only to the granted caller, and not while blocked (#586)', async () => {
+      const r = rig()
+      r.state.terminal = 'iterm2'
+      expect(await r.controller.terminalChoice()).toBe('iterm2')
+      r.state.terminal = 'Hyper'
+      expect(await r.controller.terminalChoice()).toBe('terminal')
+      r.state.terminal = new Error('unreadable')
+      expect(await r.controller.terminalChoice()).toBe('terminal')
+      r.state.enabled = false
+      r.state.terminalReads = 0
+      expect(await r.controller.terminalChoice()).toBeNull()
+      expect(r.state.terminalReads).toBe(0)
     })
 
     it('does nothing with the switch off', async () => {
@@ -1203,7 +1270,10 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
         },
       },
       writeScript: async (file: string, text: string) => { log(`writeScript ${file}`); scripts.push([file, text]); return true },
-      openTerminal: async (target: string) => { log(`openTerminal ${target}`); return true },
+      terminal: {
+        read: async () => { held.r!.state.terminalReads += 1; if (held.r!.state.terminal instanceof Error) throw held.r!.state.terminal; return held.r!.state.terminal },
+        run: async (command: { args: string[] }) => { log(`open ${command.args.join(' ')}`); return held.r!.state.opens?.(command) ?? { ok: true } },
+      },
       confirm: async (text: Json) => { log('confirm'); held.r!.spawned.push({ confirmation: text }); return held.r!.state.confirm },
       wait: async () => {},
       ...over,
@@ -1220,7 +1290,7 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     expect(t.calls.filter((c) => !c.startsWith('keys.available'))).toEqual([
       `GET /api/launches/${ID}`, 'confirm', `POST /api/launches/${ID}/hand-off`,
       `GET /api/launches/${ID}`, `GET /api/launches/${ID}`, `GET /api/launches/${ID}`,
-      `POST /api/launches/${ID}/hand-off`, `writeScript ${script}`, `openTerminal ${script}`,
+      `POST /api/launches/${ID}/hand-off`, `writeScript ${script}`, `open -b com.apple.Terminal -- ${script}`,
     ])
     const confirmation = t.spawned[0]!.confirmation as { message: string; detail: string; buttons: string[] }
     expect(confirmation.message).toBe('Take over the session of alpha in Terminal?')
@@ -1270,7 +1340,86 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
   ] as Array<[string, Json, RegExp]>)('refuses %s before asking or handing anything off', async (_, over, error) => {
     const t = takeOverRig({ ...RUNNING, ...over }, [HANDED])
     expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(error) })
-    expect(t.calls.filter((c) => c === 'confirm' || c.startsWith('POST') || c.startsWith('openTerminal'))).toEqual([])
+    expect(t.calls.filter((c) => c === 'confirm' || c.startsWith('POST') || c.startsWith('open '))).toEqual([])
+  })
+
+  // #586: Take over / Resume in Terminal follow the Terminal setting
+  it('takes over in iTerm2 when it is chosen, naming it in main’s own confirmation (#586)', async () => {
+    const t = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, HANDED])
+    t.state.terminal = 'iterm2'
+    t.reads.push(RUNNING, RUNNING, { ...RUNNING, driver: 'running' }, { ...RUNNING, status: 'ended', end_reason: 'handed_off' })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+    const text = t.spawned[0]!.confirmation as { message: string; detail: string; buttons: string[] }
+    expect(text.message).toBe('Take over the session of alpha in iTerm2?')
+    expect(text.buttons).toEqual(['Take over', 'Cancel'])
+    expect(text.detail).toContain('iTerm2 then runs copilot --resume there')
+    expect(text.detail).toContain('you answer it in iTerm2')
+    expect(text.detail).toContain('iTerm2 may first ask whether to run the script')
+    expect(t.calls.at(-1)).toBe(`open -b com.googlecode.iterm2 -- /hub/launches/${ID}/take-over.command`)
+    // the script itself does not change with the terminal
+    expect(t.scripts[0]![1]).toContain(`'copilot' '--resume=${SESSION}'`)
+  })
+
+  it('names iTerm2 when it opens a handed-off session again (#586)', async () => {
+    const t = takeOverRig({ ...RUNNING, status: 'ended', end_reason: 'handed_off', driver: null }, [HANDED])
+    t.state.terminal = 'iterm2'
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+    const text = t.spawned[0]!.confirmation as { message: string; detail: string; buttons: string[] }
+    expect(text.message).toBe('Open iTerm2 on the session of alpha again?')
+    expect(text.buttons).toEqual(['Open iTerm2', 'Cancel'])
+    expect(text.detail).toContain('If it is still open in another iTerm2 window')
+  })
+
+  it('reads the choice once, so the dialog and the open name the same terminal (#586)', async () => {
+    const answers = ['iterm2', 'terminal']
+    const t = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [HANDED], {
+      terminal: {
+        read: async () => { t.state.terminalReads += 1; return answers.shift() },
+        run: async (command: { args: string[] }) => { t.calls.push(`open ${command.args.join(' ')}`); return { ok: true } },
+      },
+    })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+    expect((t.spawned[0]!.confirmation as Json).message).toBe('Take over the session of alpha in iTerm2?')
+    expect(t.calls.at(-1)).toBe(`open -b com.googlecode.iterm2 -- /hub/launches/${ID}/take-over.command`)
+    expect(t.state.terminalReads).toBe(1)
+  })
+
+  it('reads a hand-edited or unreadable terminal value as Terminal, in the dialog and the open (#586)', async () => {
+    for (const value of ['Hyper', new Error('unreadable')]) {
+      const t = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [HANDED])
+      t.state.terminal = value
+      expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
+      expect((t.spawned[0]!.confirmation as Json).message).toBe('Take over the session of alpha in Terminal?')
+      expect(t.calls.at(-1)).toBe(`open -b com.apple.Terminal -- /hub/launches/${ID}/take-over.command`)
+    }
+  })
+
+  it('falls back to Terminal once when iTerm2 is missing, and says so (#586)', async () => {
+    const t = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [HANDED])
+    t.state.terminal = 'iterm2'
+    t.state.opens = (c) => (c.args.includes('com.googlecode.iterm2') ? { ok: false, missing: true } : { ok: true })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: true, notice: 'iTerm2 could not be opened, so Terminal was opened instead.' })
+    expect(t.calls.filter((c) => c.startsWith('open '))).toEqual([
+      `open -b com.googlecode.iterm2 -- /hub/launches/${ID}/take-over.command`, `open -b com.apple.Terminal -- /hub/launches/${ID}/take-over.command`,
+    ])
+  })
+
+  it('never opens the script twice: a timeout is reported, not retried in Terminal (#586)', async () => {
+    const t = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [HANDED])
+    t.state.terminal = 'iterm2'
+    t.state.opens = () => ({ ok: false, timedOut: true })
+    expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session is handed off, but iTerm2 could not be opened. Try Resume in Terminal.' })
+    expect(t.calls.filter((c) => c.startsWith('open '))).toEqual([`open -b com.googlecode.iterm2 -- /hub/launches/${ID}/take-over.command`])
+  })
+
+  it('names the app when nothing opens (#586)', async () => {
+    const plain = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [HANDED])
+    plain.state.opens = () => ({ ok: false, missing: true })
+    expect(await plain.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session is handed off, but Terminal could not be opened. Try Resume in Terminal.' })
+    const both = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [HANDED])
+    both.state.terminal = 'iterm2'
+    both.state.opens = () => ({ ok: false, missing: true })
+    expect(await both.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session is handed off, but iTerm2 and Terminal could not be opened. Try Resume in Terminal.' })
   })
 
   it('hands nothing off when the human cancels, or with the switch off, or for a bad id', async () => {
@@ -1294,7 +1443,7 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     t.reads.push(RUNNING, RUNNING, new Error('ECONNREFUSED'))
     expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: 'The session could not be handed off.' })
     expect(posts(t)).toEqual(['/hand-off', '/hand-off/withdraw'])
-    expect(t.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+    expect(t.calls.filter((c) => c.startsWith('open '))).toEqual([])
     // an unreadable row is not proof it stopped running: it waits out the deadline, then withdraws
     let clock = 0
     const blind = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
@@ -1326,7 +1475,7 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     t.withdrawals.push({ ok: false })
     expect(await t.controller.takeOver(ID)).toEqual({ ok: true })
     expect(posts(t)).toEqual(['/hand-off', '/hand-off/withdraw', '/hand-off'])
-    expect(t.calls.at(-1)).toBe(`openTerminal /hub/launches/${ID}/take-over.command`)
+    expect(t.calls.at(-1)).toBe(`open -b com.apple.Terminal -- /hub/launches/${ID}/take-over.command`)
     // if it is still running after a second minute, it says to use Resume in Terminal once it has
     const slow = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }], { wait: async () => { clock += 30_000 }, handOffWaitMs: 60_000 })
     slow.withdrawals.push({ ok: false })
@@ -1341,14 +1490,14 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     t.reads.push(RUNNING, { ...RUNNING, status: 'parked', driver: null, resumable: true })
     expect(await t.controller.takeOver(ID)).toEqual({ ok: false, error: expect.stringMatching(/resumed meanwhile/) })
     expect(posts(t)).toEqual(['/hand-off', '/hand-off', '/hand-off/withdraw'])
-    expect(t.calls.filter((c) => c.startsWith('openTerminal'))).toEqual([])
+    expect(t.calls.filter((c) => c.startsWith('open '))).toEqual([])
     // the resumed launch's driver took that second request first: it hands off, and Terminal opens
     const raced = takeOverRig(RUNNING, [{ ok: true, state: 'requested' }, { ok: true, state: 'requested' }, HANDED])
     raced.reads.push(RUNNING, { ...RUNNING, status: 'parked', driver: null, resumable: true }, RUNNING, ENDED_HANDED)
     raced.withdrawals.push({ ok: false })
     expect(await raced.controller.takeOver(ID)).toEqual({ ok: true })
     expect(posts(raced)).toEqual(['/hand-off', '/hand-off', '/hand-off/withdraw', '/hand-off'])
-    expect(raced.calls.at(-1)).toBe(`openTerminal /hub/launches/${ID}/take-over.command`)
+    expect(raced.calls.at(-1)).toBe(`open -b com.apple.Terminal -- /hub/launches/${ID}/take-over.command`)
   })
 
   it('withdraws a request the driver did not take in time, and opens nothing for an answer it cannot trust', async () => {
@@ -1365,7 +1514,7 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     ]) {
       const t = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [answer])
       expect(await t.controller.takeOver(ID)).toMatchObject({ ok: false })
-      expect(t.calls.filter((c) => c.startsWith('writeScript') || c.startsWith('openTerminal'))).toEqual([])
+      expect(t.calls.filter((c) => c.startsWith('writeScript') || c.startsWith('open '))).toEqual([])
     }
     // a model or effort that is not one of their own is left out, never quoted in
     const odd = takeOverRig({ ...RUNNING, status: 'parked', driver: null, resumable: true }, [{ ...HANDED, model: "x' && y", effort: 'turbo' }])
@@ -1420,6 +1569,24 @@ describe('the launch IPC and its grants (§8)', () => {
       'resume-with-budget', 'set-enabled', 'set-max-sessions', 'start', 'stop', 'take-over',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
+  })
+
+  it('names the terminal only to the granted window, with the switch on (#586)', async () => {
+    const w = world()
+    expect(await w.call('launch-available')).toMatchObject({ available: true, terminal: 'terminal' })
+    expect(w.r.state.terminalReads).toBe(1)
+    w.r.state.terminal = 'iterm2'
+    expect(await w.call('launch-available')).toMatchObject({ available: true, terminal: 'iterm2' })
+    w.r.state.terminal = 'Hyper'
+    expect(await w.call('launch-available')).toMatchObject({ terminal: 'terminal' })
+    const ungranted = world({ owned: true, granted: false })
+    ungranted.r.state.terminal = 'iterm2'
+    expect(await ungranted.call('launch-available')).not.toHaveProperty('terminal')
+    const off = world()
+    off.r.state.terminal = 'iterm2'
+    off.r.state.enabled = false
+    expect(await off.call('launch-available')).not.toHaveProperty('terminal')
+    expect(off.r.state.terminalReads).toBe(0)
   })
 
   it('answers only the owned viewer for the switch, and only the granted window for actions', async () => {
@@ -1792,6 +1959,22 @@ describe('the preload bridge (§8)', () => {
     expect(listeners.has('agent-inbox:launch-progress')).toBe(false)
   })
 
+  it('keeps a terminal only when the launch is available and the value is on the list (#586)', async () => {
+    const base = { owned: true, enabled: true, available: true, canEnable: true }
+    expect(await loadPreload(() => ({ ...base, terminal: 'iterm2' })).launch.available!()).toEqual({ ...base, terminal: 'iterm2' })
+    expect(await loadPreload(() => ({ ...base, terminal: 'terminal' })).launch.available!()).toEqual({ ...base, terminal: 'terminal' })
+    for (const terminal of ['Hyper', 'iTerm2', 3, null, {}]) expect(await loadPreload(() => ({ ...base, terminal })).launch.available!()).not.toHaveProperty('terminal')
+    expect(await loadPreload(() => ({ ...base, available: false, terminal: 'iterm2' })).launch.available!()).not.toHaveProperty('terminal')
+    expect(await loadPreload(() => ({ ...base, enabled: false, terminal: 'iterm2' })).launch.available!()).not.toHaveProperty('terminal')
+  })
+
+  it('passes a notice on a result, cut to 500, and nothing else it was not given (#586)', async () => {
+    const note = 'iTerm2 could not be opened, so Terminal was opened instead.'
+    expect(await loadPreload(() => ({ ok: true, notice: note })).launch.openWorktree!(ID)).toEqual({ ok: true, notice: note })
+    expect(await loadPreload(() => ({ ok: true, notice: 'x'.repeat(900) })).launch.takeOver!(ID)).toEqual({ ok: true, notice: 'x'.repeat(500) })
+    expect(await loadPreload(() => ({ ok: true, notice: { text: 'x' } })).launch.takeOver!(ID)).toEqual({ ok: true })
+  })
+
   it('says off unless main says the owned viewer has the switch on and the grant', async () => {
     const off = loadPreload(() => ({ owned: true, enabled: false, available: true, canEnable: true }))
     expect(await off.launch.available!()).toEqual({ owned: true, enabled: false, available: false, canEnable: true })
@@ -1827,9 +2010,13 @@ describe('main’s wiring (source)', () => {
     expect(main.match(/'agent-inbox:launch-progress'/g)).toHaveLength(1)
   })
 
-  it('opens Terminal at a worktree with a fixed argv and no shell, and runs worktree commands from the verified runtime (#432)', () => {
-    expect(main).toContain("execFile('/usr/bin/open', ['-a', 'Terminal', '--', folder], { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(!error))")
-    expect(main.match(/'\/usr\/bin\/open'/g)).toHaveLength(1)
+  it('opens a terminal only through terminal-launch.cjs, with a fixed argv and no shell, and runs worktree commands from the verified runtime (#432, #586)', () => {
+    expect(main).toContain("execFile(command.file, command.args, { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(runOutcome(error)))")
+    expect(main).toContain('read: () => linkPrefs().readTerminal(),')
+    expect(main).not.toContain('openTerminal')
+    expect(main).not.toContain("'/usr/bin/open'")
+    expect(main).not.toContain("'-a'")
+    expect(read('electron/terminal-launch.cjs').match(/'\/usr\/bin\/open'/g)).toHaveLength(1)
     // step 5: the Take over script, written 0700 by temp file and rename, opened by that same argv
     expect(main).toContain('writeFileSync(temp, text, { mode: 0o700 })')
     expect(main).toContain('renameSync(temp, file)')

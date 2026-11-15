@@ -67,6 +67,10 @@ describe('Chats tab styles (#586 PR 2)', () => {
     for (const rule of [/display:\s*block;/, /margin-top:\s*var\(--sp-1\);/, /font-size:\s*var\(--fs-meta\);/]) expect(note).toMatch(rule)
     expect(note).not.toMatch(/\d+px/)
     expect(ruleBody('.chats-resume-note:empty')).toMatch(/display:\s*none;/)
+    // Resume and Copy resume share a line (a stacked pair doubled every row's height in the desktop app),
+    // and the note takes the cell's width instead of widening the column
+    expect(ruleBody('\n.chats-actions')).toMatch(/white-space:\s*nowrap;/)
+    for (const rule of [/width:\s*0;/, /min-width:\s*100%;/, /white-space:\s*normal;/]) expect(note).toMatch(rule)
   })
 
   it('lets [hidden] win over the parts that set a display', () => {

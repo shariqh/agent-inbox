@@ -2268,7 +2268,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-refresh[aria-disabled="true"] { opacity: .45; cursor: default; }
 /* PR 3: Resume sits before Copy resume; its note (the fallback notice or main's reason) goes under both */
 .chats-resume { margin-right: var(--sp-1); }
-.chats-resume-note { display: block; max-width: 24em; margin-top: var(--sp-1); color: var(--app-muted); font-size: var(--fs-meta); white-space: normal; }
+/* the two controls stay on one line, so a row is one line tall; the note wraps to the cell and never widens the column */
+.chats-actions { white-space: nowrap; }
+.chats-resume-note { display: block; width: 0; min-width: 100%; max-width: 24em; margin-top: var(--sp-1); color: var(--app-muted); font-size: var(--fs-meta); white-space: normal; }
 .chats-resume-note:empty { display: none; }
 /* the session card */
 /* #454 A.3 V1–V5: one quiet meta line, what it is doing leading, pink only for

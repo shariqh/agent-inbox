@@ -17,8 +17,15 @@
 // #432: the request may ask for `worktree: true` and nothing more. Main plans
 // the worktree's path and branch itself (session-worktree.cjs), shows both in
 // the confirmation, and sends them in the spec; the driver creates it.
+//
+// #586 phase 2: Continue here… on a Copilot CLI chat (continueChat). The page
+// sends only the tool, the chat id, a mode, the first message and its start tag;
+// main reads the chat itself through the viewer's one-chat route, takes the
+// folder, title and project from that answer, refuses in a fixed order, confirms
+// natively, and sends a `chat` spec. Never a worktree, a model or a budget.
 const path = require('node:path')
-const { isRepositoryTop, planWorktree, worktreeProblem, worktreeRootProblem } = require('./session-worktree.cjs')
+const { insideRepository, isRepositoryTop, planWorktree, worktreeProblem, worktreeRootProblem } = require('./session-worktree.cjs')
+const { CHAT_ID, UNSAFE_PATH, holdsChat } = require('./chat-resume.cjs')
 const { openInTerminal, terminalId, terminalName } = require('./terminal-launch.cjs')
 
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -66,6 +73,31 @@ const MODES = Object.freeze({
   },
 })
 
+// #586 phase 2 (design §7 question 1): a continued chat runs in the person's own folder, so only
+// the two modes in which every tool call asks first
+const CHAT_MODES = Object.freeze(['ask', 'read-only'])
+// §3.4's decision: the Ask for everything line names the folder approvals Copilot already keeps
+const CHAT_ASK_COPY = 'Each tool call asks you first, except what your own Copilot settings already allow, such as a command you told Copilot not to ask about again in this folder.'
+// what a driver older than the `chat` kind writes on its status line before it exits 65 (§3.3)
+const OLD_DRIVER_KIND = 'launch spec: kind must be new or resume'
+// §3.7: main's refusals of Continue here…, by reason, in the order they are checked
+const CHAT_REFUSALS = Object.freeze({
+  invalid: 'This chat can’t be continued here.',
+  tool: 'Only Copilot CLI chats can be continued here for now.',
+  busy: 'This chat is already starting.',
+  index: 'Agent Inbox could not read the chat list.',
+  missing: 'This chat is no longer listed.',
+  driven: 'This chat already has a session here: use Show session.',
+  live: 'This chat is live in another process.',
+  kind: 'Only interactive chats with something said can be continued here.',
+  folder: 'Its folder no longer exists.',
+  // not in §3.7's table: the launch list the worktree check and the warning read could not be read
+  sessions: 'Agent Inbox could not read its sessions.',
+  worktree: 'This chat’s folder is a worktree of another session here. Continue that session instead.',
+  copilot_home: 'Your shell sets COPILOT_HOME to another folder, so Copilot would not find this chat.',
+  outdated: 'This Agent Inbox runtime is older than the app. Update agents in Setup.',
+})
+
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const exactKeys = (value, required, optional = []) =>
   required.every((key) => key in value) && Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
@@ -96,6 +128,37 @@ function launchRequest(value) {
     ...(value.worktree === true ? { worktree: true } : {}),
     ...(value.startId === undefined ? {} : { startId: value.startId }),
   }
+}
+
+/**
+ * #586 phase 2: the renderer's Continue here… request, checked exactly, or null: the tool (Copilot
+ * only), the chat id, a mode, the first message and its start tag. Never a folder, a title, argv or env.
+ */
+function chatRequest(value) {
+  if (!isRecord(value) || !exactKeys(value, ['tool', 'id', 'mode', 'prompt'], ['startId'])) return null
+  if (value.tool !== 'copilot') return null
+  if (typeof value.id !== 'string' || !CHAT_ID.test(value.id)) return null
+  if (!CHAT_MODES.includes(value.mode)) return null
+  if (typeof value.prompt !== 'string' || !value.prompt.trim() || value.prompt.length > MAX_PROMPT) return null
+  if (value.startId !== undefined && (typeof value.startId !== 'string' || !START_ID.test(value.startId))) return null
+  return {
+    tool: 'copilot', id: value.id, mode: value.mode, prompt: value.prompt,
+    ...(value.startId === undefined ? {} : { startId: value.startId }),
+  }
+}
+
+/**
+ * #586 phase 2: the one-chat route's answer, `{ chat, launch }`, checked, or null when it cannot be
+ * read: the chat is null or this Copilot chat's entry (its project a string, its title a string or
+ * null, its hidden reasons a list), and the launch null or a row.
+ */
+function chatLookup(body, id) {
+  if (!isRecord(body) || !('chat' in body) || !('launch' in body)) return null
+  const { chat, launch } = body
+  if (chat !== null && (!isRecord(chat) || chat.tool !== 'copilot' || chat.id !== id || typeof chat.project !== 'string'
+    || (chat.title !== null && typeof chat.title !== 'string') || !Array.isArray(chat.hidden))) return null
+  if (launch !== null && !isRecord(launch)) return null
+  return { chat, launch }
 }
 
 /** #451: the renderer's Resume with more budget… request, checked exactly, or null: the allowance in whole minutes. */
@@ -187,6 +250,35 @@ function confirmation({ project, folder, worktree, mode, model, reasoningEffort,
       `Task: ${displaySafe(preview)}`,
     ].join('\n'),
     buttons: ['Start', 'Cancel'],
+  }
+}
+
+/**
+ * #586 phase 2 (design §3.4): Continue here…'s own confirmation, from what main read: the chat's
+ * title and project from the one-chat route, its real folder, and what main found there. The
+ * title, project and folder are untrusted text, one line each. Cancel is the default (main's confirm).
+ */
+function chatConfirmation({ project, title, chatId, folder, repository, shared, liveHere, mode, prompt }) {
+  const preview = prompt.length > PROMPT_PREVIEW ? `${prompt.slice(0, PROMPT_PREVIEW)}…` : prompt
+  const modeLine = mode === 'read-only' ? `Mode: ${MODES['read-only'].label}. ${MODES['read-only'].copy}` : `Mode: ${MODES.ask.label}. ${CHAT_ASK_COPY}`
+  return {
+    message: `Continue this Copilot chat in ${displayLine(project)}?`,
+    detail: [
+      `Chat: ${title ? displayLine(title) : 'Untitled'} (${displayLine(String(chatId).slice(0, 8))})`,
+      `Folder: ${displayLine(folder)}`,
+      'It works in this folder itself, not in a worktree: what it changes, it changes in your files there, uncommitted work included.',
+      ...(repository ? [] : ['This folder is not inside a git repository, so git cannot show or undo what it changes.']),
+      ...(shared ? ['Another session Agent Inbox started is running in this folder itself, not in a worktree.'] : []),
+      ...(liveHere ? ['Another session is live in this folder.'] : []),
+      'Agent Inbox drives it from this window: the agent acts in that folder, its approvals come here, and your messages reach it as turns.',
+      modeLine,
+      'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.',
+      budgetLine({ activeMs: null, toolCalls: null }),
+      'Each turn spends Copilot premium requests, as it would in your terminal.',
+      '',
+      `Message: ${displaySafe(preview)}`,
+    ].join('\n'),
+    buttons: ['Continue', 'Cancel'],
   }
 }
 
@@ -381,6 +473,13 @@ async function quitChoice({ running, showMessageBox }) {
 }
 
 const refused = (error, extra = {}) => ({ ok: false, error, ...extra })
+// #586 phase 2: Continue here…'s refusals carry their reason, so the page can read the list again
+const chatRefused = (reason, error = CHAT_REFUSALS[reason]) => refused(error, { reason })
+// a folder at or under a worktree's path
+const within = (folder, root) => {
+  const top = root.length > 1 ? root.replace(/\/+$/, '') : root
+  return folder === top || folder.startsWith(top.endsWith('/') ? top : `${top}/`)
+}
 
 // The captured env through the driver's denylist (§8), applied here too so
 // nothing of Electron's or Agent Inbox's own reaches the spec: no ELECTRON_*,
@@ -402,6 +501,8 @@ function createLaunchController(deps) {
     platform, isEnabled, keys, viewer, captureEnv, confirm, chooseFolder, driverRuntime, startDriver, hubPath, driverEnv,
     randomUUID, realDirectory, processStart, kill, worktreeSettings, chooseWorktreeFolder,
     runWorktree, ask, terminal, sessionCap, writeScript,
+    // #586 phase 2: the home folder whose .copilot the chat index reads, and the walk up for a .git
+    homeDir, inRepository = (folder) => insideRepository(folder),
     // step 5: how Take over waits for a running launch's driver, injected for tests
     wait = sleep, handOffWaitMs = HAND_OFF_WAIT_MS,
     // #432 PR 5: what a start is doing now, for the New session dialog, and how long each step took
@@ -419,6 +520,8 @@ function createLaunchController(deps) {
   let quitting = false
   // the starts in flight, so the quit prompt can wait for the launch rows they write
   const starting = new Set()
+  // #586 phase 2 (§3.7 busy): the chats being continued now, so a second click spawns nothing
+  const continuing = new Set()
 
   // every action but Stop and Close needs the switch on, macOS and a key store
   function blocked() {
@@ -514,6 +617,68 @@ function createLaunchController(deps) {
     return { path: chosen ?? defaultWorktreeRoot, isDefault: chosen === null }
   }
 
+  // #586 phase 2 (§3.3 step 2): Copilot, started with this env, must look in the folder the index
+  // read (<home>/.copilot): COPILOT_HOME when the shell sets it, else $HOME/.copilot
+  function copilotHomeIsIndexed(env) {
+    if (typeof homeDir !== 'string' || !path.isAbsolute(homeDir)) return false
+    const indexed = realDirectory(path.join(homeDir, '.copilot'))
+    if (!indexed) return false
+    const home = env.COPILOT_HOME !== undefined ? env.COPILOT_HOME
+      : typeof env.HOME === 'string' && env.HOME ? path.join(env.HOME, '.copilot') : null
+    if (typeof home !== 'string' || !path.isAbsolute(home)) return false
+    return realDirectory(home) === indexed
+  }
+
+  // #586 phase 2: Continue here…, after the gate, the request check and the busy set (§3.7)
+  async function continueChecked({ id, mode, prompt, startId }) {
+    const found = chatLookup(await viewer.getJson(`/api/chats/copilot/${id}`), id)
+    if (!found) return chatRefused('index')
+    const { chat, launch } = found
+    if (!chat) return chatRefused('missing')
+    if (holdsChat(launch)) return chatRefused('driven')
+    if (chat.live !== false) return chatRefused('live')
+    if (chat.hidden.includes('empty') || chat.hidden.includes('non-interactive')) return chatRefused('kind')
+    // the folder is the index's, never the page's, resolved now
+    const cwd = chat.cwd
+    if (chat.hidden.includes('folder-gone') || typeof cwd !== 'string' || !path.isAbsolute(cwd) || UNSAFE_PATH.test(cwd)) return chatRefused('folder')
+    const real = realDirectory(cwd)
+    if (typeof real !== 'string' || !path.isAbsolute(real) || UNSAFE_PATH.test(real)) return chatRefused('folder')
+    // one launch list for the worktree refusal and the shared-folder warning (§3.2)
+    const launches = await viewer.getJson('/api/launches')
+    if (!Array.isArray(launches)) return chatRefused('sessions')
+    const rows = launches.filter(isRecord)
+    if (rows.some((l) => typeof l.worktree_path === 'string' && l.worktree_path && !l.worktree_removed_at
+      && [real, cwd].some((folder) => within(folder, l.worktree_path)))) return chatRefused('worktree')
+    const ready = runtimeOrRefusal()
+    if (!ready.runtime) return ready
+    // the warning's live chats: the whole list, since a live chat's folder may be one the default hides
+    const listed = await viewer.getJson('/api/chats?all=1')
+    if (!isRecord(listed) || !Array.isArray(listed.chats)) return chatRefused('index')
+    const here = (folder) => folder === real || folder === cwd
+    const facts = {
+      project: chat.project, title: chat.title, chatId: id, folder: real, mode, prompt,
+      repository: inRepository(real) === true,
+      shared: rows.some((l) => l.status === 'running' && here(l.cwd) && !l.worktree_path),
+      liveHere: listed.chats.some((entry) => isRecord(entry) && entry.live === true && entry.id !== id && here(entry.cwd)),
+    }
+    const launchId = randomUUID()
+    if (!(await confirm(chatConfirmation(facts)))) return refused('Not continued.', { cancelled: true })
+    // a quit begun, or the switch turned off, while the dialog was open runs no login shell
+    const late = blocked()
+    if (late) return late
+    report('environment', launchId, startId)
+    const envAt = now()
+    const shell = await environment(real)
+    if (!shell.env) return shell
+    if (!copilotHomeIsIndexed(shell.env)) return chatRefused('copilot_home')
+    const result = await spawnDriver(launchId, {
+      v: 1, kind: 'chat', launchId, host: 'copilot', chatId: id, cwd: real, mode, prompt, env: shell.env,
+    }, [['environment', now() - envAt]], startId)
+    // a runtime older than the app refuses the kind on its status line; it wrote no row (§3.3)
+    if (!result.ok && result.error === OLD_DRIVER_KIND) return chatRefused('outdated')
+    return result
+  }
+
   function guarded(work) {
     const run = (async () => {
       try {
@@ -605,6 +770,32 @@ function createLaunchController(deps) {
       })
     },
 
+    /**
+     * #586 phase 2: Continue here… on a Copilot CLI chat. Refusals in §3.7's order, each spawning
+     * and writing nothing: blocked, invalid, busy, then (continueChecked) index, missing, driven,
+     * live, kind, folder, sessions, worktree, runtime, index (the warning's list), cancelled,
+     * environment, copilot_home; then the driver's own, and outdated for a runtime older than the app.
+     */
+    continueChat(value) {
+      const why = blocked()
+      if (why) return Promise.resolve(why)
+      const request = chatRequest(value)
+      if (!request) {
+        // everything right but the tool: say why
+        const tool = isRecord(value) && typeof value.tool === 'string' && value.tool !== 'copilot' && chatRequest({ ...value, tool: 'copilot' }) !== null
+        return Promise.resolve(chatRefused('invalid', tool ? CHAT_REFUSALS.tool : CHAT_REFUSALS.invalid))
+      }
+      if (continuing.has(request.id)) return Promise.resolve(chatRefused('busy'))
+      continuing.add(request.id)
+      return guarded(async () => {
+        try {
+          return await continueChecked(request)
+        } finally {
+          continuing.delete(request.id)
+        }
+      })
+    },
+
     // Resume and send's first half (§5.3, §7): the click is the gesture, so no
     // second confirmation; the launch must still be parked (or, step 5, stopped
     // with its session), and the switch on.
@@ -616,6 +807,15 @@ function createLaunchController(deps) {
         const launch = await viewer.getJson(`/api/launches/${id}`)
         if (!launch || (launch.status !== 'parked' && !stoppedWithSession(launch))) {
           return refused('This session cannot be resumed: only a parked session, or one you stopped after its task was sent, can be.')
+        }
+        // #586 phase 2 (§3.3): a launch that continues a chat re-reads it first, so a chat a
+        // terminal took meanwhile is never loaded twice
+        if (launch.chat_id !== undefined && launch.chat_id !== null) {
+          if (typeof launch.chat_id !== 'string' || !CHAT_ID.test(launch.chat_id)) return refused('The launch is not valid.')
+          const held = chatLookup(await viewer.getJson(`/api/chats/copilot/${launch.chat_id}`), launch.chat_id)
+          if (!held) return chatRefused('index')
+          if (!held.chat) return chatRefused('missing')
+          if (held.chat.live !== false) return chatRefused('live')
         }
         const real = realDirectory(launch.cwd)
         if (!real) return folderGone(launch)
@@ -993,6 +1193,6 @@ function createLaunchController(deps) {
 }
 
 module.exports = {
-  MODES, approvalRequest, budgetConfirmation, budgetRequest, confirmation, createLaunchController, displayLine, forgetConfirmation, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
+  CHAT_REFUSALS, MODES, approvalRequest, budgetConfirmation, budgetRequest, chatConfirmation, chatRequest, confirmation, createLaunchController, displayLine, forgetConfirmation, removalConfirmation, displaySafe, launchEnv, launchRequest, quitChoice, runningAtQuit,
   takeOverConfirmation, takeOverScript,
 }

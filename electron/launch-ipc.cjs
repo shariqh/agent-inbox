@@ -84,6 +84,9 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     resumeWithBudget: 'resume-with-budget',
     // #432 §5: the cap on sessions at once, 1 to 8, checked again by the controller
     setMaxSessions: 'set-max-sessions',
+    // #586 phase 2: Continue here…; { tool, id, mode, prompt, startId? }, checked again by the
+    // controller, which reads the chat itself and confirms natively
+    continueChat: 'continue-chat',
   }
   for (const [action, channel] of Object.entries(oneArgument)) {
     ipcMain.handle(`agent-inbox:launch-${channel}`, async (event, ...args) => {

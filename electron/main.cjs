@@ -648,6 +648,8 @@ function launchControllerFor() {
     },
     processStart: launchProcessStart,
     kill: (pid, signal) => process.kill(pid, signal),
+    // #586 phase 2: Continue here… checks that the shell's COPILOT_HOME is <home>/.copilot, the index's
+    homeDir: app.getPath('home'),
   })
   if (installGate.quitting()) launchController.beginQuit()
   return launchController

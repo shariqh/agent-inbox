@@ -11,6 +11,8 @@ export interface LaunchController {
   canEnable(options?: { withKeys?: boolean }): LaunchResult | null
   available(): { enabled: boolean; available: boolean; error?: string }
   start(request: unknown): Promise<LaunchResult>
+  /** #586 phase 2: Continue here… on a Copilot CLI chat; refusals carry their `reason` */
+  continueChat(request: unknown): Promise<LaunchResult>
   resume(id: unknown): Promise<LaunchResult>
   /** #451: resume a budget-ended launch after main's own confirmation of the allowance */
   resumeWithBudget(request: unknown): Promise<LaunchResult>
@@ -38,6 +40,15 @@ export interface LaunchController {
   settled(): Promise<void>
 }
 export const MODES: Readonly<Record<string, { label: string; copy: string }>>
+/** #586 phase 2: Continue here…'s refusal texts, by reason */
+export const CHAT_REFUSALS: Readonly<Record<string, string>>
+/** #586 phase 2: the page's Continue here… request, checked exactly, or null */
+export function chatRequest(value: unknown): { tool: 'copilot'; id: string; mode: 'ask' | 'read-only'; prompt: string; startId?: string } | null
+/** #586 phase 2: Continue here…'s own confirmation (design §3.4) */
+export function chatConfirmation(facts: {
+  project: string; title: string | null; chatId: string; folder: string; repository: boolean; shared: boolean; liveHere: boolean
+  mode: string; prompt: string
+}): { message: string; detail: string; buttons: string[] }
 export function createLaunchController(deps: Record<string, unknown>): LaunchController
 export function launchRequest(value: unknown): Record<string, unknown> | null
 export function budgetRequest(value: unknown): { id: string; add: { activeMs: number; toolCalls: number } } | null

@@ -170,11 +170,11 @@ describe('motion foundation in public/style.css (#302)', () => {
   it('runs no infinite animation on the session cards, only the one-shot app.js starts (#454)', () => {
     // the Needs you lane and the lane chips too (dashboard lanes PR 3), and the Quiet table (PR 4):
     // nothing on them animates or transitions
-    const cards = rules.filter((r) => r.selectors.some((sel) => /(^|[\s>(])\.(sc|agents-home|ah-[\w-]+|qt-[\w-]+|working-lane|quiet-lane|needs-you-lane|ny-[\w-]+|dash-head|dash-chips?|dash-chip-[\w-]+|sc-asking)(?![\w-])/.test(sel)))
+    const cards = rules.filter((r) => r.selectors.some((sel) => /(^|[\s>(])\.(sc|agents-home|ah-[\w-]+|qt-[\w-]+|working-lane|quiet-lane|needs-you-lane|ny-[\w-]+|plans-lane|pl-[\w-]+|dash-head|dash-chips?|dash-chip-[\w-]+|sc-asking)(?![\w-])/.test(sel)))
     expect(cards.length).toBeGreaterThan(0)
     expect(cards.filter(isInfinite).flatMap((r) => r.selectors)).toEqual([])
-    // and the Working and Quiet lanes (PR 4): a row or lane never transitions
-    const lanes = cards.filter((r) => r.selectors.some((sel) => /\.(needs-you-lane|ny-|dash-chip|dash-head|sc-asking|qt-|ah-lane|working-lane|quiet-lane)/.test(sel)))
+    // and the Working and Quiet lanes (PR 4) and Plans in progress (PR 6): a row or lane never transitions
+    const lanes = cards.filter((r) => r.selectors.some((sel) => /\.(needs-you-lane|ny-|plans-lane|pl-|dash-chip|dash-head|sc-asking|qt-|ah-lane|working-lane|quiet-lane)/.test(sel)))
     expect(lanes.length).toBeGreaterThan(0)
     for (const rule of lanes) {
       for (const [prop] of rule.decls) expect(prop, rule.selectors.join(', ')).not.toMatch(/^(transition|animation)/)

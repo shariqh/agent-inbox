@@ -90,6 +90,11 @@ describe('Live Operations Desk dashboard', () => {
       .toEqual(['Asked you', 'Asking you', 'Landed'])
     expect(lane.getAttribute('aria-label')).toBe('alpha: 1m of work, working now, 2 asks (1 open), 1 outcome')
     expect(document.querySelector('.dashboard-outcomes h2')?.textContent).toBe('Just landed')
+    // lanes PR 6 (§3.5): Just landed, then the ribbon, the page's last lane, its range select inside it
+    const grid = document.querySelector('#dashboard .dashboard-grid')!
+    expect(grid.lastElementChild?.classList.contains('dashboard-activity')).toBe(true)
+    expect(grid.lastElementChild?.previousElementSibling?.classList.contains('dashboard-outcomes')).toBe(true)
+    expect(grid.lastElementChild?.querySelector('select.dashboard-range')).not.toBeNull()
   })
 
   it('uses visuals instead of explanatory dashboard subtext', async () => {

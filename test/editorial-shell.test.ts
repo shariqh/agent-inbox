@@ -358,6 +358,84 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
   })
 })
 
+// Dashboard lanes design §3.5, §4: Plans in progress, Just landed and Today are
+// full-width lanes on the tokens. jsdom lays out none of it, so the promises at
+// 1440px (the base sheet), 900px and 620px (the operations-desk container) are
+// pinned in the source.
+describe('the Plans in progress lane and the full-width tail (dashboard lanes PR 6)', () => {
+  const OURS = /(^|[\s,>])\.(plans-lane|pl-[\w-]+|dashboard-outcome-list|dashboard-outcome)(?![\w-])/
+  const all = [...css.matchAll(/(?:^|\n)([^{}@\n][^{}\n]*)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+  const rules = all.filter((r) => OURS.test(r.selector))
+  const body = (selector: string, sheet = all) => sheet.find((r) => r.selector === selector)?.body ?? ''
+  const block = (start: string) => {
+    const from = css.slice(css.indexOf(start))
+    return from.slice(0, from.indexOf('\n}'))
+  }
+  const sheetOf = (text: string) => [...text.matchAll(/\n\s*([^{}\n]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+  const narrow = sheetOf(block('@container operations-desk (max-width: 900px) {'))
+  const phone = sheetOf(block('@container operations-desk (max-width: 620px) {'))
+  const CELLS = [['pl-title', 'title'], ['pl-project', 'project'], ['pl-progress', 'progress'], ['pl-waiting', 'waiting'], ['pl-updated', 'updated']]
+
+  it('take the tokens for every font size, gap, margin and padding', () => {
+    expect(rules.length).toBeGreaterThan(10)
+    for (const { selector, body: decls } of rules) {
+      const props = /\.(plans-lane|pl-)/.test(selector) ? 'font-size|gap|row-gap|column-gap|margin[\\w-]*|padding[\\w-]*' : 'gap|row-gap|column-gap|margin[\\w-]*|padding[\\w-]*'
+      for (const [, prop, value] of decls.matchAll(new RegExp(`(?<![\\w-])(${props}):\\s*([^;]+);`, 'g'))) {
+        for (const part of value!.trim().split(/\s+/)) {
+          expect(part, `${selector} ${prop}`).toMatch(/^(0|auto|var\(--(fs-[\w-]+|sp-\d|lane-gap)\))$/)
+        }
+      }
+    }
+    expect(body('.pl-title')).toMatch(/font-size: var\(--fs-lead\);/)
+    expect(body('.pl-row')).toMatch(/padding: var\(--sp-3\) var\(--sp-2\);/)
+  })
+
+  it('1440px and up: every tail lane spans the grid, and a plan row is one line', () => {
+    expect(body('.plans-lane, .dashboard-outcomes, .dashboard-activity')).toMatch(/grid-column: 1 \/ -1;/)
+    // no rule anywhere, a container or media block included, narrows one of them again
+    const spans = [...css.matchAll(/([^{}]*)\{([^{}]*)\}/g)]
+      .filter((m) => /\.(plans-lane|dashboard-outcomes|dashboard-activity)(?![\w-])/.test(m[1]!) && /grid-column:/.test(m[2]!))
+    expect(spans.length).toBeGreaterThan(0)
+    for (const m of spans) expect(m[2], m[1]!.trim()).toMatch(/grid-column: 1 \/ -1;/)
+    const row = body('.pl-row')
+    const template = row.match(/grid-template-columns: ([^;]+);/)?.[1] ?? ''
+    const tracks = template.match(/minmax\([^)]*\)/g) ?? []
+    expect(tracks).toHaveLength(5)
+    for (const track of tracks) expect(track).toMatch(/^minmax\(0, \d+(\.\d+)?fr\)$/)
+    expect(row).toMatch(/grid-template-areas: "title project progress waiting updated";/)
+    // every cell has its area, so a hidden one (the project under a lens, a zero count) moves no other
+    for (const [cell, area] of CELLS) expect(body(`.${cell}`), cell).toMatch(new RegExp(`grid-area: ${area};`))
+    // Just landed: its four items across, the empty or loading note across all of them
+    expect(body('.dashboard-outcome-list')).toMatch(/grid-template-columns: repeat\(4, minmax\(0, 1fr\)\);/)
+    expect(body('.dashboard-outcome-list')).toMatch(/column-gap: var\(--sp-4\);/)
+    expect(body('.dashboard-outcome-list > .dashboard-empty')).toMatch(/grid-column: 1 \/ -1;/)
+  })
+
+  it('under 900px: a plan row is two lines, and Just landed two across', () => {
+    const row = body('.pl-row', narrow)
+    expect(row).toMatch(/grid-template-areas: "title title updated" "project progress waiting";/)
+    expect(row).toMatch(/grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1\.5fr\) minmax\(0, 1fr\);/)
+    expect(body('.dashboard-outcome-list', narrow)).toMatch(/grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/)
+    expect(block('@container operations-desk (max-width: 900px) {')).not.toMatch(/span 12/)
+  })
+
+  it('under 620px: a plan row stacks, and Just landed is one across', () => {
+    const row = body('.pl-row', phone)
+    expect(row).toMatch(/grid-template-areas: "title title" "progress waiting" "project updated";/)
+    expect(row).toMatch(/grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\);/)
+    expect(body('.dashboard-outcome-list', phone)).toMatch(/grid-template-columns: minmax\(0, 1fr\);/)
+  })
+
+  it('no plan-row track widens the page; a long title ellipsizes', () => {
+    expect(css).not.toMatch(/\.pl-[\w-]+[^{}]*\{[^}]*(subgrid|max-content)/)
+    const title = body('.pl-title')
+    expect(title).toMatch(/white-space: nowrap;/)
+    expect(title).toMatch(/overflow: hidden;/)
+    expect(title).toMatch(/text-overflow: ellipsis;/)
+    expect(title).toMatch(/min-width: 0;/)
+  })
+})
+
 // Dashboard lanes design §3.1, §3.2, §4: the page head's chips and the Needs
 // you lane take the type and spacing tokens, never a literal size or gap.
 describe('the Needs you lane and the lane chips (dashboard lanes PR 3)', () => {

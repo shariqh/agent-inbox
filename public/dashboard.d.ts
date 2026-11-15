@@ -1,5 +1,6 @@
 import type { RelayBoard, RelayEntry, RelayItem } from './relay.js'
 import type { Lane, LaneBoard } from './lanes.js'
+import type { PlanInProgress } from './plans-lane.js'
 
 export interface DashboardActivity {
   session: string
@@ -81,6 +82,8 @@ export interface DashboardModel {
   idleConnections: number
   /** the Needs you lane (dashboard lanes design §3.2): waitingEntries in sortRail order */
   needsYou: RelayEntry[]
+  /** the Plans in progress lane (§3.5): active plans with an open row (closed projects left out), waiting first */
+  plansInProgress: PlanInProgress[]
 }
 
 export interface RibbonMark {

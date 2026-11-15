@@ -1795,6 +1795,34 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ny-next { display: -webkit-box; overflow: hidden; color: var(--app-text-soft); font-size: var(--fs-body); line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .ny-plan { min-width: 0; overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
 .ny-empty { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
+/* §3.5: Plans in progress, Just landed and Today follow Working and Quiet, each a
+   full-width lane, the ribbon last. A plan row is one link-like control: a click
+   or Enter opens the plan in Plans, and it holds no button. Every cell has its
+   area, so a hidden one (the project under a lens, a zero count) moves no other. */
+.plans-lane, .dashboard-outcomes, .dashboard-activity { grid-column: 1 / -1; }
+.pl-rows { display: grid; }
+.pl-rows:empty { display: none; }
+.pl-row { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 2fr) minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1fr); grid-template-areas: "title project progress waiting updated"; align-items: center; column-gap: var(--sp-4); row-gap: var(--sp-1); padding: var(--sp-3) var(--sp-2); border-top: 1px solid var(--app-border); cursor: pointer; }
+.pl-row:first-child { border-top: 0; }
+.pl-row:hover { background: var(--app-soft); }
+.pl-row:focus { outline: none; }
+.pl-row:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
+.pl-row [hidden], .pl-empty[hidden], .pl-more[hidden] { display: none; }
+.pl-title { grid-area: title; min-width: 0; overflow: hidden; color: var(--app-text); font-size: var(--fs-lead); font-weight: 650; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.pl-project { display: flex; grid-area: project; min-width: 0; align-items: center; gap: var(--sp-2); color: var(--app-text-soft); font-size: var(--fs-meta); }
+.pl-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--pl-project, var(--app-text-soft)); }
+.pl-progress { display: flex; grid-area: progress; min-width: 0; align-items: center; gap: var(--sp-2); }
+.pl-bar { height: 6px; min-width: 0; flex: 1; overflow: hidden; border-radius: 999px; background: var(--app-border); }
+.pl-bar > i { display: block; width: var(--pl-done, 0%); height: 100%; background: var(--app-success); }
+.pl-count { flex: none; color: var(--app-text-soft); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.pl-waiting { grid-area: waiting; min-width: 0; overflow: hidden; color: var(--app-attention); font-size: var(--fs-meta); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.pl-updated { grid-area: updated; min-width: 0; overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; text-align: end; text-overflow: ellipsis; white-space: nowrap; }
+.pl-empty { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
+.pl-more { margin: var(--sp-3) 0 0; font-size: var(--fs-meta); }
+.pl-all { padding: 0; border: 0; background: none; color: var(--app-link); font: inherit; font-weight: 650; cursor: pointer; }
+.pl-all:hover { text-decoration: underline; }
+.pl-all:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -1822,8 +1850,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   background: var(--app-soft);
   color: var(--app-text);
 }
-.dashboard-activity { grid-column: span 8; }
-.dashboard-outcomes { grid-column: span 4; }
 .dashboard-history-empty {
   display: grid;
   min-height: 150px;
@@ -2041,21 +2067,24 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   to { opacity: 0; transform: scale(2.6); }
 }
 
-.dashboard-outcome-list { display: grid; grid-auto-rows: 60px; }
+/* §3.5: at full width Just landed's (at most four) items sit side by side, each
+   with its own top rule, so the rules read as one line across them */
+.dashboard-outcome-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 60px; column-gap: var(--sp-4); }
+.dashboard-outcome-list > .dashboard-empty { grid-column: 1 / -1; }
 .dashboard-outcome {
   display: grid;
   min-width: 0;
   align-content: center;
-  gap: 1px;
-  padding: 6px 0;
+  /* the nearest spacing tokens (§4): 1px to 0, 6px to --sp-1, the arrow's 28px to --sp-6 */
+  gap: 0;
+  padding: var(--sp-1) var(--sp-6) var(--sp-1) 0;
   border: 0;
   border-top: 1px solid var(--app-border);
   background: transparent;
   color: var(--app-text);
   text-align: left;
 }
-.dashboard-outcome:first-child { border-top: 0; }
-.dashboard-outcome { position: relative; width: 100%; padding-right: 28px; }
+.dashboard-outcome { position: relative; width: 100%; }
 .dashboard-outcome:hover strong { color: var(--app-outcome); }
 .dashboard-outcome::after { position: absolute; top: 50%; right: 4px; color: var(--app-outcome); content: "→"; transform: translateY(-50%); }
 .dashboard-outcome strong, .dashboard-outcome span { overflow: hidden; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
@@ -2391,7 +2420,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .dashboard-grid { --fs-lane: 24px; --lane-gap: 40px; }
   .needs-you-lane { --fs-lane: 24px; --lane-gap: 40px; }
   .ny-cards { grid-template-columns: minmax(0, 1fr); }
-  .dashboard-activity, .dashboard-outcomes { grid-column: span 12; }
+  /* §3.5: a plan row on two lines, Just landed two across */
+  .pl-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr); grid-template-areas: "title title updated" "project progress waiting"; }
+  .dashboard-outcome-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* the lanes' own width, the Dashboard's while no session panel is open beside them (§3.6) */
@@ -2412,6 +2443,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 @container operations-desk (max-width: 620px) {
   /* Later and Review queue wrap under the lane's title (§3.2) */
   .ny-head > h2 { flex-basis: 100%; }
+  /* §3.5: a plan row stacked, Just landed one across */
+  .pl-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "progress waiting" "project updated"; }
+  .dashboard-outcome-list { grid-template-columns: minmax(0, 1fr); }
   .dash-ribbon-lane { grid-template-columns: minmax(48px, 80px) minmax(0, 1fr); }
   .dash-ribbon-axis { padding-left: 90px; }
   .dash-ribbon-legend { display: none; }

@@ -1,5 +1,6 @@
 import { buildRelay, stamp } from './relay.js'
 import { buildLanes } from './lanes.js'
+import { plansInProgress } from './plans-lane.js'
 import { knownOutcomes } from './closed-history.js'
 import { laterEntries, sortRail } from './attention.js'
 import { currentAskAt } from './rowview.js'
@@ -144,5 +145,7 @@ export function buildDashboard({
     idleConnections: lanes.idle,
     // the Needs you lane (dashboard lanes design §3.2): the attention set in rail order
     needsYou: railOrder,
+    // the Plans in progress lane (§3.5): the lens's active plans with an open row, in lane order
+    plansInProgress: plansInProgress(visibleBoards, nowMs),
   }
 }

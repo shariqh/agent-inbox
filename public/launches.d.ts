@@ -1,5 +1,8 @@
 export interface LaunchMode { id: 'ask' | 'read-only' | 'plan' | 'edits'; label: string; copy: string }
 export const LAUNCH_MODES: readonly LaunchMode[]
+export type TerminalChoiceId = 'terminal' | 'iterm2'
+export const TERMINAL_CHOICES: readonly (readonly [TerminalChoiceId, 'Terminal' | 'iTerm2'])[]
+export function terminalName(id: unknown): 'Terminal' | 'iTerm2'
 export const REASONING_EFFORTS: readonly string[]
 export const SHELL_WARNING: string
 export const PROMPT_WARNING: string

@@ -46,8 +46,10 @@ const cardIds = (): string[] =>
 // a card opens its panel from anywhere that is not a control
 const openCard = (session: string): void => click(card(session)?.querySelector('.sc-doing'))
 const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus')
-const signal = (name: string): string =>
-  document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
+// the page head's lane chips (dashboard lanes design §3.1)
+const chip = (key: 'needs' | 'working' | 'quiet'): string =>
+  document.querySelector(`#dashboard [data-dash-chip="${key}"] .dash-chip-count`)?.textContent ?? ''
+const laneCard = (id: string) => [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.dataset.nyAsk === id) ?? null
 
 const pick = (filter: string): void => click(document.querySelector(`#dashboard [data-ah-filter="${filter}"]`))
 
@@ -63,13 +65,13 @@ async function attentionSurfaces() {
     title: document.title,
     badge: badgeCount(),
     tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
-    waiting: signal('waiting'),
+    waiting: chip('needs'),
     dock: [await dock.text(), await plans.text()],
   }
 }
 
 describe('quick filters on session cards (#307, #454)', () => {
-  it('narrow only the cards, never the Now strip, the rail or attention', async () => {
+  it('narrow only the cards, never the chips, the Needs you lane, the rail or attention', async () => {
     const d = open()
     work(d, 'a', 'Alpha work')
     work(d, 'b', 'Beta work', { project: 'beta', agent: 'claude-code' })
@@ -78,16 +80,17 @@ describe('quick filters on session cards (#307, #454)', () => {
     insertItem(d, { ...A, project: 'beta', kind: 'question', title: 'Beta ask', session: 'b' })
     await bootApp(d)
     const before = await attentionSurfaces()
-    const working = signal('agents')
+    const working = chip('working')
     expect(cardIds().sort()).toEqual(['a', 'b', 'c'])
 
-    pick('ask')
-    expect(cardIds().sort()).toEqual(['a', 'b'])
     pick('working')
-    expect(cardIds()).toEqual(['c'])
+    expect(cardIds().sort()).toEqual(['a', 'b', 'c'])
+    pick('idle')
+    expect(cardIds()).toEqual([])
     await pollTick()
-    expect(cardIds()).toEqual(['c'])
-    expect(signal('agents')).toBe(working)
+    expect(cardIds()).toEqual([])
+    expect(chip('working')).toBe(working)
+    expect(document.querySelectorAll('#dashboard .ny-card')).toHaveLength(2)
     expect(await attentionSurfaces()).toEqual(before)
 
     pick('parked')
@@ -164,8 +167,8 @@ describe('the session focus panel (#307)', () => {
     keydown(aside.querySelector('#dashFocusTitle')!, 'Escape')
     expect(aside.hidden).toBe(true)
     expect(card('mine')!.classList.contains('sel')).toBe(false)
-    // back to the card's first action: here its Answer
-    expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="review"]'))
+    // back to the card's first action: here its Message
+    expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="message"]'))
   })
 
   it('lists every ask of the session and opens one in its Inbox card', async () => {
@@ -210,21 +213,22 @@ describe('the session focus panel (#307)', () => {
     expect(document.getElementById('boards')?.hidden).toBe(false)
   })
 
-  it("a card's Answer and its ask strip open its panel at the ask, and never the rail", async () => {
+  it("a card's Asking you chip goes to its ask in Needs you, Enter opens its panel, and the card answers nothing", async () => {
     const d = open()
     const { ask } = seed(d)
     await bootApp(d)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    expect(card('mine')!.querySelector('[data-ah-action="review"]')?.textContent).toBe('Answer')
-    click(card('mine')!.querySelector('[data-ah-action="review"]'))
+    expect(card('mine')!.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
+    expect(card('mine')!.querySelector('[data-ah-action="review"]')).toBeNull()
+    click(card('mine')!.querySelector('.sc-asking'))
+    expect(panel()!.hidden).toBe(true)
+    expect(document.activeElement).toBe(laneCard(ask))
+    card('mine')!.focus()
+    keydown(card('mine')!, 'Enter')
     expect(panel()!.hidden).toBe(false)
     expect(panel()!.dataset.session).toBe('mine')
-    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${ask}"]`))
-    click(panel()!.querySelector('.dash-focus-close'))
-    // the strip opens the panel at the ask too; it answers nothing on the card
-    click(card('mine')!.querySelector('.sc-ask-title'))
-    expect(panel()!.hidden).toBe(false)
-    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${ask}"]`))
+    expect(document.activeElement).toBe(panel()!.querySelector('#dashFocusTitle'))
+    expect(panel()!.querySelector(`[data-panel-ask="${ask}"]`)).not.toBeNull()
     expect(card('mine')!.querySelector('.opt-pill, textarea')).toBeNull()
   })
 
@@ -358,7 +362,8 @@ describe('the session focus panel (#307)', () => {
     upsertActivity(d, { ...A, session: 'mine', doing: 'open', idle: true })
     await pollTick()
     expect(aside.hidden).toBe(false)
-    expect(aside.querySelector('.sp-state')?.textContent).toBe('Needs you')
+    expect(aside.querySelector('.sp-state')?.textContent).toBe('Quiet')
+    expect(aside.querySelector('[data-panel-ask]')).not.toBeNull()
     expect(aside.querySelector('.dash-focus-doing')?.textContent).toBe('Last reported: Polishing the panel · just now')
     expect(aside.querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(true)
   })
@@ -437,7 +442,7 @@ describe('⌘K actions (#307)', () => {
     expect(document.getElementById('search')!.getAttribute('aria-activedescendant')).toBe(firstOption()?.id)
   })
 
-  it('"answer…" lands on the ask in its session panel from any tab, an ask-only card’s included (#454 A.2)', async () => {
+  it('"answer…" lands on the ask’s Inbox card, open, from any tab (dashboard lanes design §6)', async () => {
     const d = open()
     work(d, 'mine', 'Asking')
     const ids: string[] = []
@@ -451,20 +456,22 @@ describe('⌘K actions (#307)', () => {
     click(document.querySelector('.tab[data-tab="needsYou"]'))
     await settle()
     await choose('answer decision 3', 'Decision 3')
-    expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(panel()?.dataset.session).toBe(`ask:item:${ids[3]}`)
-    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${ids[3]}"]`))
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(row(ids[3]!)?.dataset.open).toBe('1')
+    expect(row(ids[3]!)?.querySelector('.nrow-card')).not.toBeNull()
 
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
     await choose('answer ', 'Ship it?')
-    expect(panel()?.dataset.session).toBe('mine')
-    // a landing spot, never an option or an editor
-    expect(document.activeElement).toBe(panel()!.querySelector(`[data-panel-ask="${own}"]`))
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(row(own)?.dataset.open).toBe('1')
+    expect(panel()?.hidden).toBe(true)
   })
 
-  it('"answer…" lands an @sessions approval on its live session’s card, clearing a lens that hides it (#462 review)', async () => {
+  it('"answer…" opens an @sessions approval’s Inbox card, from a lens that hides it (#462 review)', async () => {
     const d = open()
     work(d, 'mcp-1', 'Running the tests')
-    insertItem(d, {
+    const id = insertItem(d, {
       project: '@sessions', stream: 'alpha · 307-polish', agent: 'copilot', kind: 'question', session: 'mcp-1', title: 'Allow shell: npm test',
       action_owner: 'approval', options: [{ label: 'Allow once' }, { label: 'Deny' }],
     })
@@ -472,12 +479,10 @@ describe('⌘K actions (#307)', () => {
     click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
     await settle()
     await choose('answer allow', 'Allow shell: npm test')
-    expect(panel()?.hidden).toBe(false)
-    expect(panel()?.dataset.session).toBe('mcp-1')
-    expect(panel()?.dataset.card).toBe('session:mcp-1')
-    expect(panel()?.querySelector('.sp-state')?.textContent).toBe('Needs you')
-    expect(document.querySelector('[data-session-card="ask:session:mcp-1"]')).toBeNull()
-    expect(document.querySelector('#rail [data-project="__all__"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.getElementById('needsYou')?.hidden).toBe(false)
+    expect(row(id)?.dataset.open).toBe('1')
+    // its live session's card holds it, so the Inbox card offers the way to its panel
+    expect(row(id)?.querySelector('.nrow-show-agents')).not.toBeNull()
   })
 
   it('"open plan…" lands on the plan through the deep link, and a prefix fills in the command', async () => {

@@ -98,8 +98,9 @@ function seedHub(d: Database.Database): { archive: string[]; alpha: string[] } {
 
 const historyTitles = (): string[] =>
   [...document.querySelectorAll('#done .history-row .history-copy strong')].map((el) => el.textContent ?? '')
-const signal = (name: string): string =>
-  document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
+// The Dashboard's outcome count left with the Now strip (dashboard lanes design
+// §3.1); buildDashboard().signals.outcomes still counts what is omitted, and
+// test/dashboard.test.ts proves it. Just landed's proven list is what shows.
 const recentOutcomes = (): string[] =>
   [...document.querySelectorAll('.dashboard-outcome-list .dashboard-outcome strong')].map((el) => el.textContent ?? '')
 
@@ -163,7 +164,6 @@ describe('paged closed history (issue #184)', () => {
     await bootApp(db, { interceptFetch })
 
     // Dashboard (the cold-launch view) proves its recent outcomes from the page.
-    expect(signal('outcomes')).toBe('63')
     expect(recentOutcomes()).toEqual(['Alpha closed 59', 'Alpha closed 58', 'Alpha closed 57', 'Alpha closed 56'])
     expect(tabCount('done')).toBe('64')
     // Projects and agents whose only trace is omitted history keep their controls.
@@ -246,13 +246,11 @@ describe('paged closed history (issue #184)', () => {
     seedHub(db)
     const { reads, interceptFetch } = recorder()
     await bootApp(db, { interceptFetch })
-    const outcomes = listItems(db).filter((item) => item.outcome).length
-    expect(signal('outcomes')).toBe(String(outcomes))
+    expect(recentOutcomes()).toHaveLength(4)
     expect(historyReads(reads)).toEqual([])
 
     await selectProject('archive')
     expect(historyReads(reads)).toHaveLength(1)
-    expect(signal('outcomes')).toBe('3')
     expect(recentOutcomes()).toEqual(['Archived decision 2', 'Archived decision 1', 'Archived decision 0'])
   })
 
@@ -474,7 +472,6 @@ describe('paged closed history (issue #184)', () => {
     await bootApp(db, { interceptFetch })
     await pollTick()
     await pollTick()
-    expect(signal('outcomes')).toBe('63')
     expect(recentOutcomes()).toEqual(['Alpha closed 59', 'Alpha closed 58', 'Alpha closed 57', 'Alpha closed 56'])
     expect(document.querySelector('.dashboard-outcome-list')?.hasAttribute('aria-busy')).toBe(false)
     expect(historyReads(reads)).toEqual([])
@@ -580,13 +577,12 @@ describe('paged closed history (issue #184)', () => {
     expect(lane.querySelector('[role="status"]')).toBeNull()
   })
 
-  it('paints every Handoffs outcome when opened from the focused Dashboard signal', async () => {
+  it('paints every Handoffs outcome when opened while a Dashboard control holds focus', async () => {
     db = freshDb()
     seedHub(db)
     await bootApp(db)
-    const signalButton = document.querySelector<HTMLButtonElement>('[data-dashboard-signal="outcomes"]')!
-    signalButton.focus()
-    click(signalButton)
+    document.querySelector<HTMLButtonElement>('#dashboard [data-dashboard-focus-key="chip:needs"]')!.focus()
+    click(document.querySelector('.relay-btn'))
     await settle()
     const lane = document.querySelector('#relaybox [data-relay-lane="outcome"]')!
     expect(lane.querySelectorAll('.relay-card')).toHaveLength(63)

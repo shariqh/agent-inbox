@@ -60,6 +60,8 @@ describe('the Dashboard region headers and gaps', () => {
   it('go compact under 900px: 24px headers and a 40px lane gap', () => {
     const compact = css.slice(css.indexOf('@container operations-desk (max-width: 900px) {'))
     expect(compact.slice(0, compact.indexOf('\n}'))).toMatch(/\.dashboard-grid \{ --fs-lane: 24px; --lane-gap: 40px; \}/)
+    // the Needs you lane sits above the grid (dashboard lanes PR 3), so it takes the compact values of its own
+    expect(compact.slice(0, compact.indexOf('\n}'))).toMatch(/\.needs-you-lane \{ --fs-lane: 24px; --lane-gap: 40px; \}/)
   })
 
   it('space regions by --lane-gap and a header from its content by --sp-5', () => {
@@ -68,6 +70,18 @@ describe('the Dashboard region headers and gaps', () => {
     expect(grid).toMatch(/margin-top:\s*var\(--lane-gap\);/)
     expect(ruleBody('.dashboard-card-head')).toMatch(/margin-bottom:\s*var\(--sp-5\);/)
     expect(ruleBody('.dashboard-card')).toMatch(/padding:\s*var\(--sp-5\);/)
+  })
+
+  it('never shrink a header below its text: the controls beside it wrap instead', () => {
+    // at about 700px, "Agents" ran under the session count beside it (lanes PR 3)
+    const head = ruleBody('.dashboard-card-head')
+    expect(head).toMatch(/display:\s*flex;/)
+    expect(head).toMatch(/flex-wrap:\s*wrap;/)
+    const h2 = ruleBody('.dashboard-card-head > h2')
+    expect(h2).toMatch(/min-width:\s*max-content;/)
+    expect(h2).not.toMatch(/min-width:\s*0;/)
+    // no later rule lets the Agents or Needs you heading shrink again
+    expect(css).not.toMatch(/\.(ah|ny)-head\s*>?\s*h2\s*\{[^}]*(min-width:\s*0|flex-shrink:\s*[1-9]|flex:\s*[0-9.]+\s+[1-9])/)
   })
 
   it('leave no 14px or 17px literal in the Dashboard card rules', () => {

@@ -300,7 +300,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await pollTick()
       const versions = () => log.filter((entry) => entry === 'GET /api/version').length
       const before = versions()
-      click(document.querySelector('[data-session-card="session:k2"] [data-ah-action="review"]'))
+      click(document.querySelector('[data-session-card="session:k2"] .sc-doing'))
       await settle()
       expect(document.querySelector<HTMLElement>('#dashboard .dash-focus')?.hidden).toBe(false)
       click(document.querySelector('.setup-run-btn'))
@@ -374,7 +374,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await pollTick()
       const expected = shown()
       expect(expected).toEqual(UP_ROWS)
-      for (const key of ['ask', 'working', 'parked']) {
+      for (const key of ['working', 'parked']) {
         click(document.querySelector(`.agents-home [data-ah-filter="${key}"]`))
         expect(shown(), key).toEqual(expected)
       }

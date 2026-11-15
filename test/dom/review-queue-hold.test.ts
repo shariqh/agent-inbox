@@ -97,7 +97,7 @@ describe('Review queue and unsent responses (#407)', () => {
     await bootApp(db)
 
     // the Dashboard's rail button
-    click(document.querySelector('.ah-review'))
+    click(document.querySelector('.ny-review'))
     await settle()
     expect(lightbox().hidden).toBe(false)
     expect(lightbox().textContent).toContain('Approve launch')
@@ -131,7 +131,7 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(itemRecovery(closed, 'Friday.', QUESTION_CLOSED))
     await bootApp(db)
 
-    click(document.querySelector('.ah-review'))
+    click(document.querySelector('.ny-review'))
     await settle()
     expect(lightbox().hidden).toBe(false)
     expect(lightbox().textContent).toContain('Other ask')
@@ -145,7 +145,7 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(itemRecovery(id, 'Friday.', QUESTION_CHANGED))
     await bootApp(db)
 
-    const railButton = document.querySelector<HTMLButtonElement>('.ah-review')!
+    const railButton = document.querySelector<HTMLButtonElement>('.ny-review')!
     railButton.focus()
     click(railButton)
     await settle()
@@ -219,7 +219,7 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(rowRecovery(r.id, r.revision, r.action_version, 'Approve the same ask.'))
     await bootApp(db)
 
-    click(document.querySelector('.ah-review'))
+    click(document.querySelector('.ny-review'))
     await settle()
     expect(lightbox().hidden).toBe(true)
     expect(holdText()).toBe('Finish or clear the 1 unsent response first.')

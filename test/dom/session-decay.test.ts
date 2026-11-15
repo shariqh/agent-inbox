@@ -35,9 +35,10 @@ describe('a session card after a claim goes cold (#45)', () => {
 
     await bootApp(d)
 
-    // its card asks, never works: the claim is drawn as what it was doing
+    // its card is quiet, never working, and counts its ask: the claim is drawn as what it was doing
     expect(card('s1')?.classList.contains('tone-working')).toBe(false)
-    expect(card('s1')?.classList.contains('tone-ask')).toBe(true)
+    expect(card('s1')?.classList.contains('tone-idle')).toBe(true)
+    expect(card('s1')?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
     expect(card('s1')?.querySelector('.sc-doing')?.textContent).toBe('Last reported: Executing Track B — 18-task viewer redesign · 31m ago')
     expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('1 connected')
     expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('all quiet')

@@ -17,10 +17,15 @@
 // own Open With before it opens anything. A rule with an app or Quick Look may
 // open a type the system default may not (a code file in an editor); System
 // default is offered only for the types on link-open.cjs's allow-list.
+//
+// The same file holds one more desktop preference, a top-level `terminal` (#586,
+// Settings → Terminal): which terminal app the launchers open. It is not a link
+// rule, so a rule write keeps it and a terminal write keeps the rules.
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { appBundlePath, blockedFileName, isRunnerApp, launchableApp, openableFileName } = require('./link-open.cjs')
 const { createLockedFile, resolveFilePath } = require('./update-preferences.cjs')
+const { TERMINAL_IDS, terminalId } = require('./terminal-launch.cjs')
 
 const FILENAME = 'link-preferences.json'
 const SCHEMA = 1
@@ -111,6 +116,21 @@ function createLinkPreferences(options = {}) {
         return { prefs: next }
       })
     },
+    // #586: Terminal when the file is missing, corrupt, newer or names an app off the list
+    async readTerminal() {
+      await file.settled()
+      const current = await readLive()
+      return current.writable ? terminalId(current.record?.terminal) : 'terminal'
+    },
+    setTerminal(terminal) {
+      if (typeof terminal !== 'string' || !TERMINAL_IDS.includes(terminal)) return Promise.reject(new TypeError('not a terminal'))
+      return file.mutate(async () => {
+        const current = await readLive()
+        if (!current.writable) return { terminal: 'terminal', refused: 'newer' }
+        await file.atomicWrite({ ...(current.record ?? {}), schema: SCHEMA, terminal })
+        return { terminal }
+      })
+    },
   })
 }
 
@@ -174,8 +194,29 @@ function createLinkSettings({ preferences, platform, chooseApp, fsp = fs }) {
     }
     return view(result.refused)
   }
+  // #586: the terminal setting's own view, Terminal when it cannot be read
+  const terminalView = async (error) => {
+    let terminal
+    try {
+      terminal = terminalId(await preferences.readTerminal())
+    } catch {
+      terminal = 'terminal'
+    }
+    return error ? { available: true, terminal, error } : { available: true, terminal }
+  }
   return Object.freeze({
     view: () => (platform === 'darwin' ? view() : unavailable()),
+    terminal: () => (platform === 'darwin' ? terminalView() : { available: false }),
+    async setTerminal(id) {
+      if (platform !== 'darwin') return { available: false }
+      if (typeof id !== 'string' || !TERMINAL_IDS.includes(id)) return terminalView('invalid')
+      try {
+        const result = await preferences.setTerminal(id)
+        return terminalView(result.refused)
+      } catch {
+        return terminalView('failed')
+      }
+    },
     setHandler: (id, handler) => change((prefs) => {
       const slot = ruleSlot(prefs, id)
       if (!slot || !SETTABLE[slot.kind].has(handler) || (handler === 'default' && !slot.systemDefault)) return { refused: 'invalid' }

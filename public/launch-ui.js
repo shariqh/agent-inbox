@@ -11,7 +11,7 @@
 // public/attention.js, a badge, a count, the rail or the dock.
 import {
   LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, START_PHASES, WORKTREE_COPY,
-  budgetAllowance, forgettable, launchSessions, launchStatus, newSessionRequest, transcriptLines, worktreeSummaryText,
+  budgetAllowance, forgettable, launchSessions, launchStatus, newSessionRequest, terminalName, transcriptLines, worktreeSummaryText,
 } from '/launches.js'
 
 // #451: what Resume with more budget… offers to add, before the human changes it
@@ -80,7 +80,11 @@ export function createLaunchUi(deps) {
 
   function setState(next) {
     const value = next && typeof next === 'object'
-      ? { owned: next.owned === true, enabled: next.enabled === true, available: next.available === true, canEnable: next.canEnable === true }
+      ? {
+        owned: next.owned === true, enabled: next.enabled === true, available: next.available === true, canEnable: next.canEnable === true,
+        // #586: which terminal the Terminal buttons open; anything but iTerm2 reads as Terminal
+        terminal: next.terminal === 'iterm2' ? 'iterm2' : 'terminal',
+      }
       : null
     if (JSON.stringify(value) === JSON.stringify(state)) return false
     state = value
@@ -169,12 +173,17 @@ export function createLaunchUi(deps) {
     const result = await act(id, () => bridge().takeOver(id))
     if (result && !result.ok && !result.cancelled) setNote(id, result.error ?? 'The session was not handed off.')
     await deps.settled()
+    // #586: main opened Terminal because the chosen app was missing. Written after the page has read the
+    // handed-off launch, so the note is stamped with that state and survives its next paint.
+    if (result?.ok && result.notice) setNote(id, result.notice)
   }
 
   // #432: main reads the path from the hub, checks it and opens Terminal there
   async function openWorktree(id) {
     const result = await act(id, () => bridge().openWorktree(id))
     if (result && !result.ok) setNote(id, result.error ?? 'Terminal could not be opened.')
+    else if (result?.ok && result.notice) setNote(id, result.notice)
+    bump()
   }
 
   // #432: main inspects the worktree, asks in its own dialog (Discard is a separate
@@ -589,19 +598,26 @@ export function createLaunchUi(deps) {
         }
         else if (action === 'close') actions.push(['close', 'Close'])
         else if (action === 'takeover' || action === 'terminal') {
-          actions.push(['take-over', busy.has(id) ? 'Handing off…' : action === 'takeover' ? 'Take over in Terminal' : 'Resume in Terminal'])
+          // #586: the label keeps the generic word; the title and the accessible name say which app opens
+          const app = terminalName(state?.terminal)
+          const label = action === 'takeover' ? 'Take over in Terminal' : 'Resume in Terminal'
+          actions.push(['take-over', busy.has(id) ? 'Handing off…' : label, '', false,
+            action === 'takeover' ? `Go on with this session in Copilot in ${app}` : `Open ${app} on this session again`, app === 'Terminal' || busy.has(id) ? '' : `${label} (${app})`])
         }
       }
       if (launch.worktree_path && !launch.worktree_removed_at) {
-        actions.push(['open-worktree', 'Open in Terminal'])
+        const app = terminalName(state?.terminal)
+        actions.push(['open-worktree', 'Open in Terminal', '', false, `Open ${app} in this session’s worktree`, app === 'Terminal' ? '' : `Open in Terminal (${app})`])
         actions.push(['remove-worktree', 'Remove worktree…', 'end', launch.status !== 'ended'])
       }
       // #478: only once ended, and after Remove worktree… when it has one
       if (launch.status === 'ended') actions.push(['forget', 'Forget…', 'end', forgettable(launch) ? false : 'Remove its worktree first'])
     }
-    keyed(actionsEl, JSON.stringify([actions, busy.has(id)]), () => actions.map(([action, label, tone, off]) => {
+    keyed(actionsEl, JSON.stringify([actions, busy.has(id)]), () => actions.map(([action, label, tone, off, title, aria]) => {
       if (tone === 'hint') return make('span', 'sp-actions-hint', label)
       const el = button(label, action, tone === 'danger' ? 'danger' : tone === 'end' ? 'sp-end' : '')
+      if (title) el.title = title
+      if (aria) el.setAttribute('aria-label', aria)
       if (off) {
         el.disabled = true
         el.title = typeof off === 'string' ? off : 'Only once the session has ended'
@@ -803,5 +819,7 @@ export function createLaunchUi(deps) {
     paintPanel,
     panelSummary,
     focusResume,
+    /** #586: the name of the terminal the Terminal buttons open. */
+    terminalName: () => terminalName(state?.terminal),
   }
 }

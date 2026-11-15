@@ -49,6 +49,7 @@ const { createUpdatePreferences, createUpdateTrustState } = require('./update-pr
 const { loadUpdateRegistry } = require('./update-trust.cjs')
 const { createConditionalReader } = require('./conditional-read.cjs')
 const { syncSpellcheckLanguages } = require('./spellcheck-languages.cjs')
+const { runOutcome } = require('./terminal-launch.cjs')
 const { defaultWindowSize } = require('./window-size.cjs')
 const { quitWhenRestartManagerAsks, setWindowsAppIdentity } = require('./windows-app.cjs')
 const {
@@ -458,6 +459,9 @@ handleLinkSettings('agent-inbox:link-settings-set', 2, (settings, ruleId, handle
 handleLinkSettings('agent-inbox:link-settings-choose-app', 1, (settings, ruleId) => settings.chooseApp(ruleId))
 handleLinkSettings('agent-inbox:link-settings-add-type', 1, (settings, extension) => settings.addType(extension))
 handleLinkSettings('agent-inbox:link-settings-remove-type', 1, (settings, ruleId) => settings.removeType(ruleId))
+// #586: which terminal the launchers open; the renderer names an id off a fixed list, which is checked again here
+handleLinkSettings('agent-inbox:terminal-setting', 0, (settings) => settings.terminal())
+handleLinkSettings('agent-inbox:terminal-setting-set', 1, (settings, id) => settings.setTerminal(id))
 
 ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
   const senderUrl = event.senderFrame?.url ?? ''
@@ -595,10 +599,15 @@ function launchControllerFor() {
       const { response } = owner() ? await dialog.showMessageBox(owner(), options) : await dialog.showMessageBox(options)
       return response
     },
-    // #432 §6: Terminal at the worktree, argv only; step 5: Terminal running a Take over script
-    openTerminal: (folder) => new Promise((resolve) => {
-      execFile('/usr/bin/open', ['-a', 'Terminal', '--', folder], { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(!error))
-    }),
+    // #432 §6: a terminal at the worktree, argv only; step 5: a terminal running a Take over script.
+    // #586: which one is Settings → Terminal, read and checked on every use; terminal-launch.cjs builds
+    // the argv, and a run says whether the app was missing or the open was killed by the timeout
+    terminal: {
+      read: () => linkPrefs().readTerminal(),
+      run: (command) => new Promise((resolve) => {
+        execFile(command.file, command.args, { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(runOutcome(error)))
+      }),
+    },
     // step 5: the Take over script, 0700 in the launch's 0700 log folder, by temp file and rename
     writeScript: (file, text) => {
       try {

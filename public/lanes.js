@@ -1,5 +1,6 @@
-// The Now strip's model (#304, Dashboard 2.0 phase 2) and the session helpers
-// the Agents home reads (#454, which retired the lanes the model is named for).
+// The working-session lanes (#304, Dashboard 2.0 phase 2) and the session
+// helpers the Agents home reads (#454). The Now strip they once fed is gone: the
+// Dashboard's lane chips count its lanes (dashboard lanes design §3.1).
 // Pure: no DOM, the clock injected as `nowMs`. One lane per WORKING session,
 // from /api/activity, /api/boards and the attention set the caller already
 // built; no new reads.
@@ -142,13 +143,11 @@ const askMs = (entry) => {
 export function buildLanes({ activity, boards, asks, nowMs }) {
   const lanes = []
   let idle = 0
-  // #466: a running host turn with no claim counts as working, with no lane of its own
-  let unreported = 0
   const working = new Set((activity ?? []).filter((row) => isWorking(row, nowMs)).map((row) => row.session))
   for (const row of activity ?? []) {
     if (!isWorking(row, nowMs)) {
-      if (isBusy(row, nowMs)) unreported += 1
-      else idle += 1
+      // #466: a running host turn with no claim has no lane, and is not idle either
+      if (!isBusy(row, nowMs)) idle += 1
       continue
     }
     const at = callAt(row)
@@ -178,22 +177,7 @@ export function buildLanes({ activity, boards, asks, nowMs }) {
     })
   }
   lanes.sort((a, b) => a.sinceMs - b.sinceMs || (a.session < b.session ? -1 : 1))
-  // The Now strip's plan steps are the lanes' bars, each plan counted once.
-  const plans = new Map(lanes.filter((lane) => lane.plan).map((lane) => [lane.plan.id, lane.plan]))
-  let oldestAsk = Infinity
-  for (const entry of asks ?? []) oldestAsk = Math.min(oldestAsk, askMs(entry))
-  return {
-    lanes,
-    idle,
-    now: {
-      working: lanes.length + unreported,
-      subagents: lanes.reduce((count, lane) => count + lane.children.length, 0),
-      waiting: (asks ?? []).length,
-      oldestWaitingMs: Number.isFinite(oldestAsk) ? Math.max(0, nowMs - oldestAsk) : null,
-      plans: [...plans.values()].reduce((sum, plan) =>
-        ({ done: sum.done + plan.done, countable: sum.countable + plan.countable }), { done: 0, countable: 0 }),
-    },
-  }
+  return { lanes, idle }
 }
 
 // §10 rule 5: lane order is pinned between forced paints. Sessions still

@@ -3,7 +3,7 @@
 // lanes did (#304, #306): they are updated in place by the ambient painter, keyed
 // by card; a rail draft, a held pointer and a background window never stop them
 // or pull focus; a working card pulses once on a new call and carries the
-// 30-minute call trace and its plan; the Now strip reads the lanes' model; and
+// 30-minute call trace and its plan; the page head's chips count them; and
 // nothing here reaches attention.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -33,8 +33,10 @@ const card = (session: string): HTMLElement | null =>
 const cardIds = (): string[] =>
   [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')].map((el) => el.dataset.sessionCard!.replace(/^session:/, ''))
 const doing = (session: string): string => card(session)?.querySelector('.sc-doing')?.textContent ?? ''
-const signal = (name: string): string =>
-  document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
+// the page head's lane chips (dashboard lanes design §3.1)
+const chip = (key: 'needs' | 'working' | 'quiet'): string =>
+  document.querySelector(`#dashboard [data-dash-chip="${key}"] .dash-chip-count`)?.textContent ?? ''
+const laneIds = (): string[] => [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].map((el) => el.dataset.nyAsk!)
 
 // A real MCP call stamps last_call_at, then status() claims the work.
 function work(d: Database.Database, session: string, what: string, extra: Record<string, unknown> = {}): void {
@@ -90,10 +92,10 @@ describe('session cards carry the lanes (#304, #454)', () => {
     touchActivity(d, 'heads-down')
     await pollTick()
     expect(card('heads-down')!.querySelector('.sc-state')?.textContent).toBe('Quiet')
-    expect(signal('agents')).toBe('0')
+    expect([chip('working'), chip('quiet')]).toEqual(['0', '1'])
   })
 
-  it('shows the joined plan on a working card and adds its bar to the Now strip', async () => {
+  it('shows the joined plan on a working card, its blocked row counted by the card’s chip', async () => {
     const d = open()
     upsertBoard(d, {
       ...A, title: 'Cards plan',
@@ -110,33 +112,31 @@ describe('session cards carry the lanes (#304, #454)', () => {
     work(d, 'theirs', 'Elsewhere', { stream: 'feature' })
     await bootApp(d)
 
-    // the plan's blocked row is mine's ask, so its card shows the ask; its plan is the Now strip's
-    expect(card('mine')!.querySelector('.sc-state')?.textContent).toBe('Needs you')
-    expect(card('mine')!.querySelector('.sc-ask-title')?.textContent).toBe('Approve')
+    // the plan's blocked row is mine's ask: its card keeps Working and counts it; the ask is in Needs you
+    expect(card('mine')!.querySelector('.sc-state')?.textContent).toBe('Working')
+    expect(card('mine')!.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
+    expect(card('mine')!.querySelector('.sc-plan-text')?.textContent).toBe('1/4 Cards plan')
     expect(card('theirs')!.querySelector('.sc-plan')).toBeNull()
-    // The Now strip's numbers are the lanes' own: working sessions, their plans' bars, the attention set.
-    expect(signal('agents')).toBe('2')
-    expect(signal('plans')).toBe('1')
-    expect(document.querySelector('[data-dashboard-signal="plans"] .dashboard-value-total')?.textContent).toBe('/4')
-    expect(document.querySelector('[data-dashboard-signal="plans"] .dash-now-sub')?.textContent).toBe('in sessions')
-    expect(signal('waiting')).toBe(String(badgeCount()))
-    // The headings carry none of the strip's numbers.
+    expect(laneIds()).toHaveLength(1)
+    // the chips count the lanes: working sessions and the attention set
+    expect(chip('working')).toBe('2')
+    expect(chip('needs')).toBe(String(badgeCount()))
+    // The headings carry none of the chips' numbers.
     for (const heading of document.querySelectorAll('#dashboard .dashboard-card-head h2')) {
       expect(heading.textContent).not.toMatch(/\d/)
     }
-    // the Working tile opens the Agents home, as G L and the sidebar's Sessions line do
-    click(document.querySelector('[data-dashboard-signal="agents"]'))
-    expect(document.activeElement).toBe(document.getElementById('agentsHomeTitle'))
   })
 })
 
 describe('cards keep moving while the rest of the Dashboard holds (#304)', () => {
   it('updates cards while a draft in the session panel holds its asks', async () => {
     const d = open()
-    const id = insertItem(d, { ...A, kind: 'question', title: 'Pick a window' })
+    // the ask's own session holds it, so its card opens the panel the draft is typed in
+    work(d, 'asker', 'Waiting on you')
+    const id = insertItem(d, { ...A, kind: 'question', title: 'Pick a window', session: 'asker' })
     work(d, 'busy', 'Step one')
     await bootApp(d)
-    click(document.querySelector(`[data-session-card="ask:item:${id}"] [data-ah-action="review"]`))
+    click(card('asker')?.querySelector('.sc-doing'))
     type(document.querySelector<HTMLTextAreaElement>(`[data-panel-ask="${id}"] .reply-input`), 'Thursday')
     const node = card('busy')
 
@@ -418,7 +418,8 @@ describe('attention parity with the cards present (#304, #454)', () => {
       title: document.title,
       badge: badgeCount(),
       tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
-      waiting: signal('waiting'),
+      waiting: chip('needs'),
+      lane: laneIds(),
       dock: [await dock.text(), await plans.text()],
     }
   }
@@ -450,11 +451,11 @@ describe('attention parity with the cards present (#304, #454)', () => {
 
     expect(cardIds()).toEqual(['asker', 'second'])
     expect(await surfaces()).toEqual(before)
-    // The card's ask is the attention set's own, and a snoozed one is not drawn.
+    // The lane's ask is the attention set's own, and a snoozed one is not drawn; the card only counts it.
     const asks = sortRail(attentionEntries([getItem(d, asked)!, getItem(d, snoozed)!], [], Date.now(), ['asker', 'second']), Date.now())
     expect(asks.map((entry) => entry.kind === 'item' && entry.item.id)).toEqual([asked])
-    expect(card('asker')!.querySelector('.sc-ask-title')?.textContent).toBe('Ship it?')
-    expect(card('asker')!.querySelector('.sc-ask-more')).toBeNull()
+    expect(laneIds()).toEqual([asked])
+    expect(card('asker')!.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
     // No new poll reads.
     expect([...reads].sort()).toEqual([
       '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',

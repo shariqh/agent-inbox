@@ -10,7 +10,7 @@ function read(relPath: string): string {
 }
 
 type LinksBridge = { open(...args: unknown[]): Promise<unknown>; filesAvailable(...args: unknown[]): Promise<unknown> }
-type SettingsBridge = Record<'get' | 'setHandler' | 'chooseApp' | 'addType' | 'removeType', (...args: unknown[]) => Promise<unknown>>
+type SettingsBridge = Record<'get' | 'setHandler' | 'chooseApp' | 'addType' | 'removeType' | 'getTerminal' | 'setTerminal', (...args: unknown[]) => Promise<unknown>>
 
 afterEach(() => removeScratchDirs())
 
@@ -137,7 +137,7 @@ describe('main opens local files only for the viewer it owns (issue #300)', () =
     const installBinding = { settled: vi.fn(() => settled) }
     // Settings → Links (part 2) as main builds it, recording what reaches it
     const settingsCalls: string[] = []
-    const settings = Object.fromEntries(['view', 'setHandler', 'chooseApp', 'addType', 'removeType'].map((name) => [
+    const settings = Object.fromEntries(['view', 'setHandler', 'chooseApp', 'addType', 'removeType', 'terminal', 'setTerminal'].map((name) => [
       name, async () => { settingsCalls.push(name); return { available: true, rules: [] } },
     ]))
     new Function(
@@ -204,6 +204,9 @@ describe('main opens local files only for the viewer it owns (issue #300)', () =
       ['agent-inbox:link-settings-choose-app', ['markdown']],
       ['agent-inbox:link-settings-add-type', ['py']],
       ['agent-inbox:link-settings-remove-type', ['ext:py']],
+      // #586: the terminal setting sits behind the same gate
+      ['agent-inbox:terminal-setting', []],
+      ['agent-inbox:terminal-setting-set', ['iterm2']],
     ]
     for (const granted of [null, 8]) {
       const reused = world({ granted })
@@ -215,7 +218,7 @@ describe('main opens local files only for the viewer it owns (issue #300)', () =
     }
     const owned = world({ granted: 7 })
     for (const [channel, args] of channels) expect(await owned.settings(channel, ...args), channel).toEqual({ available: true, rules: [] })
-    expect(owned.settingsCalls).toEqual(['view', 'setHandler', 'chooseApp', 'addType', 'removeType'])
+    expect(owned.settingsCalls).toEqual(['view', 'setHandler', 'chooseApp', 'addType', 'removeType', 'terminal', 'setTerminal'])
   })
 
   it('still opens web links in a viewer it does not own', async () => {
@@ -281,6 +284,8 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
       ['agent-inbox:link-settings-choose-app', 1],
       ['agent-inbox:link-settings-add-type', 1],
       ['agent-inbox:link-settings-remove-type', 1],
+      ['agent-inbox:terminal-setting', 0],
+      ['agent-inbox:terminal-setting-set', 1],
     ])
     // the only call that can store an app is chooseApp, which asks the picker itself
     expect(settings).toContain("(settings, ruleId) => settings.chooseApp(ruleId))")
@@ -305,20 +310,24 @@ describe('the Settings → Links bridge (issue #300 part 2)', () => {
     rules: [{ id: 'markdown', label: 'Markdown (.md, .markdown)', kind: 'file', handler: 'app', appName: 'QLMarkdown', removable: false, systemDefault: true }],
   }
 
-  it('has exactly five methods, each sending a rule id and at most a handler or an extension', async () => {
+  it('has exactly seven methods, each sending a rule id and at most a handler, an extension or a terminal id', async () => {
     const { settings, invoke } = loadPreload(() => VIEW)
-    expect(Object.keys(settings).sort()).toEqual(['addType', 'chooseApp', 'get', 'removeType', 'setHandler'])
+    expect(Object.keys(settings).sort()).toEqual(['addType', 'chooseApp', 'get', 'getTerminal', 'removeType', 'setHandler', 'setTerminal'])
     await settings.get()
     await settings.setHandler('markdown', 'quicklook')
     await settings.chooseApp('markdown')
     await settings.addType('.log')
     await settings.removeType('ext:log')
+    await settings.getTerminal()
+    await settings.setTerminal('iterm2')
     expect(invoke.mock.calls).toEqual([
       ['agent-inbox:link-settings'],
       ['agent-inbox:link-settings-set', 'markdown', 'quicklook'],
       ['agent-inbox:link-settings-choose-app', 'markdown'],
       ['agent-inbox:link-settings-add-type', '.log'],
       ['agent-inbox:link-settings-remove-type', 'ext:log'],
+      ['agent-inbox:terminal-setting'],
+      ['agent-inbox:terminal-setting-set', 'iterm2'],
     ])
   })
 
@@ -335,6 +344,39 @@ describe('the Settings → Links bridge (issue #300 part 2)', () => {
     const { settings, invoke } = loadPreload(() => VIEW)
     await expect(settings[method](...args)).resolves.toEqual({ available: false, rules: [], error: 'invalid' })
     expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['getTerminal', ['x']],
+    ['setTerminal', []],
+    ['setTerminal', [1]],
+    ['setTerminal', [{ app: '/Applications/Calculator.app' }]],
+    ['setTerminal', ['x'.repeat(65)]],
+    ['setTerminal', ['iterm2', 'x']],
+  ] as const)('refuses %s(%j) without asking main (#586)', async (method, args) => {
+    const { settings, invoke } = loadPreload(() => ({ available: true, terminal: 'iterm2' }))
+    await expect(settings[method](...args)).resolves.toEqual({ available: false, error: 'invalid' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('hands back a checked terminal view with no rules, path or extra field (#586)', async () => {
+    const cases: Array<[unknown, unknown]> = [
+      [{ available: true, terminal: 'iterm2', extra: 1, path: '/Applications/iTerm.app', rules: [] }, { available: true, terminal: 'iterm2' }],
+      [{ available: true, terminal: 'terminal', error: 'invalid' }, { available: true, terminal: 'terminal', error: 'invalid' }],
+      [{ available: true, terminal: 'Hyper' }, { available: false, error: 'failed' }],
+      [{ available: true }, { available: false, error: 'failed' }],
+      [null, { available: false, error: 'failed' }],
+      [{ available: 'yes' }, { available: false, error: 'failed' }],
+      [{ available: false, rules: [], error: 'unowned' }, { available: false, error: 'unowned' }],
+      [{ available: false, rules: [], error: 'nonsense' }, { available: false }],
+    ]
+    for (const [answer, expected] of cases) {
+      const { settings } = loadPreload(() => answer)
+      await expect(settings.getTerminal(), JSON.stringify(answer)).resolves.toEqual(expected)
+      await expect(settings.setTerminal('iterm2'), JSON.stringify(answer)).resolves.toEqual(expected)
+    }
+    const { settings } = loadPreload(() => { throw new Error('gone') })
+    await expect(settings.getTerminal()).resolves.toEqual({ available: false, error: 'failed' })
   })
 
   it('passes on main\'s word that this page is not the viewer the app owns', async () => {

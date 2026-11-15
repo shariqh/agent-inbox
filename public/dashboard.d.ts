@@ -1,5 +1,5 @@
 import type { RelayBoard, RelayEntry, RelayItem } from './relay.js'
-import type { Lane, LaneBoard, NowStrip } from './lanes.js'
+import type { Lane, LaneBoard } from './lanes.js'
 
 export interface DashboardActivity {
   session: string
@@ -51,7 +51,7 @@ export interface DashboardModel {
     outcomes: number
     projects: number
   }
-  /** #454 A.2: how many asks wait in Later, for the Agents header's "Later N ›" */
+  /** #454 A.2: how many asks wait in Later, for the Needs you lane's "Later N ›" */
   later: number
   waitingEntries: RelayEntry[]
   agentEntries: RelayEntry[]
@@ -77,12 +77,12 @@ export interface DashboardModel {
   lanes: Lane[]
   /** #454: the plans the lanes link (closed projects left out), which the Agents home's cards link too */
   boards: LaneBoard[]
-  /** #454 A.1: the items in the lens (closed projects left out), for an ask-only card's "last heard" */
+  /** the items in the lens (closed projects left out) */
   items: RelayItem[]
   /** connected sessions with no live claim, folded into "+N idle connections" */
   idleConnections: number
-  /** #304: the Now strip, from the same model as the lanes */
-  now: NowStrip
+  /** the Needs you lane (dashboard lanes design §3.2): waitingEntries in sortRail order */
+  needsYou: RelayEntry[]
 }
 
 export interface RibbonMark {

@@ -70,7 +70,6 @@ export function buildDashboard({
   const visibleActivity = (activity ?? []).filter((row) => validProject(row, closed))
   const relay = buildRelay(items, boards, archived, nowMs, liveSessionIds, closedProjects)
   const railOrder = sortRail(relay.human, nowMs)
-  // #304: lanes and the Now strip come from one model, so their numbers agree.
   const lanes = buildLanes({ activity: visibleActivity, boards: visibleBoards, asks: railOrder, nowMs })
   const projects = new Set([
     ...visibleItems.map((item) => item.project),
@@ -111,9 +110,9 @@ export function buildDashboard({
       outcomes,
       projects: projects.size,
     },
-    // #454 A.2: the Agents header's "Later N ›"; deferred asks count, never show
+    // the Needs you lane's "Later N ›" (#454 A.2); deferred asks count, never show
     later: later.length,
-    // the one attention set (relay.human is attentionEntries) the session cards read
+    // the one attention set (relay.human is attentionEntries), in the Inbox's own order
     waitingEntries: relay.human,
     agentEntries: relay.agent,
     // #307: every loaded outcome, newest first, for the session focus panel
@@ -142,9 +141,10 @@ export function buildDashboard({
     lanes: lanes.lanes,
     // #454: the plans the lanes link, which the Agents home's cards link too
     boards: visibleBoards,
-    // #454 A.1: an ask-only card's "last heard" reads the items its session wrote
+    // the items in the lens, which the session panel reads (#307)
     items: visibleItems,
     idleConnections: lanes.idle,
-    now: lanes.now,
+    // the Needs you lane (dashboard lanes design §3.2): the attention set in rail order
+    needsYou: railOrder,
   }
 }

@@ -320,7 +320,8 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
   }
 
   function originOf(folder: string, info: { exists: boolean; origin?: string | null }): string | null {
-    info.origin ??= info.exists ? findOrigin(folder) : null
+    // `undefined` means not asked yet; a null (no origin) is cached too
+    if (info.origin === undefined) info.origin = info.exists ? findOrigin(folder) : null
     return info.origin
   }
 

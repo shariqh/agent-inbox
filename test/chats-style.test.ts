@@ -23,13 +23,15 @@ describe('Chats tab styles (#586 PR 2)', () => {
     expect(containerStart).toBeGreaterThan(0)
     expect(ruleBody('.chats-table thead', containerStart)).toMatch(/clip-path:\s*inset\(50%\)/)
     const tr = ruleBody('.chats-table tr', containerStart)
-    expect(tr).toMatch(/display:\s*grid;/)
+    for (const rule of [/display:\s*flex;/, /flex-wrap:\s*wrap;/]) expect(tr).toMatch(rule)
     const td = ruleBody('.chats-table td', containerStart)
-    for (const rule of [/display:\s*block;/, /min-width:\s*0;/, /overflow-wrap:\s*anywhere;/]) expect(td).toMatch(rule)
-    // line 1: tool, title, Live; line 2: project, branch, folder, last active, Copy
-    const row = (cls: string) => /grid-area:\s*(\d)/.exec(ruleBody(`.chats-${cls}`, containerStart))?.[1]
-    expect(['tool', 'title', 'live'].map(row)).toEqual(['1', '1', '1'])
-    expect(['project', 'branch', 'folder', 'active', 'actions'].map(row)).toEqual(['2', '2', '2', '2', '2'])
+    for (const rule of [/display:\s*block;/, /min-width:\s*0;/, /overflow-wrap:\s*anywhere;/, /order:\s*2;/]) expect(td).toMatch(rule)
+    // line 1: tool, title, Live (order 0); a full-width break (order 1); line 2: the rest
+    expect(ruleBody('.chats-table tr::after', containerStart)).toMatch(/flex:\s*0 0 100%;[^}]*order:\s*1;/)
+    expect(ruleBody('.chats-table .chats-tool, .chats-table .chats-title, .chats-table .chats-live', containerStart)).toMatch(/order:\s*0;/)
+    // the folder takes the slack, so it is never squeezed to nothing at phone width
+    expect(ruleBody('.chats-table .chats-folder', containerStart)).toMatch(/flex:\s*1 1 12em;/)
+    expect(containerBlock).not.toMatch(/grid-template-columns/)
     expect(containerBlock).not.toMatch(/\.chats-[\w-]+[^{]*\{[^}]*display:\s*none/)
   })
 
@@ -41,6 +43,10 @@ describe('Chats tab styles (#586 PR 2)', () => {
         expect(value!.replace(/var\(--(?:fs|sp)-[\w-]+\)|\b0\b/g, '').trim(), `${selector!.trim()} ${property}`).toBe('')
       }
     }
+  })
+
+  it('wraps long unbroken text in every free-text column of the wide table', () => {
+    expect(ruleBody('.chats-title, .chats-project, .chats-branch, .chats-folder')).toMatch(/overflow-wrap:\s*anywhere;/)
   })
 
   it('draws a quiet title muted and Live in the agent color', () => {

@@ -2261,7 +2261,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .chats-table th { padding: var(--sp-1) var(--sp-3) var(--sp-1) 0; border-bottom: 1px solid var(--app-border); color: var(--app-text-soft); font-size: var(--fs-meta); font-weight: 600; text-align: left; }
 .chats-table td { padding: var(--sp-2) var(--sp-3) var(--sp-2) 0; border-bottom: 1px solid var(--app-border); vertical-align: top; }
 .chats-tool { white-space: nowrap; }
-.chats-title, .chats-branch, .chats-folder { overflow-wrap: anywhere; }
+.chats-title, .chats-project, .chats-branch, .chats-folder { overflow-wrap: anywhere; }
 .chats-folder { color: var(--app-muted); }
 .chats-active { color: var(--app-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .chats-quiet { color: var(--app-muted); }
@@ -2373,21 +2373,20 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 }
 
 /* #586: below 620px a chat is two lines, tool, title and Live over project, branch, folder,
-   last active and Copy, like the queue's rows */
+   last active and Copy, like the queue's rows. A wrapping flex row, not a grid: at phone width
+   five content-sized grid tracks left the folder 0px wide, so here the folder takes the slack
+   and drops to a line of its own when less than 12em is left. */
 @container chats-list (max-width: 620px) {
   .chats-search { flex-basis: 100%; }
   .chats-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .chats-table, .chats-table tbody { display: block; }
-  .chats-table tr { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--app-border); }
-  .chats-table td { display: block; min-width: 0; padding: 0; border-bottom: 0; overflow-wrap: anywhere; }
-  .chats-tool { grid-area: 1 / 1; }
-  .chats-title { grid-area: 1 / 2 / 2 / 5; }
-  .chats-live { grid-area: 1 / 5; }
-  .chats-project { grid-area: 2 / 1; }
-  .chats-branch { grid-area: 2 / 2; }
-  .chats-folder { grid-area: 2 / 3; }
-  .chats-active { grid-area: 2 / 4; }
-  .chats-actions { grid-area: 2 / 5; }
+  .chats-table tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--app-border); }
+  .chats-table td { display: block; flex: 0 1 auto; order: 2; min-width: 0; padding: 0; border-bottom: 0; overflow-wrap: anywhere; }
+  /* the line break: a full-width item between the two lines, its extra row gap taken back */
+  .chats-table tr::after { content: ""; flex: 0 0 100%; order: 1; margin-top: calc(-1 * var(--sp-1)); }
+  .chats-table .chats-tool, .chats-table .chats-title, .chats-table .chats-live { order: 0; }
+  .chats-table .chats-title { flex: 1 1 0; }
+  .chats-table .chats-folder { flex: 1 1 12em; }
 }
 
 @container needs-queue (max-width: 620px) {

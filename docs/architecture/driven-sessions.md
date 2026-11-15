@@ -1031,8 +1031,7 @@ is part 2 (below); until the page (a later PR) calls it, nothing starts one, so 
 
 Design §3.2 to §3.7. Main's side of Continue here…: `continueChat` (`electron/launch-controller.cjs`),
 the IPC channel and the preload method, Resume's re-check for a chat launch, and Resume in Terminal's
-refusal of a chat driven here. The page that calls it comes later, so nothing in the UI reaches it
-yet.
+refusal of a chat driven here. The page that calls it is part 3, below.
 
 - **The request** (`chatRequest`): exactly `tool`, `id`, `mode`, `prompt` and an optional `startId`.
   `tool` must be `copilot`, `id` a lowercase UUID, `mode` `ask` or `read-only`, `prompt` 1 to 65,536
@@ -1104,3 +1103,29 @@ yet.
   repository walk; Resume's re-check; the IPC's arity and grant; the preload; off reading nothing),
   `test/chat-resume.test.ts` (the switch-on refusal, and phase 1's cases with the switch off giving
   the same answers, reads and opens).
+
+## Continue a chat (#586 phase 2), part 3: the page
+
+Design §3.5. The Chats tab's **Continue here…** on a Copilot row, its dialog, Show session and the
+row states beside a chat driven here, and the session panel's line; `chats.md` ("Continue here…")
+has the row, the texts and the layout.
+
+- **Where it is drawn.** Only where `launchUi.granted()` holds (the owned window, the switch on, the
+  `launch` grant), asked again on every entry into the tab. Off, the tab draws and reads exactly what
+  phase 1 did, and the page never calls `continueChat`.
+- **The request.** The dialog (`openContinueChat`, `public/launch-ui.js`) sends exactly `{ tool, id,
+  mode, prompt, startId }`; mode is `ask` or `read-only` only (§7 question 1). It shares New session's
+  `runStart`: one start in flight, its phases bound by `startId`, Cancel as Stop starting, and Escape
+  ignored while it runs.
+- **After it starts**, the dialog closes, the page reads again (`settled`), and the session's panel
+  opens (`showLaunch`). The launch is an ordinary card. Its panel's "Continued from a Copilot chat
+  (…)" line comes from the served `chat_id`.
+- **Show session** comes from `chat_id` in the launches the page already reads with the switch on; the
+  page's rule for a launch that holds its chat is main's `holdsChat`. Copy resume and Resume are off
+  beside it, and main refuses Resume in Terminal for that chat too (part 2).
+- **Tests**: `test/dom/chats-continue.test.ts` (drawn only with the grant; each off reason; the
+  request's five keys; progress; each refusal's text in the dialog and the note, and which re-read the
+  list; a cancelled confirmation keeping the message; Escape and Cancel returning focus; a start opening
+  `launch:<id>` and its panel line; Show session, "· here" and Copy resume's off state; hostile text kept
+  as text; switch off against the phase 1 capture), `test/chats-model.test.ts` (the eligibility, link
+  and outcome rules), `test/chats-style.test.ts` (tokens, the one-line Actions cell, the narrow wrap).

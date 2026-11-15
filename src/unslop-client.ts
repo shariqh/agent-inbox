@@ -12,7 +12,8 @@
 //
 // Exit codes: 0 rewritten or unchanged, 10 kept the original, 11 refused,
 // 12 busy, 13 failed or timed out, 14 off, no agent, another process on the port or a
-// card mismatch, 4 usage.
+// card mismatch, 4 usage. The shim itself exits 18 when it is stale (meshctl.ts shimText): that
+// never reaches this client.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
@@ -35,7 +36,8 @@ export const UNSLOP_USAGE = `usage: <mesh dir>/bin/unslop --kind <pr|issue|relea
        (the shim runs agent-inbox-meshctl unslop with the same arguments)
 Sends one public draft to the local unslop agent. Email, customer text and private
 material stay in-session. Exit 0: the edited text is on stdout. Any other exit:
-stdout is empty; edit the original in-session. Default --timeout 280 s.
+stdout is empty; edit the original in-session. Exit 18: the shim is stale (run meshctl
+enable --unslop again). Default --timeout 280 s.
 `
 
 export interface UnslopIo {

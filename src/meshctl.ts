@@ -50,6 +50,7 @@
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, and
 // `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts, and
+// both shims exit 18 when they are stale (#584; 14 stays the agent being off), and
 // `call` one table for every added agent (0, 11-16, 4), in docs/mesh-call.md, and `check`
 // its own (0, 17, 15, 4), in the same page.
 // The entry appends one run record per client run (src/mesh-runs.ts, cards view V5 §5).
@@ -267,7 +268,8 @@ function profileTemplate(start: string[]): string {
 
 const shQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
 
-// The shim never reads a terminal: on a stale path it discards piped input only.
+// The shim never reads a terminal: on a stale path it discards piped input only. A stale shim exits
+// 18, not 14: 14 is the agent being off, and a caller must tell a broken install from a switch (#584).
 // It pins the mesh dir it was written for, so the caller's environment (no
 // AGENT_INBOX_MESH_DIR, or an AGENT_INBOX_DB) cannot point it at another one.
 function shimText(agent: string, issue: number, node: string, script: string, dir: string): string {
@@ -279,7 +281,7 @@ meshctl=${shQuote(script)}
 if [ ! -x "$node" ] || [ ! -f "$meshctl" ]; then
   [ -t 0 ] || cat > /dev/null
   echo 'agent-inbox ${agent}: this shim is stale: run meshctl enable --${agent} again' >&2
-  exit 14
+  exit 18
 fi
 exec "$node" "$meshctl" ${agent} "$@"
 `

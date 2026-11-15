@@ -281,7 +281,7 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
   })
 
   // the client itself (U3b) is tested in test/unslop-client.test.ts
-  it('a stale shim reads and discards its input and exits 14', () => {
+  it('a stale shim reads and discards its input and exits 18, not the 14 of an agent that is off', () => {
     // the shim names a Node binary and a meshctl.js that later go away (a new runtime, a moved checkout)
     for (const gone of ['node', 'script'] as const) {
       const t = setup()
@@ -293,7 +293,7 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
       unlinkSync(gone === 'node' ? node : t.script)
       const r = spawnSync('/bin/sh', [shim, '--kind', 'pr'], { input: 'x'.repeat(1 << 20), encoding: 'utf8' })
       expect(r.error, gone).toBeUndefined()
-      expect(r.status).toBe(14)
+      expect(r.status).toBe(18)
       expect(r.stdout).toBe('')
       expect(r.stderr).toContain('run meshctl enable --unslop again')
     }
@@ -453,7 +453,7 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
     expect(readFileSync(join(t.dir, 'mesh/tokens/request-post'), 'utf8')).toBe(`${TOKEN}\n`)
   })
 
-  it('a stale shim discards its input and exits 14', () => {
+  it('a stale shim discards its input and exits 18, not the 14 of an agent that is off', () => {
     for (const gone of ['node', 'script'] as const) {
       const t = setup()
       const node = join(scratchDir('rp-node-'), 'node')
@@ -462,7 +462,7 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
       unlinkSync(gone === 'node' ? node : t.script)
       const r = spawnSync('/bin/sh', [join(t.dir, 'bin', 'request-post'), 'file'], { input: 'x'.repeat(1 << 20), encoding: 'utf8' })
       expect(r.error, gone).toBeUndefined()
-      expect([r.status, r.stdout]).toEqual([14, ''])
+      expect([r.status, r.stdout]).toEqual([18, ''])
       expect(r.stderr).toContain('run meshctl enable --request-post again')
     }
   })

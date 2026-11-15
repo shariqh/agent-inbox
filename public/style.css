@@ -2363,7 +2363,12 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sc-action:disabled { opacity: .45; cursor: default; }
 /* §3.3: a Working card leads with its meta line; what it is doing is the lead size, two lines.
    The lane names the state, so the label is left to the card's aria-label. */
-.working-lane .sc-top { font-size: var(--fs-meta); }
+.working-lane .sc-top { flex-wrap: wrap; row-gap: 2px; font-size: var(--fs-meta); }
+/* a long recency ("turn running 4m · last tool 1m ago") wraps under the agent and branch in a
+   narrow card; held on their line it squeezed the branch down to an ellipsis. A wrapped line
+   cannot begin with the "·", so a space separates it here. */
+.working-lane .sc-when { margin-left: var(--sp-1); }
+.working-lane .sc-when::before { content: none; }
 .working-lane .sc-state { display: none; }
 .working-lane .sc-chips > :first-child::before { content: none; }
 .working-lane .sc-doing { font-size: var(--fs-lead); }

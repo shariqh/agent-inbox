@@ -3,7 +3,8 @@ export type ChatHiddenReason = 'temp' | 'non-interactive' | 'empty' | 'folder-go
 
 export interface Chat {
   id: string
-  tool: ChatTool | string
+  /** 'claude' or 'copilot' from the index; any other string is kept, labelled raw and never resumed */
+  tool: string
   title: string | null
   titleAuto: boolean
   project: string

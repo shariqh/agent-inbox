@@ -44,10 +44,10 @@ describe('shell markup', () => {
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
-  it('has a project rail and the five content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
+  it('has a project rail and the six content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
-    expect(tabs).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'agent'])
+    expect(tabs).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'chats', 'agent'])
     expect(html).not.toContain('data-tab="live"')
     // cards view V5 §3.3: hidden until an agent is open, with no count, and CSS that lets it hide
     const agent = /<button class="tab"[^>]*data-tab="agent"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? ''
@@ -65,9 +65,9 @@ describe('shell markup', () => {
 
   it('keeps every render host the viewer writes into', () => {
     for (const host of [
-      'id="dashboard"', 'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="setup"',
+      'id="dashboard"', 'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="chats"', 'id="setup"',
       'id="needsYouList"', 'class="rows"', 'class="groups"',
-      'class="boards"', 'class="items"', 'class="setup-body"',
+      'class="boards"', 'class="items"', 'class="chats"', 'class="setup-body"',
     ]) expect(html, host).toContain(host)
   })
 

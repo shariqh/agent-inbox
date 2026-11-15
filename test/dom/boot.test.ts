@@ -100,7 +100,7 @@ describe('viewer boots against a real DB', () => {
     expect(document.getElementById('pageTitle')?.textContent).toBe('Live Operations Desk')
     // the agent tab (cards view V5c1) stays hidden until a mesh agent is opened
     expect([...document.querySelectorAll('#tabs .tab:not([hidden]) .tab-name')].map((tab) => tab.textContent))
-      .toEqual(['Dashboard', 'Inbox', 'Plans', 'Notes', 'History'])
+      .toEqual(['Dashboard', 'Inbox', 'Plans', 'Notes', 'History', 'Chats'])
     click(document.querySelector('.tab[data-tab="needsYou"]'))
     await settle()
     expect(document.getElementById('pageTitle')?.textContent).toBe('Your queue')

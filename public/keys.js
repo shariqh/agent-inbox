@@ -16,6 +16,7 @@ export const KEYBOARD_COMMANDS = [
   { id: 'boards', key: 'p', prefix: 'g', display: 'G P', label: 'Plans', group: 'Go to', selector: '#tabs [data-tab="boards"]' },
   { id: 'notes', key: 'n', prefix: 'g', display: 'G N', label: 'Notes', group: 'Go to', selector: '#tabs [data-tab="notes"]' },
   { id: 'done', key: 'h', prefix: 'g', display: 'G H', label: 'History', group: 'Go to', selector: '#tabs [data-tab="done"]' },
+  { id: 'chats', key: 'c', prefix: 'g', display: 'G C', label: 'Chats', group: 'Go to', selector: '#tabs [data-tab="chats"]' },
   { id: 'setup', key: 's', prefix: 'g', display: 'G S', label: 'Settings', group: 'Go to', selector: '#gear' },
   { id: 'agents', key: 'a', prefix: 'g', display: 'G A', label: 'Agent filter', group: 'Go to', selector: '.agent-pick .tab-label' },
   { id: 'projects', key: 'o', prefix: 'g', display: 'G O', label: 'Project picker', group: 'Go to', selector: '#projectDisclosureToggle, .sidebar-section-label' },

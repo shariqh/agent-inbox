@@ -3,7 +3,8 @@
 // rule is stated here instead of hiding inside a call site.
 
 // `agent` (cards view V5 §3.3) is shown only while a mesh agent is open, and never counted
-export const TAB_IDS = ['dashboard', 'needsYou', 'boards', 'notes', 'done', 'agent']
+// `chats` (#586) reads its own list when opened and carries no count
+export const TAB_IDS = ['dashboard', 'needsYou', 'boards', 'notes', 'done', 'chats', 'agent']
 
 // the active tab is never persisted — the app always opens at the live desk
 export const DEFAULT_TAB = 'dashboard'

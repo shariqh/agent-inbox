@@ -706,9 +706,12 @@ export function createLaunchUi(deps) {
     const chatEl = aside.querySelector('.sp-chat')
     const chatId = typeof launch?.chat_id === 'string' && CHAT_ID.test(launch.chat_id) ? launch.chat_id : null
     if (chatEl) {
-      const link = chatEl.querySelector('.sp-chat-link')
-      if (!link.dataset.bound) {
-        link.dataset.bound = '1'
+      let link = chatEl.querySelector('.sp-chat-link')
+      if (!link) {
+        // the app's own tab hash, never agent text: no link builder is needed
+        link = make('a', 'sp-chat-link')
+        link.setAttribute('href', '#chats')
+        chatEl.append(link)
         // the hash may already be #chats, which would fire no hashchange: the app opens the tab itself
         link.addEventListener('click', (event) => {
           if (typeof deps.openChats !== 'function') return

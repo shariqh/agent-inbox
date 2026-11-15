@@ -2446,7 +2446,7 @@ function dashFocusEl() {
         <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close">×</button>
       </div>
       <p class="dash-focus-meta"></p>
-      <p class="sp-chat" hidden><a class="sp-chat-link" href="#chats"></a></p>
+      <p class="sp-chat" hidden></p>
       <p class="sp-hint" hidden></p>
     </div>
     <div class="sp-actions" role="group" aria-label="Session actions" hidden></div>

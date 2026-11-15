@@ -5,7 +5,7 @@
 // /api/version carries `mesh` only when it names a known agent (test/mesh-agents.test.ts).
 import { afterEach, describe, expect, it } from 'vitest'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo, LookupFunction } from 'node:net'
@@ -281,7 +281,7 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
   })
 
   // the client itself (U3b) is tested in test/unslop-client.test.ts
-  it('a stale shim reads and discards its input and exits 14', () => {
+  it('a stale shim reads and discards its input and exits 18, not the 14 of an agent that is off', () => {
     // the shim names a Node binary and a meshctl.js that later go away (a new runtime, a moved checkout)
     for (const gone of ['node', 'script'] as const) {
       const t = setup()
@@ -293,9 +293,28 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
       unlinkSync(gone === 'node' ? node : t.script)
       const r = spawnSync('/bin/sh', [shim, '--kind', 'pr'], { input: 'x'.repeat(1 << 20), encoding: 'utf8' })
       expect(r.error, gone).toBeUndefined()
-      expect(r.status).toBe(14)
+      expect(r.status).toBe(18)
       expect(r.stdout).toBe('')
       expect(r.stderr).toContain('run meshctl enable --unslop again')
+    }
+  })
+
+  it('a stale shim given --in exits 18 at once, without reading a stdin pipe held open', async () => {
+    const t = setup()
+    const node = join(scratchDir('unslop-node-'), 'node')
+    writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 })
+    expect(ctl(['enable', '--unslop', '--checkout', t.checkout, '--apply'], t.dir, undefined, { node, script: t.script }).code).toBe(0)
+    unlinkSync(t.script)
+    // stdin is a pipe this test never closes; a drain would wait on it
+    const child = spawn('/bin/sh', [join(t.dir, 'bin', 'unslop'), '--kind', 'pr', '--in', 'draft.txt'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    try {
+      const code = await new Promise<number | null>((done, fail) => {
+        const timer = setTimeout(() => fail(new Error('the stale shim is still running after 3 s')), 3000)
+        child.on('close', (status) => { clearTimeout(timer); done(status) })
+      })
+      expect(code).toBe(18)
+    } finally {
+      child.kill('SIGKILL')
     }
   })
 
@@ -453,7 +472,7 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
     expect(readFileSync(join(t.dir, 'mesh/tokens/request-post'), 'utf8')).toBe(`${TOKEN}\n`)
   })
 
-  it('a stale shim discards its input and exits 14', () => {
+  it('a stale shim discards its input and exits 18, not the 14 of an agent that is off', () => {
     for (const gone of ['node', 'script'] as const) {
       const t = setup()
       const node = join(scratchDir('rp-node-'), 'node')
@@ -462,7 +481,7 @@ describe('meshctl enable/disable --request-post (#500, request-post design §6, 
       unlinkSync(gone === 'node' ? node : t.script)
       const r = spawnSync('/bin/sh', [join(t.dir, 'bin', 'request-post'), 'file'], { input: 'x'.repeat(1 << 20), encoding: 'utf8' })
       expect(r.error, gone).toBeUndefined()
-      expect([r.status, r.stdout]).toEqual([14, ''])
+      expect([r.status, r.stdout]).toEqual([18, ''])
       expect(r.stderr).toContain('run meshctl enable --request-post again')
     }
   })

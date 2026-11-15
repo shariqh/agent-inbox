@@ -7,14 +7,17 @@
 // that point into `<mesh dir>/skills/`.
 //
 // Fixed text only (mesh design §8.5): the templates are the constants below, and the only thing
-// substituted is the mesh dir's own path. No card field, mesh.json value or agent output ever
-// reaches a skill file. request-post has no template: its routing text is part of a private skill
-// that also holds the brief guidance (docs/request-post.md). Agents added with `meshctl add` wait
-// for a follow-up. Node core only; nothing in the viewer, the frontend, Electron or the stdio MCP
-// server imports this module.
+// substituted is the mesh dir's own path, written as `~/…` when it is inside the home folder (Copilot
+// CLI's path check denies the absolute form in a non-interactive run, #584) and as is otherwise. No
+// card field, mesh.json value or agent output ever reaches a skill file. The one thing meshctl adds
+// beside SKILL.md is a symlink, `rules.md`, to the file the unslop profile's skill folder holds: a
+// link, so none of that file's text is copied. request-post has no template: its routing text is
+// part of a private skill that also holds the brief guidance (docs/request-post.md). Agents added
+// with `meshctl add` wait for a follow-up. Node core only; nothing in the viewer, the frontend,
+// Electron or the stdio MCP server imports this module.
 import { spawnSync } from 'node:child_process'
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { loopbackPort } from './mesh-config.js'
 import type { MeshDocument } from './mesh-config.js'
 
@@ -28,34 +31,54 @@ description: Remove generic AI-writing patterns from prose for people while keep
 
 # unslop
 
-The editing rules are in \`rules.md\`, in the folder that \`skill\` names in
-\`<mesh dir>/mesh/wrappers/unslop.json\` (the unslop profile, which the agent reads too).
+The editing rules are in \`rules.md\`, beside this file. If \`rules.md\` cannot be read, do NOT
+edit in-session: return the text unchanged and say that the rules could not be read.
 
 ## Where the text is edited
 
 1. Email, customer text and private material never go to the unslop agent. Edit them
    in-session with \`rules.md\`. When unsure, edit in-session.
 2. For a PR description, an issue, release notes, public documentation or a blog post,
-   write the draft to a file and run, with a shell timeout of at least 300 seconds:
+   write the draft to a file and run this command directly, with a shell timeout of at
+   least 300 seconds. Do not check for the shim first, and use no shell redirection:
 
-   <mesh dir>/bin/unslop --kind <pr|issue|release-notes|docs|blog> --report <report file> < <draft file>
+   <mesh dir>/bin/unslop --kind <pr|issue|release-notes|docs|blog> --in <draft file> --report <report file>
 
    - Exit 0: use stdout as the edited text, and check the report's \`warnings\`.
-   - Any other exit, or none within the timeout: ignore stdout and edit the original
-     in-session with \`rules.md\`. Do not retry.
+   - Any other exit, or none within the timeout: ignore stdout and never retry. Before any
+     in-session edit, tell the person in your reply that the unslop agent was not used,
+     giving the exit code (or that it timed out) and the last line the shim wrote to stderr.
+     Then edit the original in-session with \`rules.md\`.
+   - Exit 18 (the shim is stale): the same, and also tell the person to run
+     \`meshctl enable --unslop --apply\` again.
+   - If the shell says the shim file does not exist, the agent is off: still tell the person
+     the unslop agent was not used (it is off), then edit in-session with \`rules.md\`.
 3. Anything else: edit in-session with \`rules.md\`.
 
 ## Email
 
 Email is edited in-session only, with \`rules.md\`, before the draft goes for approval.
-Never change an approved revision in place.
+Never change an approved revision in place. Before the draft goes for approval, check that:
+
+- every fact and source in the original survived;
+- names, recipients, dates, links, commitments and technical terms are unchanged;
+- nothing was added that the original did not say.
 `
 
 const TEMPLATES: Readonly<Record<string, string>> = { unslop: UNSLOP_SKILL }
 
+/** The mesh dir as a skill's text names it: `~/…` inside the home folder, else the absolute path (#584). */
+export function shownDir(dir: string, home: string): string {
+  const base = home.replace(/\/+$/, '')
+  if (!base) return dir
+  if (dir === base) return '~'
+  return dir.startsWith(`${base}/`) ? `~${dir.slice(base.length)}` : dir
+}
+
 /** One agent's routing SKILL.md for the mesh dir `dir`, or undefined when no template ships. */
-export function routingSkill(agent: string, dir: string): string | undefined {
-  return Object.hasOwn(TEMPLATES, agent) ? TEMPLATES[agent]!.replaceAll('<mesh dir>', dir) : undefined
+export function routingSkill(agent: string, dir: string, home: string): string | undefined {
+  const shown = shownDir(dir, home)
+  return Object.hasOwn(TEMPLATES, agent) ? TEMPLATES[agent]!.replaceAll('<mesh dir>', () => shown) : undefined
 }
 
 const objectOf = (value: unknown): Record<string, unknown> | undefined =>
@@ -66,10 +89,10 @@ const objectOf = (value: unknown): Record<string, unknown> | undefined =>
  * its client reads (unslop: an `http://127.0.0.1:<port>` endpoint). Nothing else in the document
  * reaches the text.
  */
-export function routingSkills(doc: MeshDocument | undefined, dir: string): Map<string, string> {
+export function routingSkills(doc: MeshDocument | undefined, dir: string, home: string): Map<string, string> {
   const agents = objectOf(doc?.['agents'])
   const on = new Map<string, string>()
-  if (loopbackPort(objectOf(agents?.['unslop'])?.['endpoint']) !== undefined) on.set('unslop', routingSkill('unslop', dir)!)
+  if (loopbackPort(objectOf(agents?.['unslop'])?.['endpoint']) !== undefined) on.set('unslop', routingSkill('unslop', dir, home)!)
   return on
 }
 
@@ -92,10 +115,10 @@ export interface SkillContext {
   show: (path: string) => string
 }
 
-// the mesh dir goes into a shell command in the skill, so it must be one plain word
-const PLAIN_PATH = /^[A-Za-z0-9._/@+-]+$/
+// the mesh dir goes into a shell command in the skill, so it must be one plain word (a leading ~ is the home folder)
+const PLAIN_PATH = /^(~|~?[A-Za-z0-9._/@+-]+)$/
 
-type Entry = { kind: 'missing' } | { kind: 'dir' } | { kind: 'link'; to: string } | { kind: 'other' }
+type Entry = { kind: 'missing' } | { kind: 'dir' } | { kind: 'link'; to: string; raw: string } | { kind: 'other' }
 function entry(path: string): Entry {
   let stat
   try {
@@ -105,7 +128,8 @@ function entry(path: string): Entry {
   }
   if (stat.isSymbolicLink()) {
     try {
-      return { kind: 'link', to: resolve(dirname(path), readlinkSync(path)) }
+      const raw = readlinkSync(path)
+      return { kind: 'link', to: resolve(dirname(path), raw), raw }
     } catch {
       return { kind: 'other' }
     }
@@ -190,6 +214,44 @@ const removeIfEmpty = (dir: string): boolean => {
   }
 }
 
+// The unslop profile (meshctl enable --unslop writes it here; the agent reads it too).
+const UNSLOP_PROFILE = ['mesh', 'wrappers', 'unslop.json']
+
+/**
+ * The rules.md the unslop profile's `skill` folder holds (#584): an absolute path to a regular
+ * file (read through links, since a skills folder may be one), or undefined when the profile, its
+ * `skill` or that file is missing. Only the path is used; none of the file reaches a skill.
+ */
+function profileRules(dir: string): string | undefined {
+  const text = readRegular(join(dir, ...UNSLOP_PROFILE))
+  if (typeof text !== 'string') return undefined
+  let skill: unknown
+  try {
+    skill = objectOf(JSON.parse(text))?.['skill']
+  } catch {
+    return undefined
+  }
+  if (typeof skill !== 'string' || !isAbsolute(skill)) return undefined
+  const rules = join(skill, 'rules.md')
+  // a profile that names the generated folder itself would make the link point at itself
+  if (rules.startsWith(`${join(dir, 'skills')}/`)) return undefined
+  // ...or reaches it through a link (~/.claude/skills/unslop, which skills link makes)
+  try {
+    if (`${realpathSync(skill)}/`.startsWith(`${realpathSync(join(dir, 'skills'))}/`)) return undefined
+  } catch {
+    // no generated skills folder yet: nothing to alias
+  }
+  try {
+    return statSync(rules).isFile() ? rules : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// meshctl's rules.md link: a symlink to an absolute path ending in /rules.md. Any other thing
+// at that name (a file, a folder, a link elsewhere) was not made by meshctl and is never replaced.
+const isRulesLink = (at: Entry): at is { kind: 'link'; to: string; raw: string } => at.kind === 'link' && isAbsolute(at.raw) && basename(at.raw) === 'rules.md'
+
 export interface SkillPlan {
   steps: SkillStep[]
   /** Fixed words for each agent or target meshctl leaves alone, and why. */
@@ -210,8 +272,15 @@ export function skillPlan(ctx: SkillContext, doc: MeshDocument | undefined, mode
   const skills = join(dir, 'skills')
   const steps: SkillStep[] = []
   const refused: string[] = []
-  const all = routingSkills(doc, dir)
-  const wanted = PLAIN_PATH.test(dir) ? all : new Map<string, string>()
+  const dropRulesLink = (path: string, why: string): SkillStep => ({
+    dry: `Would remove the link ${show(path)} (${why}).`,
+    run: () => {
+      if (isRulesLink(entry(path))) unlinkSync(path)
+      return `Removed the link ${show(path)}.`
+    },
+  })
+  const all = routingSkills(doc, dir, home)
+  const wanted = PLAIN_PATH.test(shownDir(dir, home)) ? all : new Map<string, string>()
   if (wanted.size < all.size) refused.push(`${show(dir)} holds a character other than letters, digits and . _ / @ + -, so it cannot be written into a skill's command: no routing skill is written`)
 
   // write the folders of agents that are on
@@ -225,16 +294,41 @@ export function skillPlan(ctx: SkillContext, doc: MeshDocument | undefined, mode
       wanted.delete(agent)
       continue
     }
-    if (current === text) continue
-    steps.push({
-      dry: `Would ${current === undefined ? 'write' : 'rewrite'} the ${agent} routing skill ${show(file)} (fixed text${current === undefined ? '' : `; the old one is kept under ${show(join(dir, 'backups', 'skills'))}`}).`,
-      run: () => {
-        const kept = current === undefined ? '' : ` (backup: ${show(backup(ctx, agent, current))})`
-        mkdirSync(skills, { recursive: true, mode: 0o700 })
-        writeSkill(file, text)
-        return `Wrote ${show(file)}${kept}.`
-      },
-    })
+    if (current !== text) {
+      steps.push({
+        dry: `Would ${current === undefined ? 'write' : 'rewrite'} the ${agent} routing skill ${show(file)} (fixed text${current === undefined ? '' : `; the old one is kept under ${show(join(dir, 'backups', 'skills'))}`}).`,
+        run: () => {
+          const kept = current === undefined ? '' : ` (backup: ${show(backup(ctx, agent, current))})`
+          mkdirSync(skills, { recursive: true, mode: 0o700 })
+          writeSkill(file, text)
+          return `Wrote ${show(file)}${kept}.`
+        },
+      })
+    }
+
+    // unslop's rules.md: a link to the profile's skill folder, kept with the folder (#584)
+    if (agent !== 'unslop') continue
+    const rulesLink = join(folder, 'rules.md')
+    const rules = profileRules(dir)
+    const has = entry(rulesLink)
+    if (has.kind !== 'missing' && !isRulesLink(has)) {
+      if (rules !== undefined) refused.push(`${show(rulesLink)} is not a link meshctl made, so it is not replaced: the ${agent} routing skill reads whatever is there`)
+    } else if (has.kind === 'link' && has.to === rules) {
+      // already right
+    } else if (rules === undefined) {
+      if (has.kind === 'link') steps.push(dropRulesLink(rulesLink, 'the unslop profile names no readable rules.md'))
+    } else {
+      steps.push({
+        dry: `Would ${has.kind === 'link' ? 'point' : 'make'} the link ${show(rulesLink)} at ${show(rules)} (the rules.md in the unslop profile's skill folder).`,
+        run: () => {
+          const now = entry(rulesLink)
+          if (now.kind !== 'missing' && !isRulesLink(now)) return `Left ${show(rulesLink)}: it is not a link meshctl made.`
+          if (now.kind === 'link') unlinkSync(rulesLink)
+          symlinkSync(rules, rulesLink)
+          return `Linked ${show(rulesLink)} to ${show(rules)}.`
+        },
+      })
+    }
   }
 
   // remove the folders of agents that are off
@@ -247,11 +341,14 @@ export function skillPlan(ctx: SkillContext, doc: MeshDocument | undefined, mode
       steps.push({
         dry: `Would remove the ${agent} routing skill ${show(folder)} (the agent is off).`,
         run: () => {
+          // meshctl's rules.md link goes with its folder; any other file there stays
+          const rulesLink = join(folder, 'rules.md')
+          if (isRulesLink(entry(rulesLink))) unlinkSync(rulesLink)
           const current = readRegular(file)
           let kept = ''
           if (typeof current === 'string') {
             // a file this build would not write (an older template, or a hand edit) is kept aside
-            if (current !== routingSkill(agent, dir)) kept = ` (backup: ${show(backup(ctx, agent, current))})`
+            if (current !== routingSkill(agent, dir, home)) kept = ` (backup: ${show(backup(ctx, agent, current))})`
             unlinkSync(file)
           }
           const gone = removeIfEmpty(folder)

@@ -308,7 +308,7 @@ describe('the Quiet table (§3.4)', () => {
       activity: [{ session: 'run', project: 'alpha', stream: 'main', agent: 'copilot', driven: true, driven_launch: id(3), receives_messages: true,
         doing: 'open', idle: true, started_at: at(60 * MIN), updated_at: at(1000), last_call_at: at(12 * MIN) }] as never,
       launches: [
-        launch(1, { status: 'parked', parked_at: at(MIN), resumable: true }),
+        launch(1, { status: 'parked', parked_at: at(MIN), resumable: true, worktree_path: '/tmp/wt-synthetic' }),
         launch(2, { status: 'running', driver_pid: 0, updated_at: at(30 * MIN) }),
         launch(3, { status: 'running', sessions: ['run'] }),
       ],
@@ -317,6 +317,9 @@ describe('the Quiet table (§3.4)', () => {
     const rowOf = (n: number) => host.querySelector<HTMLElement>(`.qt-rows [data-session-card="launch:${id(n)}"]`)
     expect(labels(rowOf(1))).toEqual(['Take over in Terminal', 'Resume…'])
     expect(rowOf(1)?.querySelector('.sc-here')?.textContent).toBe('A')
+    // the row's name carries the Session column's origin mark and the Branch column's worktree too
+    expect(rowOf(1)?.querySelector('.qt-branch .sc-worktree')?.textContent).toBe('worktree')
+    expect(rowOf(1)?.getAttribute('aria-label')).toMatch(/^[^:]+: Copilot \(started here\) in alpha on main \(worktree\)\. /)
     expect(rowOf(2)?.querySelector('.sc-state')?.textContent).toBe('Not responding')
     expect(labels(rowOf(2))).toEqual(['Close'])
     expect(labels(rowOf(3))).toEqual(['Open', 'Message'])

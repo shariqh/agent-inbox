@@ -495,7 +495,10 @@ export function installAgentsHome(deps) {
       else el.style.removeProperty('--ah-group')
     }
     // every column, since the header row is hidden from assistive tech
-    setAttr(el, 'aria-label', [`${card.label}: ${card.host} in ${card.project}${card.branch ? ` on ${card.branch}` : ''}`, card.line, card.recency].filter(Boolean).join('. '))
+    // (§3.4): the origin mark from Session and the worktree from Branch included
+    const origin = card.origin === 'started here' || card.origin === 'driven' ? ` (${card.origin})` : ''
+    const where = `${card.branch ? ` on ${card.branch}` : ''}${card.worktree ? ` (${card.worktree})` : ''}`
+    setAttr(el, 'aria-label', [`${card.label}: ${card.host}${origin} in ${card.project}${where}`, card.line, card.recency].filter(Boolean).join('. '))
     const meta = metaOf(card, { branch: false })
     rebuild(el.querySelector('.qt-session'), JSON.stringify([card.project, meta]), () => {
       const dot = make('i', 'qt-dot')

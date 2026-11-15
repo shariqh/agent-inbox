@@ -1,5 +1,6 @@
-// The Agents home's session cards (#454, design
-// docs/superpowers/specs/2026-11-04-agents-home-design.md §2). Pure: no DOM,
+// The Dashboard's session cards (#454, design
+// docs/superpowers/specs/2026-11-04-agents-home-design.md §2), split into the
+// Working and Quiet lanes and the folds (dashboard lanes design §3.3, §3.4). Pure: no DOM,
 // the clock injected as `nowMs`. One card per session, built from what the
 // frame already read: /api/activity, the attention entries, the plans and
 // (with the app's switch on only) /api/launches. Nothing is fed back: the
@@ -39,13 +40,6 @@ const STATES = Object.freeze({
   ended: { label: 'Ended', rank: 7 },
   dormant: { label: 'Dormant', rank: 8 },
 })
-
-// The state filters in the card's header, over the cards in its main list.
-export const FILTERS = Object.freeze([
-  // `idle` holds Quiet and Idle cards alike (#466): a known-idle card is quiet too
-  // `parked` holds stopped launches whose session is kept too (#478): both resume
-  ['all', 'All'], ['working', 'Working'], ['idle', 'Quiet'], ['parked', 'Parked or stopped'],
-])
 
 const HOSTS = { copilot: 'Copilot', 'claude-code': 'Claude Code' }
 export const hostLabel = (agent) => HOSTS[agent] ?? agent
@@ -263,7 +257,7 @@ export function sessionCards({ activity, launches = null, boards = [], attention
   for (const card of cards) {
     // asks never change a card's state or place: they rise in Needs you (§3.3)
     card.state = card.base
-    // #478: one stopped (or out of budget) with its session kept is listed and filtered with
+    // #478: one stopped (or out of budget) with its session kept is listed with
     // Parked, for its Resume…, but says Stopped: it has ended, so there is nothing to End
     card.label = card.state === 'parked' && card.launch?.status === 'ended' ? 'Stopped'
       : STATES[card.state === 'idle' && card.quiet ? 'quiet' : card.state].label
@@ -338,48 +332,42 @@ function attributeAsks(cards, { asks, boards, working, nowMs }) {
   return { bySession, planOwner }
 }
 
-/** Whether a main-list card shows under a state filter. */
-export function cardMatches(card, filter) {
-  return !filter || filter === 'all' || card.state === filter
-}
-
-/** The header's counts, over the main list: cards per state. */
-export function filterCounts(cards) {
-  const counts = Object.fromEntries(FILTERS.map(([key]) => [key, 0]))
-  for (const card of cards) {
-    counts.all += 1
-    if (card.state in counts) counts[card.state] += 1
-  }
-  return counts
-}
-
 /**
- * The page head's Working and Quiet chips (dashboard lanes design §3.1), over
- * the main list: Working is a base state of working (a running host turn
- * included, §3.3), Quiet every other main card (§3.4).
+ * The lane a card is in (dashboard lanes design §3.3, §3.4, §8): Working for a
+ * main card whose base state is working (a running host turn included), Quiet
+ * for every other main card, and null for a card in a fold.
  */
+export function laneOf(card) {
+  if (card.place !== 'main') return null
+  return card.base === 'working' ? 'working' : 'quiet'
+}
+
+/** The main cards, split into the two lanes, each in the order the cards come in. */
+export function splitLanes(cards) {
+  const lanes = { working: [], quiet: [] }
+  for (const card of cards) {
+    const lane = laneOf(card)
+    if (lane) lanes[lane].push(card)
+  }
+  return lanes
+}
+
+/** The page head's Working and Quiet chips (§3.1): what each lane shows, by construction. */
 export function laneCounts(cards) {
-  let working = 0
-  let quiet = 0
-  for (const card of cards) {
-    if (card.place !== 'main') continue
-    if (card.base === 'working') working += 1
-    else quiet += 1
-  }
-  return { working, quiet }
+  const { working, quiet } = splitLanes(cards)
+  return { working: working.length, quiet: quiet.length }
 }
 
 /**
- * Cards in groups, by project (the default) or by agent kind, keeping the
- * order the cards come in: a group sits where its first card does.
- * @param {any[]} cards @param {'project'|'agent'} by
+ * The Working lane's project groups, keeping the order the cards come in: a
+ * group sits where its first card does (the lane pins that order, §3.3).
+ * @param {any[]} cards
  */
-export function groupCards(cards, by = 'project') {
+export function groupCards(cards) {
   const groups = new Map()
   for (const card of cards) {
-    const key = by === 'agent' ? card.agent : card.project
-    const group = groups.get(key) ?? { key, label: by === 'agent' ? card.host : card.project, cards: [] }
-    groups.set(key, group)
+    const group = groups.get(card.project) ?? { key: card.project, label: card.project, cards: [] }
+    groups.set(card.project, group)
     group.cards.push(card)
   }
   return [...groups.values()]

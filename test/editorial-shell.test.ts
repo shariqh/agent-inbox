@@ -248,13 +248,90 @@ describe('the session panel placement (#307, #454)', () => {
   })
 })
 
-// The Agents home (#454): jsdom cannot lay out its card grid, so its layout
-// promise is pinned in the source.
-describe('the Agents home layout (#454)', () => {
+// The Working lane's cards (#454, dashboard lanes design §3.3): jsdom cannot lay
+// out its card grid, so its layout promise is pinned in the source: three at
+// 1440px, two at 1280px, one below 900px.
+describe('the Working lane’s card grid (#454)', () => {
   it('never needs a card wider than the screen', () => {
     expect(css).toMatch(/\.ah-cards \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(340px, 100%\), 1fr\)\)/)
     // #454 A.3: two columns under 1280px and one in a narrow desk, where the panel opens inline under its card
     expect(css.slice(css.indexOf('@media (max-width: 1279px)'))).toMatch(/\.ah-cards \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}\s*@container operations-desk \(max-width: 900px\) \{\s*\.ah-cards \{ grid-template-columns: minmax\(0, 1fr\); \}/)
+  })
+})
+
+// Dashboard lanes design §3.3, §3.4, §4: the Working and Quiet lanes take the
+// tokens; jsdom cannot lay out the Quiet table, so its promises are pinned here.
+describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
+  const OURS = /(^|[\s,>])\.(agents-home|ah-lane[\w-]*|working-lane|quiet-lane|qt-[\w-]+|ah-group-head|ah-group-count)(?![\w-])/
+  const all = [...css.matchAll(/(?:^|\n)([^{}@\n][^{}\n]*)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+  const rules = all.filter((r) => OURS.test(r.selector))
+  const body = (selector: string, sheet = all) => sheet.find((r) => r.selector === selector)?.body ?? ''
+  const block = (start: string) => {
+    const from = css.slice(css.indexOf(start))
+    return from.slice(0, from.indexOf('\n}'))
+  }
+
+  it('take the tokens for every font size, gap, margin and padding', () => {
+    expect(rules.length).toBeGreaterThan(15)
+    for (const { selector, body: decls } of rules) {
+      for (const [, prop, value] of decls.matchAll(/(?<![\w-])(font-size|gap|row-gap|column-gap|margin[\w-]*|padding[\w-]*):\s*([^;]+);/g)) {
+        for (const part of value!.trim().split(/\s+/)) {
+          expect(part, `${selector} ${prop}`).toMatch(/^(0|auto|var\(--(fs-[\w-]+|sp-\d|lane-gap)\))$/)
+        }
+      }
+    }
+    expect(body('.agents-home')).toMatch(/row-gap: var\(--lane-gap\);/)
+    expect(body('.ah-group-head')).toMatch(/font-size: var\(--fs-title\);/)
+    expect(body('.ah-group-head')).not.toMatch(/uppercase/)
+    expect(body('.working-lane .sc-doing')).toMatch(/font-size: var\(--fs-lead\);/)
+    expect(body('.working-lane .sc-state')).toMatch(/display: none;/)
+    // the hidden label would leave its "·" in front of the agent
+    expect(body('.working-lane .sc-chips > :first-child::before')).toMatch(/content: none;/)
+  })
+
+  it('line the Quiet table up with one template of zero-minimum tracks, so no cell widens the page', () => {
+    const template = body('.qt-head, .qt-row').match(/grid-template-columns: ([^;]+);/)?.[1] ?? ''
+    const tracks = template.match(/minmax\([^)]*\)/g) ?? []
+    expect(tracks).toHaveLength(6)
+    for (const track of tracks) expect(track).toMatch(/^minmax\(0, \d+fr\)$/)
+    expect(css).not.toMatch(/\.qt-[\w-]+[^{}]*\{[^}]*(subgrid|max-content)/)
+    // a row's cells are one line each; the card's clamp and its "·" before the time are not a cell's
+    expect(body('.qt-row .sc-doing')).toMatch(/white-space: nowrap;/)
+    expect(body('.qt-row .sc-when::before')).toMatch(/content: none;/)
+    expect(body('.qt-act .sc-actions')).toMatch(/flex-wrap: wrap;/)
+    // the card's `flex: none` is overridden, or the group holds one line's width and spills over Since
+    expect(body('.qt-act .sc-actions')).toMatch(/flex: 0 1 auto; min-width: 0;/)
+    expect(body('.qt-act .sc-action')).toMatch(/flex: 0 1 auto; min-width: 0; white-space: normal;/)
+  })
+
+  it('give a Quiet row the card’s tones and its hollow dot for an idle state', () => {
+    expect(css).toMatch(/:is\(\.sc, \.qt-row\)\.tone-parked, :is\(\.sc, \.qt-row\)\.tone-terminal \{ --sc-tone: var\(--app-warning\); \}/)
+    expect(css).toMatch(/:is\(\.sc, \.qt-row\)\.tone-failed, :is\(\.sc, \.qt-row\)\.tone-lost \{ --sc-tone: var\(--app-danger\); \}/)
+    expect(css).toMatch(/:is\(\.sc, \.qt-row\)\.tone-idle \.sc-dot, :is\(\.sc, \.qt-row\)\.tone-dormant \.sc-dot, :is\(\.sc, \.qt-row\)\.tone-ended \.sc-dot \{ border: 1\.5px solid/)
+  })
+
+  it('put a Quiet row on two lines below 900px, on its own template, with no header', () => {
+    const narrow = block('@container operations-desk (max-width: 900px) {')
+    const sheet = [...narrow.matchAll(/\n\s*([^{}\n]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+    expect(body('.qt-head', sheet)).toMatch(/display: none;/)
+    const row = body('.qt-row', sheet)
+    expect(row).toMatch(/grid-template-areas: "state session since" "branch caption act";/)
+    // every track bounded: an auto third track took Since's and the actions' one-line width first
+    expect(row).toMatch(/grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1\.5fr\) minmax\(0, 1fr\);/)
+    expect(row).not.toMatch(/auto/)
+    for (const [cell, area] of [['qt-state', 'state'], ['qt-session', 'session'], ['qt-since', 'since'], ['qt-branch', 'branch'], ['qt-caption', 'caption'], ['qt-act', 'act']]) {
+      expect(body(`.${cell}`, sheet), cell).toMatch(new RegExp(`grid-area: ${area};`))
+    }
+  })
+
+  it('open the session panel inline in a lane’s list below 1280px without covering the card above', () => {
+    const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
+    expect(compact).toMatch(/\.ah-cards > \.dash-focus \{ margin-top: 0; \}/)
+    expect(compact).toMatch(/\.qt-rows > \.dash-focus \{ margin: var\(--sp-2\) 0; \}/)
+  })
+
+  it('leave no filter, group-by or count beside a heading', () => {
+    expect(css).not.toMatch(/\.ah-filter|\.ah-group-by|\.ah-count|\.ah-none|\.ah-show-all|ah-is-empty|\.ah-head\b/)
   })
 })
 

@@ -3,9 +3,7 @@ import type { LaneActivity, LaneBoard, PlanBar } from './lanes.js'
 
 export type SessionState = 'failed' | 'lost' | 'starting' | 'stopping' | 'working' | 'idle' | 'parked' | 'terminal' | 'ended' | 'dormant'
 export type SessionPlace = 'main' | 'ended' | 'earlier' | 'dormant' | 'closed'
-export type SessionFilter = 'all' | 'working' | 'idle' | 'parked'
-
-export const FILTERS: ReadonlyArray<readonly [SessionFilter, string]>
+export type SessionLane = 'working' | 'quiet'
 
 export interface SessionCard {
   /** `launch:<id>` or `session:<session>` */
@@ -54,11 +52,14 @@ export function sessionCards(input: {
   closed?: Iterable<string>
   nowMs: number
 }): SessionCard[]
-export function cardMatches(card: SessionCard, filter: SessionFilter | null | undefined): boolean
-export function filterCounts(cards: SessionCard[]): Record<SessionFilter, number>
-/** the page head's Working and Quiet chips, over the main list (dashboard lanes design §3.1) */
+/** the lane a card is in: Working, Quiet, or null for a fold (dashboard lanes design §3.3, §3.4) */
+export function laneOf(card: SessionCard): SessionLane | null
+/** the main cards split into the two lanes, each in input order */
+export function splitLanes(cards: SessionCard[]): { working: SessionCard[]; quiet: SessionCard[] }
+/** the page head's Working and Quiet chips: the two lanes' sizes (dashboard lanes design §3.1) */
 export function laneCounts(cards: SessionCard[]): { working: number; quiet: number }
 /** "Copilot", "Claude Code", or the agent name */
 export function hostLabel(agent: string): string
-export function groupCards(cards: SessionCard[], by?: 'project' | 'agent'): Array<{ key: string; label: string; cards: SessionCard[] }>
+/** the Working lane's project groups, each where its first card is */
+export function groupCards(cards: SessionCard[]): Array<{ key: string; label: string; cards: SessionCard[] }>
 export function messageHint(row: LaneActivity | null | undefined): string

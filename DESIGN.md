@@ -101,17 +101,17 @@ The first viewport contains, top to bottom:
 - the page head: one row of lane chips, **Needs you N**, **Working N** and **Quiet N**,
   with New session… at its right end;
 - the **Needs you** lane: one card per ask;
-- the Agents card, one card per session;
+- the **Working** lane: one card per session with live work, grouped by project;
+- the **Quiet** lane: one table row per idle, quiet or parked session, with the folds at
+  its end;
 - local agent-claim history with explicit empty/error states, and recent outcomes.
 
 A lane chip is a button that scrolls to its lane and moves focus to its first card. It
 never filters, and it shows 0 when its lane is empty. The Needs you count shows only on
-its chip: no lane header, group head or session card repeats it. Working counts the live
-session cards whose state is working; Quiet counts the other live cards in the main list.
-Until the Working and Quiet lanes exist, both chips land on the Agents card, clearing an
-Agents state filter that hides the cards they count, and that card keeps its state filters
-with their own per-state counts: its Quiet filter counts idle cards only, while the Quiet
-chip also counts parked and starting ones. PR 4 removes the filters.
+its chip: no lane header, group head or session card repeats it. Working counts the cards
+in the Working lane and Quiet the rows in the Quiet lane, so each chip equals what its lane
+shows; the lane headers carry no count. The Working and Quiet chips focus their own lane's
+first card or row. There are no session filters and no group-by.
 
 The Needs you lane holds the Inbox's attention set under the Dashboard's lens, in rail
 order (asks an agent is waiting on first, oldest first), so with All projects its count is
@@ -134,8 +134,28 @@ chip, which scrolls to its first ask in Needs you. An ask no session card holds 
 lane with "session ended" or "no session" in its meta line. The session panel keeps its
 Asking you section, so you can answer while reading that session's transcript.
 
-Keyboard: Tab reaches the chips, then the lane. In the lane, J/K and the arrow keys move
-between cards with one roving tab stop, and Enter opens the card. G I still opens the Inbox.
+Every live session is in exactly one place: Working, Quiet or a fold. **Working** holds the
+sessions whose state is working (a running host turn included), under a project head (dot,
+name, session count, at the group-head size). A card leads with one meta line (state dot,
+agent, branch, time since its last call), then what the session is doing at the lead size,
+up to two lines, then its subagents and plan progress. Its first button is **Open**, the
+session panel; **Message** follows it. **Quiet** is a compact table: state, session (project
+and agent), branch, last caption, since, and the state's main action (Open and Message for an
+idle session, Take over and Resume… for a parked one). Each row is one line, ending in an
+ellipsis, and when a message reaches the session is in Message's tooltip. The Mesh agents
+section follows the rows, then the folds: Ended (with Earlier sessions inside), Dormant,
+Closed projects and Not delivered, shown only with something in them. A lane with nothing
+keeps its header and says so in one quiet line; with no session at all, Working shows the
+first-run message.
+
+Inside a lane, order is pinned between forced paints, project groups included, and held
+through a forced one while the pointer or keyboard focus is in the lane, so a card or row
+under the pointer never moves. A session that starts or stops working changes lane on the
+next paint.
+
+Keyboard: Tab reaches the chips, then each lane in page order. In a lane, J/K and the arrow
+keys move between its cards or rows with one roving tab stop, never into the next lane, and
+Enter opens the card or the session panel. G I still opens the Inbox.
 
 Every summary is a working entry point into an existing view. Dashboard data never
 enters the attention predicate, badge count, or alert system.
@@ -171,13 +191,15 @@ No portal or duplicate action component is permitted.
 ## Responsive Contract
 
 - **1280px and wider:** fixed project library, resizable queue/inspector split,
-  the lane chips on one row.
+  the lane chips on one row; Working cards three a row at 1440px and two at 1280px;
+  the session panel is a sheet over the lanes.
 - **900–1279px:** compact masthead, inline queue detail; the lane chips wrap
-  before they shrink.
-- **620–899px:** stacked dashboard regions, one Needs you card a row, and
-  reflowed metadata.
+  before they shrink; two Working cards a row, and the session panel inline under
+  its card or Quiet row.
+- **620–899px:** stacked dashboard regions, one Needs you card and one Working
+  card a row, reflowed metadata, and each Quiet row on two lines with no header.
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
-  count; dashboard is single-column, and the Needs you lane's Later and Review
+  count; dashboard is single-column, the Needs you lane's Later and Review
   queue wrap under its title. The masthead uses three compact rows:
   identity/settings, tabs, then project and agent selectors side by side.
 - **440px and below:** full-viewport action card. Verify at 320px, 375px, and

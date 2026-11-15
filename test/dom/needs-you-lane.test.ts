@@ -111,7 +111,8 @@ describe('the Needs you lane holds every ask once (§3.2, §8)', () => {
     expect(chipCount('needs')).toBe('7')
     // each once on the whole Dashboard; no session card shows an ask's title
     for (const id of laneIds()) expect(document.querySelectorAll(`#dashboard [data-ny-ask="${id}"]`)).toHaveLength(1)
-    const cardParts = [...document.querySelectorAll('#dashboard .sc *')].map((el) => el.textContent)
+    // every session's card or row, in Working, Quiet and the folds
+    const cardParts = [...document.querySelectorAll('#dashboard [data-session-card] *')].map((el) => el.textContent)
     for (const title of ['From a live session', 'Stamped by the live one', 'Joined to the idle one', 'From an ended session']) expect(cardParts).not.toContain(title)
     expect(document.querySelector('#dashboard [data-session-card^="ask:"]')).toBeNull()
     // the asks no card holds say why
@@ -670,32 +671,49 @@ describe('the page head’s lane chips (§3.1)', () => {
     expect(document.activeElement).toBe(sessionCard('session:w'))
     click(chip('quiet'))
     expect(document.activeElement).toBe(sessionCard('session:q1'))
-    // each chip scrolls to its lane; a Working or Quiet card deep in the Agents card is revealed too
+    // each chip scrolls to its own lane; a Working card or Quiet row deep in its lane is revealed too
     expect(scroll).toHaveBeenCalledTimes(5)
     expect(scroll.mock.contexts.filter((el) => el === sessionCard('session:w') || el === sessionCard('session:q1'))).toHaveLength(2)
-    expect(document.querySelector('.agents-home .ah-filter[aria-pressed="true"]')?.getAttribute('data-ah-filter')).toBe('all')
+    expect(scroll.mock.contexts.filter((el) => el === document.querySelector('#dashboard .working-lane') || el === document.querySelector('#dashboard .quiet-lane'))).toHaveLength(2)
+    expect(document.querySelector('#dashboard [data-ah-filter]')).toBeNull()
     expect([...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].map((el) => el.dataset.sessionCard)).toEqual(before)
     expect(shown('dashboard')).toBe(true)
   })
 
-  it('a Working or Quiet chip clears an Agents filter that hides every card it counts, and applies none', async () => {
+  it('a key move in a session lane reveals the card it lands on', async () => {
+    db = freshDb()
+    live(db, 'w1')
+    live(db, 'w2')
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const cards = [...document.querySelectorAll<HTMLElement>('#dashboard .working-lane [data-session-card]')]
+    expect(cards).toHaveLength(2)
+    cards[0]!.focus()
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    key(cards[0]!, 'j')
+    expect(document.activeElement).toBe(cards[1])
+    expect(scroll.mock.contexts).toEqual([cards[1]])
+    expect(scroll.mock.calls[0]![0]).toMatchObject({ block: 'nearest' })
+    // at the lane's end nothing moves and nothing scrolls
+    key(cards[1]!, 'j')
+    expect(document.activeElement).toBe(cards[1])
+    expect(scroll).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Working or Quiet chip lands in its own lane, whose size it counts (PR 4)', async () => {
     db = freshDb()
     idle(db, 'q1', { project: 'beta' })
     live(db, 'w')
     await bootApp(db)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    const pressed = () => document.querySelector('.agents-home .ah-filter[aria-pressed="true"]')?.getAttribute('data-ah-filter')
-    click(document.querySelector('.agents-home [data-ah-filter="working"]'))
-    expect(sessionCard('session:q1')).toBeNull()
-    expect(chipCount('quiet')).toBe('1')
     click(chip('quiet'))
-    expect(pressed()).toBe('all')
     expect(document.activeElement).toBe(sessionCard('session:q1'))
-    // a filter that still shows a counted card is left alone
-    click(document.querySelector('.agents-home [data-ah-filter="working"]'))
+    expect(sessionCard('session:q1')?.closest('.quiet-lane')).not.toBeNull()
+    expect(chipCount('quiet')).toBe(String(document.querySelectorAll('#dashboard .quiet-lane .qt-rows [data-session-card]').length))
     click(chip('working'))
-    expect(pressed()).toBe('working')
     expect(document.activeElement).toBe(sessionCard('session:w'))
+    expect(sessionCard('session:w')?.closest('.working-lane')).not.toBeNull()
+    expect(chipCount('working')).toBe(String(document.querySelectorAll('#dashboard .working-lane .ah-cards [data-session-card]').length))
   })
 
   it('an empty lane’s chip lands on its heading', async () => {
@@ -705,7 +723,9 @@ describe('the page head’s lane chips (§3.1)', () => {
     click(chip('needs'))
     expect(document.activeElement).toBe(document.getElementById('needsYouLaneTitle'))
     click(chip('working'))
-    expect(document.activeElement).toBe(document.getElementById('agentsHomeTitle'))
+    expect(document.activeElement).toBe(document.getElementById('workingLaneTitle'))
+    click(chip('quiet'))
+    expect(document.activeElement).toBe(document.getElementById('quietLaneTitle'))
   })
 
   it('replaces the Now strip, and New session… sits at the head’s right end', async () => {

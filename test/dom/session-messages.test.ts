@@ -210,8 +210,8 @@ describe('the session panel’s composer (#411, #454)', () => {
     input('mcp-a')!.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     await settle()
     expect(panel().hidden).toBe(true)
-    // focus goes back to the card it came from
-    expect(document.activeElement).toBe(messageButton('mcp-a'))
+    // focus goes back to the card it came from, on its first action: Open (dashboard lanes design §3.3, §3.4)
+    expect(document.activeElement).toBe(messageButton('mcp-a')?.parentElement?.querySelector('[data-ah-action="open"]'))
     vi.mocked(document.hasFocus).mockRestore()
     // a closed composer that holds text says so on its button, from the next frame on
     await pollTick()
@@ -319,7 +319,7 @@ describe('the session panel’s composer across polls (#411)', () => {
   })
 })
 
-describe('the Not delivered fold, in the Agents home (#411, #454)', () => {
+describe('the Not delivered fold, at the end of the Quiet lane (#411, #454)', () => {
   it('lists open messages whose session ended, ten at a time, with Copy text and Withdraw, until withdrawn', async () => {
     db = freshDb()
     present(db, { session: 'gone', project: 'beta' })

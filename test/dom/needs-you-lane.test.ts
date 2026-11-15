@@ -680,6 +680,26 @@ describe('the page head’s lane chips (§3.1)', () => {
     expect(shown('dashboard')).toBe(true)
   })
 
+  it('a key move in a session lane reveals the card it lands on', async () => {
+    db = freshDb()
+    live(db, 'w1')
+    live(db, 'w2')
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const cards = [...document.querySelectorAll<HTMLElement>('#dashboard .working-lane [data-session-card]')]
+    expect(cards).toHaveLength(2)
+    cards[0]!.focus()
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    key(cards[0]!, 'j')
+    expect(document.activeElement).toBe(cards[1])
+    expect(scroll.mock.contexts).toEqual([cards[1]])
+    expect(scroll.mock.calls[0]![0]).toMatchObject({ block: 'nearest' })
+    // at the lane's end nothing moves and nothing scrolls
+    key(cards[1]!, 'j')
+    expect(document.activeElement).toBe(cards[1])
+    expect(scroll).toHaveBeenCalledTimes(1)
+  })
+
   it('a Working or Quiet chip lands in its own lane, whose size it counts (PR 4)', async () => {
     db = freshDb()
     idle(db, 'q1', { project: 'beta' })

@@ -262,7 +262,10 @@ export function installAgentsHome(deps) {
     const lane = el.closest('[data-ah-lane]')
     const cards = [...lane.querySelectorAll('[data-session-card]')]
     const next = cards[cards.indexOf(el) + move]
-    if (next) land(lane.dataset.ahLane, next)
+    if (!next) return
+    land(lane.dataset.ahLane, next)
+    // a key move reveals the card it lands on, as a chip does and as the Needs you lane's keys do
+    next.scrollIntoView?.({ block: 'nearest', behavior: deps.scrollBehavior?.() ?? 'auto' })
   }
 
   // Moves a lane's roving stop to one of its cards or rows and focuses it.

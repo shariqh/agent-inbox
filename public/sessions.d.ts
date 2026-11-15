@@ -1,14 +1,14 @@
 import type { AttentionEntry } from './attention.js'
 import type { LaneActivity, LaneBoard, PlanBar } from './lanes.js'
 
-export type SessionState = 'ask' | 'failed' | 'lost' | 'starting' | 'stopping' | 'working' | 'idle' | 'parked' | 'terminal' | 'ended' | 'dormant'
+export type SessionState = 'failed' | 'lost' | 'starting' | 'stopping' | 'working' | 'idle' | 'parked' | 'terminal' | 'ended' | 'dormant'
 export type SessionPlace = 'main' | 'ended' | 'earlier' | 'dormant' | 'closed'
-export type SessionFilter = 'all' | 'ask' | 'working' | 'idle' | 'parked'
+export type SessionFilter = 'all' | 'working' | 'idle' | 'parked'
 
 export const FILTERS: ReadonlyArray<readonly [SessionFilter, string]>
 
 export interface SessionCard {
-  /** `launch:<id>`, `session:<session>`, or an ask-only card's `ask:session:<id>`, `ask:plan:<id>` or `ask:item:<id>` */
+  /** `launch:<id>` or `session:<session>` */
   id: string
   /** the live session a Message goes to, if any */
   session: string | null
@@ -22,11 +22,10 @@ export interface SessionCard {
   agent: string
   /** "Copilot", "Claude Code", or the agent name */
   host: string
-  origin: 'started here' | 'terminal' | 'driven' | 'session ended' | 'no session'
-  /** #454 A.1: an ask-only card, for an ask whose session no card shows ('ended' when it names one) */
-  askOnly?: 'ended' | 'none'
-  /** the state before any ask */
-  base: Exclude<SessionState, 'ask'>
+  origin: 'started here' | 'terminal' | 'driven'
+  /** the card's own state; asks never change it (dashboard lanes design §3.3) */
+  base: SessionState
+  /** the same as `base` */
   state: SessionState
   label: string
   text: string
@@ -37,11 +36,10 @@ export interface SessionCard {
   plan: PlanBar | null
   children: Array<{ name: string; doing: string; state: string }>
   trace: number[] | null
+  /** the asks this card holds, in sortRail order: the Needs you lane shows them, the card counts them */
   asks: AttentionEntry[]
   /** this session's answers the agent has not picked up yet: shown in the panel, never counted */
   answered: Array<Record<string, any>>
-  /** the first ask is an app session's approval (#412) */
-  approval: boolean
   place: SessionPlace
   activeAt: number
 }
@@ -53,12 +51,14 @@ export function sessionCards(input: {
   attention?: AttentionEntry[]
   /** the frame's answered-awaiting-pickup entries (relay's `agent`) */
   answered?: Array<Record<string, any>>
-  /** the items in the lens, for an ask-only card's "last heard" */
-  items?: Array<Record<string, any>>
   closed?: Iterable<string>
   nowMs: number
 }): SessionCard[]
 export function cardMatches(card: SessionCard, filter: SessionFilter | null | undefined): boolean
 export function filterCounts(cards: SessionCard[]): Record<SessionFilter, number>
+/** the page head's Working and Quiet chips, over the main list (dashboard lanes design §3.1) */
+export function laneCounts(cards: SessionCard[]): { working: number; quiet: number }
+/** "Copilot", "Claude Code", or the agent name */
+export function hostLabel(agent: string): string
 export function groupCards(cards: SessionCard[], by?: 'project' | 'agent'): Array<{ key: string; label: string; cards: SessionCard[] }>
 export function messageHint(row: LaneActivity | null | undefined): string

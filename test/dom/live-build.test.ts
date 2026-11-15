@@ -52,7 +52,7 @@ function seed(d: Database.Database, s: Seed): void {
 
 // a session's card, by the project it runs in
 const cardOf = (project: string): HTMLElement | undefined =>
-  [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]:not(.sc-ask-only)')]
+  [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')]
     .find((el) => el.getAttribute('aria-label')?.includes(` in ${project}`))
 // #454 A.3 (V1): a card names no build; its panel's hint does, for an older or newer one
 function hint(project: string): string | null {

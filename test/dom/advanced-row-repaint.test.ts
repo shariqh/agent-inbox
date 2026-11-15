@@ -182,7 +182,7 @@ describe('#563 · the session panel', () => {
     const [rowId, other] = seedRow(d, [LABEL, 'Rotate the token']) as [string, string]
     await bootApp(d)
     const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    click(document.querySelector('#dashboard [data-session-card="session:here"] [data-ah-action="review"]'))
+    click(document.querySelector('#dashboard [data-session-card="session:here"] .sc-doing'))
     await settle()
     const panel = (): HTMLElement => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
     const block = (id: string): HTMLElement | null => panel().querySelector<HTMLElement>(`[data-panel-ask="${id}"]`)

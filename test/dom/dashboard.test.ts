@@ -18,18 +18,16 @@ function open(): Database.Database {
   return db
 }
 
-const signal = (name: string): string =>
-  document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
+// the page head's lane chips (dashboard lanes design §3.1), which replaced the Now strip
+const chip = (key: 'needs' | 'working' | 'quiet'): string =>
+  document.querySelector(`#dashboard [data-dash-chip="${key}"] .dash-chip-count`)?.textContent ?? ''
 
-// the Agents home's Needs you count: every ask on a card (#454 A.1)
-const askCount = (): number => Number(document.querySelector('.agents-home [data-ah-filter="ask"] .ah-filter-count')?.textContent)
+// the Needs you lane: every ask once (§3.2)
+const askCount = (): number => document.querySelectorAll('#dashboard .needs-you-lane .ny-card').length
 
 // #454: the Agents home's cards, past its folds
-// the sessions' own cards: an ask naming no live session has an ask-only card too (#454 A.1, test/dom/agents-asks.test.ts)
-const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .ah-groups [data-session-card]:not(.sc-ask-only)')]
+const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .ah-groups [data-session-card]')]
 const working = (): HTMLElement[] => cards().filter((card) => card.classList.contains('tone-working'))
-const nowSub = (name: string): string =>
-  document.querySelector(`[data-dashboard-signal="${name}"] .dash-now-sub`)?.textContent ?? ''
 
 describe('Live Operations Desk dashboard', () => {
   it('is the default view and projects real current state', async () => {
@@ -72,16 +70,11 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
     expect(document.getElementById('pageTitle')?.textContent).toBe('Live Operations Desk')
-    expect(signal('agents')).toBe('1')
-    expect(signal('waiting')).toBe('1')
-    // #304: the plan steps are the working card's own bar (#454).
-    expect(signal('plans')).toBe('0')
-    expect(document.querySelector('[data-dashboard-signal="plans"] .dashboard-value-total')?.textContent).toBe('/1')
-    expect(signal('outcomes')).toBe('1')
-    expect(document.querySelector('[data-dashboard-signal="agents"] .dash-now-label')?.textContent).toBe('Working')
-    expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label')).toBe('Agents working: 1')
-    expect(document.querySelector('[data-dashboard-signal="plans"]')?.getAttribute('aria-label'))
-      .toBe('Plan steps done in the plans agents are working on: 0 of 1')
+    expect(chip('working')).toBe('1')
+    expect(chip('needs')).toBe('1')
+    expect(chip('quiet')).toBe('0')
+    expect(document.querySelector('[data-dash-chip="working"] .dash-chip-label')?.textContent).toBe('Working')
+    expect(document.querySelector('[data-dash-chip="working"]')?.getAttribute('aria-label')).toBe('Working: 1')
     expect(cards().map((card) => card.dataset.sessionCard)).toEqual(['session:live'])
     expect(cards()[0]!.querySelector('.sc-doing')?.textContent).toBe('Building the dashboard')
     expect(cards()[0]!.closest('.ah-group')?.querySelector('.ah-group-name')?.textContent).toBe('alpha')
@@ -112,7 +105,8 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('.dashboard-history-empty')?.textContent?.trim()).toBe('')
     expect(document.querySelector<HTMLElement>('.agents-home .ah-empty')?.hidden).toBe(false)
     expect(document.querySelector('.agents-home .ah-empty-text')?.textContent).toMatch(/^No sessions yet\./)
-    expect(document.querySelectorAll('.dash-now-item')).toHaveLength(4)
+    expect([...document.querySelectorAll('.dash-chip')].map((el) => el.textContent)).toEqual(['Needs you0', 'Working0', 'Quiet0'])
+    expect(document.querySelector('.dash-now')).toBeNull()
   })
 
   it('draws one card per session, working and idle alike', async () => {
@@ -130,14 +124,15 @@ describe('Live Operations Desk dashboard', () => {
 
     await bootApp(d)
 
-    expect(signal('agents')).toBe('2')
+    expect(chip('working')).toBe('2')
+    expect(chip('quiet')).toBe('8')
     expect(working()).toHaveLength(2)
     expect(cards()).toHaveLength(10)
     expect(document.querySelector('[data-ah-filter="idle"] .ah-filter-count')?.textContent).toBe('8')
     expect(document.querySelector<HTMLElement>('.agents-home .ah-empty')?.hidden).toBe(true)
   })
 
-  it('draws reported subagents on their working card and counts them in the Now strip', async () => {
+  it('draws reported subagents on their working card', async () => {
     const d = open()
     upsertActivity(d, {
       session: 'manager',
@@ -162,15 +157,12 @@ describe('Live Operations Desk dashboard', () => {
 
     await bootApp(d)
 
-    expect(signal('agents')).toBe('1')
-    expect(nowSub('agents')).toBe('+5 subagents')
+    expect(chip('working')).toBe('1')
     expect(working()[0]!.querySelector('.sc-kids')?.textContent).toBe('▸ 5 subagents')
     expect(working()[0]!.querySelector<HTMLElement>('.sc-kids')?.title.split('\n'))
       .toEqual(['worker-0', 'worker-1', 'worker-2', 'worker-3', 'worker-4'].map((name) => `${name}: Working`))
     // an idle session's stale children are not drawn
     expect(document.querySelectorAll('.agents-home .sc-kids')).toHaveLength(1)
-    expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label'))
-      .toBe('Agents working: 1, plus 5 subagents')
     expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('1 working')
   })
 
@@ -178,7 +170,7 @@ describe('Live Operations Desk dashboard', () => {
     const d = open()
     await bootApp(d)
 
-    expect(signal('agents')).toBe('0')
+    expect(chip('working')).toBe('0')
     expect(cards()).toHaveLength(0)
     expect(document.querySelector('#sessionsIndicator .si-v')?.textContent).toBe('No sessions')
   })
@@ -194,15 +186,16 @@ describe('Live Operations Desk dashboard', () => {
 
     await bootApp(d)
 
-    expect(signal('agents')).toBe('0')
-    expect(document.querySelector('[data-dashboard-signal="agents"]')?.getAttribute('aria-label')).toBe('Agents working: 0')
+    expect(chip('working')).toBe('0')
+    expect(chip('quiet')).toBe('1')
+    expect(document.querySelector('[data-dash-chip="working"]')?.getAttribute('aria-label')).toBe('Working: 0')
     expect(working()).toHaveLength(0)
     expect(cards()[0]!.querySelector('.sc-state')?.textContent).toBe('Quiet')
     // the Agents home (#454) draws it only as what the session was doing
     expect(document.querySelector('.sc-doing')?.textContent).toMatch(/^Last reported: Checking the build · /)
   })
 
-  it('turns on the Needs you filter from the waiting signal and lands on the Agents card (#454 A.2)', async () => {
+  it('the Needs you chip lands on the lane’s first card and filters nothing (lanes design §3.1)', async () => {
     const d = open()
     const id = insertItem(d, {
       project: 'alpha',
@@ -214,13 +207,12 @@ describe('Live Operations Desk dashboard', () => {
 
     await bootApp(d)
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    click(document.querySelector('[data-dashboard-signal="waiting"]'))
+    click(document.querySelector('[data-dash-chip="needs"]'))
     await settle()
 
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(document.querySelector('.agents-home [data-ah-filter="ask"]')?.getAttribute('aria-pressed')).toBe('true')
-    expect(document.activeElement).toBe(document.getElementById('agentsHomeTitle'))
-    expect(document.querySelector(`[data-session-card="ask:item:${id}"]`)).not.toBeNull()
+    expect(document.querySelector('.agents-home [data-ah-filter="all"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(document.querySelector(`#dashboard [data-ny-ask="${id}"]`))
   })
 
   it('opens the complete outcomes projection and reaches an archived plan outcome', async () => {
@@ -240,7 +232,8 @@ describe('Live Operations Desk dashboard', () => {
     expect(archiveBoard(d, board.id, board.revision)).toBe(true)
     await bootApp(d)
 
-    click(document.querySelector('[data-dashboard-target="outcomes"]'))
+    // the Now strip's Recorded outcomes went with it (§3.1): Handoffs opens it from the Inbox
+    click(document.querySelector('.relay-btn'))
     await settle()
     expect(document.getElementById('relaybox')?.hidden).toBe(false)
     expect(document.querySelector('[data-relay-lane="outcome"]')?.textContent).toContain('Canary reached 100%.')
@@ -311,9 +304,8 @@ describe('Live Operations Desk dashboard', () => {
     })
     await pollTick()
 
-    expect(signal('waiting')).toBe('2')
-    expect(signal('agents')).toBe('1')
-    expect(nowSub('agents')).toBe('+2 subagents')
+    expect(chip('needs')).toBe('2')
+    expect(chip('working')).toBe('1')
     expect(working()[0]!.querySelector('.sc-kids')?.textContent).toBe('▸ 2 subagents')
     expect(cards()).toHaveLength(2)
     expect(document.activeElement).toBe(range)
@@ -364,8 +356,8 @@ describe('Live Operations Desk dashboard', () => {
     initial.dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     const range = document.querySelector<HTMLSelectElement>('.dashboard-range')!
-    expect(signal('waiting')).toBe('5')
-    expect(signal('agents')).toBe('1')
+    expect(chip('needs')).toBe('5')
+    expect(chip('working')).toBe('1')
     expect(document.querySelector('.dashboard-activity-total strong')?.textContent).toBe('1m')
 
     advanceClock(60_000)
@@ -380,10 +372,9 @@ describe('Live Operations Desk dashboard', () => {
     resolveItem(d, outcome, 'Checks completed.')
     await pollTick()
 
-    expect(signal('waiting')).toBe('6')
-    expect(signal('agents')).toBe('0')
+    expect(chip('needs')).toBe('6')
+    expect(chip('working')).toBe('0')
     expect(askCount()).toBe(6)
-    expect(signal('outcomes')).toBe('1')
     expect(working()).toHaveLength(0)
     expect(cards().map((card) => card.querySelector('.sc-state')?.textContent)).toEqual(['Quiet'])
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Checks completed.')
@@ -505,7 +496,7 @@ describe('Live Operations Desk dashboard', () => {
     }
     await pollTick()
     expect(document.title).toBe('(4) Agent Inbox')
-    expect(signal('waiting')).toBe('2')
+    expect(chip('needs')).toBe('2')
     expect(askCount()).toBe(2)
     expect(cards().map((card) => card.dataset.sessionCard)).toEqual(['session:alpha'])
     expect(document.activeElement).toBe(range)
@@ -521,12 +512,12 @@ describe('Live Operations Desk dashboard', () => {
     range.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'Next decision' })
     await vi.advanceTimersByTimeAsync(200)
-    expect(signal('waiting')).toBe('1')
+    expect(chip('needs')).toBe('1')
     expect(askCount()).toBe(1)
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
     range.dispatchEvent(new Event('pointerup', { bubbles: true }))
     await pollTick()
-    expect(signal('waiting')).toBe('2')
+    expect(chip('needs')).toBe('2')
     expect(askCount()).toBe(2)
     expect(document.querySelector('.dashboard-range')).toBe(range)
   })
@@ -542,13 +533,14 @@ describe('Live Operations Desk dashboard', () => {
     })
     closeProject(d, 'alpha')
     await bootApp(d)
-    expect(signal('waiting')).toBe('0')
+    expect(chip('needs')).toBe('0')
 
     click(document.querySelector('#rail .closed-fold > summary'))
     click(document.querySelector('#rail .closed-fold .rail-tab[data-project="alpha"]'))
     await settle()
 
-    expect(signal('waiting')).toBe('1')
-    expect(document.querySelector('[data-dashboard-signal="waiting"]')?.getAttribute('aria-label')).toBe('Waiting on you: 1 open action, oldest <1m')
+    expect(chip('needs')).toBe('1')
+    expect(askCount()).toBe(1)
+    expect(document.querySelector('[data-dash-chip="needs"]')?.getAttribute('aria-label')).toBe('Needs you: 1')
   })
 })

@@ -162,8 +162,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   state survives rebuilds and `revealDetailsAncestors` opens it for a deep link or draft
   recovery), headed `Later · N` with `laterBreakdown` (`2 pinned · 1 snoozed, next back in
   2h`). N follows the lens and the action filters, like every list surface, and never
-  reaches the badge, a tab or a session card; the Dashboard's entry to it is the Agents
-  header's "Later N ›" (#454 A.2, `openLater`, the rail's "N in Later" before it), which
+  reaches the badge, a tab or a session card; the Dashboard's entry to it is the Needs you
+  lane header's "Later N ›", shown only above 0 (dashboard lanes design §3.2; the Agents
+  header's before it, #454 A.2, and the rail's "N in Later" before that; `openLater`), which
   opens the Inbox with the section open. Its order is `sortLaterEntries` (snoozed soonest back
   first, then pinned oldest first, ties by a stable key), never the Sort menu. Rows are
   ordinary `.nrow`s whose way back is always "Back to inbox"; only their lines are dimmed,

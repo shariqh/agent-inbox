@@ -168,9 +168,15 @@ describe('motion foundation in public/style.css (#302)', () => {
   // session cards (#454, once the lanes) use no infinite animation; activity
   // motion is one-shot per real call.
   it('runs no infinite animation on the session cards, only the one-shot app.js starts (#454)', () => {
-    const cards = rules.filter((r) => r.selectors.some((sel) => /(^|[\s>])\.(sc|agents-home|ah-[\w-]+)(?![\w-])/.test(sel)))
+    // the Needs you lane and the lane chips too (dashboard lanes PR 3): nothing on them animates or transitions
+    const cards = rules.filter((r) => r.selectors.some((sel) => /(^|[\s>])\.(sc|agents-home|ah-[\w-]+|needs-you-lane|ny-[\w-]+|dash-head|dash-chips?|dash-chip-[\w-]+|sc-asking)(?![\w-])/.test(sel)))
     expect(cards.length).toBeGreaterThan(0)
     expect(cards.filter(isInfinite).flatMap((r) => r.selectors)).toEqual([])
+    const lanes = cards.filter((r) => r.selectors.some((sel) => /\.(needs-you-lane|ny-|dash-chip|dash-head|sc-asking)/.test(sel)))
+    expect(lanes.length).toBeGreaterThan(0)
+    for (const rule of lanes) {
+      for (const [prop] of rule.decls) expect(prop, rule.selectors.join(', ')).not.toMatch(/^(transition|animation)/)
+    }
     const shots = rules.filter((r) => !r.media && /dash-lane-pulse/.test(r.decls.get('animation') ?? ''))
     expect(shots.flatMap((r) => r.selectors)).toEqual(['.sc.pulse .sc-dot::after'])
     expect(shots[0]!.decls.get('animation')).toMatch(/^dash-lane-pulse var\(--motion-slow\) var\(--motion-ease[\w-]*\) 1$/)

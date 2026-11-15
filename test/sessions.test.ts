@@ -2,8 +2,9 @@
 // docs/superpowers/specs/2026-11-04-agents-home-design.md §2). Pure, so plain
 // objects in, cards out; the clock is NOW.
 import { describe, expect, it } from 'vitest'
-import { cardMatches, filterCounts, groupCards, messageHint, sessionCards } from '../public/sessions.js'
+import { FILTERS, cardMatches, filterCounts, groupCards, hostLabel, laneCounts, messageHint, sessionCards } from '../public/sessions.js'
 import { attentionEntries } from '../public/attention.js'
+import { buildDashboard } from '../public/dashboard.js'
 
 const NOW = Date.parse('2026-11-04T12:00:00.000Z')
 const at = (msAgo: number) => new Date(NOW - msAgo).toISOString()
@@ -200,10 +201,13 @@ describe('sessionCards: one card per session', () => {
   })
 })
 
+// Dashboard lanes design §3.3, §3.4: a card holds its asks only to count them
+// ("Asking you · N"); its state and place are its own, and the asks rise in
+// the Needs you lane.
 describe('sessionCards: asks', () => {
   const item = (id: string, o: Record<string, unknown>) => ({ kind: 'item', item: { id, created_at: at(5000), kind: 'question', ...o } })
 
-  it('attributes an item by its session and a row by the plan its session stamped, and Needs you wins over every state', () => {
+  it('attributes an item by its session and a row by the plan its session stamped, keeping each card its own state', () => {
     const board = { id: 'b1', project: 'alpha', stream: 'main', agent: 'claude-code', title: 'Plan', updated_at: at(1000), rows: [], session: 'k' }
     const cards = by(sessionCards({
       activity: [
@@ -219,34 +223,35 @@ describe('sessionCards: asks', () => {
       ] as never,
       nowMs: NOW,
     }))
-    // a dormant session with an ask leaves the Dormant fold
-    expect(cards['session:k']).toMatchObject({ state: 'ask', label: 'Needs you', base: 'dormant', place: 'main', approval: false })
+    // a dormant session with an ask keeps its base state and folds as Dormant
+    expect(cards['session:k']).toMatchObject({ state: 'dormant', base: 'dormant', label: 'Dormant', place: 'dormant' })
     expect(cards['session:k']!.asks.map((entry) => (entry as unknown as { row: { id: string } }).row.id)).toEqual(['r1'])
     // the driver files its approval with the session's id, which the launch remembers once the session is gone
-    expect(cards[`launch:${ID(1)}`]).toMatchObject({ state: 'ask', base: 'parked', approval: true })
-    // an item naming no session is not c's: it gets an ask-only card of its own (#454 A.1)
+    expect(cards[`launch:${ID(1)}`]).toMatchObject({ state: 'parked', base: 'parked' })
+    expect(cards[`launch:${ID(1)}`]!.asks).toHaveLength(1)
+    // an item naming no session is no card's: it shows only in Needs you
     expect(cards['session:c']).toMatchObject({ state: 'working', asks: [] })
-    expect(cards['ask:item:i2']).toMatchObject({ state: 'ask', label: 'No session', askOnly: 'none', project: 'beta', place: 'main' })
+    expect(Object.keys(cards).filter((id) => id.startsWith('ask:'))).toEqual([])
   })
 
-  it('gives a plan row’s ask to one card only, so Needs you counts what the rail does (#458 review)', () => {
+  it('gives a plan row’s ask to one card only (#458 review)', () => {
     const board = { id: 'b1', project: 'p', stream: 'main', agent: 'claude-code', title: 'Plan', updated_at: at(1000), rows: [], session: 'A' }
     const ask = { kind: 'row', row: { id: 'r1', label: 'Rotate the token', action_started_at: at(4000) }, board }
     const quiet = (session: string, ms: number) => row({ session, project: 'p', agent: 'claude-code', doing: 'open', idle: true, last_call_at: at(ms) })
     const activity = [quiet('A', 5 * MIN), quiet('B', 40 * MIN), quiet('C', 9 * HOUR), quiet('D', 30 * HOUR)]
     const cards = by(sessionCards({ activity, boards: [board as never], attention: [ask] as never, nowMs: NOW }))
-    // the stamping session's card has it; the others keep their own state and place
+    // the stamping session's card has it; every card keeps its own state and place
     expect(['A', 'B', 'C', 'D'].map((s) => [cards[`session:${s}`]!.state, cards[`session:${s}`]!.place, cards[`session:${s}`]!.asks.length]))
-      .toEqual([['ask', 'main', 1], ['idle', 'main', 0], ['dormant', 'dormant', 0], ['dormant', 'dormant', 0]])
-    expect(filterCounts(Object.values(cards).filter((card) => card.place === 'main')).ask).toBe(1)
+      .toEqual([['idle', 'main', 1], ['idle', 'main', 0], ['dormant', 'dormant', 0], ['dormant', 'dormant', 0]])
 
     // unstamped, the newest quiet session the join matches takes it (#454 A.1 step 2), so it never looks ended
     const loose = sessionCards({ activity, boards: [{ ...board, session: null } as never], attention: [{ ...ask, board: { ...board, session: null } }] as never, nowMs: NOW })
     expect(loose.filter((card) => card.asks.length).map((card) => card.id)).toEqual(['session:A'])
-    // and with no quiet session on its branch, an ask-only card ("No session") has it
+    // and with no quiet session on its branch, no card holds it
     const none = sessionCards({ activity: activity.map((r) => ({ ...(r as object), stream: 'other' }) as never), boards: [{ ...board, session: null } as never],
       attention: [{ ...ask, board: { ...board, session: null } }] as never, nowMs: NOW })
-    expect(none.filter((card) => card.asks.length).map((card) => [card.id, card.label])).toEqual([['ask:plan:b1', 'No session']])
+    expect(none.filter((card) => card.asks.length)).toEqual([])
+    expect(none).toHaveLength(4)
     // and a working session joins it as its lane does, the newest one only
     const two = sessionCards({
       activity: [...activity, row({ session: 'W1', project: 'p', agent: 'claude-code', doing: 'Working', last_call_at: at(2 * MIN) }),
@@ -256,14 +261,38 @@ describe('sessionCards: asks', () => {
     expect(two.filter((card) => card.asks.length).map((card) => card.id)).toEqual(['session:W2'])
   })
 
-  it('counts each ask once under Needs you, however many one card holds', () => {
-    const items = ['i1', 'i2'].map((id) => item(id, { project: 'alpha', session: 's' }))
+  it('holds a card’s asks in rail order, and the filters have no Needs you', () => {
+    const items = [item('newer', { project: 'alpha', session: 's', created_at: at(1000) }), item('older', { project: 'alpha', session: 's', created_at: at(9000) })]
     const cards = sessionCards({ activity: [row({ session: 's', project: 'alpha', doing: 'Working', last_call_at: at(1000) })], attention: items as never, nowMs: NOW })
-    expect(filterCounts(cards)).toMatchObject({ all: 1, ask: 2 })
+    expect(cards[0]!.asks.map((entry) => (entry as unknown as { item: { id: string } }).item.id)).toEqual(['older', 'newer'])
+    expect(cards[0]).toMatchObject({ state: 'working', label: 'Working' })
+    expect(FILTERS.map(([key]) => key)).toEqual(['all', 'working', 'idle', 'parked'])
+    expect(filterCounts(cards)).toEqual({ all: 1, working: 1, idle: 0, parked: 0 })
+  })
+
+  it('laneCounts counts main cards: Working by base working (a running host turn included), Quiet the rest', () => {
+    const cards = sessionCards({
+      activity: [
+        row({ session: 'w', project: 'alpha', doing: 'Writing', last_call_at: at(1000) }),
+        row({ session: 'turn', project: 'alpha', doing: 'open', idle: true, host_turn_at: at(2 * MIN) }),
+        row({ session: 'i', project: 'alpha', doing: 'open', idle: true, last_call_at: at(47 * MIN) }),
+        row({ session: 'd', project: 'alpha', doing: 'open', idle: true, last_call_at: at(9 * HOUR) }),
+        row({ session: 'x', project: 'shut', doing: 'Working', last_call_at: at(1000) }),
+      ],
+      launches: [launch(1, { status: 'parked' })],
+      closed: ['shut'],
+      nowMs: NOW,
+    })
+    expect(laneCounts(cards)).toEqual({ working: 2, quiet: 2 })
+    expect(laneCounts([])).toEqual({ working: 0, quiet: 0 })
+    expect([hostLabel('copilot'), hostLabel('claude-code'), hostLabel('codex')]).toEqual(['Copilot', 'Claude Code', 'codex'])
   })
 })
 
-describe('every ask on exactly one card (#454 A.1)', () => {
+// The 11-04 amendment's invariant moved from the cards to the Needs you lane
+// (dashboard lanes design §3.2, §8): every attention entry shows exactly once
+// on the Dashboard, and a card holds at most one of them, to count it.
+describe('every ask once: in the lane, on at most one card', () => {
   const q = (id: string, o: Record<string, unknown> = {}) => ({ id, kind: 'question', status: 'open', project: 'p', stream: 'main', agent: 'claude-code', created_at: at(10 * MIN), ...o })
   const plan = (id: string, o: Record<string, unknown>, rows: Array<Record<string, unknown>>) => ({
     id, project: 'p', stream: 'main', agent: 'claude-code', title: `Plan ${id}`, updated_at: at(30 * MIN), revision: 1,
@@ -283,8 +312,6 @@ describe('every ask on exactly one card (#454 A.1)', () => {
     q('live-q', { session: 'live' }),
     q('gone-1', { session: 'gone', created_at: at(3 * HOUR) }),
     q('gone-2', { session: 'gone', created_at: at(4 * HOUR) }),
-    // the newest thing session "gone" wrote: a note, which "last heard" reads
-    { id: 'gone-note', kind: 'note', status: 'open', project: 'p', session: 'gone', agent: 'claude-code', created_at: at(2 * HOUR) },
     q('loose-q', { project: 'r', agent: 'copilot' }),
     q('closed-q', { project: 'shut', session: 'shut-s' }),
     q('snoozed-q', { session: 'live', snoozed_until: at(-HOUR) }),
@@ -301,47 +328,45 @@ describe('every ask on exactly one card (#454 A.1)', () => {
   ]
   const live = activity.map((r) => (r as { session: string }).session)
   const attention = attentionEntries(items as never, boards as never, NOW, live, ['shut'])
-  const cards = sessionCards({ activity, boards: boards as never, attention: attention as never, items, closed: ['shut'], launches: null, nowMs: NOW })
+  const cards = sessionCards({ activity, boards: boards as never, attention: attention as never, closed: ['shut'], launches: null, nowMs: NOW })
   const byId = by(cards)
 
-  it('puts each attention entry on exactly one card, and Needs you counts them all', () => {
-    expect(ids(cards.flatMap((card) => card.asks) as never)).toEqual(ids(attention as never))
-    expect(new Set(ids(cards.flatMap((card) => card.asks) as never)).size).toBe(attention.length)
-    expect(filterCounts(cards.filter((card) => card.place === 'main')).ask).toBe(attention.length)
+  it('puts each attention entry in the lane once and on at most one card, and draws no ask-only card', () => {
+    const lane = buildDashboard({ items: items as never, boards: boards as never, archived: [], activity: activity as never, nowMs: NOW, liveSessionIds: live, closedProjects: ['shut'] }).needsYou
+    expect(ids(lane as never)).toEqual(ids(attention as never))
+    expect(new Set(ids(lane as never)).size).toBe(attention.length)
+    const held = ids(cards.flatMap((card) => card.asks) as never)
+    expect(new Set(held).size).toBe(held.length)
+    expect(held.every((id) => ids(attention as never).includes(id))).toBe(true)
+    expect(cards.map((card) => card.id).filter((id) => id.startsWith('ask:'))).toEqual([])
     // snoozed, pinned, stale and closed asks stay out, because attentionEntries leaves them out
     for (const out of ['snoozed-q', 'pinned-q', 'stale-q', 'closed-q', 'closed-r0', 'ended-r1']) expect(ids(attention as never)).not.toContain(out)
   })
 
-  it('draws an ask-only card per session id, per plan with no session, and per item with none', () => {
-    expect(byId['session:live']!.asks).toHaveLength(2)
-    // the idle session on the plan's project, branch and agent takes its row (step 2)
-    expect(byId['session:quiet']).toMatchObject({ state: 'ask', place: 'main', base: 'idle' })
-    expect(byId['ask:session:gone']).toMatchObject({
-      state: 'ask', label: 'Session ended', askOnly: 'ended', place: 'main', project: 'p', host: 'Claude Code',
-      session: null, launch: null, recency: 'last heard 2h ago', text: 'Plan: Plan ended',
-    })
-    expect(byId['ask:session:gone']!.asks).toHaveLength(3)
-    expect(byId['ask:plan:orphan']).toMatchObject({ label: 'No session', askOnly: 'none', project: 'r', recency: 'last heard 20m ago' })
-    expect(byId['ask:plan:orphan']!.asks).toHaveLength(2)
-    expect(byId['ask:item:loose-q']).toMatchObject({ label: 'No session', host: 'Copilot', recency: 'last heard 10m ago', text: 'Filed without a session' })
-    // the driver's approval, with the switch off and no presence row: an ask-only card all the same
-    expect(byId['ask:session:drv-1']).toMatchObject({ approval: true, label: 'Session ended', project: '@sessions' })
+  it('leaves an ended session’s, an unstamped plan’s and a session-less ask on no card; a joined plan on its idle card', () => {
+    expect(ids(byId['session:live']!.asks as never)).toEqual(['live-q', 'stamped-r0'])
+    // the idle session on the plan's project, branch and agent takes its row (step 2), and stays idle
+    expect(byId['session:quiet']).toMatchObject({ state: 'idle', place: 'main', base: 'idle' })
+    expect(ids(byId['session:quiet']!.asks as never)).toEqual(['joined-r0'])
+    const held = new Set(ids(cards.flatMap((card) => card.asks) as never))
+    for (const id of ['gone-1', 'gone-2', 'ended-r0', 'loose-q', 'orphan-r0', 'orphan-r1', 'approval']) expect(held.has(id), id).toBe(false)
     // a closed project's session keeps its fold
     expect(byId['session:shut-s']).toMatchObject({ place: 'closed', asks: [] })
   })
 
   it('shows this session’s answers not picked up yet, never counted', () => {
     const answered = [
-      { kind: 'item', item: q('replied', { session: 'gone', reply: 'Yes' }) },
-      { kind: 'item', item: q('seen', { session: 'gone', reply: 'Yes', reply_seen_at: at(MIN) }) },
+      { kind: 'item', item: q('replied', { session: 'live', reply: 'Yes' }) },
+      { kind: 'item', item: q('seen', { session: 'live', reply: 'Yes', reply_seen_at: at(MIN) }) },
       { kind: 'row', row: { id: 'done-row', status: 'blocked', handled_at: at(MIN) }, board: boards[0] },
     ]
-    const withAnswers = by(sessionCards({ activity, boards: boards as never, attention: attention as never, answered, items, nowMs: NOW }))
-    expect(withAnswers['ask:session:gone']!.answered.map((entry) => (entry as { item: { id: string } }).item.id)).toEqual(['replied'])
-    expect(withAnswers['session:live']!.answered).toHaveLength(1)
-    expect(filterCounts(Object.values(withAnswers).filter((card) => card.place === 'main')).ask).toBe(attention.length)
+    const withAnswers = by(sessionCards({ activity, boards: boards as never, attention: attention as never, answered, nowMs: NOW }))
+    expect(withAnswers['session:live']!.answered.map((entry) => needsId(entry as never))).toEqual(['replied', 'done-row'])
+    expect(withAnswers['session:live']!.asks).toHaveLength(2)
   })
 })
+
+const needsId = (entry: { kind: string; item?: { id: string }; row?: { id: string } }) => (entry.kind === 'item' ? entry.item!.id : entry.row!.id)
 
 describe('filters, groups and the Message hint', () => {
   const cards = sessionCards({
@@ -354,7 +379,7 @@ describe('filters, groups and the Message hint', () => {
   })
 
   it('counts the states, and a filter shows its own', () => {
-    expect(filterCounts(cards)).toEqual({ all: 3, ask: 0, working: 2, idle: 1, parked: 0 })
+    expect(filterCounts(cards)).toEqual({ all: 3, working: 2, idle: 1, parked: 0 })
     expect(cards.filter((card) => cardMatches(card, 'idle')).map((card) => card.id)).toEqual(['session:c'])
     expect(cards.filter((card) => cardMatches(card, 'all'))).toHaveLength(3)
   })

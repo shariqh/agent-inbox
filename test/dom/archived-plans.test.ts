@@ -60,8 +60,9 @@ const fold = (): HTMLDetailsElement | null => document.querySelector<HTMLDetails
 const foldTitles = (): string[] =>
   [...document.querySelectorAll('#boards .archived-fold .board .board-title')].map((el) => (el.textContent ?? '').replace(/#\w+$/, ''))
 const foldWait = (): string | null => fold()?.querySelector('.archived-loading')?.textContent ?? null
-const signal = (name: string): string =>
-  document.querySelector(`[data-dashboard-signal="${name}"] .dashboard-value`)?.textContent ?? ''
+// The Dashboard's outcome count left with the Now strip (dashboard lanes design
+// §3.1); buildDashboard().signals.outcomes still counts what is omitted, and
+// test/dashboard.test.ts proves it. Just landed's proven list is what shows.
 const recentOutcomes = (): string[] =>
   [...document.querySelectorAll('.dashboard-outcome-list .dashboard-outcome strong')].map((el) => el.textContent ?? '')
 
@@ -147,9 +148,7 @@ describe('archived plans in brief (issue #299)', () => {
     const archive = archivedControl()
     await bootApp(db, { interceptFetch: archive.interceptFetch })
 
-    // The Dashboard (the cold-launch view) counts every archived outcome and
-    // proves its recent ones from the brief.
-    expect(signal('outcomes')).toBe('6')
+    // The Dashboard (the cold-launch view) proves its recent outcomes from the brief.
     expect(recentOutcomes()).toEqual(['Ship 6', 'Ship 5', 'Ship 4', 'Ship 3'])
     // A project whose only plans are archived keeps its rail tab.
     expect(document.querySelector('#rail button.rail-tab[data-project="retired"]')).not.toBeNull()
@@ -329,7 +328,6 @@ describe('archived plans in brief (issue #299)', () => {
     agents.dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     expect(fullReads(archive.control.reads)).toEqual([200])
-    expect(signal('outcomes')).toBe('7')
     expect(recentOutcomes()).toEqual(['C2', 'C1', 'Claude item 4', 'Claude item 3'])
     // the page alone proves claude's lens against older history: it is not read
     expect(archive.control.reads.some((read) => read.path === '/api/items/history')).toBe(false)
@@ -407,7 +405,7 @@ describe('archived plans in brief (issue #299)', () => {
     archive.control.briefMissing = true
     await bootApp(db, { interceptFetch: archive.interceptFetch })
     expect(status()).toBe('')
-    expect(signal('outcomes')).toBe('6')
+    expect(recentOutcomes()).toEqual(['Ship 6', 'Ship 5', 'Ship 4', 'Ship 3'])
     expect(fullReads(archive.control.reads)).toEqual([200])
     await selectTab('boards')
     expect(fold()?.querySelector('summary')?.textContent).toBe('Archived plans (3)')
@@ -423,14 +421,14 @@ describe('archived plans in brief (issue #299)', () => {
     seedHub(db)
     const archive = archivedControl()
     await bootApp(db, { interceptFetch: archive.interceptFetch })
-    expect(signal('outcomes')).toBe('6')
+    expect(recentOutcomes()).toEqual(['Ship 6', 'Ship 5', 'Ship 4', 'Ship 3'])
     archive.control.briefMissing = true
     archive.control.fail = true
     expectConsoleError(/Archived plans are unavailable right now/)
     await pollTick()
     expect(status()).toBe('disconnected')
     // the frame on screen stays
-    expect(signal('outcomes')).toBe('6')
+    expect(recentOutcomes()).toEqual(['Ship 6', 'Ship 5', 'Ship 4', 'Ship 3'])
   })
 })
 

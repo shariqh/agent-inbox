@@ -950,8 +950,11 @@ person's message as its first turn. This part is the store and the driver only. 
   closed. This build's refusal of an unknown kind reads "kind must be new, resume or chat".
 - **`chat_id`** (`launches`, nullable TEXT, written by `createLaunch` for a `chat` spec and never
   changed; `createLaunch` refuses one that is not a lowercase UUID). `launchView` passes it through, so
-  `/api/launches` serves it. The column renames the whole-table `launches` update trigger, as
-  `end_detail` did. Rows with a `chat_id` exist only once someone continued a chat.
+  `/api/launches` now carries `chat_id`, null for every launch that continues no chat. The column
+  renames the whole-table `launches` update trigger, as `end_detail` did: on a hub an older build made,
+  that build's trigger stays beside the renamed one and both fire on a write, which is harmless because
+  readers compare the domain version only for equality. Rows with a `chat_id` exist only once someone
+  continued a chat.
 - **One chat, one launch.** The partial unique index `idx_launches_chat` on `chat_id`, over rows whose
   `chat_id` is set and that are running, parked, or ended `stopped` with an `acp_session` (`CHAT_HELD`,
   `RESUMABLE_END` without its worktree term). A second `createLaunch` for the chat fails inside its own
@@ -960,7 +963,10 @@ person's message as its first turn. This part is the store and the driver only. 
   chat can be continued again. `resumeLaunch` cannot hit it, since the row it moves is already counted;
   `run` still wraps it, so a throw there refuses instead of killing the driver. No older build's
   statement names `chat_id`, so none of its writes can put a second launch of a chat in the index
-  (`test/mixed-version.test.ts`).
+  (`test/mixed-version.test.ts`). Every `openDb` creates `idx_launches_chat` if it is missing, so a
+  later change to the one-launch-per-chat rule must keep that index name and must never loosen the
+  rule: an older build's migration would fail to recreate the index over rows that break it, and that
+  build could not open the hub.
 - **`listLaunches`** carries every ended launch that holds its chat (`CHAT_HELD`) besides the 50 newest
   ended ones and those with a kept worktree, so a resumable chat launch never drops out of
   `/api/launches`.
@@ -991,9 +997,12 @@ person's message as its first turn. This part is the store and the driver only. 
   chat a terminal holds and takes its own lock only at the first prompt, so this is the guard on the
   driver's side against two Copilots on one chat. One folder cannot apply the index's newest-lock-per-pid
   rule, so it refuses more than the chat index does, never less. A folder that is not there holds no
-  lock (Copilot then answers `-32002`); a chat path that is not a folder, an unreadable listing, or an
-  env with neither `COPILOT_HOME` nor `HOME` refuses. The same re-check runs on a resume of a launch
-  with a `chat_id`, which then loads only its `acp_session`, and only when that is the chat.
+  lock (Copilot then answers `-32002`), and a lock gone between the listing and its `lstat` is skipped;
+  a chat path that is not a folder, an unreadable listing, any other `lstat` error, a `COPILOT_HOME`
+  that is set but not absolute (Copilot is handed it as it is), or an env with neither `COPILOT_HOME`
+  nor `HOME` refuses. A resume of a launch with a `chat_id` applies the same exact-folder rule to the
+  row's `cwd` and the same re-check, putting the row back as it was on a refusal, and then loads only
+  its `acp_session`, and only when that is the chat.
 - **`closeRow` for a launch with a `chat_id`, on `error:load`:** a `-32002` (first start or any resume)
   ends it with `end_detail` and the session forgotten, so it leaves the index and the chat can be
   continued again; another load error ends a first start (nothing here to retry) and parks a later

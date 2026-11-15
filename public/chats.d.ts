@@ -46,6 +46,8 @@ export function resumeOutcome(result: unknown): { label: string | null; note: st
 export const CONTINUE_LABEL: 'Continue here…'
 export const SHOW_SESSION_LABEL: 'Show session'
 export const HERE_TEXT: '· here'
+export const CHECKING_TEXT: string
+export const SESSIONS_UNREAD_TEXT: string
 /** The launch fields the Chats tab reads, as /api/launches serves them. */
 export interface ChatLaunchRow { id: string; chat_id?: string | null; status?: string; end_reason?: string | null; resumable?: boolean; created_at?: string }
 export function continueControl(chat: Chat): { enabled: boolean; title: string } | null

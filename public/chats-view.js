@@ -18,9 +18,9 @@
 // switch on (each launch's chat_id); with the switch off none of this is drawn or read.
 
 import {
-  allSwitchText, chatLaunch, chatsUrl, CONTINUE_LABEL, continueControl, continueOutcome, displayFolder, drivenView, emptyText,
+  allSwitchText, chatLaunch, chatsUrl, CHECKING_TEXT, CONTINUE_LABEL, continueControl, continueOutcome, displayFolder, drivenView, emptyText,
   filterChats, HERE_TEXT, hiddenLabel, inferHome, lastActiveView, projectOptions, readChatsBody, RESUME_BUSY_LABEL, RESUME_LABEL,
-  resumeControl, resumeOutcome, resumeTerminalControl, retentionText, SHOW_SESSION_LABEL, shouldFetchOnOpen, shownText, sortChats,
+  resumeControl, resumeOutcome, resumeTerminalControl, retentionText, SESSIONS_UNREAD_TEXT, SHOW_SESSION_LABEL, shouldFetchOnOpen, shownText, sortChats,
   titleView, toolLabel, TRUNCATED_TEXT,
 } from './chats.js'
 import { githubRef } from './links.js'
@@ -37,7 +37,7 @@ const COLUMNS = ['Tool', 'Title', 'Project', 'Branch', 'Folder', 'Last active', 
 /**
  * @param {{ doc: Document, host: () => HTMLElement | null, fetch: (url: string) => Promise<Response>, now: () => number,
  *   resume?: () => ({ resumeAvailable(): Promise<unknown>, resume(request: { tool: string, id: string }): Promise<unknown> } | null),
- *   drive?: () => ({ available(): Promise<boolean>, granted(): boolean, launches(): unknown[] | null,
+ *   drive?: () => ({ available(): Promise<boolean>, granted(): boolean, launches(): unknown[] | null, launchesFailed(): boolean,
  *     continueChat(chat: { tool: string, id: string, title: string | null, folder: string | null },
  *       hooks: { returnFocus: () => HTMLElement | null, answered: (result: unknown) => void }): boolean,
  *     showSession(launchId: string): void } | null) }} deps
@@ -75,6 +75,11 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
   let canDrive = false
   let driveSeq = 0
   const drivenByKey = new Map()
+  // the last launch list read while this window may continue chats: a later failed read keeps it,
+  // so a failed tick never turns Copy resume and Resume back on beside a chat a session here holds
+  let lastLaunches = null
+  // key → why Copy resume and Resume are off for a Copilot chat (driven here, or not known yet)
+  const heldOff = new Map()
   const NOT_DRIVEN = drivenView(null)
 
   const make = (tag, className, text) => {
@@ -270,8 +275,8 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     const chat = chatByKey.get(key)
     const bridge = resume()
     if (!chat || !bridge || !canResume || resumeBusy.has(key) || !resumeTerminalControl(chat, terminal).enabled) return
-    // a chat driven here is never opened in a terminal too (§3.5); main refuses it as well
-    if (drivenByKey.get(key)?.show) return
+    // a chat driven here, or one not yet known not to be, is never opened in a terminal too (§3.5)
+    if (heldOff.has(key)) return
     resumeBusy.add(key)
     win.clearTimeout(resumeTimers.get(key))
     resumeTimers.delete(key)
@@ -361,7 +366,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
 
   // The Resume button exists only while main says this window can resume. Beside Show session it
   // is off (§3.5): this chat has a session here.
-  function paintResume(tr, chat, driven) {
+  function paintResume(tr, chat, offTitle) {
     const key = tr.dataset.chatKey
     const actions = tr.querySelector('.chats-actions')
     let control = actions.querySelector('.chats-resume')
@@ -373,7 +378,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
       control = button('chats-resume', RESUME_LABEL, () => resumeChat(key))
       actions.prepend(control)
     }
-    const view = driven.show ? { enabled: false, title: driven.offTitle, ariaLabel: null } : resumeTerminalControl(chat, terminal)
+    const view = offTitle ? { enabled: false, title: offTitle, ariaLabel: null } : resumeTerminalControl(chat, terminal)
     const busy = resumeBusy.has(key)
     const confirm = resumeConfirm.get(key) ?? null
     setText(control, busy ? RESUME_BUSY_LABEL : confirm ?? RESUME_LABEL)
@@ -448,7 +453,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
 
   // A kept row changes only where its chat did. The Copy label is never set
   // here, so a paint cannot cut a "Copied" short.
-  function paintRow(tr, chat, home, nowMs, launches) {
+  function paintRow(tr, chat, home, nowMs, launches, checking) {
     const [tool, titleCell, projectCell, branchCell, folderCell, activeCell, liveCell] = tr.children
     setText(tool, toolLabel(chat.tool))
     const title = titleView(chat)
@@ -493,14 +498,31 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
       liveCell.append(here)
     }
     if (!driven.here && here) here.remove()
+    // beside Show session nothing is copied or opened: a second Copilot would open on a chat
+    // driven here; nor before the launches are first read, when that is not known yet
+    const offTitle = driven.show ? driven.offTitle : checking && chat.tool === 'copilot' ? CHECKING_TEXT : null
+    if (offTitle) heldOff.set(tr.dataset.chatKey, offTitle)
     const control = tr.querySelector('.chats-copy')
     const copyView = resumeControl(chat)
-    // beside Show session nothing is copied: a second Copilot would open on a chat driven here
-    setAttr(control, 'title', driven.show ? driven.offTitle : copyView.title)
-    setAttr(control, 'aria-disabled', copyView.command && !driven.show ? null : 'true')
-    paintResume(tr, chat, driven)
+    setAttr(control, 'title', offTitle ?? copyView.title)
+    setAttr(control, 'aria-disabled', copyView.command && !offTitle ? null : 'true')
+    paintResume(tr, chat, offTitle)
     paintContinue(tr, chat, driven, allowed)
     paintNote(tr, allowed)
+  }
+
+  // made only when needed, so a window that may not continue chats draws exactly what phase 1 did
+  function paintSessionsNote(show) {
+    let note = ui.root.querySelector('.chats-sessions')
+    if (!show) {
+      note?.remove()
+      return
+    }
+    if (!note) {
+      note = make('p', 'chats-note chats-sessions', SESSIONS_UNREAD_TEXT)
+      note.setAttribute('role', 'status')
+      ui.root.insertBefore(note, ui.countLine)
+    }
   }
 
   function paintHeader(projects) {
@@ -564,17 +586,25 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     }
     chatByKey.clear()
     drivenByKey.clear()
+    heldOff.clear()
     const nowMs = now()
-    // #586 phase 2: what Continue here… and Show session are drawn from; null (no grant, or the
-    // launches not read yet) draws neither, so a chat driven here never shows Continue here… first
-    const held = driving()?.launches()
-    const launches = Array.isArray(held) ? held : null
+    // #586 phase 2: what Continue here… and Show session are drawn from, the last list read while
+    // this window may continue chats. None yet (no grant, or the launches not read yet) draws
+    // neither; with the grant, Copilot rows then keep Copy resume and Resume off until it lands.
+    const bridge = driving()
+    const held = bridge?.launches()
+    if (!bridge) lastLaunches = null
+    else if (Array.isArray(held)) lastLaunches = held
+    const launches = lastLaunches
+    const checking = Boolean(bridge) && launches === null
+    // said once above the table, only after the tab's own read finished and a launches read failed
+    paintSessionsNote(checking && !loading && (body !== null || error !== null) && bridge.launchesFailed?.() === true)
     visible.forEach((chat, index) => {
       const key = keys[index]
       chatByKey.set(key, chat)
       let el = rowEls.get(key)
       if (!el) rowEls.set(key, (el = rowEl(key)))
-      paintRow(el, chat, home, nowMs, launches)
+      paintRow(el, chat, home, nowMs, launches, checking)
       if (tbody.children[index] !== el) tbody.insertBefore(el, tbody.children[index] ?? null)
     })
   }

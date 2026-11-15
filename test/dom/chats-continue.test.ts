@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type Database from 'better-sqlite3'
-import { createLaunch, endLaunch, parkLaunch } from '../../src/store.js'
+import { createLaunch, endLaunch, parkLaunch, upsertActivity } from '../../src/store.js'
 import type { ChatEntry, ChatIndex } from '../../src/chat-index.js'
 import { bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, settle, T0, type, useDomTest } from './harness.js'
 
@@ -15,6 +15,7 @@ useDomTest()
 
 let db: Database.Database | null = null
 afterEach(async () => {
+  control.failLaunches = false
   for (const dialog of document.querySelectorAll('dialog')) dialog.remove()
   await vi.advanceTimersByTimeAsync(300)
   db?.close()
@@ -91,6 +92,8 @@ function chatLaunch(d: Database.Database, n: number, id = LAUNCH): void {
 }
 
 // `tick`: one poll after the boot, which reads the launches once main has said the switch is on
+// `failLaunches`: while true, every /api/launches read answers 500
+const control = { failLaunches: false }
 async function boot(chats = fixture(), setup: (d: Database.Database) => void = () => {}, { tick = true } = {}) {
   db = freshDb()
   setup(db)
@@ -105,6 +108,7 @@ async function boot(chats = fixture(), setup: (d: Database.Database) => void = (
     viewer: { chatIndex },
     interceptFetch: async (input, _init, next) => {
       reads.push(String(input))
+      if (control.failLaunches && String(input).startsWith('/api/launches')) return new Response('down', { status: 500 })
       return await next()
     },
   })
@@ -329,6 +333,20 @@ describe('the dialog (§3.5)', () => {
     expect(noteFor(1)!.textContent).toBe('')
   })
 
+  it('a refusal puts focus on the message, not on the body', async () => {
+    const api = launchBridge()
+    api.continueChat.mockResolvedValueOnce({ ok: false, reason: 'live', error: 'This chat is live in another process.' })
+    await boot()
+    await openChats()
+    await openDialog()
+    startButton().focus()
+    submit()
+    await settle()
+    await settle()
+    expect(message()).toBe('This chat is live in another process.')
+    expect(document.activeElement).toBe(promptBox())
+  })
+
   it('a cancelled confirmation returns to the dialog with the message kept, saying nothing', async () => {
     const api = launchBridge()
     api.continueChat.mockResolvedValueOnce({ ok: false, cancelled: true, error: 'Not continued.' })
@@ -498,5 +516,132 @@ describe('with the switch off, the tab draws and reads exactly what phase 1 did 
       .toBe(portable(fixtureFile(withResume ? 'with-resume.html' : 'browser.html')))
     expect(reads.filter((u) => !u.startsWith('/api/version'))).toEqual(JSON.parse(fixtureFile('reads.json')))
     expect(reads.filter((u) => u.includes('/api/launch'))).toEqual([])
+    // and a later tick that paints the tab changes nothing either: no launch is read or drawn
+    const before = reads.length
+    await changedPollTick(db!)
+    await settle()
+    expect(portable(document.querySelector('#chats .chats')!.innerHTML))
+      .toBe(portable(fixtureFile(withResume ? 'with-resume.html' : 'browser.html')))
+    expect(reads.slice(before).filter((u) => u.includes('/api/launch') || u.startsWith('/api/chats'))).toEqual([])
+  })
+})
+
+describe('the launch list behind Show session (review of PR 6)', () => {
+  const checking = 'Checking for a session here…'
+  const unread = 'Agent Inbox could not read its sessions, so Continue here… is not offered.'
+  const offPair = (n: number, tool = 'copilot') => [inRow(n, '.chats-resume', tool)!, inRow(n, '.chats-copy', tool)!]
+    .map((el) => [el.getAttribute('aria-disabled'), el.title])
+
+  it('a failed read keeps the last list: Show session, Copy resume and Resume off, and focus where it was', async () => {
+    launchBridge()
+    chatsBridge()
+    await boot(fixture(), (d) => chatLaunch(d, 1))
+    await openChats()
+    const off = 'This chat has a session here: use Show session, then Take over.'
+    expect(offPair(1)).toEqual([['true', off], ['true', off]])
+    inRow(1, '.chats-show')!.focus()
+    const focused = document.activeElement
+    control.failLaunches = true
+    await changedPollTick(db!)
+    await settle()
+    expect(actionsOf(1)).toEqual(['chats-resume', 'chats-copy', 'chats-show', 'chats-resume-note'])
+    expect(offPair(1)).toEqual([['true', off], ['true', off]])
+    expect(document.activeElement).toBe(focused)
+    expect((focused as HTMLElement).isConnected).toBe(true)
+    // nothing is said: a list was read
+    expect(q('.chats-sessions')).toBeNull()
+  })
+
+  it('before the first list, Copilot rows keep Copy resume and Resume off; Claude rows are untouched', async () => {
+    launchBridge()
+    chatsBridge()
+    const { reads } = await boot(fixture(), () => {}, { tick: false })
+    await openChats()
+    expect(reads.filter((u) => u.startsWith('/api/launches'))).toEqual([])
+    expect(offPair(1)).toEqual([['true', checking], ['true', checking]])
+    expect(offPair(3, 'claude').map(([disabled]) => disabled)).toEqual([null, null])
+    expect(continueFor(1)).toBeNull()
+    // nothing failed yet, so nothing is said
+    expect(q('.chats-sessions')).toBeNull()
+    await pollTick()
+    await settle()
+    expect(offPair(1).map(([disabled]) => disabled)).toEqual([null, null])
+    expect(inRow(1, '.chats-copy')!.title).toBe(`cd '/Users/tester/dev/alpha' && copilot --resume=${uuid(1)}`)
+    expect(continueFor(1)).not.toBeNull()
+  })
+
+  it('says once above the table when no list could be read, and stops once one is', async () => {
+    launchBridge()
+    chatsBridge()
+    control.failLaunches = true
+    await boot()
+    await openChats()
+    const note = q('.chats-sessions')!
+    expect([note.textContent, note.className, note.getAttribute('role')]).toEqual([unread, 'chats-note chats-sessions', 'status'])
+    expect(panel().querySelectorAll('.chats-sessions')).toHaveLength(1)
+    expect(note.nextElementSibling).toBe(q('.chats-count'))
+    expect(offPair(1)).toEqual([['true', checking], ['true', checking]])
+    await changedPollTick(db!)
+    await settle()
+    expect(panel().querySelectorAll('.chats-sessions')).toHaveLength(1)
+    control.failLaunches = false
+    await pollTick()
+    await settle()
+    expect(q('.chats-sessions')).toBeNull()
+    expect(continueFor(1)).not.toBeNull()
+  })
+
+  it('with the switch off, none of it: no note, nothing off for a session here, and no launch read', async () => {
+    launchBridge({ enabled: false, available: false })
+    chatsBridge()
+    control.failLaunches = true
+    const { reads } = await boot(fixture(), (d) => chatLaunch(d, 1))
+    await openChats()
+    await changedPollTick(db!)
+    await settle()
+    expect(q('.chats-sessions')).toBeNull()
+    expect(offPair(1).map(([disabled]) => disabled)).toEqual([null, null])
+    expect(reads.filter((u) => u.includes('/api/launch'))).toEqual([])
+  })
+})
+
+describe('the session panel’s chat line (review of PR 6)', () => {
+  const OTHER = '11111111-2222-4333-8444-777777777777'
+
+  it('has no link for a launch that continues no chat, and keeps none after showing one that does', async () => {
+    launchBridge()
+    await boot(fixture(), (d) => {
+      chatLaunch(d, 1)
+      createLaunch(d, {
+        id: OTHER, host: 'copilot', project: 'alpha', stream: 'main', cwd: '/Users/tester/dev/alpha', mode: 'ask',
+        budgetActiveMs: null, budgetToolCalls: null, prompt: 'Fresh.', specVersion: 1, driverPid: 4243,
+      })
+    })
+    const line = () => focusPanel().querySelector<HTMLElement>('.sp-chat')!
+    const open = async (id: string) => {
+      click(document.querySelector(`[data-session-card="launch:${id}"] .sc-doing`))
+      await settle()
+    }
+    await open(OTHER)
+    expect(focusPanel().dataset.session).toBe(`launch:${OTHER}`)
+    expect([line().hidden, line().childElementCount, line().querySelector('a')]).toEqual([true, 0, null])
+    await open(LAUNCH)
+    expect([line().hidden, line().querySelectorAll('a').length]).toEqual([false, 1])
+    await open(OTHER)
+    expect([line().hidden, line().childElementCount]).toEqual([true, 0])
+  })
+
+  it('has no link without the grant, for any session', async () => {
+    await boot(fixture(), (d) => {
+      chatLaunch(d, 1)
+      upsertActivity(d, { session: 'mcp-1', project: 'alpha', stream: 'main', agent: 'copilot', doing: 'open', idle: true, claim: false })
+    })
+    await pollTick()
+    click(document.querySelector('[data-session-card="session:mcp-1"] .sc-doing'))
+    await settle()
+    expect(focusPanel().hidden).toBe(false)
+    const line = focusPanel().querySelector<HTMLElement>('.sp-chat')!
+    expect([line.hidden, line.childElementCount]).toEqual([true, 0])
+    expect(document.querySelectorAll('.sp-chat-link')).toHaveLength(0)
   })
 })

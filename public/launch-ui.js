@@ -639,9 +639,10 @@ export function createLaunchUi(deps) {
         if (typeof result.launch === 'string') deps.showLaunch?.(result.launch)
         return
       }
-      // a cancelled confirmation is back in the dialog with the message kept, and says nothing
+      // a cancelled confirmation is back in the dialog with the message kept, and says nothing; after
+      // either, focus is on the message (the start button it may have been on was disabled meanwhile)
       message.textContent = result?.cancelled ? '' : result?.error ?? 'This chat was not continued.'
-      if (result?.cancelled) prompt.focus()
+      prompt.focus()
     })
     form.append(heading, facts, modes, promptField, message, actions)
     own.append(form)
@@ -705,8 +706,12 @@ export function createLaunchUi(deps) {
     // #586 phase 2 (design §3.5): a launch that continues a Copilot chat says so, linked to the Chats tab
     const chatEl = aside.querySelector('.sp-chat')
     const chatId = typeof launch?.chat_id === 'string' && CHAT_ID.test(launch.chat_id) ? launch.chat_id : null
-    if (chatEl) {
-      let link = chatEl.querySelector('.sp-chat-link')
+    let link = chatEl?.querySelector('.sp-chat-link') ?? null
+    // no link at all unless the panel shows a launch that continues a chat
+    if (chatEl && !chatId) {
+      link?.remove()
+      if (!chatEl.hidden) chatEl.hidden = true
+    } else if (chatEl) {
       if (!link) {
         // the app's own tab hash, never agent text: no link builder is needed
         link = make('a', 'sp-chat-link')
@@ -719,9 +724,9 @@ export function createLaunchUi(deps) {
           deps.openChats()
         })
       }
-      const text = chatId ? `Continued from a Copilot chat (${chatId.slice(0, 8)})` : ''
+      const text = `Continued from a Copilot chat (${chatId.slice(0, 8)})`
       if (link.textContent !== text) link.textContent = text
-      if (chatEl.hidden !== !chatId) chatEl.hidden = !chatId
+      if (chatEl.hidden) chatEl.hidden = false
     }
     if (!launch) {
       for (const el of parts) if (el && !el.hidden) el.hidden = true

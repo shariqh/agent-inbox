@@ -42,6 +42,10 @@ const CONTINUE_OFF = Object.freeze({
   'non-interactive': 'This was not an interactive chat.',
   invalid: 'This chat can’t be continued here.',
 })
+// #586 phase 2 review: until the launches are first read, a Copilot chat may be one a session here
+// holds, so nothing is copied or opened for it yet; and if they cannot be read, the tab says so
+export const CHECKING_TEXT = 'Checking for a session here…'
+export const SESSIONS_UNREAD_TEXT = 'Agent Inbox could not read its sessions, so Continue here… is not offered.'
 const DRIVEN_HERE = 'This chat has a session here: use Show session, then Take over.'
 const SHOW_SESSION_TITLE = 'Open the session Agent Inbox drives for this chat'
 const HERE_TITLE = 'Agent Inbox is driving this chat now'

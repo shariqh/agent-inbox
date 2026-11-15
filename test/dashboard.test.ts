@@ -257,6 +257,26 @@ describe('buildDashboard', () => {
     expect(model.needsYou).toEqual([])
     expect(model.idleConnections).toBe(0)
     expect(model.recentOutcomes).toEqual([])
+    expect(model.plansInProgress).toEqual([])
+  })
+
+  // Dashboard lanes PR 6 (§3.5): the lane reads the active plans the frame
+  // holds, closed projects left out; an archived plan never reaches it.
+  it('plansInProgress leaves out closed projects and archived plans', () => {
+    const open = (id: string, project: string) => ({
+      id, project, agent: 'copilot', title: id, status: 'active', updated_at: '2026-08-24T19:00:00.000Z',
+      progress: { done: 0, partial: 0, countable: 1 }, rows: [{ id: `${id}-r`, label: 'Step', status: 'missing' }],
+    })
+    const model = buildDashboard({
+      items: [],
+      boards: [open('alphaOpen', 'alpha'), open('betaOpen', 'beta')] as never,
+      archived: [{ ...open('alphaArchived', 'alpha'), status: 'archived' }] as never,
+      activity: [],
+      nowMs: NOW,
+      liveSessionIds: new Set(),
+      closedProjects: ['beta'],
+    })
+    expect(model.plansInProgress.map((plan) => plan.id)).toEqual(['alphaOpen'])
   })
 
   // Issue #184: the page omits older closed items; the summary keeps every count

@@ -232,19 +232,35 @@ describe('the session panel placement (#307, #454)', () => {
   const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
   const rule = (sheet: string) => sheet.match(/(?:^|\n)\s*\.dash-focus\s*\{([^}]*)\}/)?.[1] ?? ''
 
-  it('is a sheet over the Dashboard grid on a desktop, mounted in the grid where no lens can hide it', () => {
-    expect(desktop).toMatch(/\.dashboard-grid\s*\{\s*position:\s*relative;\s*\}/)
-    expect(rule(desktop)).toMatch(/position:\s*absolute;/)
-    expect(rule(desktop)).toMatch(/width:\s*min\(620px, calc\(100% - 24px\)\);/)
-    expect(rule(desktop)).not.toMatch(/position:\s*fixed/)
-    expect(app).toMatch(/grid\.appendChild\(dashFocusEl\(\)\)/)
+  // dashboard lanes design §3.6 (PR 5): beside the lanes, never a sheet over them
+  it('sits beside the lanes in a split on a desktop, mounted in the split where no lens can hide it', () => {
+    expect(app).toMatch(/split\.append\(agentsHome\.element\(\), dashFocusEl\(\)\)/)
+    // closed, the split is no box, so the lanes keep the full width
+    expect(desktop).toMatch(/\.dash-split \{ display: contents; \}/)
+    // the sheet's containing block is gone with the sheet
+    expect(desktop).not.toMatch(/\.dashboard-grid\s*\{\s*position:\s*relative;\s*\}/)
+    const panel = rule(desktop)
+    expect(panel).toMatch(/position: sticky;/)
+    expect(panel).toMatch(/top: 116px;/)
+    expect(panel).toMatch(/max-height: calc\(100vh - 116px - var\(--sp-4\)\);/)
+    expect(panel).not.toMatch(/position:\s*(absolute|fixed)|z-index|box-shadow|width:/)
+    expect(desktop).toMatch(/\.dash-split\.open \{ display: grid; grid-column: 1 \/ -1; grid-template-columns: minmax\(0, 1fr\) clamp\(360px, 34%, 460px\); column-gap: var\(--sp-4\); align-items: start; \}/)
+    expect(desktop).toMatch(/\.dash-split\.open > \.agents-home \{ grid-column: 1; grid-row: 1; \}/)
+    expect(desktop).toMatch(/\.dash-split\.open > \.dash-focus \{ grid-column: 2; grid-row: 1; \}/)
+    // held inline by focus across a resize, it lays out as the narrow panel, not as a card cell
+    expect(desktop).toMatch(/:is\(\.ah-cards, \.qt-rows\) > \.dash-focus \{ position: static; grid-column: 1 \/ -1; max-height: none; \}/)
+    // no new motion: the one-shot entrance only
+    expect(panel).toMatch(/animation: dash-focus-in var\(--motion-moderate\) var\(--motion-ease-out\) 1;/)
+    expect(css).not.toMatch(/\n[^{}\n]*\.dash-split[^{}\n]*\{[^}]*(transition|animation)/)
   })
 
   it('joins the flow after the list under 1280px, never over the masthead', () => {
     const narrow = rule(compact)
     expect(narrow).toMatch(/position:\s*static;/)
     expect(narrow).toMatch(/max-height:\s*none;/)
-    expect(narrow).toMatch(/z-index:\s*auto;/)
+    expect(narrow).not.toMatch(/z-index/)
+    // the split never turns on there (app.js syncSplit), so no compact rule needs it
+    expect(compact.slice(0, compact.indexOf('\n}'))).not.toMatch(/\.dash-split/)
   })
 })
 
@@ -287,6 +303,10 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
     expect(body('.working-lane .sc-state')).toMatch(/display: none;/)
     // the hidden label would leave its "·" in front of the agent
     expect(body('.working-lane .sc-chips > :first-child::before')).toMatch(/content: none;/)
+    // a long recency wraps under the agent and branch (it squeezed the branch to an ellipsis in a
+    // narrow card), and a wrapped line does not begin with the "·"
+    expect(body('.working-lane .sc-top')).toMatch(/flex-wrap: wrap;/)
+    expect(body('.working-lane .sc-when::before')).toMatch(/content: none;/)
   })
 
   it('line the Quiet table up with one template of zero-minimum tracks, so no cell widens the page', () => {
@@ -311,7 +331,10 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
   })
 
   it('put a Quiet row on two lines below 900px, on its own template, with no header', () => {
-    const narrow = block('@container operations-desk (max-width: 900px) {')
+    // keyed on the lanes' own width (§3.6): narrower than the Dashboard beside an open session panel
+    expect(body('.agents-home')).toMatch(/container: dash-lanes \/ inline-size;/)
+    expect(block('@container operations-desk (max-width: 900px) {')).not.toMatch(/\.qt-/)
+    const narrow = block('@container dash-lanes (max-width: 900px) {')
     const sheet = [...narrow.matchAll(/\n\s*([^{}\n]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
     expect(body('.qt-head', sheet)).toMatch(/display: none;/)
     const row = body('.qt-row', sheet)
@@ -332,6 +355,84 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
 
   it('leave no filter, group-by or count beside a heading', () => {
     expect(css).not.toMatch(/\.ah-filter|\.ah-group-by|\.ah-count|\.ah-none|\.ah-show-all|ah-is-empty|\.ah-head\b/)
+  })
+})
+
+// Dashboard lanes design §3.5, §4: Plans in progress, Just landed and Today are
+// full-width lanes on the tokens. jsdom lays out none of it, so the promises at
+// 1440px (the base sheet), 900px and 620px (the operations-desk container) are
+// pinned in the source.
+describe('the Plans in progress lane and the full-width tail (dashboard lanes PR 6)', () => {
+  const OURS = /(^|[\s,>])\.(plans-lane|pl-[\w-]+|dashboard-outcome-list|dashboard-outcome)(?![\w-])/
+  const all = [...css.matchAll(/(?:^|\n)([^{}@\n][^{}\n]*)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+  const rules = all.filter((r) => OURS.test(r.selector))
+  const body = (selector: string, sheet = all) => sheet.find((r) => r.selector === selector)?.body ?? ''
+  const block = (start: string) => {
+    const from = css.slice(css.indexOf(start))
+    return from.slice(0, from.indexOf('\n}'))
+  }
+  const sheetOf = (text: string) => [...text.matchAll(/\n\s*([^{}\n]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
+  const narrow = sheetOf(block('@container operations-desk (max-width: 900px) {'))
+  const phone = sheetOf(block('@container operations-desk (max-width: 620px) {'))
+  const CELLS = [['pl-title', 'title'], ['pl-project', 'project'], ['pl-progress', 'progress'], ['pl-waiting', 'waiting'], ['pl-updated', 'updated']]
+
+  it('take the tokens for every font size, gap, margin and padding', () => {
+    expect(rules.length).toBeGreaterThan(10)
+    for (const { selector, body: decls } of rules) {
+      const props = /\.(plans-lane|pl-)/.test(selector) ? 'font-size|gap|row-gap|column-gap|margin[\\w-]*|padding[\\w-]*' : 'gap|row-gap|column-gap|margin[\\w-]*|padding[\\w-]*'
+      for (const [, prop, value] of decls.matchAll(new RegExp(`(?<![\\w-])(${props}):\\s*([^;]+);`, 'g'))) {
+        for (const part of value!.trim().split(/\s+/)) {
+          expect(part, `${selector} ${prop}`).toMatch(/^(0|auto|var\(--(fs-[\w-]+|sp-\d|lane-gap)\))$/)
+        }
+      }
+    }
+    expect(body('.pl-title')).toMatch(/font-size: var\(--fs-lead\);/)
+    expect(body('.pl-row')).toMatch(/padding: var\(--sp-3\) var\(--sp-2\);/)
+  })
+
+  it('1440px and up: every tail lane spans the grid, and a plan row is one line', () => {
+    expect(body('.plans-lane, .dashboard-outcomes, .dashboard-activity')).toMatch(/grid-column: 1 \/ -1;/)
+    // no rule anywhere, a container or media block included, narrows one of them again
+    const spans = [...css.matchAll(/([^{}]*)\{([^{}]*)\}/g)]
+      .filter((m) => /\.(plans-lane|dashboard-outcomes|dashboard-activity)(?![\w-])/.test(m[1]!) && /grid-column:/.test(m[2]!))
+    expect(spans.length).toBeGreaterThan(0)
+    for (const m of spans) expect(m[2], m[1]!.trim()).toMatch(/grid-column: 1 \/ -1;/)
+    const row = body('.pl-row')
+    const template = row.match(/grid-template-columns: ([^;]+);/)?.[1] ?? ''
+    const tracks = template.match(/minmax\([^)]*\)/g) ?? []
+    expect(tracks).toHaveLength(5)
+    for (const track of tracks) expect(track).toMatch(/^minmax\(0, \d+(\.\d+)?fr\)$/)
+    expect(row).toMatch(/grid-template-areas: "title project progress waiting updated";/)
+    // every cell has its area, so a hidden one (the project under a lens, a zero count) moves no other
+    for (const [cell, area] of CELLS) expect(body(`.${cell}`), cell).toMatch(new RegExp(`grid-area: ${area};`))
+    // Just landed: its four items across, the empty or loading note across all of them
+    expect(body('.dashboard-outcome-list')).toMatch(/grid-template-columns: repeat\(4, minmax\(0, 1fr\)\);/)
+    expect(body('.dashboard-outcome-list')).toMatch(/column-gap: var\(--sp-4\);/)
+    expect(body('.dashboard-outcome-list > .dashboard-empty')).toMatch(/grid-column: 1 \/ -1;/)
+  })
+
+  it('under 900px: a plan row is two lines, and Just landed two across', () => {
+    const row = body('.pl-row', narrow)
+    expect(row).toMatch(/grid-template-areas: "title title updated" "project progress waiting";/)
+    expect(row).toMatch(/grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1\.5fr\) minmax\(0, 1fr\);/)
+    expect(body('.dashboard-outcome-list', narrow)).toMatch(/grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/)
+    expect(block('@container operations-desk (max-width: 900px) {')).not.toMatch(/span 12/)
+  })
+
+  it('under 620px: a plan row stacks, and Just landed is one across', () => {
+    const row = body('.pl-row', phone)
+    expect(row).toMatch(/grid-template-areas: "title title" "progress waiting" "project updated";/)
+    expect(row).toMatch(/grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\);/)
+    expect(body('.dashboard-outcome-list', phone)).toMatch(/grid-template-columns: minmax\(0, 1fr\);/)
+  })
+
+  it('no plan-row track widens the page; a long title ellipsizes', () => {
+    expect(css).not.toMatch(/\.pl-[\w-]+[^{}]*\{[^}]*(subgrid|max-content)/)
+    const title = body('.pl-title')
+    expect(title).toMatch(/white-space: nowrap;/)
+    expect(title).toMatch(/overflow: hidden;/)
+    expect(title).toMatch(/text-overflow: ellipsis;/)
+    expect(title).toMatch(/min-width: 0;/)
   })
 })
 
@@ -358,6 +459,18 @@ describe('the Needs you lane and the lane chips (dashboard lanes PR 3)', () => {
     expect(body('.needs-you-lane')).toMatch(/margin-top: var\(--lane-gap\);/)
     expect(body('.ny-cards')).toMatch(/gap: var\(--sp-3\);/)
     expect(body('.ny-card')).toMatch(/padding: var\(--sp-3\) var\(--sp-4\);/)
+  })
+
+  it('keep a Needs you card\'s branch readable: the session note takes its own line', () => {
+    // held on the meta line, "session ended" squeezed a short branch down to an ellipsis
+    expect(body('.ny-meta')).toMatch(/flex-wrap: wrap;/)
+    const note = body('.ny-session')
+    for (const rule of [/order: 2;/, /flex: 0 0 100%;/]) expect(note).toMatch(rule)
+    expect(body('.ny-meta > .ny-session::before')).toMatch(/content: none;/)
+    // a zero basis keeps a long branch, and the age after it, on the first line
+    const branch = body('.ny-branch')
+    for (const rule of [/flex: 1 1 0;/, /max-width: max-content;/, /min-width: 0;/, /text-overflow: ellipsis;/]) expect(branch).toMatch(rule)
+    expect(body('.ny-draft')).toMatch(/order: 1;/)
   })
 
   it('wrap Later and Review queue under the lane title below 620px, and leave no Now strip', () => {

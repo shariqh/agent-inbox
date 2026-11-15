@@ -1776,20 +1776,53 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ny-card:hover { border-color: var(--app-border-strong); border-left-color: var(--app-attention); }
 .ny-card:focus { outline: none; }
 .ny-card:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
-.ny-meta { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); white-space: nowrap; }
+/* one line, and under it the session's note when there is one ("session ended"): held on
+   the line, the note squeezed a short branch down to an ellipsis in a narrow card */
+.ny-meta { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); white-space: nowrap; }
 .ny-meta > span + span::before { margin-right: var(--sp-2); content: "·"; }
 .ny-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--ny-project, var(--app-text-soft)); }
 .ny-project { flex: none; color: var(--app-text); font-weight: 650; }
-.ny-branch { min-width: 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; }
+/* a zero basis, so a long branch never sends itself or the age to a second line; it grows
+   to its own width at most and takes an ellipsis only when the line is too short for it */
+.ny-branch { max-width: max-content; min-width: 0; flex: 1 1 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; }
 .ny-age { flex: none; font-variant-numeric: tabular-nums; }
-.ny-session { flex: none; font-style: italic; }
+.ny-session { order: 2; flex: 0 0 100%; font-style: italic; }
+.ny-meta > .ny-session::before { content: none; }
 /* the Inbox holds an unsent answer for this ask (app.js holdsDraft) */
-.ny-draft { flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-weight: 600; }
+.ny-draft { order: 1; flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-weight: 600; }
 .ny-title { min-width: 0; overflow-wrap: anywhere; color: var(--app-text); font-size: var(--fs-title); font-weight: 650; line-height: 1.3; }
 .ny-title.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }
 .ny-next { display: -webkit-box; overflow: hidden; color: var(--app-text-soft); font-size: var(--fs-body); line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .ny-plan { min-width: 0; overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
 .ny-empty { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
+/* §3.5: Plans in progress, Just landed and Today follow Working and Quiet, each a
+   full-width lane, the ribbon last. A plan row is one link-like control: a click
+   or Enter opens the plan in Plans, and it holds no button. Every cell has its
+   area, so a hidden one (the project under a lens, a zero count) moves no other. */
+.plans-lane, .dashboard-outcomes, .dashboard-activity { grid-column: 1 / -1; }
+.pl-rows { display: grid; }
+.pl-rows:empty { display: none; }
+.pl-row { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 2fr) minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1fr); grid-template-areas: "title project progress waiting updated"; align-items: center; column-gap: var(--sp-4); row-gap: var(--sp-1); padding: var(--sp-3) var(--sp-2); border-top: 1px solid var(--app-border); cursor: pointer; }
+.pl-row:first-child { border-top: 0; }
+.pl-row:hover { background: var(--app-soft); }
+.pl-row:focus { outline: none; }
+.pl-row:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
+.pl-row [hidden], .pl-empty[hidden], .pl-more[hidden] { display: none; }
+.pl-title { grid-area: title; min-width: 0; overflow: hidden; color: var(--app-text); font-size: var(--fs-lead); font-weight: 650; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.pl-project { display: flex; grid-area: project; min-width: 0; align-items: center; gap: var(--sp-2); color: var(--app-text-soft); font-size: var(--fs-meta); }
+.pl-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--pl-project, var(--app-text-soft)); }
+.pl-progress { display: flex; grid-area: progress; min-width: 0; align-items: center; gap: var(--sp-2); }
+.pl-bar { height: 6px; min-width: 0; flex: 1; overflow: hidden; border-radius: 999px; background: var(--app-border); }
+.pl-bar > i { display: block; width: var(--pl-done, 0%); height: 100%; background: var(--app-success); }
+.pl-count { flex: none; color: var(--app-text-soft); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.pl-waiting { grid-area: waiting; min-width: 0; overflow: hidden; color: var(--app-attention); font-size: var(--fs-meta); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.pl-updated { grid-area: updated; min-width: 0; overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; text-align: end; text-overflow: ellipsis; white-space: nowrap; }
+.pl-empty { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
+.pl-more { margin: var(--sp-3) 0 0; font-size: var(--fs-meta); }
+.pl-all { padding: 0; border: 0; background: none; color: var(--app-link); font: inherit; font-weight: 650; cursor: pointer; }
+.pl-all:hover { text-decoration: underline; }
+.pl-all:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -1817,8 +1850,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   background: var(--app-soft);
   color: var(--app-text);
 }
-.dashboard-activity { grid-column: span 8; }
-.dashboard-outcomes { grid-column: span 4; }
 .dashboard-history-empty {
   display: grid;
   min-height: 150px;
@@ -1888,29 +1919,40 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* #303's icons, an ask's Snooze, Pin and Open in Inbox in the session panel (#454) */
 .ask-icon { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; font-size: 11.5px; }
 .ask-icon svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.4; }
-/* #307 grown by #454 (design §3.3): the session panel, a sheet over the right
-   side of the Dashboard grid (over the cards while open), mounted in the grid
-   itself so no lens can hide it. Below 1280px it is in flow after the list (the
-   compact block at the end). Its one-shot entrance uses the motion tokens;
-   reduced motion makes it instant and Calm drops it. */
-.dashboard-grid { position: relative; }
+/* #307 grown by #454, dashboard lanes design §3.6: the session panel, in the
+   split it shares with the lanes (.dash-split, never inside a card a lens could
+   hide). At 1280px and wider an open panel turns the split on (app.js
+   syncSplit): the lanes narrow to the left column and the panel takes the
+   right one, covering nothing. Sticky under the top bar (116px, its height, as
+   the Inbox inspector's offset), with its own scroll when taller than the
+   window; no z-index, so the top bar and every dialog stay over it, and its
+   grid area keeps it off Needs you and the ribbon. Below 1280px it is in flow
+   after its card or row (the compact block at the end). Its one-shot entrance
+   uses the motion tokens; reduced motion makes it instant and Calm drops it. */
 .dash-focus {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 5;
+  position: sticky;
+  top: 116px;
   display: flex;
-  width: min(620px, calc(100% - 24px));
-  max-height: max(420px, calc(100vh - 200px));
+  max-height: calc(100vh - 116px - var(--sp-4));
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--app-border-strong);
   border-radius: 14px;
   background: var(--app-surface);
-  box-shadow: 0 12px 40px color-mix(in srgb, var(--app-text) 18%, transparent);
   animation: dash-focus-in var(--motion-moderate) var(--motion-ease-out) 1;
 }
 .dash-focus[hidden], .dash-focus [hidden] { display: none; }
+/* closed, the split is no box at all, so the lanes and the grid lay out as without it */
+.dash-split { display: contents; }
+/* 360px keeps the panel's action bar and composer readable; 34%, capped at 460px, keeps
+   the lanes 556px or wider at 1280px with the default 220px sidebar. Beside the panel
+   Working has one card column up to about 1485px wide and two above (spec §3.6) */
+.dash-split.open { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) clamp(360px, 34%, 460px); column-gap: var(--sp-4); align-items: start; }
+.dash-split.open > .agents-home { grid-column: 1; grid-row: 1; }
+.dash-split.open > .dash-focus { grid-column: 2; grid-row: 1; }
+/* held inline by focus across a resize to 1280px or wider (app.js placeFocusPanel):
+   the narrow panel's own layout until focus leaves, never one card cell */
+:is(.ah-cards, .qt-rows) > .dash-focus { position: static; grid-column: 1 / -1; max-height: none; }
 .sp-head { display: grid; gap: 6px; padding: 14px 16px 10px; border-bottom: 1px solid var(--app-border); }
 .sp-state { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--sp-tone, var(--app-text-soft)) 16%, transparent); color: var(--sp-tone, var(--app-text-soft)); font-size: 10.5px; font-weight: 700; }
 .sp-state.tone-working { --sp-tone: var(--app-success); }
@@ -2025,21 +2067,24 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   to { opacity: 0; transform: scale(2.6); }
 }
 
-.dashboard-outcome-list { display: grid; grid-auto-rows: 60px; }
+/* §3.5: at full width Just landed's (at most four) items sit side by side, each
+   with its own top rule, so the rules read as one line across them */
+.dashboard-outcome-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 60px; column-gap: var(--sp-4); }
+.dashboard-outcome-list > .dashboard-empty { grid-column: 1 / -1; }
 .dashboard-outcome {
   display: grid;
   min-width: 0;
   align-content: center;
-  gap: 1px;
-  padding: 6px 0;
+  /* the nearest spacing tokens (§4): 1px to 0, 6px to --sp-1, the arrow's 28px to --sp-6 */
+  gap: 0;
+  padding: var(--sp-1) var(--sp-6) var(--sp-1) 0;
   border: 0;
   border-top: 1px solid var(--app-border);
   background: transparent;
   color: var(--app-text);
   text-align: left;
 }
-.dashboard-outcome:first-child { border-top: 0; }
-.dashboard-outcome { position: relative; width: 100%; padding-right: 28px; }
+.dashboard-outcome { position: relative; width: 100%; }
 .dashboard-outcome:hover strong { color: var(--app-outcome); }
 .dashboard-outcome::after { position: absolute; top: 50%; right: 4px; color: var(--app-outcome); content: "→"; transform: translateY(-50%); }
 .dashboard-outcome strong, .dashboard-outcome span { overflow: hidden; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
@@ -2104,7 +2149,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
    public/agents-home.js (grown from the #454 Agents home), one lane gap apart
    after Needs you. Static but for the one-shot pulse a new call starts on a
    working card (#304). */
-.agents-home { position: relative; display: grid; grid-column: span 12; row-gap: var(--lane-gap); }
+.agents-home { position: relative; display: grid; grid-column: span 12; row-gap: var(--lane-gap); container: dash-lanes / inline-size; }
 .agents-home[hidden], .ah-empty[hidden], .ah-lane-empty[hidden], .ah-note[hidden], .ah-outside[hidden], .ah-fold[hidden], .ah-folds[hidden], .ah-new[hidden], .qt-rows[hidden], .sc-asking[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
 .agents-home.reading .ah-groups, .agents-home.reading .qt-rows, .agents-home.reading .ah-folds { display: none; }
 /* a lane with nothing keeps its header and says so in one quiet line */
@@ -2173,8 +2218,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* a fixed size, so the strip never changes height as text changes; every line clamps to one */
 .ma-card {
   display: flex;
-  /* 232px, narrowed against the Dashboard's operations-desk container (not the viewport,
-     which also counts the padding around the strip) so the next card still peeks */
+  /* 232px, narrowed against the lanes' dash-lanes container, the Dashboard's width while no
+     session panel is open beside them (not the viewport, which also counts the padding
+     around the strip), so the next card still peeks */
   width: min(232px, 78cqi);
   height: 134px;
   box-sizing: border-box;
@@ -2328,7 +2374,12 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sc-action:disabled { opacity: .45; cursor: default; }
 /* §3.3: a Working card leads with its meta line; what it is doing is the lead size, two lines.
    The lane names the state, so the label is left to the card's aria-label. */
-.working-lane .sc-top { font-size: var(--fs-meta); }
+.working-lane .sc-top { flex-wrap: wrap; row-gap: var(--sp-1); font-size: var(--fs-meta); }
+/* a long recency ("turn running 4m · last tool 1m ago") wraps under the agent and branch in a
+   narrow card; held on their line it squeezed the branch down to an ellipsis. A wrapped line
+   cannot begin with the "·", so a space separates it here. */
+.working-lane .sc-when { margin-left: var(--sp-1); }
+.working-lane .sc-when::before { content: none; }
 .working-lane .sc-state { display: none; }
 .working-lane .sc-chips > :first-child::before { content: none; }
 .working-lane .sc-doing { font-size: var(--fs-lead); }
@@ -2369,7 +2420,13 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .dashboard-grid { --fs-lane: 24px; --lane-gap: 40px; }
   .needs-you-lane { --fs-lane: 24px; --lane-gap: 40px; }
   .ny-cards { grid-template-columns: minmax(0, 1fr); }
-  .dashboard-activity, .dashboard-outcomes { grid-column: span 12; }
+  /* §3.5: a plan row on two lines, Just landed two across */
+  .pl-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr); grid-template-areas: "title title updated" "project progress waiting"; }
+  .dashboard-outcome-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* the lanes' own width, the Dashboard's while no session panel is open beside them (§3.6) */
+@container dash-lanes (max-width: 900px) {
   /* §3.4: each Quiet row on two lines, with no header; a row's own template, not the table's.
      Six columns in under 900px left the session and its caption a few letters each. */
   .qt-head { display: none; }
@@ -2386,6 +2443,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 @container operations-desk (max-width: 620px) {
   /* Later and Review queue wrap under the lane's title (§3.2) */
   .ny-head > h2 { flex-basis: 100%; }
+  /* §3.5: a plan row stacked, Just landed one across */
+  .pl-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "progress waiting" "project updated"; }
+  .dashboard-outcome-list { grid-template-columns: minmax(0, 1fr); }
   .dash-ribbon-lane { grid-template-columns: minmax(48px, 80px) minmax(0, 1fr); }
   .dash-ribbon-axis { padding-left: 90px; }
   .dash-ribbon-legend { display: none; }
@@ -2624,9 +2684,9 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
    .rail-filter stays inside the menu whenever >12 projects means it is
    rendered (RAIL_FILTER_THRESHOLD, rail.js). */
 @media (max-width: 1279px) {
-  /* #307, #454: the session panel joins the flow after the list, never fixed
+  /* #307, #454: the session panel joins the flow after the list, never sticky
      over the masthead's selectors, tabs or project menu. */
-  .dash-focus { position: static; z-index: auto; grid-column: 1 / -1; width: auto; max-height: none; margin-top: calc(var(--sp-3) - var(--lane-gap)); box-shadow: none; }
+  .dash-focus { position: static; grid-column: 1 / -1; max-height: none; margin-top: calc(var(--sp-3) - var(--lane-gap)); }
   /* #454 A.3: two columns of session cards, one in a narrow desk, where the
      panel sits inline under its card (placeFocusPanel) */
   .ah-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }

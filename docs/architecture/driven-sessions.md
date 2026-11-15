@@ -79,7 +79,8 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
 - **Setup deadline:** if setup has not reached ready within `setupDeadlineMs` (2 min), the driver
   gives up so a hung Copilot cannot hold a driver slot: a new launch ends with `error:setup`, and a
   resume ends with `error:load` and is parked again with its session and a `park_reason`, like any
-  other failed load. A launch that reached ready is never ended by it.
+  other failed load (a continued chat's first start ends instead: "Continue a chat", below). A launch
+  that reached ready is never ended by it.
 - **Phases** (`driver-policy.ts`): `executing` allows only `#agent`; Plan first starts in
   `awaiting_plan_approval` (only `#plan`), files "Approve the plan and continue?" when a turn ends in
   `#plan`, and on approval enters `switching`, sends exactly one `set_mode #agent`, accepts that one
@@ -255,7 +256,8 @@ Claude Code and Copilot CLI load this file automatically when they read or edit 
   instead. A `resume` spec claims the parked row (`resumeLaunch`, parked → running, once), loads the
   session (`session/load`, history ignored until it answers, then the mode and `allow_all` verified)
   without re-sending the task, or starts a fresh one and sends the stored task when there is none or
-  the load answers `-32002` (never prompted, so never persisted). Any other load failure ends the
+  the load answers `-32002` (never prompted, so never persisted), except a launch that continues a chat,
+  which never starts a fresh session ("Continue a chat", below). Any other load failure ends the
   driver with `error:load`, and the launch is parked again with its ACP session and a `park_reason`
   ("Copilot could not load the session: …", sanitized, at most 300 characters of Copilot's message)
   that the UI shows, so the human can retry; a later resume clears it.
@@ -931,3 +933,95 @@ keeps its session but resumes only with a new allowance, each one an explicit hu
   route and the log folders), `test/launch-electron.test.ts` (the confirmation, order, refusals, IPC,
   preload), `test/dom/driven-sessions.test.ts` (Stopped, the card and panel actions, the card and panel
   gone, a refusal), `test/sessions.test.ts`, `test/mixed-version.test.ts`.
+
+## Continue a chat (#586 phase 2), part 1: the store and the driver
+
+Design: [`2026-11-14-chats-resume-driven-design.md`](../superpowers/specs/2026-11-14-chats-resume-driven-design.md)
+§3.3 and §3.6; the check it rests on is the spike's "2026-11-15" section. A launch can continue a
+Copilot CLI chat made in a terminal: the driver loads the chat with `session/load` and sends the
+person's message as its first turn. This part is the store and the driver only. Nothing starts one yet
+(main's `continueChat` and the page come later), so the app behaves as before.
+
+- **The spec.** A third kind, `chat`: exactly `v`, `kind`, `launchId`, `host` (`copilot`), `chatId` (a
+  lowercase UUID), `cwd`, `mode` (`ask` or `read-only` only), `prompt` (1 to 65,536 characters), `env`,
+  `launchKey` and an optional `maxDrivers`. No model, effort, budgets, worktree or raise: a continued chat
+  runs on Copilot's default model with no budget limit, in its own folder. `LAUNCH_SPEC_VERSION` stays
+  1; an older driver refuses the kind ("launch spec: kind must be new or resume", exit 65), so it fails
+  closed. This build's refusal of an unknown kind reads "kind must be new, resume or chat".
+- **`chat_id`** (`launches`, nullable TEXT, written by `createLaunch` for a `chat` spec and never
+  changed; `createLaunch` refuses one that is not a lowercase UUID). `launchView` passes it through, so
+  `/api/launches` now carries `chat_id`, null for every launch that continues no chat. The column
+  renames the whole-table `launches` update trigger, as `end_detail` did: on a hub an older build made,
+  that build's trigger stays beside the renamed one and both fire on a write, which is harmless because
+  readers compare the domain version only for equality. Rows with a `chat_id` exist only once someone
+  continued a chat.
+- **One chat, one launch.** The partial unique index `idx_launches_chat` on `chat_id`, over rows whose
+  `chat_id` is set and that are running, parked, or ended `stopped` with an `acp_session` (`CHAT_HELD`,
+  `RESUMABLE_END` without its worktree term). A second `createLaunch` for the chat fails inside its own
+  statement, and `run` refuses it with "This chat already has a session here." A hand-off, an `error:*`
+  end, a stop before the first message (no `acp_session`) and Forget take a launch out of it, so the
+  chat can be continued again. `resumeLaunch` cannot hit it, since the row it moves is already counted;
+  `run` still wraps it, so a throw there refuses instead of killing the driver. No older build's
+  statement names `chat_id`, so none of its writes can put a second launch of a chat in the index
+  (`test/mixed-version.test.ts`). Every `openDb` creates `idx_launches_chat` if it is missing, so a
+  later change to the one-launch-per-chat rule must keep that index name and must never loosen the
+  rule: an older build's migration would fail to recreate the index over rows that break it, and that
+  build could not open the hub.
+- **`listLaunches`** carries every ended launch that holds its chat (`CHAT_HELD`) besides the 50 newest
+  ended ones and those with a kept worktree, so a resumable chat launch never drops out of
+  `/api/launches`.
+- **`endLaunch({ forgetSession })`**, as `parkLaunch` has: without it a null session keeps the stored
+  one (`COALESCE`).
+- **The driver** (`Driver` options). `chatStart` on a `chat` spec's first start only: the load does not
+  count as the task sent, so the message goes after it, framed by `chatPrompt` ("The human continued
+  this chat via Agent Inbox and says:" and the text, so it never begins with `/`), once.
+  `resumableSession()` returns the chat only once that message was sent, and Park now, the idle park
+  and Take over wait for it, so a chat launch stopped before its message ends with no session and is
+  not resumable. `noFreshSession` on every start of a launch with a `chat_id`: `session/new` is never
+  sent. A `-32002` load ends with `error:load` and `sessionGone()` ("Copilot has no chat with this id.
+  If your shell sets COPILOT_HOME, Copilot looks there."); another load error, or a load that does not
+  answer by the setup deadline, ends with `error:load` and Copilot's message ("Copilot could not load
+  the chat: …", sanitized, at most 300 characters); an `initialize` that does not offer
+  `agentCapabilities.loadSession`, or nothing to load, ends with `error:setup` ("this Copilot cannot
+  load chats over ACP. Update Copilot CLI."). `startFailure()` returns each, so the row reads "Didn't
+  start: …". A later resume passes `noFreshSession` alone: `taskSent` starts true, so the stored first
+  message (`row.prompt`) is never sent again. The reasoning-effort fallback is off for a chat launch,
+  since Copilot does not refuse a load over it (spike, 2026-11-15).
+- **`run`'s `chat` branch** follows `new` without a worktree. The folder must resolve (`realpathSync`)
+  to exactly the `cwd` main sent, or it refuses "<folder> is not a folder": Copilot accepts a load in
+  any folder and moves the chat there, so the driver passes exactly that folder. Then, after the slot
+  and before `createLaunch`, the lock re-check (`chatHolder`): it lists
+  `<COPILOT_HOME, or $HOME/.copilot>/session-state/<chatId>/` from the spec's env and `lstat`s each
+  `inuse.<pid>.lock` (`lockPid`, `src/chat-parse.ts`), never following or reading one, and refuses "This
+  chat is live in another process." when one has a live pid and was written since boot. Copilot loads a
+  chat a terminal holds and takes its own lock only at the first prompt, so this is the guard on the
+  driver's side against two Copilots on one chat. One folder cannot apply the index's newest-lock-per-pid
+  rule, so it refuses more than the chat index does, never less. A folder that is not there holds no
+  lock (Copilot then answers `-32002`), and a lock gone between the listing and its `lstat` is skipped;
+  a chat path that is not a folder, an unreadable listing, any other `lstat` error, a `COPILOT_HOME`
+  that is set but not absolute (Copilot is handed it as it is), or an env with neither `COPILOT_HOME`
+  nor `HOME` refuses. A resume of a launch with a `chat_id` applies the same exact-folder rule to the
+  row's `cwd` and the same re-check, putting the row back as it was on a refusal, and then loads only
+  its `acp_session`, and only when that is the chat.
+- **`closeRow` for a launch with a `chat_id`, on `error:load`:** a `-32002` (first start or any resume)
+  ends it with `end_detail` and the session forgotten, so it leaves the index and the chat can be
+  continued again; another load error ends a first start (nothing here to retry) and parks a later
+  resume, as any resume, with "Copilot could not load the chat: …" as its `park_reason`.
+- **Mixed versions.** An older driver refuses the `chat` kind. An older viewer or main shows a chat
+  launch as an ordinary launch and ignores `chat_id`. An older driver that resumes a parked chat launch
+  loads it as any launch; on `-32002` it would fall back to a fresh session holding the stored first
+  message, the one degraded case, and it needs a downgrade, since main spawns its own release's runtime.
+- **Tests**: `test/launch-spec.test.ts` (the kind's exact keys, modes, id and message bounds),
+  `test/launches.test.ts` (the column and `launchView`; the index refusing a second create while the
+  first is running, parked or stopped with its session, and allowing one after a hand-off, an error, a
+  stop before the first message or Forget; the list behind 50 newer ended launches; `endLaunch`
+  forgetting the session), `test/driver.test.ts` (against the 1.0.112-0 recording: a first start loads
+  and sends the framed message once; Park now waits for it; a resume sends none; `-32002` and another
+  load error on a first start and a resume, never with `session/new`; no `loadSession`; the deadline),
+  `test/driver-run.test.ts` (against the fake `copilot` and a synthetic `session-state` folder: the row,
+  a live lock refused, stale locks ignored, two drivers for one chat writing one row, "Didn't start", a
+  resume's `-32002` ending it with its session forgotten and another load error parking it, a resume
+  refused while a terminal holds the chat, a stop before the first message leaving nothing resumable,
+  and a folder other than the resolved one refused), `test/mixed-version.test.ts` (a v2.9.0 table
+  migrated while its process writes on; its writes keep `chat_id` and never break the index; its spec
+  check refuses the kind).

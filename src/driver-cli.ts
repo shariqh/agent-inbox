@@ -21,13 +21,16 @@
 // it writes at most two phase lines, `{"phase":"worktree"|"copilot"}`, then
 // exactly one status line: `{"ok":true,"launch":<id>}` once Copilot's session
 // is set up and verified (#432 PR 5), or `{"ok":false,"error":…}` with why it
-// did not start. Everything else goes to the launch's logs and row.
+// did not start. Everything else goes to the launch's logs and row. A `chat`
+// spec (#586 phase 2) continues a Copilot chat made in a terminal: in its own
+// folder, refused while another process holds it, and only ever loaded.
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import {
-  accessSync, appendFileSync, closeSync, constants, createWriteStream, fstatSync, mkdirSync, openSync, readFileSync, readSync,
+  accessSync, appendFileSync, closeSync, constants, createWriteStream, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync,
   realpathSync, renameSync, rmSync, statSync,
 } from 'node:fs'
+import { uptime } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +45,7 @@ import { findNativeHost, linkSessions, readProcesses } from './driver-link.js'
 import { childEnv, copilotAgentInboxServer, copilotArgs, editsFolder, isReasoningEffort, REASONING_EFFORTS, terminalSafe } from './driver-policy.js'
 import type { LaunchMode, ReasoningEffort } from './driver-policy.js'
 import { inferProject, inferStream } from './infer.js'
+import { lockPid } from './chat-parse.js'
 import {
   claimDriverSlot, createLaunch, defaultDbPath, driverStopRequested, endLaunch, getLaunch, handOffLaunch, holdDriverLeases, listHostSessions, recordLaunchEffort,
   recordWorktreeSummary, liveSessionServers, markWorktreeRemoved, openDb, parkLaunch, restoreStoppedLaunch,
@@ -63,6 +67,10 @@ const MAX_DRIVERS = 2
 const MAX_PROMPT = 64 * 1024
 const LOG_ROTATE_BYTES = 20 * 1024 * 1024
 const EFFORT_FALLBACK_NOTICE = 'This model takes no reasoning effort, so Agent Inbox started it with none.'
+// #586 phase 2: the unique index's refusal of a second launch of one chat, in the person's words
+const CHAT_TAKEN = 'This chat already has a session here.'
+// a lock written a moment before the boot time computed here still belongs to this boot (as the chat index's)
+const BOOT_SLACK_MS = 5000
 
 function fail(message: string, code = 2): never {
   process.stderr.write(`agent-inbox-driver: ${terminalSafe(message)}\n`)
@@ -234,6 +242,63 @@ function pinOwnRuntime(launchId: string): string | null {
   process.on('exit', () => removePin(pinned, launchId))
   return null
 }
+
+// #586 phase 2 (design §3.3): whether a Copilot holds the chat now, read just before the row is
+// written, so a terminal that took the chat after main's check is not joined by a second Copilot
+// (Copilot itself loads a chat a terminal holds, and takes its own lock only at the first prompt).
+// The chat's folder in <COPILOT_HOME or $HOME/.copilot>/session-state is listed and each
+// `inuse.<pid>.lock` lstat'ed, never followed or read: one with a live pid written since boot is a
+// holder. One folder cannot apply the index's newest-lock-per-pid rule, so this refuses more than
+// the index does, never less. A folder that is not there holds no lock (Copilot then answers
+// -32002), and a lock that vanished after the listing is skipped; anything else that cannot be
+// checked refuses, and so does a COPILOT_HOME that is set but not absolute, since Copilot is handed
+// it as it is (childEnv) and would look elsewhere. Returns why it refuses, or null.
+function chatHolder(env: Record<string, string>, chatId: string): string | null {
+  if (env.COPILOT_HOME !== undefined && !isAbsolute(env.COPILOT_HOME)) {
+    return 'Your shell sets COPILOT_HOME to a path that is not absolute, so Agent Inbox cannot tell where Copilot keeps this chat.'
+  }
+  const home = env.COPILOT_HOME !== undefined ? env.COPILOT_HOME : env.HOME && isAbsolute(env.HOME) ? join(env.HOME, '.copilot') : null
+  if (!home) return 'Agent Inbox cannot tell where Copilot keeps this chat: your shell sets no HOME.'
+  const dir = join(home, 'session-state', chatId)
+  const unreadable = `Agent Inbox could not check whether another process holds this chat (${dir}).`
+  let names: string[]
+  try {
+    const folder = lstatSync(dir, { throwIfNoEntry: false })
+    if (!folder) return null
+    if (!folder.isDirectory()) return unreadable
+    names = readdirSync(dir)
+  } catch {
+    return unreadable
+  }
+  const boot = Date.now() - uptime() * 1000
+  for (const name of names) {
+    const pid = lockPid(name)
+    if (pid === null) continue
+    let mtimeMs: number
+    try {
+      mtimeMs = lstatSync(join(dir, name)).mtimeMs
+    } catch (error) {
+      // gone since the listing: its holder let go
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      return unreadable
+    }
+    if (mtimeMs >= boot - BOOT_SLACK_MS && pidAlive(pid)) return 'This chat is live in another process.'
+  }
+  return null
+}
+
+// kill(pid, 0) sends nothing: EPERM means the process exists under another user, ESRCH that it is gone
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+// #586 phase 2: the unique index's refusal of a second running, parked or resumable launch of one chat
+const chatTaken = (error: unknown): boolean => error instanceof Error && error.message.includes('launches.chat_id')
 
 // The copilot child, in its own process group (so a terminal's Ctrl-C reaches
 // only the driver, which stops the session in order, §7), with its stdout
@@ -504,7 +569,9 @@ async function runLaunch(argv: string[]): Promise<void> {
   let facts: { cwd: string; mode: LaunchMode; model?: string; reasoningEffort?: ReasoningEffort; activeMs: number | null; toolCalls: number | null; prompt: string; project: string; stream: string }
   // the launch's usage so far: the budgets are per-launch totals across park and resume
   let used = { activeMs: 0, toolCalls: 0 }
-  let resume: Pick<DriverOptions, 'loadSessionId' | 'priorSessions'> = {}
+  let resume: Pick<DriverOptions, 'loadSessionId' | 'priorSessions' | 'chatStart' | 'noFreshSession'> = {}
+  // #586 phase 2: a launch that continues a chat, and whether this is its first start
+  let chatLaunch: { first: boolean } | null = null
   // the session a resume tries to load, kept on the row if the load fails
   let loading: string | null = null
   // step 5: git's refusal to lock a resumed stopped launch's worktree again, logged once the event log is open
@@ -563,8 +630,44 @@ async function runLaunch(argv: string[]): Promise<void> {
       if (!LAUNCH_ID.test(old)) continue
       for (const dir of ['launches', 'drivers']) rmSync(join(hubDir, dir, old), { recursive: true, force: true })
     }
+  } else if (spec.kind === 'chat') {
+    // #586 phase 2 (design §3.2, §3.3): in the chat's own folder, exactly as main resolved it, since
+    // Copilot moves a chat to whatever folder it is loaded in; no worktree, no budget limit
+    let cwd: string | null = null
+    try {
+      const real = realpathSync(spec.cwd)
+      if (statSync(real).isDirectory()) cwd = real
+    } catch { /* checked below */ }
+    if (cwd !== spec.cwd) return refuse(`${spec.cwd} is not a folder`)
+    const holder = chatHolder(spec.env, spec.chatId)
+    if (holder) return refuse(holder)
+    facts = { cwd, mode: spec.mode, activeMs: null, toolCalls: null, prompt: spec.prompt, project: inferProject(cwd), stream: inferStream(cwd) }
+    let pruned: string[]
+    try {
+      pruned = createLaunch(db, {
+        id: launchId, host: 'copilot', project: facts.project, stream: facts.stream, cwd, mode: facts.mode,
+        model: null, reasoningEffort: null, budgetActiveMs: null, budgetToolCalls: null, prompt: facts.prompt,
+        specVersion: LAUNCH_SPEC_VERSION, driverPid: process.pid, chatId: spec.chatId,
+      }).pruned
+    } catch (error) {
+      // the unique index: this chat already has a running, parked or resumable launch (§3.6)
+      return refuse(chatTaken(error) ? CHAT_TAKEN : `launch ${launchId} already exists`)
+    }
+    undoRow = (why) => { endLaunch(db, launchId, { reason: 'error:start', detail: why }) }
+    for (const old of pruned) {
+      if (!LAUNCH_ID.test(old)) continue
+      for (const dir of ['launches', 'drivers']) rmSync(join(hubDir, dir, old), { recursive: true, force: true })
+    }
+    chatLaunch = { first: true }
+    resume = { loadSessionId: spec.chatId, chatStart: true, noFreshSession: true }
   } else {
-    const row = resumeLaunch(db, launchId, process.pid, spec.raise)
+    // #586 phase 2: a throw here (the chat index, which the row a resume moves never hits) refuses, never kills the driver
+    let row: ReturnType<typeof resumeLaunch>
+    try {
+      row = resumeLaunch(db, launchId, process.pid, spec.raise)
+    } catch (error) {
+      return refuse(chatTaken(error) ? CHAT_TAKEN : `launch ${launchId} could not be resumed: ${error instanceof Error ? error.message : String(error)}`)
+    }
     if (!row) {
       return refuse(spec.raise
         ? 'The session changed since you confirmed its budget, so nothing was added. Try again.'
@@ -627,6 +730,29 @@ async function runLaunch(argv: string[]): Promise<void> {
     resume = {
       ...(row.acp_session ? { loadSessionId: row.acp_session } : {}),
       priorSessions: row.sessions.map((session) => ({ session, dead: alive.has(session) && !serverAlive(alive.get(session) ?? null) })),
+    }
+    // #586 phase 2: a launch that continues a chat only ever loads that chat, never a fresh session,
+    // and its first message is never sent again (§3.3); a terminal that took it meanwhile refuses
+    if (row.chat_id !== null) {
+      const chatId = row.chat_id
+      // the first start's rule: exactly the folder it resolves to now, since Copilot moves a chat to
+      // whatever folder it is loaded in; refused, the row is put back as it was
+      let real: string | null = null
+      try {
+        const resolved = realpathSync(row.cwd)
+        if (statSync(resolved).isDirectory()) real = resolved
+      } catch { /* checked below */ }
+      if (real !== row.cwd) return refuse(`${row.cwd} is not a folder`)
+      // never reached by this build's writes (the chat is its session once the first message is sent);
+      // ended rather than put back, so a row that can never load leaves the unique index
+      if (row.acp_session !== chatId) {
+        undoRow = (why) => { endLaunch(db, launchId, { reason: 'error:start', detail: why }) }
+        return refuse('This session has no chat to load.')
+      }
+      const holder = chatHolder(spec.env, chatId)
+      if (holder) return refuse(holder)
+      chatLaunch = { first: false }
+      resume = { ...resume, noFreshSession: true }
     }
     // after a Resume every open message is pushed again: the new process may not hold the old turn (§5.3)
     rmSync(join(hubDir, 'drivers', launchId, 'pushed.json'), { force: true })
@@ -720,7 +846,8 @@ async function runLaunch(argv: string[]): Promise<void> {
     usage: used,
     ...resume,
     context: 'app',
-    effortFallback,
+    // a chat launch only loads, which Copilot does not refuse over the reasoning effort (spike, 2026-11-15)
+    effortFallback: effortFallback && !chatLaunch,
     timing: {
       activeMs: facts.activeMs ?? Infinity, maxToolCalls: facts.toolCalls ?? Infinity,
       ...(linkWaitMs === undefined ? {} : { linkWaitMs }),
@@ -740,9 +867,14 @@ async function runLaunch(argv: string[]): Promise<void> {
       if (reason === 'idle' || reason === 'park') {
         ended = parkLaunch(db, launchId, { acpSession: driver.resumableSession(), ...usage, forgetSession: driver.sessionGone() }) !== 'parked'
       }
+      // #586 phase 2: a chat launch whose load found no such chat ends with its session forgotten, so it
+      // leaves the unique index and the chat can be continued again; a first start has nothing to retry
+      else if (reason === 'error:load' && chatLaunch && (driver.sessionGone() || chatLaunch.first)) {
+        endLaunch(db, launchId, { reason, ...usage, detail: driver.startFailure(), acpSession: null, forgetSession: driver.sessionGone() })
+      }
       // a load that failed for another reason than "never prompted" parks it again, to retry (§7)
       else if (reason === 'error:load') {
-        ended = parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the session: ${driver.loadFailure() ?? 'unknown error'}` }) !== 'parked'
+        ended = parkLaunch(db, launchId, { acpSession: loading, ...usage, reason: `Copilot could not load the ${chatLaunch ? 'chat' : 'session'}: ${driver.loadFailure() ?? 'unknown error'}` }) !== 'parked'
       }
       // Take over in Terminal (§3.5): the session is the terminal's now; its worktree stays locked, in use there
       else if (reason === 'handed_off') {

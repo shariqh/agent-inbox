@@ -113,6 +113,8 @@ export interface FakeScript {
    * as Copilot did: the load's replayed updates, then its result or error (#586 phase 2, PR 2).
    */
   recorded?: string
+  /** A Copilot whose initialize does not offer loadSession (#586 phase 2: it cannot load a chat). */
+  noLoadSession?: boolean
 }
 
 /** What a recording's initialize and first session/load answered, with the load's updates before its answer. */
@@ -191,7 +193,12 @@ export function fakeAgent(script: FakeScript = {}): FakeAgent {
   const handle = (m: Json) => {
     const params = (m.params ?? {}) as Json
     switch (m.method) {
-      case 'initialize': return script.hang === 'initialize' ? undefined : fake.respond(m.id, recorded?.initialize ?? INITIALIZE)
+      case 'initialize': {
+        if (script.hang === 'initialize') return
+        const result = clone(recorded?.initialize ?? INITIALIZE)
+        if (script.noLoadSession) delete (result.agentCapabilities as Json).loadSession
+        return fake.respond(m.id, result)
+      }
       case 'session/new': {
         if (script.refuseSessionNew) return fake.send({ id: m.id, error: { code: -32603, message: script.refuseSessionNew } })
         const result = clone(SESSION_NEW)

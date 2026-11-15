@@ -178,6 +178,11 @@ export function firstPrompt(task: string): string {
   return `The human started this session via Agent Inbox with this task:\n\n${task}`
 }
 
+/** #586 phase 2: a continued chat's first turn, framed as firstPrompt is, so it never begins with `/`. */
+export function chatPrompt(text: string): string {
+  return `The human continued this chat via Agent Inbox and says:\n\n${text}`
+}
+
 export function messagesPrompt(messages: readonly PushedMessage[]): string {
   const n = messages.length
   const head = `The human sent you ${n} message${n === 1 ? '' : 's'} via Agent Inbox. Each is also in pending(); act on each once, then ack_message({ id, outcome }).`

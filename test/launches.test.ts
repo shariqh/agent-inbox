@@ -226,6 +226,102 @@ describe('a launch in its own worktree (#432 §4)', () => {
   })
 })
 
+// #586 phase 2, PR 3: a launch that continues a Copilot chat (the chats-resume-driven design, §3.6)
+describe('a launch that continues a chat (#586 phase 2)', () => {
+  const CHAT = '0c4a7000-0000-4000-8000-00000000c001'
+  const chat = (n: number, over: Partial<NewLaunch> = {}) => launch(n, { chatId: CHAT, budgetActiveMs: null, budgetToolCalls: null, model: null, reasoningEffort: null, ...over })
+
+  it('records the chat it continues, served by /api/launches; any other launch records none, and a bad id is refused', async () => {
+    createLaunch(db, chat(1))
+    createLaunch(db, launch(2))
+    expect(getLaunch(db, ID(1))).toMatchObject({ chat_id: CHAT, status: 'running', acp_session: null, worktree_path: null, budget_active_ms: null, budget_tool_calls: null })
+    expect(getLaunch(db, ID(2))!.chat_id).toBeNull()
+    const body = await (await createViewer(db).request('/api/launches')).json() as Array<Record<string, unknown>>
+    expect(body.find((l) => l.id === ID(1))).toMatchObject({ chat_id: CHAT, resumable: false })
+    expect(body.find((l) => l.id === ID(2))).toMatchObject({ chat_id: null })
+    expect(listLaunches(db).find((l) => l.id === ID(1))).not.toHaveProperty('acp_session')
+    expect(() => createLaunch(db, chat(3, { chatId: CHAT.toUpperCase() }))).toThrow(/chat id must be a lowercase UUID/)
+    expect(() => createLaunch(db, chat(3, { chatId: '../../etc' }))).toThrow(/chat id must be a lowercase UUID/)
+  })
+
+  it('refuses a second launch of one chat while the first is running, parked, or stopped with its session', () => {
+    const second = () => createLaunch(db, chat(9))
+    createLaunch(db, chat(1))
+    expect(second).toThrow(/UNIQUE constraint failed: launches\.chat_id/)
+    parkLaunch(db, ID(1), { acpSession: CHAT, activeMs: 0, toolCalls: 0 })
+    expect(second).toThrow(/UNIQUE constraint failed: launches\.chat_id/)
+    expect(resumeLaunch(db, ID(1), 4243)).toMatchObject({ status: 'running', chat_id: CHAT })
+    endLaunch(db, ID(1), { reason: 'stopped', acpSession: CHAT })
+    expect(second).toThrow(/UNIQUE constraint failed: launches\.chat_id/)
+    // the row a resume moves is already counted, so a resume never hits the index
+    expect(resumeLaunch(db, ID(1), 4244)).toMatchObject({ status: 'running' })
+    expect(getLaunch(db, ID(9))).toBeNull()
+    // another chat, and any launch with no chat, are never refused for it
+    createLaunch(db, chat(2, { chatId: '0c4a7000-0000-4000-8000-00000000c002' }))
+    createLaunch(db, launch(3))
+    createLaunch(db, launch(4))
+    expect(listLaunches(db)).toHaveLength(4)
+  })
+
+  it.each([
+    ['a hand-off', (id: string) => { handOffLaunch(db, id, { acpSession: CHAT, activeMs: 0, toolCalls: 0 }) }],
+    ['an error', (id: string) => { endLaunch(db, id, { reason: 'error:load', acpSession: CHAT }) }],
+    ['a stop before the first message', (id: string) => { endLaunch(db, id, { reason: 'stopped', acpSession: null }) }],
+    ['a stopped launch handed off later', (id: string) => {
+      endLaunch(db, id, { reason: 'stopped', acpSession: CHAT })
+      expect(handOffForTerminal(db, id)).toMatchObject({ ok: true, state: 'handed_off' })
+    }],
+    ['a stopped launch whose session was forgotten', (id: string) => {
+      endLaunch(db, id, { reason: 'stopped', acpSession: CHAT })
+      tick()
+      expect(createLaunch.bind(null, db, chat(8))).toThrow(/UNIQUE/)
+      expect(forgetLaunch(db, id, getLaunch(db, id)!.revision)).toEqual({ ok: true })
+    }],
+  ] as Array<[string, (id: string) => void]>)('allows another launch of the chat after %s', (_, end) => {
+    createLaunch(db, chat(1))
+    end(ID(1))
+    expect(() => createLaunch(db, chat(2))).not.toThrow()
+    expect(getLaunch(db, ID(2))).toMatchObject({ chat_id: CHAT, status: 'running' })
+    // the first can no longer move back to running beside the second
+    expect(resumeLaunch(db, ID(1), 4243)).toBeNull()
+  })
+
+  it('endLaunch forgets the session only when asked, as parkLaunch does', () => {
+    createLaunch(db, chat(1))
+    parkLaunch(db, ID(1), { acpSession: CHAT, activeMs: 0, toolCalls: 0 })
+    resumeLaunch(db, ID(1), 4243)
+    // a null session keeps the stored one
+    endLaunch(db, ID(1), { reason: 'error:load', detail: 'Copilot could not load the chat: busy' })
+    expect(getLaunch(db, ID(1))).toMatchObject({ status: 'ended', acp_session: CHAT })
+    createLaunch(db, chat(2))
+    parkLaunch(db, ID(2), { acpSession: CHAT, activeMs: 0, toolCalls: 0 })
+    resumeLaunch(db, ID(2), 4244)
+    expect(endLaunch(db, ID(2), { reason: 'error:load', detail: 'Copilot has no chat with this id.', forgetSession: true })).toBe(true)
+    expect(getLaunch(db, ID(2))).toMatchObject({ status: 'ended', end_reason: 'error:load', acp_session: null, end_detail: 'Copilot has no chat with this id.' })
+    // and a launch with no chat keeps its own rule
+    createLaunch(db, launch(3))
+    endLaunch(db, ID(3), { reason: 'stopped', acpSession: 'acp-3' })
+    expect(getLaunch(db, ID(3))!.acp_session).toBe('acp-3')
+  })
+
+  it('lists a resumable chat launch behind 50 newer ended ones; an ended chat launch that cannot resume drops out as any does', () => {
+    createLaunch(db, chat(1))
+    endLaunch(db, ID(1), { reason: 'stopped', acpSession: CHAT })
+    createLaunch(db, chat(2, { chatId: '0c4a7000-0000-4000-8000-00000000c002' }))
+    endLaunch(db, ID(2), { reason: 'error:load', acpSession: null })
+    for (let n = 3; n <= 53; n++) {
+      tick()
+      createLaunch(db, launch(n))
+      endLaunch(db, ID(n), { reason: 'stopped' })
+    }
+    const ids = listLaunches(db).map((l) => l.id)
+    expect(ids).toContain(ID(1))
+    expect(ids).not.toContain(ID(2))
+    expect(ids).toHaveLength(51)
+    expect(listLaunches(db).find((l) => l.id === ID(1))).toMatchObject({ chat_id: CHAT, resumable: true, status: 'ended', end_reason: 'stopped' })
+  })
+})
+
 describe('a launch’s asks (§4.2–4.3)', () => {
   it('files an @sessions question and its mapping in one transaction, and settling removes the mapping', () => {
     createLaunch(db, launch(1))

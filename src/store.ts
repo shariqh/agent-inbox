@@ -784,7 +784,14 @@ function runMigrations(db: Database.Database): void {
   // words (at most 300 characters), for its row's "Didn't start". NULL on every
   // other end and on every row an older driver ends: its UPDATE never names it.
   ensureColumn(db, 'launches', 'end_detail', 'TEXT')
+  // #586 phase 2 — the Copilot chat a launch continues (a lowercase UUID), written by
+  // createLaunch for a `chat` spec and never changed. NULL on every other launch and on
+  // every row an older driver writes: its INSERT never names it.
+  ensureColumn(db, 'launches', 'chat_id', 'TEXT')
   migrateOptionalBudgets(db)
+  // #586 phase 2 — one chat, one launch: at most one running, parked, or stopped-with-its-session
+  // launch per chat. A row with no chat_id is never in it, so no older driver's write can hit it.
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_launches_chat ON launches(chat_id) WHERE ${CHAT_HELD}`)
   // issue #297 — keep this last: its triggers name the columns added above
   migrateSnapshotDomains(db)
 }
@@ -4221,6 +4228,8 @@ export interface LaunchRecord {
   worktree_summary: string | null
   /** #432 PR 5: why it ended before its session was ready, in plain words; null otherwise. */
   end_detail: string | null
+  /** #586 phase 2: the Copilot chat this launch continues; null for a launch started fresh here. */
+  chat_id: string | null
 }
 
 /** What /api/launches serves of a launch: no prompt, process ids or ACP session id. */
@@ -4272,10 +4281,16 @@ export interface NewLaunch {
   driverPid: number
   /** #432: the worktree the driver made for it; `cwd` is its path. */
   worktree?: { checkoutRoot: string; branch: string; baseSha: string; baseRef: string | null }
+  /** #586 phase 2: the Copilot chat a `chat` spec continues, a lowercase UUID. */
+  chatId?: string
 }
 
 // an ended launch whose worktree is still on disk (#432): never pruned, always listed
 const WORKTREE_KEPT = `worktree_path IS NOT NULL AND worktree_removed_at IS NULL`
+// #586 phase 2: a chat launch that holds its chat: running, parked, or stopped with its session
+// (RESUMABLE_END without its worktree term, since a chat launch never has one). The unique index
+// idx_launches_chat and listLaunches' chat clause share it.
+const CHAT_HELD = `chat_id IS NOT NULL AND (status <> 'ended' OR (end_reason = 'stopped' AND acp_session IS NOT NULL))`
 
 // The driver's start, after it claimed its slot: one row, status running. In
 // the same transaction, ended launches older than 30 days are removed with
@@ -4283,6 +4298,7 @@ const WORKTREE_KEPT = `worktree_path IS NOT NULL AND worktree_removed_at IS NULL
 // folders too (§8: logs are pruned with the launch). Throws on a reused id.
 export function createLaunch(db: Database.Database, launch: NewLaunch): { pruned: string[] } {
   if (!LAUNCH_ID.test(launch.id)) throw new Error('launch id must be a lowercase UUID')
+  if (launch.chatId !== undefined && !LAUNCH_ID.test(launch.chatId)) throw new Error('chat id must be a lowercase UUID')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
   return db.transaction(() => {
@@ -4294,16 +4310,17 @@ export function createLaunch(db: Database.Database, launch: NewLaunch): { pruned
     db.prepare(`INSERT INTO launches (
         id, host, project, stream, cwd, mode, model, reasoning_effort, budget_active_ms, budget_tool_calls,
         prompt, spec_version, status, created_at, updated_at, driver_pid,
-        checkout_root, worktree_path, branch, base_sha, base_ref)
+        checkout_root, worktree_path, branch, base_sha, base_ref, chat_id)
       VALUES (@id, @host, @project, @stream, @cwd, @mode, @model, @effort, @activeMs, @toolCalls,
         @prompt, @specVersion, 'running', @now, @now, @driverPid,
-        @checkoutRoot, @worktreePath, @branch, @baseSha, @baseRef)`).run({
+        @checkoutRoot, @worktreePath, @branch, @baseSha, @baseRef, @chatId)`).run({
       id: launch.id, host: launch.host, project: launch.project, stream: launch.stream, cwd: launch.cwd,
       mode: launch.mode, model: launch.model ?? null, effort: launch.reasoningEffort ?? null,
       activeMs: launch.budgetActiveMs, toolCalls: launch.budgetToolCalls, prompt: launch.prompt,
       specVersion: launch.specVersion, now, driverPid: launch.driverPid,
       checkoutRoot: worktree?.checkoutRoot ?? null, worktreePath: worktree ? launch.cwd : null,
       branch: worktree?.branch ?? null, baseSha: worktree?.baseSha ?? null, baseRef: worktree?.baseRef ?? null,
+      chatId: launch.chatId ?? null,
     })
     return { pruned: pruned.sort() }
   }).immediate()
@@ -4319,6 +4336,7 @@ export function listLaunches(db: Database.Database): Launch[] {
   const rows = db.prepare(`SELECT * FROM launches WHERE status <> 'ended'
       OR id IN (SELECT id FROM launches WHERE status = 'ended' ORDER BY ended_at DESC, id DESC LIMIT @limit)
       OR id IN (SELECT id FROM launches WHERE status = 'ended' AND ${WORKTREE_KEPT} ORDER BY ended_at DESC, id DESC LIMIT @limit)
+      OR (status = 'ended' AND ${CHAT_HELD})
     ORDER BY created_at DESC, id DESC`).all({ limit: RECENT_ENDED_LAUNCHES }) as Array<Omit<LaunchRecord, 'sessions'> & { sessions: string | null }>
   return rows.map((row) => launchView(parseLaunch(row)))
 }
@@ -4483,22 +4501,23 @@ export function handOffLaunch(
 }
 
 // step 5 (full resume): `acpSession`, the session Copilot persisted, is kept so a
-// stopped launch can be resumed; a null one never erases a stored one
+// stopped launch can be resumed; a null one never erases a stored one, unless
+// `forgetSession` (#586 phase 2: Copilot said the chat does not exist, -32002)
 export function endLaunch(
   db: Database.Database,
   id: string,
-  end: { reason: string; activeMs?: number; toolCalls?: number; detail?: string | null; acpSession?: string | null },
+  end: { reason: string; activeMs?: number; toolCalls?: number; detail?: string | null; acpSession?: string | null; forgetSession?: boolean },
 ): boolean {
   const now = new Date().toISOString()
   return db.prepare(`UPDATE launches
                         SET status = 'ended', end_reason = @reason, end_detail = @detail, ended_at = @now, parked_at = NULL, park_reason = NULL,
-                            acp_session = COALESCE(@acp, acp_session),
+                            acp_session = CASE WHEN @forget = 1 THEN @acp ELSE COALESCE(@acp, acp_session) END,
                             active_ms = MAX(active_ms, COALESCE(@activeMs, 0)), tool_calls = MAX(tool_calls, COALESCE(@toolCalls, 0)),
                             updated_at = @now, revision = revision + 1
                       WHERE id = @id AND status <> 'ended'`).run({
     now, id, reason: end.reason, detail: end.detail ? Array.from(end.detail).slice(0, 300).join('') : null,
     activeMs: end.activeMs === undefined ? null : Math.max(0, Math.round(end.activeMs)),
-    toolCalls: end.toolCalls ?? null, acp: end.acpSession ?? null,
+    toolCalls: end.toolCalls ?? null, acp: end.acpSession ?? null, forget: end.forgetSession === true ? 1 : 0,
   }).changes === 1
 }
 

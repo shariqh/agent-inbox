@@ -6,11 +6,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import type Database from 'better-sqlite3'
-import { claimDriverSlot, closeLostLaunch, getLaunch, handOffForTerminal, launchDriverAlive, listItems, openDb, recordLaunchProgress, replyItem, requestLaunchPark, requestLaunchStop } from '../src/store.js'
+import { claimDriverSlot, closeLostLaunch, getLaunch, handOffForTerminal, launchDriverAlive, listItems, listLaunches, openDb, recordLaunchProgress, replyItem, requestLaunchPark, requestLaunchStop } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -41,10 +41,12 @@ fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: process.argv.slic
 let buffer = ''
 let prompt = null
 let slow = false
+// the session its updates name: s-1, or the one a load named (#586 phase 2: a chat's own id)
+let sid = 's-1'
 // a tool's process left in copilot's group, which outlives copilot itself (step 5's handoff ends it)
 if (process.env.FAKE_GROUP_SLEEPER) require('child_process').spawn('/bin/sleep', ['60'], { stdio: 'ignore' }).unref()
 const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')
-const update = (u) => send({ method: 'session/update', params: { sessionId: 's-1', update: u } })
+const update = (u) => send({ method: 'session/update', params: { sessionId: sid, update: u } })
 process.stdin.setEncoding('utf8')
 process.stdin.on('data', (chunk) => {
   buffer += chunk
@@ -61,6 +63,7 @@ process.stdin.on('data', (chunk) => {
       if (process.env.FAKE_EFFORT_SLOW_EXIT) { slow = true; process.on('SIGTERM', () => {}); setInterval(() => {}, 1000) }
     }
     else if (m.method === 'session/new' || m.method === 'session/load') {
+      if (m.method === 'session/load') sid = m.params.sessionId
       send({ id: m.id, result: { ...(m.method === 'session/new' ? { sessionId: 's-1' } : {}), modes: { currentModeId: agent }, configOptions: config(agent) } })
       if (m.method === 'session/load') for (let i = 0; i < Number(process.env.FAKE_TOOLS_AFTER_LOAD || 0); i++) update({ sessionUpdate: 'tool_call', toolCallId: 'l-' + i, title: 'Read', kind: 'read', rawInput: {} })
     }
@@ -73,7 +76,7 @@ process.stdin.on('data', (chunk) => {
       if (!process.env.FAKE_ASK) { send({ id: m.id, result: { stopReason: 'end_turn' } }); continue }
       prompt = m.id
       update({ sessionUpdate: 'tool_call', toolCallId: 't-1', title: 'Run tests', kind: 'execute', rawInput: { command: 'npm test' } })
-      send({ id: 900, method: 'session/request_permission', params: { sessionId: 's-1', toolCall: { toolCallId: 't-1', title: 'Run tests', kind: 'execute', rawInput: { command: 'npm test' } }, options: [
+      send({ id: 900, method: 'session/request_permission', params: { sessionId: sid, toolCall: { toolCallId: 't-1', title: 'Run tests', kind: 'execute', rawInput: { command: 'npm test' } }, options: [
         { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once' },
         { optionId: 'reject_once', kind: 'reject_once', name: 'Deny' },
       ] } })
@@ -130,9 +133,9 @@ function newSpec(r: Rig, over: Record<string, unknown> = {}): Record<string, unk
 }
 
 // `entry` runs a built driver-cli.js, as main does: no tsx, from '/'
-function runDriver(r: Rig, spec: unknown, env: Record<string, string> = {}, entry?: string) {
+function runDriver(r: Rig, spec: unknown, env: Record<string, string> = {}, entry?: string, launchId = LAUNCH) {
   const argv = entry ? [entry] : ['--import', 'tsx', join(REPO, 'src', 'driver-cli.ts')]
-  const child = spawn(process.execPath, [...argv, 'run', LAUNCH, r.db], {
+  const child = spawn(process.execPath, [...argv, 'run', launchId, r.db], {
     cwd: entry ? '/' : REPO,
     stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
     env: { ...process.env, AGENT_INBOX_DB: join(r.dir, 'elsewhere.db'), AGENT_INBOX_DRIVER_LINK_WAIT_MS: '0', ...env },
@@ -886,4 +889,250 @@ describe('agent-inbox-driver run (#412 step 3)', () => {
     expect(JSON.parse(stdout.trim())).toEqual({ ok: false, error: 'no launch spec on fd 3 (Electron main passes it on a pipe)' })
     expect(getLaunch(r.hub, LAUNCH)).toBeNull()
   })
+})
+
+// #586 phase 2, PR 3: a `chat` spec continues a terminal-made Copilot chat (the chats-resume-driven
+// design, §3.3), against the fake copilot and a synthetic session-state folder under COPILOT_HOME.
+describe('agent-inbox-driver run: continuing a chat (#586 phase 2)', () => {
+  const CHAT = '0c4a7000-0000-4000-8000-00000000c001'
+  const OTHER = '33333333-4444-4555-8666-777777777777'
+  const NOT_FOUND = 'Copilot has no chat with this id. If your shell sets COPILOT_HOME, Copilot looks there.'
+  const chatDir = (r: Rig) => join(r.env.COPILOT_HOME!, 'session-state', CHAT)
+  // a chat as a terminal Copilot leaves it: synthetic, no real title, message or path
+  function chatRig(): Rig {
+    const r = rig()
+    mkdirSync(chatDir(r), { recursive: true })
+    writeFileSync(join(chatDir(r), 'workspace.yaml'), `id: ${CHAT}\ncwd: ${realpathSync(join(r.dir, 'work'))}\nclient_name: github/cli\n`)
+    writeFileSync(join(chatDir(r), 'events.jsonl'), '{"type":"session.start"}\n')
+    return r
+  }
+  const chatSpec = (r: Rig, over: Record<string, unknown> = {}) => ({
+    v: 1, kind: 'chat', launchId: LAUNCH, host: 'copilot', chatId: CHAT, cwd: realpathSync(join(r.dir, 'work')), mode: 'ask',
+    prompt: 'Carry on with the tests.', env: r.env, launchKey: LAUNCH_KEY.toString('base64'), ...over,
+  })
+  const resumeSpec = (r: Rig, env: Record<string, string> = {}) => ({ v: 1, kind: 'resume', launchId: LAUNCH, env: { ...r.env, ...env }, launchKey: LAUNCH_KEY.toString('base64') })
+  const methods = (r: Rig, method: string) => received(r).filter((m) => m.method === method)
+  const prompts = (r: Rig) => methods(r, 'session/prompt').map((m) => JSON.stringify(m.params))
+
+  it('writes the row with its chat, loads the chat in its own folder, sends the message once, and a resume sends it no more', async () => {
+    const r = chatRig()
+    const run = runDriver(r, chatSpec(r))
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    const work = realpathSync(join(r.dir, 'work'))
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({
+      status: 'running', chat_id: CHAT, cwd: work, mode: 'ask', prompt: 'Carry on with the tests.', model: null, reasoning_effort: null,
+      budget_active_ms: null, budget_tool_calls: null, worktree_path: null, checkout_root: null, acp_session: null,
+    })
+    await until(() => methods(r, 'session/prompt').length === 1 && getLaunch(r.hub, LAUNCH)?.child_pgid, 'the first message')
+    // Copilot's own model and effort, in the chat's folder, loading exactly that folder
+    expect(received(r)[0]).toMatchObject({ argv: ['--acp', '--stdio', '--allow-tool', 'agent-inbox'], cwd: work })
+    expect(methods(r, 'session/load').map((m) => m.params)).toEqual([{ sessionId: CHAT, cwd: work, mcpServers: [] }])
+    expect(prompts(r)[0]).toContain('The human continued this chat via Agent Inbox and says:\\n\\nCarry on with the tests.')
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await run.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: CHAT, chat_id: CHAT })
+    expect(listLaunches(r.hub).find((l) => l.id === LAUNCH)).toMatchObject({ resumable: true, chat_id: CHAT })
+
+    const resumed = runDriver(r, resumeSpec(r))
+    expect(await resumed.status()).toEqual({ ok: true, launch: LAUNCH })
+    await until(() => methods(r, 'session/load').length === 2, 'the second load')
+    expect(methods(r, 'session/load')[1]!.params).toEqual({ sessionId: CHAT, cwd: work, mcpServers: [] })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await resumed.exited).toBe(0)
+    expect(methods(r, 'session/prompt')).toHaveLength(1)
+    expect(methods(r, 'session/new')).toEqual([])
+  }, 40_000)
+
+  it('refuses a chat whose lock a live process wrote since boot, before writing any row or starting Copilot', async () => {
+    const r = chatRig()
+    // this test's own process: alive, and its lock just written
+    writeFileSync(join(chatDir(r), `inuse.${process.pid}.lock`), String(process.pid))
+    const run = runDriver(r, chatSpec(r))
+    expect(await run.status()).toEqual({ ok: false, error: 'This chat is live in another process.' })
+    expect(await run.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toBeNull()
+    expect(readFileSync(r.fakeLog, 'utf8')).toBe('')
+    expect(launchDriverAlive(r.hub, LAUNCH)).toBe(false)
+  }, 40_000)
+
+  it('ignores a stale lock: a pid that is gone, or a live pid’s lock from before this boot', async () => {
+    const r = chatRig()
+    // the highest pid lockPid accepts, which no process has here
+    writeFileSync(join(chatDir(r), 'inuse.2147483646.lock'), '2147483646')
+    const old = join(chatDir(r), `inuse.${process.pid}.lock`)
+    writeFileSync(old, String(process.pid))
+    utimesSync(old, new Date('2001-01-01T00:00:00Z'), new Date('2001-01-01T00:00:00Z'))
+    writeFileSync(join(chatDir(r), `inuse.${process.pid}.hold`), '')
+    const run = runDriver(r, chatSpec(r))
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await run.exited).toBe(0)
+  }, 40_000)
+
+  it('one chat, one launch: two drivers started for it at once write one row, and the other is refused', async () => {
+    const r = chatRig()
+    const runs = [runDriver(r, chatSpec(r)), runDriver(r, chatSpec(r, { launchId: OTHER }), {}, undefined, OTHER)]
+    const statuses = await Promise.all(runs.map((run) => run.status()))
+    expect(statuses).toContainEqual({ ok: false, error: 'This chat already has a session here.' })
+    const won = statuses.findIndex((s) => s.ok === true)
+    expect(won).not.toBe(-1)
+    expect(await runs[1 - won]!.exited).toBe(1)
+    expect(listLaunches(r.hub).map((l) => [l.chat_id, l.status])).toEqual([[CHAT, 'running']])
+    // a later one is refused too, while the first runs
+    const late = runDriver(r, chatSpec(r, { launchId: '44444444-5555-4666-8777-888888888888' }), {}, undefined, '44444444-5555-4666-8777-888888888888')
+    expect(await late.status()).toEqual({ ok: false, error: 'This chat already has a session here.' })
+    expect(await late.exited).toBe(1)
+    expect(requestLaunchStop(r.hub, [LAUNCH, OTHER][won]!)).toBe('stopping')
+    expect(await runs[won]!.exited).toBe(0)
+    expect(methods(r, 'session/load')).toHaveLength(1)
+    expect(methods(r, 'session/new')).toEqual([])
+  }, 40_000)
+
+  it('a first start whose load fails reads Didn’t start, ends with nothing to resume, and the chat can be continued again', async () => {
+    const r = chatRig()
+    const unknown = runDriver(r, chatSpec(r, { env: { ...r.env, FAKE_LOAD_ERROR: JSON.stringify({ code: -32002, message: `Resource not found: Session ${CHAT} not found` }) } }))
+    expect(await unknown.status()).toEqual({ ok: false, error: NOT_FOUND })
+    expect(await unknown.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'error:load', end_detail: NOT_FOUND, acp_session: null, chat_id: CHAT })
+
+    const failed = runDriver(r, chatSpec(r, { launchId: OTHER, env: { ...r.env, FAKE_LOAD_ERROR: JSON.stringify({ code: -32603, message: 'Internal error' }) } }), {}, undefined, OTHER)
+    expect(await failed.status()).toEqual({ ok: false, error: 'Copilot could not load the chat: Internal error' })
+    expect(await failed.exited).toBe(1)
+    // nothing here to retry: ended, never parked
+    expect(getLaunch(r.hub, OTHER)).toMatchObject({ status: 'ended', end_reason: 'error:load', end_detail: 'Copilot could not load the chat: Internal error', acp_session: null })
+    expect(listLaunches(r.hub).filter((l) => l.resumable)).toEqual([])
+    expect(methods(r, 'session/new')).toEqual([])
+    expect(methods(r, 'session/prompt')).toEqual([])
+
+    const again = runDriver(r, chatSpec(r, { launchId: '44444444-5555-4666-8777-888888888888' }), {}, undefined, '44444444-5555-4666-8777-888888888888')
+    expect(await again.status()).toEqual({ ok: true, launch: '44444444-5555-4666-8777-888888888888' })
+    expect(requestLaunchStop(r.hub, '44444444-5555-4666-8777-888888888888')).toBe('stopping')
+    expect(await again.exited).toBe(0)
+  }, 40_000)
+
+  it('a resume that gets -32002 ends the launch with its session forgotten; another load error parks it to retry', async () => {
+    const r = chatRig()
+    const first = runDriver(r, chatSpec(r), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', acp_session: CHAT })
+
+    const busy = runDriver(r, resumeSpec(r, { FAKE_LOAD_ERROR: JSON.stringify({ code: -32603, message: 'Internal error' }) }))
+    expect(await busy.status()).toEqual({ ok: false, error: 'Copilot could not load the chat: Internal error' })
+    expect(await busy.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', acp_session: CHAT, park_reason: 'Copilot could not load the chat: Internal error' })
+
+    const gone = runDriver(r, resumeSpec(r, { FAKE_LOAD_ERROR: JSON.stringify({ code: -32002, message: `Resource not found: Session ${CHAT} not found` }) }))
+    expect(await gone.status()).toEqual({ ok: false, error: NOT_FOUND })
+    expect(await gone.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'error:load', end_detail: NOT_FOUND, acp_session: null, chat_id: CHAT })
+    expect(listLaunches(r.hub).find((l) => l.id === LAUNCH)).toMatchObject({ resumable: false })
+    // never a fresh session, and the first message was sent once, by the first start
+    expect(methods(r, 'session/new')).toEqual([])
+    expect(methods(r, 'session/prompt')).toHaveLength(1)
+    const resumeAgain = runDriver(r, resumeSpec(r))
+    expect(await resumeAgain.status()).toEqual({ ok: false, error: `launch ${LAUNCH} is not parked or stopped with its session` })
+    expect(await resumeAgain.exited).toBe(1)
+  }, 40_000)
+
+  it('a resume of a chat a terminal now holds is refused and the launch stays as it was', async () => {
+    const r = chatRig()
+    const first = runDriver(r, chatSpec(r), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    writeFileSync(join(chatDir(r), `inuse.${process.pid}.lock`), String(process.pid))
+    const resumed = runDriver(r, resumeSpec(r))
+    expect(await resumed.status()).toEqual({ ok: false, error: 'This chat is live in another process.' })
+    expect(await resumed.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'parked', acp_session: CHAT })
+    expect(methods(r, 'session/load')).toHaveLength(1)
+  }, 40_000)
+
+  it('stopped before its first message, it leaves no resumable launch, and the chat can be continued again', async () => {
+    const r = chatRig()
+    // the first message waits for the session's MCP server to link, which the fake never does
+    const run = runDriver(r, chatSpec(r), { AGENT_INBOX_DRIVER_LINK_WAIT_MS: '10000' })
+    expect(await run.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(requestLaunchStop(r.hub, LAUNCH)).toBe('stopping')
+    expect(await run.exited).toBe(0)
+    expect(methods(r, 'session/prompt')).toEqual([])
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: null })
+    expect(listLaunches(r.hub).find((l) => l.id === LAUNCH)).toMatchObject({ resumable: false })
+    const resumed = runDriver(r, resumeSpec(r))
+    expect(await resumed.status()).toEqual({ ok: false, error: `launch ${LAUNCH} is not parked or stopped with its session` })
+    expect(await resumed.exited).toBe(1)
+    const again = runDriver(r, chatSpec(r, { launchId: OTHER }), {}, undefined, OTHER)
+    expect(await again.status()).toEqual({ ok: true, launch: OTHER })
+    expect(requestLaunchStop(r.hub, OTHER)).toBe('stopping')
+    expect(await again.exited).toBe(0)
+  }, 40_000)
+
+  it.each([
+    // Copilot would move the chat to whatever folder it is loaded in, so only the resolved folder itself runs
+    ['a folder other than the one main resolved', (r: Rig) => {
+      symlinkSync(realpathSync(join(r.dir, 'work')), join(r.dir, 'link'))
+      return { cwd: join(r.dir, 'link') }
+    }, /link is not a folder$/],
+    ['a folder that is gone', (r: Rig) => ({ cwd: join(r.dir, 'gone') }), /is not a folder$/],
+    ['a chat folder that is not a folder', (r: Rig) => {
+      rmSync(chatDir(r), { recursive: true })
+      writeFileSync(chatDir(r), '')
+      return {}
+    }, /could not check whether another process holds this chat/],
+    // Copilot is handed it as it is (childEnv), so the check and Copilot would look in different places
+    ['a COPILOT_HOME that is not absolute', (r: Rig) => ({ env: { ...r.env, COPILOT_HOME: 'copilot-home' } }), /^Your shell sets COPILOT_HOME to a path that is not absolute/],
+  ] as Array<[string, (r: Rig) => Record<string, unknown>, RegExp]>)('refuses %s before writing any row', async (_, spoil, error) => {
+    const r = chatRig()
+    const run = runDriver(r, chatSpec(r, spoil(r)))
+    const status = await run.status()
+    expect(status.ok).toBe(false)
+    expect(String(status.error)).toMatch(error)
+    expect(await run.exited).toBe(1)
+    expect(getLaunch(r.hub, LAUNCH)).toBeNull()
+    expect(readFileSync(r.fakeLog, 'utf8')).toBe('')
+  }, 40_000)
+
+  // a folder that can be listed but not searched: each lock's lstat fails with EACCES, not ENOENT
+  it.skipIf(process.getuid?.() === 0)('refuses a chat whose lock cannot be lstat’ed, before writing any row', async () => {
+    const r = chatRig()
+    writeFileSync(join(chatDir(r), 'inuse.2147483646.lock'), '2147483646')
+    chmodSync(chatDir(r), 0o444)
+    try {
+      // the case under test: the listing works, the lock's lstat does not
+      expect(readdirSync(chatDir(r))).toContain('inuse.2147483646.lock')
+      expect(() => lstatSync(join(chatDir(r), 'inuse.2147483646.lock'))).toThrow(/EACCES/)
+      const run = runDriver(r, chatSpec(r))
+      const status = await run.status()
+      expect(status.ok).toBe(false)
+      expect(String(status.error)).toMatch(/could not check whether another process holds this chat/)
+      expect(await run.exited).toBe(1)
+      expect(getLaunch(r.hub, LAUNCH)).toBeNull()
+      expect(readFileSync(r.fakeLog, 'utf8')).toBe('')
+    } finally {
+      chmodSync(chatDir(r), 0o755)
+    }
+  }, 40_000)
+
+  it('a resume whose folder was replaced by a symlink since it parked is refused, starts nothing, and leaves the row as it was', async () => {
+    const r = chatRig()
+    const first = runDriver(r, chatSpec(r), { AGENT_INBOX_DRIVER_IDLE_MS: '400' })
+    expect(await first.status()).toEqual({ ok: true, launch: LAUNCH })
+    expect(await first.exited).toBe(0)
+    const work = realpathSync(join(r.dir, 'work'))
+    const before = getLaunch(r.hub, LAUNCH)!
+    expect(before).toMatchObject({ status: 'parked', acp_session: CHAT, cwd: work })
+    renameSync(work, `${work}-real`)
+    symlinkSync(`${work}-real`, work)
+    const spawned = received(r).filter((m) => 'argv' in m).length
+    const resumed = runDriver(r, resumeSpec(r))
+    expect(await resumed.status()).toEqual({ ok: false, error: `${work} is not a folder` })
+    expect(await resumed.exited).toBe(1)
+    expect(received(r).filter((m) => 'argv' in m)).toHaveLength(spawned)
+    expect(methods(r, 'session/load')).toHaveLength(1)
+    expect(getLaunch(r.hub, LAUNCH)).toMatchObject({
+      status: 'parked', acp_session: CHAT, chat_id: CHAT, cwd: work, park_reason: before.park_reason, end_reason: null,
+      active_ms: before.active_ms, tool_calls: before.tool_calls, sessions: before.sessions, prompt: before.prompt,
+    })
+  }, 40_000)
 })

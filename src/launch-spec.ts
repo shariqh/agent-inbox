@@ -4,7 +4,9 @@
 // the renderer never sends a path, executable, argv or env. A `new` spec carries
 // every launch fact plus the captured environment and the launch key; a
 // `resume` spec carries only the id, environment and key, since the first
-// driver wrote the facts into the launch row. Pure, apart from reading fd 3.
+// driver wrote the facts into the launch row. A `chat` spec (#586 phase 2)
+// carries a terminal-made Copilot chat's id, its folder, the mode and the first
+// message. Pure, apart from reading fd 3.
 import { readSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { LAUNCH_KEY_BYTES } from './launch-sign.js'
@@ -64,7 +66,26 @@ export interface ResumeLaunchSpec extends SpecCommon {
   raise?: { revision: number; activeMs: number; toolCalls: number }
 }
 
-export type LaunchSpec = NewLaunchSpec | ResumeLaunchSpec
+/**
+ * #586 phase 2: continue a Copilot CLI chat made in a terminal as a driven session, in the chat's own
+ * folder (no worktree, no budget limit, Copilot's default model), with `prompt` as its first turn. The
+ * version stays 1: an older driver refuses the kind (exit 65, "kind must be new or resume").
+ */
+export interface ChatLaunchSpec extends SpecCommon {
+  kind: 'chat'
+  host: 'copilot'
+  /** The chat's id, a lowercase UUID: a path segment under session-state and session/load's sessionId. */
+  chatId: string
+  cwd: string
+  mode: ChatMode
+  prompt: string
+}
+
+/** The modes a continued chat may run in: every tool call asks first (design §7 question 1). */
+export type ChatMode = Extract<LaunchMode, 'ask' | 'read-only'>
+const CHAT_MODES: readonly ChatMode[] = ['ask', 'read-only']
+
+export type LaunchSpec = NewLaunchSpec | ResumeLaunchSpec | ChatLaunchSpec
 
 export type SpecResult = { ok: true; spec: LaunchSpec } | { ok: false; error: string }
 
@@ -92,10 +113,12 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
   }
   if (!isRecord(raw)) return fail('not an object')
   if (raw.v !== LAUNCH_SPEC_VERSION) return fail(`version ${String(raw.v)} is not ${LAUNCH_SPEC_VERSION}`)
-  if (raw.kind !== 'new' && raw.kind !== 'resume') return fail('kind must be new or resume')
+  if (raw.kind !== 'new' && raw.kind !== 'resume' && raw.kind !== 'chat') return fail('kind must be new, resume or chat')
   const shape = raw.kind === 'new'
     ? exactKeys(raw, ['v', 'kind', 'launchId', 'host', 'cwd', 'mode', 'budgets', 'prompt', 'env', 'launchKey'], ['model', 'reasoningEffort', 'worktree', 'maxDrivers'])
-    : exactKeys(raw, ['v', 'kind', 'launchId', 'env', 'launchKey'], ['maxDrivers', 'raise'])
+    : raw.kind === 'chat'
+      ? exactKeys(raw, ['v', 'kind', 'launchId', 'host', 'chatId', 'cwd', 'mode', 'prompt', 'env', 'launchKey'], ['maxDrivers'])
+      : exactKeys(raw, ['v', 'kind', 'launchId', 'env', 'launchKey'], ['maxDrivers', 'raise'])
   if (shape) return fail(shape)
   if (typeof raw.launchId !== 'string' || !LAUNCH_ID.test(raw.launchId) || raw.launchId !== launchId) {
     return fail('launchId must be the lowercase UUID on the command line')
@@ -127,6 +150,12 @@ export function parseLaunchSpec(text: string, launchId: string): SpecResult {
 
   if (raw.host !== 'copilot') return fail('host must be copilot')
   if (typeof raw.cwd !== 'string' || !isAbsolute(raw.cwd) || raw.cwd.length > 4096 || raw.cwd.includes('\0')) return fail('cwd must be an absolute path')
+  if (raw.kind === 'chat') {
+    if (typeof raw.chatId !== 'string' || !LAUNCH_ID.test(raw.chatId)) return fail('chatId must be a lowercase UUID')
+    if (!CHAT_MODES.includes(raw.mode as ChatMode)) return fail(`mode must be one of ${CHAT_MODES.join(', ')}`)
+    if (typeof raw.prompt !== 'string' || !raw.prompt.trim() || raw.prompt.length > MAX_PROMPT) return fail('prompt must hold 1 to 65536 characters')
+    return { ok: true, spec: { ...common, kind: 'chat', host: 'copilot', chatId: raw.chatId, cwd: raw.cwd, mode: raw.mode as ChatMode, prompt: raw.prompt } }
+  }
   if (!MODES.includes(raw.mode as LaunchMode)) return fail(`mode must be one of ${MODES.join(', ')}`)
   if (raw.model !== undefined && (typeof raw.model !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(raw.model))) return fail('model must be a model id')
   if (raw.reasoningEffort !== undefined && (typeof raw.reasoningEffort !== 'string' || !isReasoningEffort(raw.reasoningEffort))) {

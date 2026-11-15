@@ -9,7 +9,7 @@ import type { AcpFrame } from '../src/acp-client.js'
 import { findNativeHost, linkSessions, parsePs } from '../src/driver-link.js'
 import {
   MODE_AGENT, MODE_PLAN, PLAN_APPROVED_PROMPT, answerPingPrompt, askTitle, cappedInput, childEnv, copilotAgentInboxServer,
-  copilotArgs, editsFolder, filterOptions, firstPrompt, initialPhase, interruptPrompt, messagesPrompt, promptSafe, setupRefusalHint, stateValid, terminalSafe,
+  chatPrompt, copilotArgs, editsFolder, filterOptions, firstPrompt, initialPhase, interruptPrompt, messagesPrompt, promptSafe, setupRefusalHint, stateValid, terminalSafe,
 } from '../src/driver-policy.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -26,7 +26,9 @@ describe('prompt framing (§4.1 rule 5, §5.3)', () => {
     expect(messagesPrompt([{ id: 'm-1', text: '/autopilot' }])).toBe(
       'The human sent you 1 message via Agent Inbox. Each is also in pending(); act on each once, then ack_message({ id, outcome }).\n\n[m-1] /autopilot',
     )
-    for (const prompt of [firstPrompt('/x'), messagesPrompt([{ id: 'a', text: '/x' }])]) expect(promptSafe(prompt)).toBe(true)
+    // #586 phase 2: a continued chat's first message
+    expect(chatPrompt('/allow-all on')).toBe('The human continued this chat via Agent Inbox and says:\n\n/allow-all on')
+    for (const prompt of [firstPrompt('/x'), chatPrompt('/x'), messagesPrompt([{ id: 'a', text: '/x' }])]) expect(promptSafe(prompt)).toBe(true)
   })
 
   it('starts every control message with "Agent Inbox:" and quotes agent text on one line', () => {

@@ -30,6 +30,7 @@ import { runHook } from '../src/hook.js'
 import { issueKeyFor } from '../public/issue-key.js'
 import { createViewer } from '../src/viewer.js'
 import { appAsks } from '../src/driver-launch.js'
+import { parseLaunchSpec } from '../src/launch-spec.js'
 import { sign } from './launch-fixtures.js'
 import type { FoundLink } from '../public/links.js'
 import { renderStructuredText } from '../public/structured-text.js'
@@ -2017,5 +2018,136 @@ describe('a v2.5.0 hub, driver and spec sharing launches with no budget limit (#
     for (const budgets of [{ activeMs: null, toolCalls: null }, { activeMs: 7_200_000, toolCalls: null }, { activeMs: null, toolCalls: 500 }]) {
       expect(V250_BUDGETS.budgets(budgets)).toBe('launch spec: a budget is out of bounds')
     }
+  })
+})
+
+// #586 phase 2: what a v2.9.0 hub, driver and spec validator hold, copied verbatim from tag v2.9.0:
+// the launches table as its migrations leave it (V250_BUDGETS' table with optional budgets), the
+// launch writes of its driver (createLaunch, parkLaunch, resumeLaunch without a raise with
+// RESUMABLE_END inlined, endLaunch, handOffLaunch; src/store.ts) and parseLaunchSpec's kind check
+// (src/launch-spec.ts). None of its statements names chat_id.
+const V290 = {
+  launches: V250_BUDGETS.launches.replace('budget_active_ms INTEGER NOT NULL', 'budget_active_ms INTEGER')
+    .replace('budget_tool_calls INTEGER NOT NULL', 'budget_tool_calls INTEGER'),
+  createLaunch: `INSERT INTO launches (
+        id, host, project, stream, cwd, mode, model, reasoning_effort, budget_active_ms, budget_tool_calls,
+        prompt, spec_version, status, created_at, updated_at, driver_pid,
+        checkout_root, worktree_path, branch, base_sha, base_ref)
+      VALUES (@id, @host, @project, @stream, @cwd, @mode, @model, @effort, @activeMs, @toolCalls,
+        @prompt, @specVersion, 'running', @now, @now, @driverPid,
+        @checkoutRoot, @worktreePath, @branch, @baseSha, @baseRef)`,
+  parkLaunch: `UPDATE launches
+                             SET status = CASE WHEN stop_requested_at IS NULL THEN 'parked' ELSE 'ended' END,
+                                 end_reason = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE 'stopped' END,
+                                 parked_at = CASE WHEN stop_requested_at IS NULL THEN @now ELSE NULL END,
+                                 park_reason = CASE WHEN stop_requested_at IS NULL THEN @reason ELSE NULL END,
+                                 ended_at = CASE WHEN stop_requested_at IS NULL THEN NULL ELSE @now END,
+                                 acp_session = CASE WHEN @forget = 1 THEN @acp ELSE COALESCE(@acp, acp_session) END, active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
+                                 driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
+                                 updated_at = @now, revision = revision + 1
+                           WHERE id = @id AND status = 'running'
+                       RETURNING status`,
+  resumeLaunch: `UPDATE launches
+                               SET status = 'running', parked_at = NULL, park_reason = NULL, ended_at = NULL, end_reason = NULL, end_detail = NULL,
+                                   stop_requested_at = NULL, driver_pid = @pid, updated_at = @now,
+                                   revision = revision + CASE WHEN budget_active_ms IS NULL OR budget_tool_calls IS NULL THEN 2 ELSE 1 END,
+                                   budget_active_ms = budget_active_ms + @addActive, budget_tool_calls = budget_tool_calls + @addCalls
+                             WHERE id = @id AND (status = 'parked' OR (status = 'ended' AND end_reason = 'stopped' AND acp_session IS NOT NULL
+                       AND (worktree_path IS NULL OR worktree_removed_at IS NULL)))
+                         RETURNING *`,
+  endLaunch: `UPDATE launches
+                        SET status = 'ended', end_reason = @reason, end_detail = @detail, ended_at = @now, parked_at = NULL, park_reason = NULL,
+                            acp_session = COALESCE(@acp, acp_session),
+                            active_ms = MAX(active_ms, COALESCE(@activeMs, 0)), tool_calls = MAX(tool_calls, COALESCE(@toolCalls, 0)),
+                            updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND status <> 'ended'`,
+  handOffLaunch: `UPDATE launches
+                        SET status = 'ended', end_reason = CASE WHEN stop_requested_at IS NULL THEN 'handed_off' ELSE 'stopped' END,
+                            acp_session = @acp, ended_at = @now, parked_at = NULL, park_reason = NULL,
+                            active_ms = MAX(active_ms, @activeMs), tool_calls = MAX(tool_calls, @toolCalls),
+                            driver_pid = NULL, child_pgid = NULL, child_started_at = NULL, host_pid = NULL,
+                            updated_at = @now, revision = revision + 1
+                      WHERE id = @id AND status = 'running'`,
+  kind: (raw: { kind: unknown }): string | null => (raw.kind !== 'new' && raw.kind !== 'resume' ? 'launch spec: kind must be new or resume' : null),
+}
+
+describe('a v2.9.0 hub, driver and spec sharing launches that continue a chat (#586 phase 2)', () => {
+  let dir: string
+  const LAUNCH = (n: number) => `11111111-2222-4333-8444-${String(n).padStart(12, '0')}`
+  const CHAT = '0c4a7000-0000-4000-8000-00000000c001'
+  const now = () => new Date().toISOString()
+  const oldCreate = (n: number) => ({
+    id: LAUNCH(n), host: 'copilot', project: 'agent-inbox', stream: 'main', cwd: '/work/a', mode: 'ask', model: null, effort: null,
+    activeMs: null, toolCalls: null, prompt: 'x', specVersion: 1, now: now(), driverPid: 1,
+    checkoutRoot: null, worktreePath: null, branch: null, baseSha: null, baseRef: null,
+  })
+  const chatLaunch = (n: number) => ({
+    id: LAUNCH(n), host: 'copilot' as const, project: 'agent-inbox', stream: 'main', cwd: '/work/a', mode: 'ask',
+    budgetActiveMs: null, budgetToolCalls: null, prompt: 'Carry on.', specVersion: 1, driverPid: 1, chatId: CHAT,
+  })
+
+  beforeEach(() => { dir = scratchDir('mixed-version-chat-') })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('migrates a v2.9.0 launches table additively while the old process writes on, and a second open changes nothing', () => {
+    const path = join(dir, 'inbox.db')
+    const old = new Database(path)
+    old.pragma('busy_timeout = 5000')
+    old.pragma('journal_mode = WAL')
+    old.exec(V290.launches)
+    old.prepare(V290.createLaunch).run(oldCreate(1))
+    const db = openDb(path)
+    expect(db.prepare(`SELECT type, "notnull", dflt_value FROM pragma_table_info('launches') WHERE name = 'chat_id'`).get())
+      .toEqual({ type: 'TEXT', notnull: 0, dflt_value: null })
+    expect(db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_launches_chat'`).pluck().get()).toBe('idx_launches_chat')
+    expect(getLaunch(db, LAUNCH(1))).toMatchObject({ status: 'running', chat_id: null, revision: 1 })
+    // the old process's statements keep working on the migrated table, and write no chat id
+    old.prepare(V290.createLaunch).run(oldCreate(2))
+    expect(old.prepare(V290.parkLaunch).get({ id: LAUNCH(2), now: now(), reason: null, acp: 'acp-2', activeMs: 0, toolCalls: 0, forget: 0 })).toEqual({ status: 'parked' })
+    expect(old.prepare(V290.resumeLaunch).get({ id: LAUNCH(2), pid: 2, now: now(), addActive: 0, addCalls: 0 })).toMatchObject({ status: 'running', chat_id: null })
+    expect(old.prepare(V290.endLaunch).run({ id: LAUNCH(2), now: now(), reason: 'stopped', detail: null, acp: null, activeMs: null, toolCalls: null }).changes).toBe(1)
+    expect(getLaunch(db, LAUNCH(2))).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: 'acp-2', chat_id: null })
+    const schema = db.pragma('schema_version', { simple: true })
+    openDb(path).close()
+    expect(db.pragma('schema_version', { simple: true })).toBe(schema)
+    old.close()
+    db.close()
+  })
+
+  it('its writes to a chat launch keep chat_id, and none of them puts a second launch of the chat in the index', () => {
+    const path = join(dir, 'inbox.db')
+    const db = openDb(path)
+    const old = new Database(path)
+    old.pragma('busy_timeout = 5000')
+    createLaunch(db, chatLaunch(1))
+    // an older driver that resumes a parked chat launch loads it as any launch (§3.7, Older builds)
+    expect(old.prepare(V290.parkLaunch).get({ id: LAUNCH(1), now: now(), reason: null, acp: CHAT, activeMs: 0, toolCalls: 0, forget: 0 })).toEqual({ status: 'parked' })
+    expect(old.prepare(V290.resumeLaunch).get({ id: LAUNCH(1), pid: 2, now: now(), addActive: 0, addCalls: 0 })).toMatchObject({ status: 'running', chat_id: CHAT })
+    expect(old.prepare(V290.endLaunch).run({ id: LAUNCH(1), now: now(), reason: 'stopped', detail: null, acp: null, activeMs: null, toolCalls: null }).changes).toBe(1)
+    expect(getLaunch(db, LAUNCH(1))).toMatchObject({ status: 'ended', end_reason: 'stopped', acp_session: CHAT, chat_id: CHAT })
+    // still held: this build refuses a second launch of the chat; the old one starts launches with no chat
+    expect(() => createLaunch(db, chatLaunch(2))).toThrow(/UNIQUE constraint failed: launches\.chat_id/)
+    old.prepare(V290.createLaunch).run(oldCreate(3))
+    expect(old.prepare(V290.resumeLaunch).get({ id: LAUNCH(1), pid: 3, now: now(), addActive: 0, addCalls: 0 })).toMatchObject({ status: 'running' })
+    expect(old.prepare(V290.handOffLaunch).run({ id: LAUNCH(1), now: now(), acp: CHAT, activeMs: 0, toolCalls: 0 }).changes).toBe(1)
+    // handed off, it holds the chat no more
+    expect(() => createLaunch(db, chatLaunch(2))).not.toThrow()
+    expect(getLaunch(db, LAUNCH(1))).toMatchObject({ end_reason: 'handed_off', chat_id: CHAT })
+    expect(old.prepare(V290.resumeLaunch).get({ id: LAUNCH(1), pid: 4, now: now(), addActive: 0, addCalls: 0 })).toBeUndefined()
+    old.close()
+    db.close()
+  })
+
+  // V290.kind is a copy of tag v2.9.0's src/launch-spec.ts kind check; its text is what main matches
+  // to say the runtime is older than the app (design §3.3)
+  it('an older driver refuses a chat spec this build accepts (exit 65), so it never starts one', () => {
+    const text = JSON.stringify({
+      v: 1, kind: 'chat', launchId: LAUNCH(1), host: 'copilot', chatId: CHAT, cwd: '/work/a', mode: 'ask',
+      prompt: 'Carry on.', env: { PATH: '/usr/bin:/bin', HOME: '/home/someone' }, launchKey: Buffer.alloc(32, 3).toString('base64'),
+    })
+    const parsed = parseLaunchSpec(text, LAUNCH(1))
+    expect(parsed).toMatchObject({ ok: true, spec: { kind: 'chat', chatId: CHAT } })
+    expect(V290.kind(JSON.parse(text) as { kind: unknown })).toBe('launch spec: kind must be new or resume')
+    expect(V290.kind(parsed.ok ? parsed.spec : { kind: null })).toBe('launch spec: kind must be new or resume')
   })
 })

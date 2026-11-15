@@ -1368,6 +1368,7 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
     expect(text.message).toBe('Open iTerm2 on the session of alpha again?')
     expect(text.buttons).toEqual(['Open iTerm2', 'Cancel'])
     expect(text.detail).toContain('If it is still open in another iTerm2 window')
+    expect(text.detail).toContain('iTerm2 may first ask whether to run the script')
   })
 
   it('reads the choice once, so the dialog and the open name the same terminal (#586)', async () => {

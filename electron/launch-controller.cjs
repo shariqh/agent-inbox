@@ -271,6 +271,9 @@ function budgetConfirmation({ launch, folder, add }) {
   }
 }
 
+// iTerm2 asks before it runs a script it is handed (#586)
+const ITERM_ASKS = 'iTerm2 may first ask whether to run the script: answer OK there.'
+
 // Take over in Terminal (step 5, §3.5): what main shows before the launch leaves Agent Inbox for
 // good. `state` is what the launch is now: running (its turn is cancelled), parked, or already handed
 // off (the terminal is opened on it again). `app` is the terminal the Settings name (#586), and
@@ -282,6 +285,7 @@ function takeOverConfirmation({ project, folder, state, app = 'Terminal' }) {
       detail: [
         `Folder: ${displayLine(folder)}`,
         `${app} runs copilot --resume there, with the session’s history.`,
+        ...(app === 'iTerm2' ? [ITERM_ASKS] : []),
         `If it is still open in another ${app} window, use that one instead: two Copilots must never work in one session.`,
       ].join('\n'),
       buttons: [`Open ${app}`, 'Cancel'],
@@ -293,8 +297,7 @@ function takeOverConfirmation({ project, folder, state, app = 'Terminal' }) {
       `Folder: ${displayLine(folder)}`,
       ...(state === 'running' ? ['Agent Inbox stops driving it first: its current turn and any approval it waits on are cancelled.'] : []),
       `${app} then runs copilot --resume there, with the session’s history, and you answer it in ${app}.`,
-      // iTerm2 asks before it runs a script it is handed (#586)
-      ...(app === 'iTerm2' ? ['iTerm2 may first ask whether to run the script: answer OK there.'] : []),
+      ...(app === 'iTerm2' ? [ITERM_ASKS] : []),
       'Agent Inbox does not resume it, push messages to it or approve for it again. Messages it has not read yet stay with the old session.',
     ].join('\n'),
     buttons: ['Take over', 'Cancel'],

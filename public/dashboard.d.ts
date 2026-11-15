@@ -77,8 +77,6 @@ export interface DashboardModel {
   lanes: Lane[]
   /** #454: the plans the lanes link (closed projects left out), which the Agents home's cards link too */
   boards: LaneBoard[]
-  /** the items in the lens (closed projects left out) */
-  items: RelayItem[]
   /** connected sessions with no live claim, folded into "+N idle connections" */
   idleConnections: number
   /** the Needs you lane (dashboard lanes design §3.2): waitingEntries in sortRail order */

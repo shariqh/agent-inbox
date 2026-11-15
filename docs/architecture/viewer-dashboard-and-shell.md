@@ -34,8 +34,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `docs/superpowers/specs/2026-11-13-dashboard-lanes-design.md` §3.1–3.2) come first:
   `public/dash-head.js` draws one row of lane chips (Needs you, Working, Quiet) with New
   session… at its right end, and `public/needs-you-lane.js` draws one card per attention
-  entry, above the grid. The chips replaced the Now strip, so each lane is counted once on
-  the Dashboard; a chip scrolls to its lane and focuses its first card, never filters, and
+  entry, above the grid. The chips replaced the Now strip, so the Needs you count shows only
+  on its chip (the Agents card's state filters keep their per-state counts until PR 4, and
+  its Quiet filter counts idle cards only); a chip scrolls to its lane and focuses its first card, never filters, and
   says "…" before the first `/api/activity` read. The lane is `buildDashboard().needsYou`
   (`waitingEntries` in `sortRail` order): with All projects it equals the badge, each entry
   once. A card never answers: a click or Enter opens the ask in the Inbox's detail panel
@@ -365,8 +366,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   over the Plans tab's own `countable`, where "waiting on you" is only rows
   `isBlockedRowAttention` counts. The page head's chips count the lanes from the same
   frame (Needs you the lane's cards; Working the main-list cards whose base state is
-  working, a running host turn included; Quiet the other main-list cards); the card
-  headings carry no numbers. The Agents home keeps cards keyed by id and writes only changed text and
+  working, a running host turn included; Quiet the other main-list cards); the Needs you
+  lane's heading carries no number. A Working or Quiet chip clears an Agents state filter
+  that hides every card it counts, then focuses and reveals the first one. The Agents home keeps cards keyed by id and writes only changed text and
   attributes, so an unchanged card keeps its nodes and selection; a rail draft never stops
   it, and a held pointer stops it with the rest of `paintAmbient`. A focused card control
   that leaves hands focus to the Agents heading only when the document had focus before the

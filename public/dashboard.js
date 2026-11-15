@@ -141,8 +141,6 @@ export function buildDashboard({
     lanes: lanes.lanes,
     // #454: the plans the lanes link, which the Agents home's cards link too
     boards: visibleBoards,
-    // the items in the lens, which the session panel reads (#307)
-    items: visibleItems,
     idleConnections: lanes.idle,
     // the Needs you lane (dashboard lanes design §3.2): the attention set in rail order
     needsYou: railOrder,

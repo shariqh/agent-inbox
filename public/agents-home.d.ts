@@ -10,7 +10,6 @@ export interface AgentsHomeInput {
   boards?: LaneBoard[]
   attention?: AttentionEntry[]
   answered?: Array<Record<string, any>>
-  items?: Array<Record<string, any>>
   closed?: Iterable<string>
   nowMs: number
   /** a forced paint re-sorts the cards (§10 rule 5) */

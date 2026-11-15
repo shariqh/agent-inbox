@@ -41,7 +41,7 @@ export function liveSummary(activity, nowMs) {
  * The sidebar's Sessions indicator (#454, design §3.5): "2 working" over "5 connected",
  * the dot in the freshest working session's tone (liveSummary's rule), and how many
  * run an older build. Working is the lanes' `isBusy` (a claim, or a running host
- * turn, #466), so it agrees with the Now strip and the cards. Before the first /api/activity read, "Checking sessions…".
+ * turn, #466), so it agrees with the Working chip and the cards. Before the first /api/activity read, "Checking sessions…".
  * @param {Array<any> | null | undefined} activity every /api/activity row (global, never lens-filtered)
  * @param {number} nowMs
  * @param {(row: any) => ({ older: boolean } | null)} [buildOf] a row's build, from sessionBuild

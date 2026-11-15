@@ -104,11 +104,13 @@ The first viewport contains, top to bottom:
 - local agent-claim history with explicit empty/error states, and recent outcomes.
 
 A lane chip is a button that scrolls to its lane and moves focus to its first card. It
-never filters, and it shows 0 when its lane is empty. Each lane is counted once on the
-Dashboard, by its chip: no lane header, group head or session card repeats the count.
-Working counts the live session cards whose state is working; Quiet counts the other live
-cards in the main list. Until the Working and Quiet lanes exist, both chips land on the
-Agents card.
+never filters, and it shows 0 when its lane is empty. The Needs you count shows only on
+its chip: no lane header, group head or session card repeats it. Working counts the live
+session cards whose state is working; Quiet counts the other live cards in the main list.
+Until the Working and Quiet lanes exist, both chips land on the Agents card, clearing an
+Agents state filter that hides the cards they count, and that card keeps its state filters
+with their own per-state counts: its Quiet filter counts idle cards only, while the Quiet
+chip also counts parked and starting ones. PR 4 removes the filters.
 
 The Needs you lane holds the Inbox's attention set under the Dashboard's lens, in rail
 order (asks an agent is waiting on first, oldest first), so with All projects its count is

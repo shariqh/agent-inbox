@@ -246,25 +246,27 @@ a guess.
 
 The app opens on the Dashboard (`G D`), for all projects and agents.
 
+- **The page head** has one row of lane chips, **Needs you**, **Working** and
+  **Quiet**, each with its count, and **New session…** at its right end. A chip
+  scrolls to its lane and moves focus to its first card; it never filters.
 - **Needs you** lists the requests waiting on you, the same set the badge counts,
-  with requests whose agent is still waiting on the answer first. The top three are
-  cards you can answer right there, with the Inbox's own options and editor, or set
-  aside with **Snooze** (4 hours) or **Pin**. On a card, `J`/`K` move, `1`-`4`
-  choose, `S` snoozes, `P` pins and `Enter` expands. The rail also says how many
-  more requests wait in the Inbox and how many are in Later.
-- **The Now strip** counts working sessions and their subagents, the requests
-  waiting on you and how long the oldest has waited, and the plan steps of the
-  working sessions' plans.
+  with requests whose agent is still waiting on the answer first. Each card shows
+  the project, agent, branch, age, the request and its next step. Cards don't answer:
+  a click or `Enter` opens the request in the Inbox, and `Esc` brings you back to
+  the Dashboard where you were. `J`/`K` or the arrow keys move between cards. The
+  lane's header links to **Later** when something is there, and to the Review queue.
 - **Agents** has a card for every session, grouped by project (or by agent): what
-  it reports, whether it is working, quiet, idle, parked or needs you, and for a working
+  it reports, whether it is working, quiet, idle or parked, and for a working
   session its plan's progress (done, in progress, waiting on you, to do), its
-  subagents and a small trace of its MCP calls over the last 30 minutes. A terminal
+  subagents and a small trace of its MCP calls over the last 30 minutes. A session
+  that is asking you something shows an **Asking you · N** chip, which takes you to
+  its first request in Needs you. A terminal
   session with no live claim reads **Quiet** ("no Agent Inbox call for 40m"), because
   one busy with other tools makes no Agent Inbox call either; **Idle** is kept for an
   app-driven session whose driver reports no running turn. A claim that is no longer
   live shows as "Last reported: … · 52m ago". A session with no call for 8 hours
   folds under **Dormant**, and ended sessions under **Ended**. Filter by state with
-  **All**, **Needs you**, **Working**, **Quiet** and **Parked or stopped**.
+  **All**, **Working**, **Quiet** and **Parked or stopped**.
   Click a card to open its session panel: its requests, its plan, its recent
   outcomes, PR and CI state, links, and a place to message it.
 - **The Today ribbon** draws one line per project over the last 24 hours, 7 days or

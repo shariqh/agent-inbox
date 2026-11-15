@@ -1054,7 +1054,9 @@ refusal of a chat driven here. The page that calls it is part 3, below.
   any of them: blocked (`blocked()`'s texts, no reason); `invalid` ("This chat can’t be continued
   here.", or "Only Copilot CLI chats can be continued here for now." when only the tool is wrong);
   `busy` ("This chat is already starting.": an in-memory set of chat ids, emptied on every way out,
-  a throw included); `index` (the route's answer could not be read); `missing`; `driven` (the
+  a throw included; it is cleared on every path that settles, so a confirmation sheet that never
+  returns would leave the chat "already starting" until the app restarts, since the set lives in
+  memory only); `index` (the route's answer could not be read); `missing`; `driven` (the
   route's launch is not ended, or ended `stopped` or by a budget with `resumable` not false); `live`
   (`chat.live` anything but `false`); `kind` (`hidden` holds `empty` or `non-interactive`); `folder`
   (`folder-gone`, no folder, a relative one, a C0, DEL, C1, U+2028 or U+2029 character in the folder
@@ -1070,15 +1072,25 @@ refusal of a chat driven here. The page that calls it is part 3, below.
   value, no `HOME`, or a `<home>/.copilot` that is not there refuses.
 - **The confirmation** (`chatConfirmation`, Cancel the default): "Continue this Copilot chat in
   <project>?", then "Chat: <title, or Untitled> (<first 8 of the id>)", "Folder: <real folder>", the
-  works-in-the-folder line, the three conditional lines (not inside a git repository; another session
+  works-in-the-folder line, the conditional lines (not inside a git repository; another session
   of this app running in the folder itself, counted as `start` counts `shared`: a running launch whose
   `cwd` is the folder and that has no `worktree_path`; another chat live in the folder, from the whole
-  list, by its recorded or real folder), the drives-it-from-this-window line, the Mode line (Ask for
+  list, by its recorded folder or, for live chats only, its folder resolved by `realDirectory`, one that
+  cannot be resolved not matching; or, when no live chat matched and the list says `truncated`, "Agent
+  Inbox could not check every chat for another live session in this folder."), the
+  drives-it-from-this-window line, the Mode line (Ask for
   everything with §3.4's decided copy, "…such as a command you told Copilot not to ask about again in
   this folder."; Read-only with `MODES['read-only']`'s), the shell-command warning, "Budgets: no limit
   on active turn time or tool calls.", the premium-requests line, a blank line, and "Message: " with
-  the first 300 characters. Project, title and folder go through `displayLine`, so none can add, hide
-  or reorder a line; the message through `displaySafe`, as New session's task.
+  the first 300 characters. Project and title go through `displayLine`, so neither can add, hide or
+  reorder a line; the message through `displaySafe`, as New session's task. The folder comes from the
+  chat index, not main's own dialog, so its line (`folderLine`) differs from `displayLine` in two ways:
+  a folder over 120 code points loses its middle, keeping its first 40 and its last 79 around "…", so
+  the end that names the folder always shows; and every Unicode space separator but the ordinary
+  space, the blank-looking U+115F, U+1160, U+2800, U+3164 and U+FFA0, and a trailing ordinary space
+  show as `<U+XXXX>`, so a look-alike folder reads differently. `displayLine` is unchanged for its
+  other callers. The dialog names the index's project, while the launch row gets the driver's own
+  `inferProject(cwd)`, so the card's project can differ from the dialog's.
 - **The spec** main sends: `{ v: 1, kind: 'chat', launchId, host: 'copilot', chatId, cwd, mode, prompt,
   env, launchKey, maxDrivers }`, `cwd` the real folder, `env` the capture through `launchEnv`, and the
   key and cap added by `spawnDriver` as for every start (which checks the gate and the runtime again
@@ -1094,8 +1106,12 @@ refusal of a chat driven here. The page that calls it is part 3, below.
 - **Resume in Terminal** (`electron/chat-resume.cjs`, injected `isEnabled`, main's `launchEnabled`):
   with the switch on, a Copilot chat is also read through the route after the list's `missing`, and
   one whose launch holds it is refused (`driven`, "This chat has a session here: use Show session, then
-  Take over."), as is an unreadable answer (`index`) or a chat the route reads live (`live`). With the
-  switch off it reads nothing new and answers as before (`chats.md`, "Resume in Terminal").
+  Take over."), as is an unreadable answer (`index`) or a chat the route reads live (`live`). Before any
+  read, a Copilot chat that Continue here… is starting now (the controller's `isContinuing(id)`, a
+  read-only view of its busy set; between Continue and the driver's row the route shows no launch and
+  a chat that is not live) is refused as `busy`, "This chat is already starting.". With the switch off
+  it reads nothing new, never asks `isContinuing`, and answers as before (`chats.md`, "Resume in
+  Terminal").
 - **Tests**: `test/launch-electron.test.ts` (the spec and the call order; every refusal in order with
   nothing spawned, `worktree` included; extra keys, paths, argv and env refused before any read; the
   confirmation's exact lines and hostile titles, projects and folders; `COPILOT_HOME`; the older

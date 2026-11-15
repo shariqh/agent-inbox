@@ -43,6 +43,8 @@ const ERRORS = Object.freeze({
   write: 'Agent Inbox could not write the Terminal script.',
   // #586 phase 2: with the switch on, a chat a launch of this app holds
   driven: 'This chat has a session here: use Show session, then Take over.',
+  // #586 phase 2: with the switch on, Continue here… is starting this chat now
+  continuing: 'This chat is already starting.',
 })
 
 const refused = (reason, error = ERRORS[reason]) => ({ ok: false, reason, error })
@@ -150,7 +152,8 @@ function writeChatScript({ dir, name, text, now = Date.now }) {
 
 /**
  * Main's handler. Refusals, in order: unavailable (not macOS), invalid,
- * quitting, busy (one resume at a time), index, missing, driven and live from the
+ * quitting, busy (one resume at a time; #586 phase 2, also a Copilot chat Continue here… is
+ * starting, with the switch on), index, missing, driven and live from the
  * one-chat route (#586 phase 2: a Copilot chat with the switch on), live, opened (this
  * chat was opened moments ago), folder, invalid (the script cannot be built),
  * write, open.
@@ -159,6 +162,8 @@ function createChatResume({
   platform, isQuitting, viewer, isDirectory, terminal, scriptDir,
   // #586 phase 2: the driven-sessions switch, read on each resume; off when not given
   isEnabled = () => false,
+  // #586 phase 2: whether Continue here… is starting this chat now; asked only with the switch on
+  isContinuing = () => false,
   writeScript = (dir, name, text) => writeChatScript({ dir, name, text, now }),
   now = Date.now,
   random = () => randomBytes(8).toString('hex'),
@@ -175,6 +180,9 @@ function createChatResume({
   }
 
   async function resumeChecked({ tool, id }) {
+    // #586 phase 2: a continue between Continue and the driver's row reads as no launch and not live,
+    // so it is refused before any read
+    if (tool === 'copilot' && isEnabled() === true && isContinuing(id) === true) return refused('busy', ERRORS.continuing)
     // The page's default list first, then ?all=1: each is cut at 2,000 after its
     // own filter, so a chat either view lists is found in one of them.
     let chat = null

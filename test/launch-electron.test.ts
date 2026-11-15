@@ -1892,6 +1892,104 @@ describe('Continue a chat (#586 phase 2)', () => {
     expect(lines.at(-1)).toBe(`Message: ${'x'.repeat(300)}…`)
   })
 
+  it('keeps the end of a long folder, and shows look-alike spaces and blanks and a trailing space, on the Folder line only (review)', async () => {
+    const folderOf = (folder: string) => controllerModule.chatConfirmation({
+      project: 'alpha', title: null, chatId: CHAT, folder, repository: true, shared: false, liveHere: false, mode: 'ask', prompt: 'x',
+    }).detail.split('\n')[1]!
+    const long = `/Users/tester/${'deep/'.repeat(40)}the-folder-it-runs-in`
+    const line = folderOf(long)
+    expect(line.startsWith('Folder: /Users/tester/deep/deep/')).toBe(true)
+    expect(line.endsWith('/deep/the-folder-it-runs-in')).toBe(true)
+    expect(Array.from(line.slice('Folder: '.length))).toHaveLength(120)
+    expect(line.match(/…/g)).toHaveLength(1)
+    // a cut never splits an escape, and the end keeps its escapes
+    expect(folderOf(`/Users/tester/${'d'.repeat(200)}/proj `).endsWith('/proj<U+00A0>')).toBe(true)
+    expect(folderOf(`/Users/tester/${'ㅤ'.repeat(200)}`)).toBe(`Folder: /Users/tester/${'<U+3164>'.repeat(40 - '/Users/tester/'.length)}…${'<U+3164>'.repeat(79)}`)
+    for (const [end, shown] of [
+      [' ', '<U+00A0>'], ['ㅤ', '<U+3164>'], [' ', '<U+0020>'], ['⠀', '<U+2800>'], ['ᅟ', '<U+115F>'], ['ᅠ', '<U+1160>'],
+      ['ﾠ', '<U+FFA0>'], [' ', '<U+2003>'], ['　', '<U+3000>'], [' ', '<U+202F>'],
+    ]) expect(folderOf(`/Users/x/proj${end}`), JSON.stringify(end)).toBe(`Folder: /Users/x/proj${shown}`)
+    // an ordinary space inside a name stays as it is; so does a folder that is short and plain
+    expect(folderOf('/Users/x/my proj')).toBe('Folder: /Users/x/my proj')
+    expect(folderOf('/Users/x/a b ')).toBe('Folder: /Users/x/a<U+00A0>b<U+0020>')
+    // displayLine is unchanged for its other callers: the New session confirmation, projects, titles
+    expect(controllerModule.displayLine('proj  ')).toBe('proj  ')
+    expect(controllerModule.displayLine(`/${'f'.repeat(500)}`)).toBe(`/${'f'.repeat(118)}…`)
+    expect(controllerModule.confirmation({ project: 'alpha', folder: '/w/proj ', mode: 'ask', budgets: { activeMs: null, toolCalls: null }, prompt: 'x' }).detail.split('\n')[0]).toBe('Folder: /w/proj ')
+    // through main: the folder the route names, as the dialog shows it
+    const r = chatRig({ realDirectory: (folder: string) => folder })
+    r.chat.lookup = { chat: chatEntry({ cwd: '/Users/tester/dev/alphaㅤ' }), launch: null }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(confirmationOf(r).detail.split('\n')[1]).toBe('Folder: /Users/tester/dev/alpha<U+3164>')
+    expect((r.spawned.at(-1)!.spec as Json).cwd).toBe('/Users/tester/dev/alphaㅤ')
+  })
+
+  it('says when the chat list was cut, so a live chat in the folder may be missing from it (review)', async () => {
+    const note = 'Agent Inbox could not check every chat for another live session in this folder.'
+    const r = chatRig()
+    r.chat.list = { chats: [chatEntry()], truncated: true }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    const lines = confirmationOf(r).detail.split('\n')
+    expect(lines[3]).toBe(note)
+    expect(lines).toHaveLength(11)
+    // a live chat found is the warning itself; a whole list says nothing
+    const found = chatRig()
+    found.chat.list = { chats: [chatEntry(), chatEntry({ id: CHAT2, live: true })], truncated: true }
+    await found.controller.continueChat(CONTINUE)
+    expect(confirmationOf(found).detail).toContain('Another session is live in this folder.')
+    expect(confirmationOf(found).detail).not.toContain(note)
+    for (const truncated of [false, undefined, 'true']) {
+      const whole = chatRig()
+      whole.chat.list = { chats: [chatEntry()], truncated }
+      await whole.controller.continueChat(CONTINUE)
+      expect(confirmationOf(whole).detail, String(truncated)).not.toMatch(/could not check|is live in this folder/)
+    }
+  })
+
+  it('resolves only live chats’ folders to find one live in this folder through a link, and one that cannot be resolved is not (review)', async () => {
+    const resolved: string[] = []
+    const links: Record<string, string | null> = { '/tmp/alpha': CHAT_FOLDER, '/tmp/beta': '/Users/tester/dev/beta', '/tmp/gone': null }
+    const make = () => chatRig({
+      realDirectory: (folder: string) => {
+        if (folder.startsWith('/tmp/')) resolved.push(folder)
+        return folder in links ? links[folder]! : folder
+      },
+    })
+    const r = make()
+    r.chat.list = { chats: [chatEntry(), chatEntry({ id: CHAT2, live: true, cwd: '/tmp/alpha' })] }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(confirmationOf(r).detail).toContain('Another session is live in this folder.')
+    resolved.length = 0
+    const other = make()
+    other.chat.list = {
+      chats: [
+        chatEntry(),
+        chatEntry({ id: CHAT2, live: true, cwd: '/tmp/beta' }), chatEntry({ id: CHAT2, live: true, cwd: '/tmp/gone' }),
+        chatEntry({ id: CHAT2, live: false, cwd: '/tmp/alpha' }), chatEntry({ id: CHAT2, live: true, cwd: 'tmp/alpha' }),
+        chatEntry({ id: CHAT2, live: true, cwd: null }),
+      ],
+    }
+    expect(await other.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(confirmationOf(other).detail).not.toContain('is live in this folder')
+    // a chat that is not live, a relative folder and no folder are never resolved
+    expect(resolved).toEqual(['/tmp/beta', '/tmp/gone'])
+  })
+
+  it('says whether a chat is being continued now, for Resume in Terminal (review)', async () => {
+    const r = chatRig()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const confirm = r.deps.confirm
+    r.deps.confirm = async (text: Json) => { await gate; return confirm(text) }
+    const fresh = controllerModule.createLaunchController(r.deps)
+    expect(fresh.isContinuing(CHAT)).toBe(false)
+    const started = fresh.continueChat(CONTINUE)
+    expect([fresh.isContinuing(CHAT), fresh.isContinuing(CHAT2), fresh.isContinuing(7)]).toEqual([true, false, false])
+    release()
+    await started
+    expect(fresh.isContinuing(CHAT)).toBe(false)
+  })
+
   it('keeps a hostile title, project or folder to one visible line that cannot forge, hide or reorder another', async () => {
     const forged = '\nMode: Read-only.\nBudgets: up to 1 min'
     for (const hostile of [
@@ -2647,6 +2745,8 @@ describe('main’s wiring (source)', () => {
     expect(main).toContain("createLaunchKeys({ safeStorage, filePath: path.join(app.getPath('userData'), 'launch-master-key') })")
     // #586 phase 2: Continue here… matches COPILOT_HOME against the home folder whose .copilot the index reads
     expect(main).toContain("homeDir: app.getPath('home'),")
+    // ...and Resume in Terminal asks it, through its accessor, whether a chat is being continued
+    expect(main).toContain('isContinuing: (id) => launchController !== null && launchController.isContinuing(id) === true,')
     expect(main).not.toMatch(/console\.(log|error)\([^)]*(launchKey|masterKey|spec)/)
   })
 })

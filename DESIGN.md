@@ -131,13 +131,15 @@ the pointer, or holding keyboard focus, does not move.
 
 A session card never shows an ask. A session that has asks carries a pink "Asking you · N"
 chip, which scrolls to its first ask in Needs you. An ask no session card holds shows in the
-lane with "session ended" or "no session" in its meta line. The session panel keeps its
-Asking you section, so you can answer while reading that session's transcript.
+lane with "session ended" or "no session" on a line of its own under the meta line, so the
+note never squeezes the branch. The session panel keeps its Asking you section, so you can
+answer while reading that session's transcript.
 
 Every live session is in exactly one place: Working, Quiet or a fold. **Working** holds the
 sessions whose state is working (a running host turn included), under a project head (dot,
 name, session count, at the group-head size). A card leads with one meta line (state dot,
-agent, branch, time since its last call), then what the session is doing at the lead size,
+agent, branch, time since its last call; a long time wraps under the agent and branch
+instead of squeezing the branch), then what the session is doing at the lead size,
 up to two lines, then its subagents and plan progress. Its first button is **Open**, the
 session panel; **Message** follows it. **Quiet** is a compact table: state, session (project
 and agent), branch, last caption, since, and the state's main action (Open and Message for an

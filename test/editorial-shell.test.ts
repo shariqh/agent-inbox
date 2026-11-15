@@ -383,6 +383,18 @@ describe('the Needs you lane and the lane chips (dashboard lanes PR 3)', () => {
     expect(body('.ny-card')).toMatch(/padding: var\(--sp-3\) var\(--sp-4\);/)
   })
 
+  it('keep a Needs you card\'s branch readable: the session note takes its own line', () => {
+    // held on the meta line, "session ended" squeezed a short branch down to an ellipsis
+    expect(body('.ny-meta')).toMatch(/flex-wrap: wrap;/)
+    const note = body('.ny-session')
+    for (const rule of [/order: 2;/, /flex: 0 0 100%;/]) expect(note).toMatch(rule)
+    expect(body('.ny-meta > .ny-session::before')).toMatch(/content: none;/)
+    // a zero basis keeps a long branch, and the age after it, on the first line
+    const branch = body('.ny-branch')
+    for (const rule of [/flex: 1 1 0;/, /max-width: max-content;/, /min-width: 0;/, /text-overflow: ellipsis;/]) expect(branch).toMatch(rule)
+    expect(body('.ny-draft')).toMatch(/order: 1;/)
+  })
+
   it('wrap Later and Review queue under the lane title below 620px, and leave no Now strip', () => {
     const narrow = css.slice(css.indexOf('@container operations-desk (max-width: 620px) {'))
     expect(narrow.slice(0, narrow.indexOf('\n}'))).toMatch(/\.ny-head > h2 \{ flex-basis: 100%; \}/)

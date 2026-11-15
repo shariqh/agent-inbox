@@ -252,7 +252,7 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
 - **Needs you** lists the requests waiting on you, the same set the badge counts,
   with requests whose agent is still waiting on the answer first. Each card leads
   with what its Inbox row leads with, the step you are asked to take, and shows its
-  one-line summary, the project, agent, branch and age, the plan and row for a plan
+  summary (up to two lines), the project, agent, branch and age, the plan and row for a plan
   step, and **Draft** when you have started an answer in the Inbox. Cards don't answer:
   a click or `Enter` opens the request in the Inbox, and `Esc` brings you back to
   the Dashboard where you were. `J`/`K` or the arrow keys move between cards. The

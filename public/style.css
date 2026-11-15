@@ -2114,7 +2114,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
    public/agents-home.js (grown from the #454 Agents home), one lane gap apart
    after Needs you. Static but for the one-shot pulse a new call starts on a
    working card (#304). */
-.agents-home { position: relative; display: grid; grid-column: span 12; row-gap: var(--lane-gap); }
+.agents-home { position: relative; display: grid; grid-column: span 12; row-gap: var(--lane-gap); container: dash-lanes / inline-size; }
 .agents-home[hidden], .ah-empty[hidden], .ah-lane-empty[hidden], .ah-note[hidden], .ah-outside[hidden], .ah-fold[hidden], .ah-folds[hidden], .ah-new[hidden], .qt-rows[hidden], .sc-asking[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
 .agents-home.reading .ah-groups, .agents-home.reading .qt-rows, .agents-home.reading .ah-folds { display: none; }
 /* a lane with nothing keeps its header and says so in one quiet line */
@@ -2183,8 +2183,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 /* a fixed size, so the strip never changes height as text changes; every line clamps to one */
 .ma-card {
   display: flex;
-  /* 232px, narrowed against the Dashboard's operations-desk container (not the viewport,
-     which also counts the padding around the strip) so the next card still peeks */
+  /* 232px, narrowed against the lanes' dash-lanes container, the Dashboard's width while no
+     session panel is open beside them (not the viewport, which also counts the padding
+     around the strip), so the next card still peeks */
   width: min(232px, 78cqi);
   height: 134px;
   box-sizing: border-box;
@@ -2350,6 +2351,10 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .needs-you-lane { --fs-lane: 24px; --lane-gap: 40px; }
   .ny-cards { grid-template-columns: minmax(0, 1fr); }
   .dashboard-activity, .dashboard-outcomes { grid-column: span 12; }
+}
+
+/* the lanes' own width, the Dashboard's while no session panel is open beside them (§3.6) */
+@container dash-lanes (max-width: 900px) {
   /* §3.4: each Quiet row on two lines, with no header; a row's own template, not the table's.
      Six columns in under 900px left the session and its caption a few letters each. */
   .qt-head { display: none; }

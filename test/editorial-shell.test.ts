@@ -327,7 +327,10 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
   })
 
   it('put a Quiet row on two lines below 900px, on its own template, with no header', () => {
-    const narrow = block('@container operations-desk (max-width: 900px) {')
+    // keyed on the lanes' own width (§3.6): narrower than the Dashboard beside an open session panel
+    expect(body('.agents-home')).toMatch(/container: dash-lanes \/ inline-size;/)
+    expect(block('@container operations-desk (max-width: 900px) {')).not.toMatch(/\.qt-/)
+    const narrow = block('@container dash-lanes (max-width: 900px) {')
     const sheet = [...narrow.matchAll(/\n\s*([^{}\n]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
     expect(body('.qt-head', sheet)).toMatch(/display: none;/)
     const row = body('.qt-row', sheet)

@@ -43,6 +43,7 @@ import { refreshLinkSettings, renderLinkSettings, renderTerminalSettings } from 
 import { createLaunchUi } from '/launch-ui.js'
 import { installAgentsHome, moveKeepingFocus } from '/agents-home.js'
 import { installNeedsYouLane } from '/needs-you-lane.js'
+import { installPlansLane } from '/plans-lane.js'
 import { installDashHead } from '/dash-head.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
 import { SHELL_WARNING } from '/launches.js'
@@ -2168,6 +2169,8 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   })
   // dashboard lanes design §3.1–3.2: every attention entry once, in rail order, and each lane counted once
   needsYouLane.paint({ entries: model.needsYou, later: model.later, nowMs: Date.now() })
+  // §3.5: the lens's plans with open steps, each naming its project only under All projects
+  plansLane.paint({ plans: model.plansInProgress, showProject: !projectFilter, nowMs: Date.now() })
   dashHead.paint({ needs: model.needsYou.length, ...(agentsHome.counts() ?? { working: null, quiet: null }) })
   renderDashFocus(focusPanelEl, model, { forced })
   placeFocusPanel()
@@ -2243,6 +2246,16 @@ const needsYouLane = installNeedsYouLane({
   scrollBehavior: () => motion.scrollBehavior(),
   // the old "Answer · draft" hint, now on the ask's own card: the drafts suspendState() reads
   hasDraft: (id) => Boolean(id) && holdsDraft(id),
+})
+// ── the Plans in progress lane (dashboard lanes design §3.5) ─────────────────
+// A row opens its plan the way every other link to a plan does (focusItem: its
+// project as the lens, the Plans tab, the card focused); "All plans ›" opens
+// Plans under the lens the Dashboard has.
+const plansLane = installPlansLane({
+  open: (id) => focusItem(id),
+  openAll: () => selectTab('boards'),
+  projectColor: (project) => pcolor(project).dot,
+  scrollBehavior: () => motion.scrollBehavior(),
 })
 const dashHead = installDashHead({
   onChip: (key) => (key === 'needs' ? needsYouLane.focusFirst() : agentsHome.focusFirst(key)),
@@ -3318,7 +3331,9 @@ function renderDashboard(model) {
   // row on a narrow screen (placeFocusPanel).
   grid.appendChild(agentsHome.element())
   grid.appendChild(dashFocusEl())
-  grid.appendChild(dashRibbonEl())
+  // §3.5: then Plans in progress, Just landed and Today, each a full-width lane, the ribbon
+  // last; DOM order is the page's order, so Tab follows it with no CSS order
+  grid.appendChild(plansLane.element())
 
   const outcomes = document.createElement('section')
   outcomes.className = 'dashboard-card dashboard-outcomes'
@@ -3331,6 +3346,7 @@ function renderDashboard(model) {
   waiting.hidden = true
   outcomes.appendChild(waiting)
   grid.appendChild(outcomes)
+  grid.appendChild(dashRibbonEl())
 
   host.appendChild(grid)
   renderDashboardAmbient(model, { forced: true })

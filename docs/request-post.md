@@ -111,15 +111,32 @@ terminal and never asks anything; the brief comes on stdin or from `--brief-file
 | 14 | Off: no `agents.request-post`, or the device token is missing | The in-session path is fine |
 | 15 | Unavailable: DNS, TLS, refused, a redirect on the card, a refused token, a card that does not match ("update agent-inbox or the service"), or this Mac not on the endpoint's tailnet or its tailnet unreadable; nothing was filed | Retry once, then report to the user; no in-session filing |
 | 16 | Conflict: another row already covers this | Report that row; never change the slug, title or channels to get around it |
+| 18 | The shim is stale (its Node or `meshctl.js` is gone); the shim itself exits 18 before the client runs, and nothing was sent | Tell Shariq to run `meshctl enable --request-post --endpoint <url> --token-file <path> --apply` again (the same endpoint and token file as before); the in-session path is fine |
 | 124 | `wait` ran 4 hours without a final phase | Run the same `wait` again if it still matters |
 | 4 | Usage, a terminal on stdin, or an unreadable `--brief-file` | Fix the command |
 
 stdout is empty on every exit but 0. **These codes are request-post's own.** They share numbers
 with [unslop's](unslop.md) but not meanings: unslop's 13 means failed, its 14 also covers an
-unreachable agent and a card mismatch, and it has no 15 or 16.
+unreachable agent and a card mismatch, and it has no 15 or 16. Both shims use 18 for a stale shim,
+so a broken install is never mistaken for 14, the agent being off.
 
 While this machine is on a tailnet shared with others, the service's name does not resolve or
 refuses the device: exit 15, by design.
+
+## Allow rules in each host
+
+A host asks before it runs the shim unless a rule allows it (#584).
+
+- **Claude Code** matches a prefix, so `Bash(<mesh dir>/bin/request-post status:*)` allows `status`
+  and nothing else, and `Bash(<mesh dir>/bin/request-post file:*)` allows `file`. Write the shim as
+  `~/.agent-inbox/bin/request-post` (the `~/…` form) when the mesh dir is in your home folder.
+- **Copilot CLI** cannot limit a rule to one subcommand: `--allow-tool 'shell(<shim> status)'` does
+  not match, and only the whole command does, `--allow-tool 'shell(<shim>)'`. So allowing
+  `status` there also allows `file`, which files a request. Allow the shim in Copilot only when
+  both are acceptable; otherwise leave it to ask (#584, finding 2). A non-interactive `copilot -p`
+  run with a mesh dir outside your home folder also needs `--add-dir <mesh dir>`. When a call is
+  denied, read the exit code and stderr of the run, not the model's explanation of the denial:
+  Copilot's model gave a made-up reason in the #584 test.
 
 ## What this Mac keeps
 
@@ -166,5 +183,7 @@ compete with the private one. So `enable --request-post` writes no routing skill
 > **16:** report the existing row; never change fields to get around it.
 > **15:** retry once, then report to the user; no in-session filing.
 > **14:** the agent is off; the in-session path is fine on the Mac.
+> **18:** the shim is stale; tell Shariq to run `meshctl enable --request-post --endpoint <url> --token-file <path> --apply` again
+> (the same endpoint and token file as before).
 > Monitoring uses `status` and `wait`; repair is in-session. Ready is not approval: at
 > `awaiting-go`, `ready-for-human` or `proposed`, report `humanAction` and stop.

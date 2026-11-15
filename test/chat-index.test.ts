@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, lstatSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, lstatSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { chatsResponse, CHAT_WINDOW_BYTES, createChatIndex, MAX_CHATS } from '../src/chat-index.js'
 import type { ChatEntry, ChatIndexOpts, ChatIndexRead } from '../src/chat-index.js'
 import { openDb } from '../src/store.js'
@@ -13,8 +13,15 @@ afterEach(removeScratchDirs)
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const rec = (o: object) => JSON.stringify(o)
 const at = (n: number) => `2026-11-14T10:00:${String(n).padStart(2, '0')}.000Z`
-// not under a temp folder, so the hidden arrays below are exact
-const CWD = '/Users/example/dev/widget'
+// A folder that exists and is not under a temp folder, so the hidden arrays below are exact. It sits in node_modules
+// (not $TMPDIR, which is a temp folder) and has an empty .git, so the walk up for an origin stops here, reads nothing,
+// and the project is named after the folder.
+const FIXTURES = join(import.meta.dirname, '..', 'node_modules', '.cache', `chat-index-${process.pid}-${Date.now()}`)
+const CWD = join(FIXTURES, 'widget')
+mkdirSync(join(CWD, '.git'), { recursive: true })
+afterAll(() => rmSync(FIXTURES, { recursive: true, force: true }))
+// a folder that is not there (a test that wants it to appear makes it, inside FIXTURES)
+const GONE = join(FIXTURES, 'gone')
 const HOUR = 3_600_000
 
 const home = () => scratchDir('chat-home-')
@@ -69,7 +76,7 @@ describe('chat index: Claude Code transcripts (#586)', () => {
     const read = open(h).read()
     expect(read.truncated).toBe(false)
     expect(byId(read, id(1))).toEqual({
-      id: id(1), tool: 'claude', title: 'Fix the widget', project: 'widget', cwd: CWD, branch: 'feature', createdAt: at(1),
+      id: id(1), tool: 'claude', title: 'Fix the widget', titleAuto: false, project: 'widget', cwd: CWD, branch: 'feature', createdAt: at(1),
       lastActiveAt: expect.any(String), live: false, pr: { number: 5, repo: 'example/widget', url: 'https://github.com/example/widget/pull/5' }, hidden: [],
     })
   })
@@ -191,17 +198,42 @@ describe('chat index: Claude Code transcripts (#586)', () => {
 })
 
 describe('chat index: Copilot CLI folders (#586)', () => {
-  it('lists a Copilot chat from workspace.yaml, with only a user-typed name as its title', () => {
+  it('lists a Copilot chat from workspace.yaml, titled by the name Copilot shows for it', () => {
     const h = home()
     copilot(h, id(1), yaml(id(1), ['branch: main', 'repository: example/widget', 'user_named: true', 'name: A name I typed']), { events: true })
-    copilot(h, id(2), [...yaml(id(2)), 'name: |-', '  SECRET-PROMPT start of the first message'], { events: true })
+    copilot(h, id(2), [...yaml(id(2)), 'name: |-', '  Opening of the first prompt', '  SECRET-SECOND-LINE of the prompt'], { events: true })
+    copilot(h, id(3), yaml(id(3)), { events: true })
     const read = open(h).read()
     expect(byId(read, id(1))).toEqual({
-      id: id(1), tool: 'copilot', title: 'A name I typed', project: 'widget', cwd: CWD, branch: 'main', createdAt: '2026-11-14T09:00:00.000Z',
+      id: id(1), tool: 'copilot', title: 'A name I typed', titleAuto: false, project: 'widget', cwd: CWD, branch: 'main', createdAt: '2026-11-14T09:00:00.000Z',
       lastActiveAt: expect.any(String), live: false, pr: null, hidden: [],
     })
-    expect(byId(read, id(2)).title).toBeNull()
+    expect(byId(read, id(2))).toMatchObject({ title: 'Opening of the first prompt', titleAuto: true })
+    expect(byId(read, id(3))).toMatchObject({ title: null, titleAuto: false })
+    // the opening line of an automatic name is the only prompt text that comes back
     expect(JSON.stringify(read.chats)).not.toContain('SECRET')
+  })
+
+  it('titleAuto: user_named true or false, a long name, and a missing name', () => {
+    const h = home()
+    copilot(h, id(1), yaml(id(1), ['user_named: true', 'name: Typed']), { events: true })
+    copilot(h, id(2), yaml(id(2), ['user_named: false', 'name: Automatic']), { events: true })
+    copilot(h, id(3), yaml(id(3), [`name: ${'long '.repeat(60)}`]), { events: true })
+    copilot(h, id(4), yaml(id(4), ['user_named: true']), { events: true })
+    const read = open(h).read()
+    expect([id(1), id(2), id(3), id(4)].map((n) => [byId(read, n).title === null ? null : Array.from(byId(read, n).title!).length, byId(read, n).titleAuto])).toEqual([
+      [5, false], [9, true], [120, true], [null, false],
+    ])
+    expect(byId(read, id(3)).title!.endsWith('\u2026')).toBe(true)
+  })
+
+  it('a Claude title is never automatic, typed or generated', () => {
+    const h = home()
+    claude(h, 'a', id(1), basicHead, [{ type: 'ai-title', aiTitle: 'Generated' }])
+    claude(h, 'a', id(2), basicHead, [{ type: 'custom-title', customTitle: 'Typed' }])
+    claude(h, 'a', id(3), basicHead)
+    const read = open(h).read()
+    expect([1, 2, 3].map((n) => [byId(read, id(n)).title, byId(read, id(n)).titleAuto])).toEqual([['Generated', false], ['Typed', false], [null, false]])
   })
 
   it('skips a folder with no workspace.yaml, a mismatched id, or an oversized file', () => {
@@ -238,7 +270,8 @@ describe('chat index: Copilot CLI folders (#586)', () => {
 describe('chat index: hidden reasons (#586)', () => {
   it('hides temp folders, sdk runs and driver sessions, each with an exact reason list', () => {
     const h = home()
-    claude(h, 'a', id(1), [{ type: 'user', cwd: '/tmp/scratch', entrypoint: 'cli', timestamp: at(1) }])
+    // the temp folders are not on disk, so they are gone as well
+    claude(h, 'a', id(1), [{ type: 'user', cwd: '/tmp/chat-index-never-there', entrypoint: 'cli', timestamp: at(1) }])
     claude(h, 'b', id(2), [{ type: 'user', cwd: CWD, entrypoint: 'sdk-cli', timestamp: at(1) }])
     claude(h, 'c', id(3), [{ type: 'user', cwd: '/private/var/folders/xy/T/run', entrypoint: 'sdk-cli', timestamp: at(1) }])
     claude(h, 'd', id(4), [{ type: 'user', cwd: CWD, entrypoint: 'claude-vscode', timestamp: at(1) }])
@@ -246,8 +279,91 @@ describe('chat index: hidden reasons (#586)', () => {
     copilot(h, id(6), yaml(id(6)), { events: true })
     const read = open(h).read()
     expect(Object.fromEntries(read.chats.map((c) => [c.id, c.hidden]))).toEqual({
-      [id(1)]: ['temp'], [id(2)]: ['non-interactive'], [id(3)]: ['temp', 'non-interactive'], [id(4)]: [],
-      [id(5)]: ['temp', 'non-interactive', 'empty'], [id(6)]: [],
+      [id(1)]: ['temp', 'folder-gone'], [id(2)]: ['non-interactive'], [id(3)]: ['temp', 'non-interactive', 'folder-gone'], [id(4)]: [],
+      [id(5)]: ['temp', 'non-interactive', 'empty', 'folder-gone'], [id(6)]: [],
+    })
+  })
+
+  describe('folder-gone', () => {
+    const reasons = (h: string, uuid: string) => byId(open(h).read(), uuid).hidden
+
+    it('Claude: an existing folder is not gone, a deleted folder and a missing cwd are', () => {
+      const h = home()
+      const dir = scratchDir('chat-folder-')
+      claude(h, 'a', id(1), [{ type: 'user', cwd: CWD, entrypoint: 'cli', timestamp: at(1) }])
+      claude(h, 'a', id(2), [{ type: 'user', cwd: GONE, entrypoint: 'cli', timestamp: at(1) }])
+      claude(h, 'a', id(3), [{ type: 'user', entrypoint: 'cli', timestamp: at(1) }])
+      claude(h, 'a', id(4), [{ type: 'user', cwd: join(dir, 'file'), entrypoint: 'cli', timestamp: at(1) }])
+      put(join(dir, 'file'), 'not a folder')
+      claude(h, 'a', id(5), [{ type: 'user', cwd: join(dir, 'file', 'below'), entrypoint: 'cli', timestamp: at(1) }])
+      // the file's folder is a scratch folder, so those two are also `temp`
+      expect([1, 2, 3, 4, 5].map((n) => reasons(h, id(n)).filter((r) => r !== 'temp'))).toEqual([[], ['folder-gone'], ['folder-gone'], ['folder-gone'], ['folder-gone']])
+    })
+
+    it('Copilot: an existing folder is not gone, a deleted folder and a missing cwd are', () => {
+      const h = home()
+      copilot(h, id(1), yaml(id(1)), { events: true })
+      copilot(h, id(2), [...yaml(id(2)).filter((l) => !l.startsWith('cwd:')), `cwd: ${GONE}`], { events: true })
+      copilot(h, id(3), yaml(id(3)).filter((l) => !l.startsWith('cwd:')), { events: true })
+      expect([1, 2, 3].map((n) => reasons(h, id(n)))).toEqual([[], ['folder-gone'], ['folder-gone']])
+    })
+
+    it('Copilot: it is the chat\'s cwd that counts, not the git root above it', () => {
+      const h = home()
+      const rooted = (n: number, cwd: string, root: string) => [...yaml(id(n)).filter((l) => !l.startsWith('cwd:')), `cwd: ${cwd}`, `git_root: ${root}`]
+      copilot(h, id(1), rooted(1, GONE, CWD), { events: true })
+      copilot(h, id(2), rooted(2, CWD, GONE), { events: true })
+      const read = open(h).read()
+      expect(byId(read, id(1)).hidden).toEqual(['folder-gone'])
+      expect(byId(read, id(2)).hidden).toEqual([])
+    })
+
+    it('a folder that exists but cannot be read is not gone, for both tools', () => {
+      const h = home()
+      const locked = scratchDir('chat-locked-')
+      chmodSync(locked, 0o000)
+      try {
+        claude(h, 'a', id(1), [{ type: 'user', cwd: locked, entrypoint: 'cli', timestamp: at(1) }])
+        copilot(h, id(2), [...yaml(id(2)).filter((l) => !l.startsWith('cwd:')), `cwd: ${locked}`], { events: true })
+        const read = open(h).read()
+        expect(byId(read, id(1)).hidden).not.toContain('folder-gone')
+        expect(byId(read, id(2)).hidden).not.toContain('folder-gone')
+      } finally {
+        chmodSync(locked, 0o700)
+      }
+    })
+
+    it('a folder whose parent cannot be searched is not gone either', () => {
+      if (process.getuid?.() === 0) return // root searches every folder
+      const h = home()
+      const parent = scratchDir('chat-parent-')
+      mkdirSync(join(parent, 'inner'))
+      chmodSync(parent, 0o000)
+      try {
+        claude(h, 'a', id(1), [{ type: 'user', cwd: join(parent, 'inner'), entrypoint: 'cli', timestamp: at(1) }])
+        expect(byId(open(h).read(), id(1)).hidden).not.toContain('folder-gone')
+      } finally {
+        chmodSync(parent, 0o700)
+      }
+    })
+
+    it('caches whether a folder exists for 60 seconds', () => {
+      const h = home()
+      for (const n of [1, 2, 3]) claude(h, 'a', id(n), [{ type: 'user', cwd: GONE, entrypoint: 'cli', timestamp: at(1) }])
+      for (const n of [4, 5]) copilot(h, id(n), [...yaml(id(n)).filter((l) => !l.startsWith('cwd:')), `cwd: ${GONE}`], { events: true })
+      let clock = 1_700_000_000_000
+      const index = open(h, { now: () => clock })
+      expect(index.read().chats.every((c) => c.hidden.includes('folder-gone'))).toBe(true)
+      // a folder that appears is seen once the 60 second cache is stale, not before
+      mkdirSync(GONE, { recursive: true })
+      try {
+        clock += 1000
+        expect(index.read().chats.every((c) => c.hidden.includes('folder-gone'))).toBe(true)
+        clock += 61_000
+        expect(index.read().chats.some((c) => c.hidden.includes('folder-gone'))).toBe(false)
+      } finally {
+        rmSync(GONE, { recursive: true, force: true })
+      }
     })
   })
 })
@@ -463,7 +579,7 @@ describe('GET /api/chats (#586)', () => {
     createViewer(openDb(join(scratchDir('chat-db-'), 'inbox.db')), { agentHome: h, setupInfoPath: join(h, 'none.json'), chatIndex: open(h, extra) })
 
   const entry = (n: number, over: Partial<ChatEntry> = {}): ChatEntry => ({
-    id: id(n), tool: 'claude', title: null, project: 'p', cwd: null, branch: null, createdAt: null, lastActiveAt: at(n), live: false, pr: null, hidden: [], ...over,
+    id: id(n), tool: 'claude', title: null, titleAuto: false, project: 'p', cwd: null, branch: null, createdAt: null, lastActiveAt: at(n), live: false, pr: null, hidden: [], ...over,
   })
   const read = (chats: ChatEntry[], truncated = false): ChatIndexRead => ({ chats, truncated, work: { filesRead: 0, bytesRead: 0 } })
 
@@ -491,7 +607,7 @@ describe('GET /api/chats (#586)', () => {
     const body = await res.json() as ReturnType<typeof chatsResponse>
     expect(Object.keys(body).sort()).toEqual(['chats', 'counts', 'retention', 'truncated'])
     expect(body.chats.map((c) => c.id)).toEqual([id(1)])
-    expect(Object.keys(body.chats[0]!).sort()).toEqual(['branch', 'createdAt', 'cwd', 'hidden', 'id', 'lastActiveAt', 'live', 'pr', 'project', 'title', 'tool'])
+    expect(Object.keys(body.chats[0]!).sort()).toEqual(['branch', 'createdAt', 'cwd', 'hidden', 'id', 'lastActiveAt', 'live', 'pr', 'project', 'title', 'titleAuto', 'tool'])
     expect(body.counts).toEqual({ total: 2, hidden: 1, claude: 2, copilot: 0, live: 0 })
     expect(body.retention).toEqual({ claudeDays: 30 })
   })
@@ -505,6 +621,23 @@ describe('GET /api/chats (#586)', () => {
     const bad = await v.request('/api/chats?all=yes')
     expect(bad.status).toBe(400)
     expect(await bad.json()).toEqual({ ok: false, error: 'expected ?all=1' })
+  })
+
+  it('folder-gone chats are left out by default, listed with ?all=1, and counted as hidden', async () => {
+    const h = home()
+    claude(h, 'a', id(1), basicHead)
+    claude(h, 'b', id(2), [{ type: 'user', cwd: GONE, entrypoint: 'cli', timestamp: at(1) }])
+    copilot(h, id(3), yaml(id(3)), { events: true })
+    copilot(h, id(4), [...yaml(id(4)).filter((l) => !l.startsWith('cwd:')), `cwd: ${GONE}`], { events: true })
+    copilot(h, id(5), yaml(id(5)).filter((l) => !l.startsWith('cwd:')), { events: true })
+    const v = viewer(h)
+    const body = async (q: string) => await (await v.request(`/api/chats${q}`)).json() as ReturnType<typeof chatsResponse>
+    const shown = await body('')
+    expect(shown.chats.map((c) => c.id).sort()).toEqual([id(1), id(3)])
+    expect(shown.counts).toEqual({ total: 5, hidden: 3, claude: 2, copilot: 3, live: 0 })
+    const all = await body('?all=1')
+    expect(all.chats.map((c) => [c.id, c.hidden]).sort()).toEqual([[id(1), []], [id(2), ['folder-gone']], [id(3), []], [id(4), ['folder-gone']], [id(5), ['folder-gone']]])
+    expect(all.counts).toEqual(shown.counts)
   })
 
   it('retention.claudeDays is cleanupPeriodDays when positive, else 30', async () => {

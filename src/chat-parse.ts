@@ -5,11 +5,13 @@
 // Privacy rule: a record is parsed, the few named fields are copied and the
 // record is dropped. Nothing here keeps message text. The only free text that
 // leaves is a title a tool chose (Claude's ai-title and custom-title) or the
-// user typed (Copilot's name when `user_named` is true).
+// user typed. A Copilot chat's name is the opening of its first prompt unless the
+// user named it, so the opening line of it (at most 120 characters) is the only
+// prompt text the index ever returns.
 
 export type ChatTool = 'claude' | 'copilot'
 /** Why a chat is hidden from the default list. A chat can have several. */
-export type ChatHiddenReason = 'temp' | 'non-interactive' | 'empty'
+export type ChatHiddenReason = 'temp' | 'non-interactive' | 'empty' | 'folder-gone'
 
 export interface ChatPr { number: number; repo: string; url: string }
 
@@ -30,8 +32,10 @@ export interface CopilotMeta {
   branch: string | null
   /** `owner/name` */
   repository: string | null
-  /** Only a name the user typed. Copilot's automatic name is the start of the first prompt, so it is dropped. */
+  /** Copilot's `name`, cut to its first line (see cleanCopilotName); null when it has none. */
   title: string | null
+  /** true when `title` is Copilot's automatic name (the start of the first prompt), false for one the user typed or no title */
+  titleAuto: boolean
   createdAt: string | null
   updatedAt: string | null
   clientName: string | null
@@ -75,6 +79,27 @@ export function cleanTitle(s: unknown): string | null {
   if (!one) return null
   const chars = Array.from(one)
   return chars.length > MAX_TITLE ? chars.slice(0, MAX_TITLE).join('') : one
+}
+
+const MAX_COPILOT_TITLE = 120
+// zero-width characters and the byte order mark hide text just as bidi controls do
+const ZERO_WIDTH = /[\u{200b}-\u{200d}\u{2060}\u{feff}]/gu
+
+/**
+ * Copilot's chat name as a title: its first non-empty line, whitespace collapsed, control, bidi and
+ * zero-width characters removed, at most 120 characters with a trailing ellipsis when cut. Null when
+ * nothing is left. Only this line of a name is ever kept (docs/architecture/chats.md).
+ */
+export function cleanCopilotName(s: unknown): string | null {
+  if (typeof s !== 'string') return null
+  // a name can run to the size of workspace.yaml; the opening is all that is read
+  for (const raw of s.slice(0, 10_000).split(/\r\n|[\n\r\u{2028}\u{2029}]/u)) {
+    const line = raw.replace(ZERO_WIDTH, '').replace(/\s+/gu, ' ').replace(CONTROLS, '').replace(/ {2,}/g, ' ').trim()
+    if (!line) continue
+    const chars = Array.from(line)
+    return chars.length > MAX_COPILOT_TITLE ? `${chars.slice(0, MAX_COPILOT_TITLE - 1).join('').trimEnd()}\u2026` : line
+  }
+  return null
 }
 
 /** An absolute POSIX path with no control character. The index is POSIX-only for now (docs/architecture/chats.md). */
@@ -206,15 +231,17 @@ export function parseWorkspaceYaml(text: string): CopilotMeta | null {
   const id = y.get('id')
   if (id === undefined || !isChatId(id)) return null
   const client = y.get('client_name')
+  // Copilot fills `name` with the start of the first prompt unless the user named the chat (#586): the
+  // automatic one is still the chat's display name, so it is the title, marked auto, and cut to one line.
+  const title = cleanCopilotName(y.get('name'))
   return {
     id,
     cwd: cleanPath(y.get('cwd')),
     gitRoot: cleanPath(y.get('git_root')),
     branch: branchName(y.get('branch')),
     repository: slug(y.get('repository')),
-    // Copilot fills `name` with the start of the first prompt unless the user named the chat, so
-    // only a user-typed name is a title (#586). Reading it any other way would return prompt text.
-    title: y.get('user_named') === 'true' ? cleanTitle(y.get('name')) : null,
+    title,
+    titleAuto: title !== null && y.get('user_named') !== 'true',
     createdAt: stamp(y.get('created_at')),
     updatedAt: stamp(y.get('updated_at')),
     clientName: client !== undefined && /^[\w./-]{1,64}$/.test(client) ? client : null,

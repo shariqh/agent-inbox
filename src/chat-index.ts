@@ -26,8 +26,10 @@ export type { ChatHiddenReason, ChatPr, ChatTool }
 export interface ChatEntry {
   id: string
   tool: ChatTool
-  /** A title the tool generated or the user typed; null for a Copilot chat nobody named. */
+  /** The tool's name for the chat (Copilot's display name, Claude's custom or AI title); null when it has none. */
   title: string | null
+  /** true when `title` is Copilot's automatic name (the opening of the first prompt); false for a typed name, a Claude title or no title */
+  titleAuto: boolean
   project: string
   /** The folder the chat started in, which `--resume` needs; null when the files do not say. */
   cwd: string | null
@@ -177,7 +179,8 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
   const workspaces = new Map<string, { stamp: string; meta: CopilotMeta | null }>()
   const folderLocks = new Map<string, { mtimeMs: number; locks: Array<{ pid: number; mtimeMs: number }> }>()
   const sessionFiles = new Map<string, { stamp: string; doc: { sessionId: string; startedAt: number | null } | null }>()
-  const origins = new Map<string, { at: number; origin: string | null; exists: boolean }>()
+  // per folder, for ORIGIN_TTL_MS: whether it exists (one stat) and, once asked for, its git origin
+  const origins = new Map<string, { at: number; exists: boolean; origin?: string | null }>()
   let settings: { stamp: string; days: number } | null = null
   let work = { filesRead: 0, bytesRead: 0 }
 
@@ -279,10 +282,20 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
     return originOfConfig(join(common ? resolve(gitdir, common) : gitdir, 'config'))
   }
 
+  // Only a folder that is not there (ENOENT, or a path through a file) is gone. A folder that exists but cannot
+  // be read or searched still exists: the chat can be resumed once permissions are fixed (#586).
+  function folderExists(folder: string): boolean {
+    try {
+      return statSync(folder).isDirectory()
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      return code !== 'ENOENT' && code !== 'ENOTDIR'
+    }
+  }
+
+  // callers walk only a folder that still exists: walking up from a deleted one could land on an unrelated repository
   function findOrigin(folder: string): string | null {
     try {
-      // only a folder that still exists: walking up from a deleted one could land on an unrelated repository
-      if (!statSync(folder).isDirectory()) return null
       let dir = folder
       for (let i = 0; i <= MAX_WALK; i++) {
         const git = join(dir, '.git')
@@ -298,14 +311,17 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
     return null
   }
 
-  function originFor(folder: string, at: number): { origin: string | null; exists: boolean } {
+  function folderInfo(folder: string, at: number): { at: number; exists: boolean; origin?: string | null } {
     const hit = origins.get(folder)
     if (hit && at - hit.at < ORIGIN_TTL_MS) return hit
-    let exists = false
-    try { exists = statSync(folder).isDirectory() } catch { /* gone */ }
-    const next = { at, origin: findOrigin(folder), exists }
+    const next = { at, exists: folderExists(folder) }
     origins.set(folder, next)
     return next
+  }
+
+  function originOf(folder: string, info: { exists: boolean; origin?: string | null }): string | null {
+    info.origin ??= info.exists ? findOrigin(folder) : null
+    return info.origin
   }
 
   // ── Claude Code ───────────────────────────────────────────────────────────
@@ -371,6 +387,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
           id: f.id,
           tool: 'claude',
           title: meta.title,
+          titleAuto: false,
           cwd: meta.cwd,
           branch: meta.branch,
           createdAt: meta.createdAt,
@@ -462,6 +479,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
           id: d.name,
           tool: 'copilot',
           title: meta.title,
+          titleAuto: meta.titleAuto,
           cwd: folder,
           branch: meta.branch,
           createdAt: meta.createdAt,
@@ -495,11 +513,15 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
       const copilot = scanCopilot(budget, alive, boot)
       const byKey = new Map<string, ChatEntry>()
       for (const raw of [...claude.raws, ...copilot.raws]) {
-        const found = raw.folder === null ? null : originFor(raw.folder, at)
-        const origin = found?.origin ?? null
+        const found = raw.folder === null ? null : folderInfo(raw.folder, at)
+        const origin = found === null ? null : originOf(raw.folder!, found)
         const slug = raw.slugIfGone && found?.exists ? null : raw.slug
+        // the chat's own folder decides `folder-gone`, reusing the stat above when it is the same folder
+        const cwd = raw.entry.cwd
+        const cwdInfo = cwd === null ? null : cwd === raw.folder ? found : folderInfo(cwd, at)
         const entry: ChatEntry = {
           ...raw.entry,
+          hidden: cwdInfo?.exists ? raw.entry.hidden : [...raw.entry.hidden, 'folder-gone'],
           // inferProject is always given its origin (a string or null), so it never runs git
           project: inferProject(raw.folder ?? '', origin ?? slug ?? null),
           live: raw.live,

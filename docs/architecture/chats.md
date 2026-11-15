@@ -25,15 +25,14 @@ A record is parsed, the named fields are copied and the record is dropped. The t
 
 Title rules:
 
-- **Claude:** the last `custom-title` (a name the user typed), else the last `ai-title`. The brief asked for the last `ai-title`; a typed name outranks it because it is the user's own.
-- **Copilot:** `name` only when `user_named` is `true`. Copilot sets `name` to the start of the first prompt otherwise, so reading it would return prompt text; an unnamed chat has a null title. On this Mac that leaves 11 titled Copilot chats out of 1,228 in the default list.
-- A title is one line, free of control and bidi characters, at most 200 characters.
+- **Claude:** the last `custom-title` (a name the user typed), else the last `ai-title`. The brief asked for the last `ai-title`; a typed name outranks it because it is the user's own. A title is one line, free of control and bidi characters, at most 200 characters. `titleAuto` is always `false`.
+- **Copilot:** `name` is the title of every chat that has one. It is Copilot's own display name for the chat (what its resume picker shows) and the source the approved design in #586 names. When the user did not name the chat (`user_named` is not `true`), Copilot sets `name` to **the opening of the chat's first prompt**, and the entry has `titleAuto: true`. That opening is the only prompt text the index ever returns. It is reduced to the first non-empty line, whitespace collapsed, control, bidi and zero-width characters removed, and cut to at most 120 characters (119 and an ellipsis `…` when it was longer). Nothing else from a chat's messages is read or returned. A name the user typed has `titleAuto: false`. A chat with no `name` has `title: null` and `titleAuto: false`.
 
 A strict YAML subset reads `workspace.yaml`: only column-0 `key: value` lines for the keys above, with plain, `'single'` and `"double"` scalars and `|`, `|-`, `>`, `>-` blocks. Anything else (flow collections, anchors, tags, a nested map, a duplicate key, an unknown escape) leaves that key missing and the others still read. There is no YAML dependency. Each line is split by a prefix match and a linear blank trim, never one regex with a lazy value between two blank runs, which backtracks cubically on `key:` + thousands of blanks + a lone `\r`; `parseGitOrigin` follows the same rule. A line holding a `\r`, U+2028 or U+2029 past the key is left unread.
 
 ## What is never read
 
-- Message records beyond the two windows, and any message text. The tests plant a `SECRET` marker in user, assistant and `last-prompt` records and in an automatic Copilot name, and check it never comes back.
+- Message records beyond the two windows, and any message text. The tests plant a `SECRET` marker in user, assistant and `last-prompt` records and on the second line of an automatic Copilot name, and check it never comes back.
 - `events.jsonl` is only `lstat`ed (its existence and mtime). It is never opened. `session.db`, `sessions-index.json` (it holds `firstPrompt`) and a lock file's contents are never opened either.
 - Nothing is read at server start. The first read is the first API request.
 
@@ -47,8 +46,9 @@ The index is **POSIX-only for now**: `cleanPath` accepts absolute `/…` paths o
 
 ## Entry
 
-`{ id, tool, title, project, cwd, branch, createdAt, lastActiveAt, live, pr, hidden }`.
+`{ id, tool, title, titleAuto, project, cwd, branch, createdAt, lastActiveAt, live, pr, hidden }`.
 
+- `title` is described under Title rules. `titleAuto` is `true` only for Copilot's automatic name, so a UI can tell it from a name a person chose.
 - `cwd` is the folder the chat started in (Claude: the first `cwd` seen, Copilot: `cwd`), which `--resume` needs. It is null when the files do not say.
 - `lastActiveAt` is the **later** of the newest timestamp the tool wrote and a file mtime: for Claude the transcript's mtime (the last 64 KiB can be one huge tool result with no complete record), for Copilot `events.jsonl`'s mtime, which is `lstat`ed on every read because an append to it does not change the folder's mtime and `updated_at` lags a resumed chat.
 - `pr` is the last valid `pr-link` record (`https://github.com/<owner>/<repo>/pull/<n>`), Claude only.
@@ -80,12 +80,18 @@ These are the reused-pid checks the files allow: a pid from before this boot, an
 | `temp` | the chat's folder is `/tmp`, `/private/tmp`, `/var/folders` or `/private/var/folders`, or under one |
 | `non-interactive` | Claude: the entrypoint starts with `sdk-` (`sdk-cli`, print mode); `cli` and `claude-vscode` are interactive. Copilot: `client_name` is present and is neither `github/cli` nor `github/autopilot` (so `agent-inbox-driver` is hidden) |
 | `empty` | Copilot only: no `events.jsonl`, which means nothing was ever said in the folder |
+| `folder-gone` | the chat's `cwd` no longer exists on disk, or the files name no `cwd` at all |
+
+`folder-gone` exists because Resume needs the folder: `--resume` runs in the chat's own `cwd`, so a chat whose folder was deleted cannot be resumed in place. The default list is then the chats that can be continued. The rule:
+
+- Only a folder that is not there is gone: `stat` says `ENOENT`, or a path component is a file (`ENOTDIR`), or the path is not a directory. A folder that exists but cannot be read or searched (permissions) is **not** gone, because the chat resumes once that is fixed.
+- It is the chat's `cwd` that counts, not the folder the project name comes from (Copilot's `git_root` when it has one). The check reuses the existence result the origin cache already holds for the folder, so a chat adds no stat of its own; only a Copilot chat whose `cwd` differs from its `git_root` adds one more, cached the same way. The result is cached for 60 seconds with the origin, so a folder that is deleted or restored shows within a minute.
 
 Decisions beyond the issue's two reasons (temp, non-interactive), made while building PR 1 and open to change:
 
 - `empty` hides 254 Copilot folders on this Mac that hold no event and no name.
 - **No `remote` reason.** The issue lists cloud sessions (`mc_task_id`) as a non-goal, but 73 of the 74 folders with `mc_task_id` hold a local `events.jsonl`, and 19 of those are ordinary local `github/cli` chats. Hiding them for that key would hide real chats.
-- **No `missing-folder` reason.** `client_name` does not separate Copilot's one-shot automated runs from interactive chats: no `workspace.yaml` key does. Of 1,228 Copilot chats in the default list on this Mac, 1,168 have a folder that no longer exists, and Resume needs the folder. They stay listed so the list is complete; a later PR can add a `missing-folder` reason (one cached `stat` per distinct folder) or let the UI filter on it.
+- **`folder-gone` is a hidden reason, not a UI filter.** `client_name` does not separate Copilot's one-shot automated runs from interactive chats (no `workspace.yaml` key does), and Resume needs the folder, so chats without one are hidden by default like the other reasons and `?all=1` lists them.
 - A Claude `custom-title` outranks the last `ai-title`.
 
 ## Bounds and cache

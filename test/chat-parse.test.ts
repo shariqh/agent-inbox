@@ -46,25 +46,54 @@ describe('chat-parse (#586)', () => {
     ].join('\n'))
     expect(meta).toEqual({
       id: ID, cwd: '/Users/example/dev/widget', gitRoot: '/Users/example/dev/widget', branch: 'main', repository: 'example/widget',
-      title: 'My named chat', createdAt: '2026-11-14T09:00:00.000Z', updatedAt: '2026-11-14T10:00:00.000Z', clientName: 'github/cli',
+      title: 'My named chat', titleAuto: false, createdAt: '2026-11-14T09:00:00.000Z', updatedAt: '2026-11-14T10:00:00.000Z', clientName: 'github/cli',
     })
   })
 
-  it('parseWorkspaceYaml gives null without a valid id, and a null title when nothing was named', () => {
+  it('parseWorkspaceYaml gives null without a valid id, and a null title and titleAuto false when nothing was named', () => {
     expect(parseWorkspaceYaml('cwd: /x')).toBeNull()
     expect(parseWorkspaceYaml('id: pending-session:abc')).toBeNull()
-    expect(parseWorkspaceYaml(`id: ${ID}`)?.title).toBeNull()
-    expect(parseWorkspaceYaml(`id: ${ID}\nuser_named: true`)?.title).toBeNull()
+    for (const extra of ['', '\nuser_named: true', '\nuser_named: false', "\nname: ''", '\nname: |-\n  \n  \nuser_named: false']) {
+      expect(parseWorkspaceYaml(`id: ${ID}${extra}`)).toMatchObject({ title: null, titleAuto: false })
+    }
   })
 
-  it('parseWorkspaceYaml never returns an automatic name, which is the start of the first prompt', () => {
-    const block = parseWorkspaceYaml(`id: ${ID}\nname: |-\n  SECRET-PROMPT explain the thing\n  second line\nuser_named: false`)
-    const inline = parseWorkspaceYaml(`id: ${ID}\nname: SECRET-PROMPT short\nuser_named: false`)
-    const unset = parseWorkspaceYaml(`id: ${ID}\nname: SECRET-PROMPT short`)
-    for (const meta of [block, inline, unset]) {
-      expect(meta).not.toBeNull()
-      expect(JSON.stringify(meta)).not.toContain('SECRET')
-    }
+  it('parseWorkspaceYaml: titleAuto is true for Copilot\'s automatic name and false for one the user typed', () => {
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: Fix the widget\nuser_named: false`)).toMatchObject({ title: 'Fix the widget', titleAuto: true })
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: Fix the widget`)).toMatchObject({ title: 'Fix the widget', titleAuto: true })
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: Fix the widget\nuser_named: true`)).toMatchObject({ title: 'Fix the widget', titleAuto: false })
+  })
+
+  it('parseWorkspaceYaml: a multi-line name is cut to its first non-empty line, with whitespace collapsed', () => {
+    const block = parseWorkspaceYaml(`id: ${ID}\nname: |-\n  \n  first   line\twith  gaps  \n  SECOND-LINE\nuser_named: false`)
+    expect(block?.title).toBe('first line with gaps')
+    expect(JSON.stringify(block)).not.toContain('SECOND-LINE')
+    // a double-quoted scalar can carry its own line breaks
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: "\\n\\nopening\\nrest"`)?.title).toBe('opening')
+  })
+
+  it('parseWorkspaceYaml: a long name is cut at 120 characters ending in an ellipsis, and a short one is not', () => {
+    const long = parseWorkspaceYaml(`id: ${ID}\nname: ${'word '.repeat(60)}`)!.title!
+    expect(Array.from(long)).toHaveLength(120)
+    expect(long.endsWith('\u2026')).toBe(true)
+    const exact = 'x'.repeat(120)
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: ${exact}`)?.title).toBe(exact)
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: ${exact}y`)?.title).toBe(`${'x'.repeat(119)}\u2026`)
+    // counted in characters, not UTF-16 units
+    const emoji = Array.from(parseWorkspaceYaml(`id: ${ID}\nname: ${'\u{1F600}'.repeat(130)}`)!.title!)
+    expect(emoji).toHaveLength(120)
+  })
+
+  it('parseWorkspaceYaml: control, bidi and zero-width characters are removed from a name', () => {
+    const dirty = 'a\u202eb\u200bc\u200dd\u2060e\ufeff\u0007f\u2066g\u061ch\u0085i'
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: ${dirty}`)?.title).toBe('abcdefghi')
+    expect(parseWorkspaceYaml(`id: ${ID}\nname: \u202e\u200b\nuser_named: false`)).toMatchObject({ title: null, titleAuto: false })
+  })
+
+  it('parseWorkspaceYaml only returns the opening line of a name: nothing else of the prompt', () => {
+    const meta = parseWorkspaceYaml(`id: ${ID}\nname: |-\n  Opening line\n  SECRET-PROMPT second line\nuser_named: false`)
+    expect(meta?.title).toBe('Opening line')
+    expect(JSON.stringify(meta)).not.toContain('SECRET')
   })
 
   it('reads a pathological line of blanks and a lone \\r in linear time', () => {

@@ -131,13 +131,15 @@ the pointer, or holding keyboard focus, does not move.
 
 A session card never shows an ask. A session that has asks carries a pink "Asking you · N"
 chip, which scrolls to its first ask in Needs you. An ask no session card holds shows in the
-lane with "session ended" or "no session" in its meta line. The session panel keeps its
-Asking you section, so you can answer while reading that session's transcript.
+lane with "session ended" or "no session" on a line of its own under the meta line, so the
+note never squeezes the branch. The session panel keeps its Asking you section, so you can
+answer while reading that session's transcript.
 
 Every live session is in exactly one place: Working, Quiet or a fold. **Working** holds the
 sessions whose state is working (a running host turn included), under a project head (dot,
 name, session count, at the group-head size). A card leads with one meta line (state dot,
-agent, branch, time since its last call), then what the session is doing at the lead size,
+agent, branch, time since its last call; a long time wraps under the agent and branch
+instead of squeezing the branch), then what the session is doing at the lead size,
 up to two lines, then its subagents and plan progress. Its first button is **Open**, the
 session panel; **Message** follows it. **Quiet** is a compact table: state, session (project
 and agent), branch, last caption, since, and the state's main action (Open and Message for an
@@ -156,6 +158,13 @@ next paint.
 Keyboard: Tab reaches the chips, then each lane in page order. In a lane, J/K and the arrow
 keys move between its cards or rows with one roving tab stop, never into the next lane, and
 Enter opens the card or the session panel. G I still opens the Inbox.
+
+The session panel: at 1280px and wider it opens beside Working and Quiet as a split. The
+lanes take the left column and reflow to it: Working to the card columns that fit, each
+Quiet row on two lines once the lanes are under 900px wide. The panel takes a 360–460px
+right column, stays in view under the top bar with its own scroll, and covers nothing.
+Opening or closing it keeps the card or row you opened where it was on screen, and closing
+gives the lanes their full width back. Below 1280px it opens inline under its card or row.
 
 Every summary is a working entry point into an existing view. Dashboard data never
 enters the attention predicate, badge count, or alert system.
@@ -191,13 +200,16 @@ No portal or duplicate action component is permitted.
 ## Responsive Contract
 
 - **1280px and wider:** fixed project library, resizable queue/inspector split,
-  the lane chips on one row; Working cards three a row at 1440px and two at 1280px;
-  the session panel is a sheet over the lanes.
+  the lane chips on one row; with the session panel closed, Working cards three a row
+  at 1440px and two at 1280px; an open session panel splits the lanes: lanes left,
+  panel right, nothing covered, with one Working card a row beside it up to about
+  1485px wide and two above, and each Quiet row on two lines.
 - **900–1279px:** compact masthead, inline queue detail; the lane chips wrap
   before they shrink; two Working cards a row, and the session panel inline under
   its card or Quiet row.
 - **620–899px:** stacked dashboard regions, one Needs you card and one Working
-  card a row, reflowed metadata, and each Quiet row on two lines with no header.
+  card a row, reflowed metadata, and each Quiet row on two lines with no header
+  (keyed on the lanes' own width, so also beside an open session panel).
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
   count; dashboard is single-column, the Needs you lane's Later and Review
   queue wrap under its title. The masthead uses three compact rows:

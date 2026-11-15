@@ -538,7 +538,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     expect(row(id)!.querySelector('.options')?.classList.contains('comparing')).toBe(true)
   })
 
-  it('opens the panel under its card’s row in a narrow window, and as the grid’s sheet in a wide one', async () => {
+  it('opens the panel under its card’s row in a narrow window, and goes back to the split on close', async () => {
     setViewport(760)
     db = freshDb()
     live(db, 'one', { doing: 'First' })
@@ -554,7 +554,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     await pollTick()
     expect(panel().parentElement).toBe(host)
     click(panel().querySelector('.dash-focus-close'))
-    expect(panel().parentElement?.classList.contains('dashboard-grid')).toBe(true)
+    expect(panel().parentElement?.classList.contains('dash-split')).toBe(true)
     setViewport('wide')
   })
 

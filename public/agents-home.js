@@ -99,7 +99,8 @@ export function installAgentsHome(deps) {
   const titleOf = (kind) => laneEl(kind)?.querySelector('h2') ?? null
   // A narrow window's session panel sits in a lane's or fold's list, after its
   // card or row (app.js placeFocusPanel): before that list is removed, hidden
-  // or folded away, the panel steps out after the lanes, so it is never cut off with it.
+  // or folded away, the panel steps out after the lanes, into the split (§3.6),
+  // so it is never cut off with it.
   const release = (el) => {
     for (const child of el.querySelectorAll('.ah-cards > :not([data-session-card]), .qt-rows > :not([data-session-card]):not(.qt-head)')) {
       if (mounted) moveKeepingFocus(child, () => mounted.after(child))
@@ -171,7 +172,7 @@ export function installAgentsHome(deps) {
   }
 
   function homeEl() {
-    // the two lanes, after Needs you (§3.3, §3.4); the session panel's sheet sits after this wrapper
+    // the two lanes, after Needs you (§3.3, §3.4); the session panel sits after this wrapper, in the split (§3.6)
     const home = make('div', 'agents-home')
     for (const [kind, name] of LANES) {
       const section = make('section', `dashboard-card ah-lane ${kind}-lane`)

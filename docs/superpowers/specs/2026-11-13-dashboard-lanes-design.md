@@ -1,8 +1,8 @@
 # Design: the Dashboard as attention lanes
 
 Status: direction picked by the owner on 2026-11-13 (mockup A, "Attention lanes"). PR 2 (tokens
-and window size), PR 3 (the page head chips and the Needs you lane) and PR 4 (the Working and
-Quiet lanes) are built; §7 says what each remaining PR holds. Mockups were shared with the owner separately and are not committed.
+and window size), PR 3 (the page head chips and the Needs you lane), PR 4 (the Working and
+Quiet lanes) and PR 5 (the session panel as a split) are built; §7 says what each remaining PR holds. Mockups were shared with the owner separately and are not committed.
 
 ## §0 Summary
 
@@ -128,7 +128,9 @@ G I still opens the Inbox.
   session also has open asks, a pink "Asking you · N" chip scrolls to them in Needs you. The
   main action is **Open** (the session panel, at its head), the card's first button;
   **Message** stays where it is today.
-- **Columns.** Three at 1440px, two at 1280px, one below 900px, as the 11-04 V4 cleanup set.
+- **Columns.** With the session panel closed, three at 1440px, two at 1280px, one below 900px,
+  as the 11-04 V4 cleanup set. Beside an open panel (§3.6), the columns that fit the lanes'
+  narrower column.
 
 ### 3.4 Quiet
 
@@ -165,6 +167,29 @@ G I still opens the Inbox.
 
 At 1280px and wider the panel opens beside the lanes as a split, so the lanes narrow instead of
 being covered. Below 1280px it opens inline under its card, as today. Its contents do not change.
+
+As built (PR 5):
+
+- **The split.** `.dash-split` wraps `.agents-home` and the panel. Closed, it is
+  `display: contents`, so the lanes have the full width and the narrow layout is unchanged.
+  Open (`.dash-split.open`, set by `syncSplit` in `public/app.js` only while the panel is shown,
+  the window is 1280px or wider and the panel is the split's own), it is a two-column grid: the
+  lanes in `minmax(0, 1fr)`, the panel in `clamp(360px, 34%, 460px)`. 360px keeps the panel's
+  action bar and composer readable; 34%, capped at 460px, keeps the lanes 556px or wider at
+  1280px with the default 220px sidebar. Beside the panel Working has one card column at 1280px
+  and 1440px with any expanded sidebar, and two from about 1485px wide with the default 220px
+  sidebar (or with the sidebar collapsed); `main`'s 1460px cap keeps the lanes column under
+  about 865px, so never more than two, and Quiet's rows always take their two-line layout.
+- **The panel column.** Sticky under the top bar (`top: 116px`, the Inbox inspector's offset),
+  at most the window's height below it, with its own scroll. It has no z-index and no shadow,
+  and its grid area keeps it off Needs you and the ribbon.
+- **The lanes column.** `.agents-home` is the `dash-lanes` container, so the Quiet table's
+  two-line rule keys on the lanes' own width; Working's `auto-fill` grid takes the columns that
+  fit.
+- **No jump.** Only a flip of the class reads layout: `keepOnScreen` scrolls by however far the
+  reflow moved the card the panel was opened for, on open and on close. A switch between
+  sessions or a poll flips nothing. A panel held inline by focus across a resize stays inline,
+  with no split, until focus leaves.
 
 ## §4 Type and spacing tokens
 

@@ -30,7 +30,7 @@ import {
   accessSync, appendFileSync, closeSync, constants, createWriteStream, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync,
   realpathSync, renameSync, rmSync, statSync,
 } from 'node:fs'
-import { homedir, uptime } from 'node:os'
+import { uptime } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'

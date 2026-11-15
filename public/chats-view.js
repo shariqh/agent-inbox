@@ -280,7 +280,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
       }, CONFIRM_MS))
     }
     changed()
-    // after live, folder or missing the list is read again, so the row's off state catches up
+    // after live, folder, missing or opened the list is read again, so the row's off state catches up
     if (outcome.refresh) read()
     else settlePaint()
   }

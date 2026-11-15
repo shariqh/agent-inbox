@@ -1,7 +1,7 @@
 'use strict'
 // Resume a chat in Terminal (#586 PR 3, docs/architecture/chats.md "Resume in
 // Terminal"). The page sends { tool, id } and nothing else; main looks the chat
-// up in the index through the viewer's own GET /api/chats?all=1, takes the
+// up in the index through the viewer's own GET /api/chats (then ?all=1), takes the
 // folder from there, refuses a live chat or a folder that is gone, writes a
 // fresh 0700 script that cds there and execs the tool's own resume command, and
 // opens it with openInTerminal. It is the person opening their own terminal, so
@@ -21,6 +21,7 @@ const SCRIPT_KEEP_MS = 24 * 60 * 60 * 1000
 // A chat reads as live only once its tool has started (and, in iTerm2, once the
 // person said OK), so a second Resume of the same chat is refused for this long.
 const REOPEN_MS = 2 * 60 * 1000
+const CHAT_ROUTES = Object.freeze(['/api/chats', '/api/chats?all=1'])
 const CHANNELS = Object.freeze({ available: 'agent-inbox:chat-resume-available', resume: 'agent-inbox:chat-resume' })
 const SCRIPT_NAME = /^(?:claude|copilot)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{16}\.command$/
 
@@ -149,9 +150,15 @@ function createChatResume({
   }
 
   async function resumeChecked({ tool, id }) {
-    const body = await Promise.resolve(viewer.getJson('/api/chats?all=1')).catch(() => null)
-    if (!isPlainObject(body) || !Array.isArray(body.chats)) return refused('index')
-    const chat = body.chats.find((entry) => isPlainObject(entry) && entry.tool === tool && entry.id === id)
+    // The page's default list first, then ?all=1: each is cut at 2,000 after its
+    // own filter, so a chat either view lists is found in one of them.
+    let chat = null
+    for (const route of CHAT_ROUTES) {
+      const body = await Promise.resolve(viewer.getJson(route)).catch(() => null)
+      if (!isPlainObject(body) || !Array.isArray(body.chats)) return refused('index')
+      chat = body.chats.find((entry) => isPlainObject(entry) && entry.tool === tool && entry.id === id)
+      if (chat) break
+    }
     if (!chat) return refused('missing')
     if (chat.live === true) return refused('live')
     const key = `${tool}:${id}`

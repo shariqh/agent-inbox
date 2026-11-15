@@ -212,7 +212,7 @@ function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal',
     viewer: {
       getJson: async (route: string) => {
         routes.push(route)
-        return typeof state.chats === 'function' ? (state.chats as () => unknown)() : { chats: state.chats }
+        return typeof state.chats === 'function' ? (state.chats as (route: string) => unknown)(route) : { chats: state.chats }
       },
     },
     isDirectory: (folder) => folders.includes(folder),
@@ -234,7 +234,7 @@ describe('createChatResume', () => {
   it('opens a script that cds to the index’s folder, in Terminal', async () => {
     const r = rig()
     expect(await r.handler.resume({ tool: 'claude', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
-    expect(r.routes).toEqual(['/api/chats?all=1'])
+    expect(r.routes).toEqual(['/api/chats'])
     expect(r.written).toEqual([[DIR, `claude-${ID}-0000000000000000.command`, chatResumeScript({ tool: 'claude', id: ID, cwd: FOLDER })]])
     expect(r.runs).toEqual([['/usr/bin/open', '-b', 'com.apple.Terminal', '--', scriptFor('claude')]])
   })
@@ -270,6 +270,25 @@ describe('createChatResume', () => {
     expect(await both.handler.resume({ tool: 'claude', id: ID })).toEqual({ ok: false, reason: 'open', error: 'Could not open iTerm2 or Terminal.' })
     const thrown = rig({ run: async () => { throw new Error('spawn failed') } })
     expect(await thrown.handler.resume({ tool: 'claude', id: ID })).toEqual({ ok: false, reason: 'open', error: 'Could not open Terminal.' })
+  })
+
+  it('finds a chat the default list shows but the capped ?all=1 list leaves out', async () => {
+    // more hidden chats than the 2,000 cap can push a listed chat out of ?all=1 alone
+    const r = rig({ chats: (route: string) => ({ chats: route === '/api/chats' ? [chatEntry()] : [chatEntry({ id: ID2, hidden: ['non-interactive'] })] }) })
+    expect(await r.handler.resume({ tool: 'claude', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
+    expect(r.routes).toEqual(['/api/chats'])
+  })
+
+  it('falls back to ?all=1 for a hidden chat, and refuses one neither list has', async () => {
+    const hidden = rig({ chats: (route: string) => ({ chats: route === '/api/chats' ? [] : [chatEntry({ hidden: ['temp-folder'] })] }) })
+    expect(await hidden.handler.resume({ tool: 'claude', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
+    expect(hidden.routes).toEqual(['/api/chats', '/api/chats?all=1'])
+    const neither = rig({ chats: [chatEntry({ id: ID2 })] })
+    expect(await neither.handler.resume({ tool: 'claude', id: ID })).toMatchObject({ ok: false, reason: 'missing' })
+    expect(neither.routes).toEqual(['/api/chats', '/api/chats?all=1'])
+    const unreadable = rig({ chats: (route: string) => (route === '/api/chats' ? { chats: [] } : null) })
+    expect(await unreadable.handler.resume({ tool: 'claude', id: ID })).toMatchObject({ ok: false, reason: 'index' })
+    expect(unreadable.runs).toEqual([])
   })
 
   it('takes the folder from the index, never from the request', async () => {

@@ -21,7 +21,8 @@ import {
   withdrawSessionMessage, endActivity, createLaunch, getLaunch, dismissItem, resolveItem, listActivity, requestLaunchInterrupt, requestLaunchPark, handOffForTerminal,
 } from '../src/store.js'
 import { LAUNCH_KEY, sign } from './launch-fixtures.js'
-import { MODE, configUpdate, fakeAgent, permissionRequest, toolCall } from './acp-fake.js'
+import { MODE, configUpdate, fakeAgent, fixture, permissionRequest, toolCall } from './acp-fake.js'
+import { setupRefusalHint } from '../src/driver-policy.js'
 import type { FakeAgent, FakeScript } from './acp-fake.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -926,5 +927,97 @@ describe('app launches: the row, park and resume (§6, §7)', () => {
     expect(h.fake.prompts().some((p) => p.includes('Fix the failing test.'))).toBe(false)
     h.driver.stop()
     await h.done
+  })
+})
+
+// #586 phase 2, PR 2: Copilot CLI 1.0.112-0 loading a chat made in its terminal (the spike doc's
+// 2026-11-15 section). The recordings answer initialize and session/load as Copilot did.
+describe('loading a terminal-made chat (Copilot 1.0.112-0, #586 phase 2)', () => {
+  const V = 'copilot-1.0.112-0'
+  const CHAT = '0c4a7000-0000-4000-8000-00000000c001'
+  type Rec = ReturnType<typeof fixture>
+  const updatesOf = (rec: Rec, kind: string) => rec.filter((e) => ((e.msg?.params as Json | undefined)?.update as Json | undefined)?.sessionUpdate === kind)
+  const resultOf = (rec: Rec, method: string) => {
+    const id = rec.find((e) => e.dir === 'c2a' && e.msg?.method === method)!.msg!.id
+    return rec.find((e) => e.dir === 'a2c' && e.msg?.id === id && !('method' in e.msg!))!.msg!
+  }
+
+  it('loads it with its history replayed, ignores that history, then sets and verifies #agent', async () => {
+    const rec = fixture(`${V}/load-terminal-chat`)
+    // the recording: initialize offers loadSession, and the load replays the terminal's turns before it answers
+    expect(((resultOf(rec, 'initialize').result as Json).agentCapabilities as Json).loadSession).toBe(true)
+    expect(updatesOf(rec, 'user_message_chunk').length).toBeGreaterThan(0)
+    expect(updatesOf(rec, 'tool_call').length).toBeGreaterThan(0)
+    const h = start({ loadSessionId: CHAT, script: { onPrompt: () => undefined, recorded: `${V}/load-terminal-chat` } })
+    await h.ready()
+    expect(h.fake.received.find((m) => m.method === 'session/load')!.params).toEqual({ sessionId: CHAT, cwd: h.dir, mcpServers: [] })
+    expect(h.log.some((e) => e.event === 'mode_escalation')).toBe(false)
+    expect(h.log.find((e) => e.event === 'ready')).toMatchObject({ mode: MODE.agent, allow_all: 'off' })
+    // replayed tool calls are history: no ask, no tool call counted, no prompt sent
+    expect(h.asks).toEqual([])
+    expect(h.driver.usage().toolCalls).toBe(0)
+    expect(h.fake.prompts()).toEqual([])
+    expect(h.driver.resumableSession()).toBe(CHAT)
+    h.driver.stop()
+    expect(await h.done).toBe('stopped')
+  })
+
+  it('a chat the terminal left with allow-all on loads with it on; set_mode #agent leaves it on, so the driver turns it off once', async () => {
+    const rec = fixture(`${V}/load-allow-all-from-terminal`)
+    const allowAll = (options: unknown) => (options as Json[]).find((o) => o.id === 'allow_all')!.currentValue
+    expect(allowAll((resultOf(rec, 'session/load').result as Json).configOptions)).toBe('on')
+    // 1.0.112-0: set_mode to the mode already set sends one config update, with allow_all still on
+    const afterSetMode = updatesOf(rec, 'config_option_update').map((e) => allowAll(((e.msg!.params as Json).update as Json).configOptions))
+    expect(afterSetMode).toEqual(['on', 'off'])
+    const h = start({ loadSessionId: CHAT, script: { onPrompt: () => undefined, recorded: `${V}/load-allow-all-from-terminal`, keepAllowAll: true } })
+    await h.ready()
+    expect(h.log.find((e) => e.event === 'session')).toMatchObject({ mode: MODE.agent, allow_all: 'on' })
+    expect(h.fake.received.filter((m) => m.method === 'session/set_config_option').map((m) => m.params))
+      .toEqual([{ sessionId: CHAT, configId: 'allow_all', value: 'off' }])
+    expect(h.log.find((e) => e.event === 'ready')).toMatchObject({ mode: MODE.agent, allow_all: 'off' })
+    h.driver.stop()
+    await h.done
+  })
+
+  it('an unknown id is -32002, as in 1.0.105; a resume today falls back to a fresh session (PR 3 ends a chat launch instead)', async () => {
+    const error = resultOf(fixture(`${V}/load-unknown-id`), 'session/load').error as { code: number; message: string }
+    expect(error.code).toBe(-32002)
+    const h = start({ app: true, script: ended, loadSessionId: '9b2c6a1e-4d3f-4e8a-9c71-2f5e8d0a6b13', refuseLoad: error })
+    await h.ready()
+    expect(h.log.some((e) => e.event === 'load_not_found')).toBe(true)
+    expect(h.fake.received.some((m) => m.method === 'session/new')).toBe(true)
+    h.driver.stop()
+    await h.done
+  })
+
+  it('a settings effortLevel that refuses session/new does not refuse the load', async () => {
+    const rec = fixture(`${V}/load-effort-setting`)
+    const refused = resultOf(rec, 'session/new').error as { message: string }
+    // the refusal's wording still matches the hint the driver gives for session/new
+    expect(setupRefusalHint(refused.message)).not.toBeNull()
+    const h = start({ loadSessionId: CHAT, script: { onPrompt: () => undefined, recorded: `${V}/load-effort-setting` } })
+    await h.ready()
+    expect(h.driver.retryWithoutEffort()).toBe(false)
+    expect(h.log.find((e) => e.event === 'ready')).toMatchObject({ mode: MODE.agent, allow_all: 'off' })
+    h.driver.stop()
+    await h.done
+  })
+
+  it('the recordings: the ACP host takes inuse.<pid>.lock at the first prompt, not at the load, and a load runs while a terminal holds the chat', () => {
+    type Listing = { label: string; locks: Array<{ name: string; body: string }>; loaderPid: number }
+    const listings = (name: string) => fixture(`${V}/${name}`).filter((e) => (e as unknown as Json).event === 'listing') as unknown as Listing[]
+    const loaded = listings('load-terminal-chat')
+    const at = (label: string) => loaded.find((l) => l.label === label)!.locks.map((l) => l.name.replace(/\d+/, '<pid>')).sort()
+    expect(at('1-after-load')).toEqual([])
+    expect(at('2-after-prompt')).toEqual(['inuse.<pid>.hold', 'inuse.<pid>.lock'])
+    expect(at('3-after-exit')).toEqual([])
+    // the lock names the native host, not the loader the client spawned
+    const lock = loaded.find((l) => l.label === '2-after-prompt')!.locks.find((l) => l.name.endsWith('.lock'))!
+    expect(lock.body.trim()).toBe(lock.name.split('.')[1])
+    expect(Number(lock.body)).not.toBe(loaded[0]!.loaderPid)
+    // a terminal's lock was there before the load, and the load was answered anyway
+    const held = listings('load-while-terminal-holds').find((l) => l.label === '0-before-load')!
+    expect(held.locks.some((l) => /^inuse\.\d+\.lock$/.test(l.name))).toBe(true)
+    expect(resultOf(fixture(`${V}/load-while-terminal-holds`), 'session/load').result).toBeDefined()
   })
 })

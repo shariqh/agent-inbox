@@ -7,6 +7,7 @@ import {
   chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import vm from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import chatResume from '../electron/chat-resume.cjs'
 import type { ChatResumeResult } from '../electron/chat-resume.cjs'
@@ -419,5 +420,118 @@ describe('registerChatResumeIpc', () => {
     finish()
     expect(await answer).toEqual({ ok: true, terminal: 'terminal' })
     expect(w.isOwned).toHaveBeenCalledTimes(1)
+  })
+})
+
+const REPO = join(import.meta.dirname, '..')
+const read = (rel: string) => readFileSync(join(REPO, rel), 'utf8')
+
+describe('main’s wiring (source)', () => {
+  const main = read('electron/main.cjs')
+  const at = main.indexOf('registerChatResumeIpc({')
+  const call = main.slice(at, main.indexOf('})', at))
+  const made = main.slice(main.indexOf('const chatResumeFor = () =>'), at)
+
+  it('registers the channels once, after the launch IPC and outside the link slice the link tests run', () => {
+    expect(main.match(/registerChatResumeIpc\(/g)).toHaveLength(1)
+    expect(at).toBeGreaterThan(main.indexOf('registerLaunchIpc({'))
+    const sliceEnd = main.indexOf("ipcMain.handle('agent-inbox:set-theme-preference'")
+    expect(at).toBeGreaterThan(sliceEnd)
+    expect(main).not.toMatch(/ipcMain\.handle\('agent-inbox:chat-resume/)
+  })
+
+  it('gates on the owned viewer after the re-proof, on this platform', () => {
+    expect(call).toContain('platform: process.platform,')
+    expect(call).toContain('settled: () => installBinding?.settled() ?? Promise.resolve(),')
+    expect(call).toContain('isOwned: (event) => linkSender(event) && linkFilesPermitted(event),')
+    expect(call).toContain('chatResume: chatResumeFor,')
+  })
+
+  it('reads the index through the viewer and runs the launchers’ own terminal runner', () => {
+    expect(made).toContain('isQuitting: () => installGate.quitting(),')
+    expect(made).toContain('viewer: launchViewer,')
+    expect(made).toContain('return statSync(folder).isDirectory()')
+    expect(made).toContain('terminal: { read: () => linkPrefs().readTerminal(), run: runTerminalCommand },')
+    expect(made).toContain("scriptDir: path.join(path.dirname(launchHubPath()), 'chat-resume'),")
+    // one runner, so both callers share its env and its 10 s timeout
+    expect(main.match(/execFile\(command\.file, command\.args, \{ env: \{ PATH: '\/usr\/bin:\/bin' \}, timeout: 10_000 \}/g)).toHaveLength(1)
+    expect(main).toContain('run: runTerminalCommand,')
+  })
+})
+
+type ChatsBridge = {
+  resumeAvailable(...args: unknown[]): Promise<unknown>
+  resume(...args: unknown[]): Promise<unknown>
+}
+
+function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown) {
+  const exposed: Record<string, unknown> = {}
+  const invoke = vi.fn(async (channel: string, ...args: unknown[]) => answer(channel, ...args))
+  const electron = {
+    contextBridge: { exposeInMainWorld: (name: string, api: unknown) => { exposed[name] = api } },
+    ipcRenderer: { invoke, on: () => {}, removeListener: () => {} },
+  }
+  const factory = vm.runInThisContext(
+    `(function (require, process) {\n${read('electron/setup-preload.cjs')}\n})`,
+    { filename: 'setup-preload.cjs' },
+  ) as (require: (id: string) => unknown, process: { argv: string[] }) => void
+  factory((id) => {
+    if (id !== 'electron') throw new Error(`unexpected require ${id}`)
+    return electron
+  }, { argv: [] })
+  return { chats: exposed.agentInboxChats as ChatsBridge, invoke }
+}
+
+describe('the agentInboxChats bridge', () => {
+  it('has the two methods, and sends a fresh { tool, id } and nothing else', async () => {
+    const { chats, invoke } = loadPreload(() => ({ ok: true, terminal: 'iterm2' }))
+    expect(Object.keys(chats)).toEqual(['resumeAvailable', 'resume'])
+    expect(await chats.resume({ tool: 'claude', id: ID, cwd: '/x', command: 'sh' })).toEqual({ ok: true, terminal: 'iterm2' })
+    expect(invoke.mock.calls).toEqual([['agent-inbox:chat-resume', { tool: 'claude', id: ID }]])
+  })
+
+  it.each([
+    [[]],
+    [[{ tool: 'claude', id: ID }, 'second']],
+    [[null]],
+    [[ID]],
+    [[[{ tool: 'claude', id: ID }]]],
+    [[{ tool: 'sh', id: ID }]],
+    [[{ tool: 'copilot', id: ID.toUpperCase().replace('0000-4000', 'ABCD-4000') }]],
+    [[{ tool: 'copilot', id: `${ID};id` }]],
+  ])('refuses %j without asking main', async (args) => {
+    const { chats, invoke } = loadPreload(() => ({ ok: true, terminal: 'terminal' }))
+    expect(await chats.resume(...args)).toEqual({ ok: false, reason: 'invalid', error: 'This chat can’t be resumed.' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  const noAnswer = { ok: false, reason: 'unavailable', error: 'Agent Inbox did not answer.' }
+  it.each([
+    ['a refusal', { ok: false, reason: 'live', error: 'This chat is live in another process.', extra: 1 }, { ok: false, reason: 'live', error: 'This chat is live in another process.' }],
+    ['a refusal with a long error', { ok: false, reason: 'open', error: 'x'.repeat(900) }, { ok: false, reason: 'open', error: 'x'.repeat(500) }],
+    ['a success with the fallback notice', { ok: true, terminal: 'terminal', notice: 'n'.repeat(600), folder: '/x' }, { ok: true, terminal: 'terminal', notice: 'n'.repeat(500) }],
+    ['an unknown reason', { ok: false, reason: 'shell', error: 'x' }, noAnswer],
+    ['a refusal with no error', { ok: false, reason: 'live' }, noAnswer],
+    ['an unknown terminal', { ok: true, terminal: 'Hyper' }, noAnswer],
+    ['no object', 'yes', noAnswer],
+  ])('filters the answer: %s', async (_, answer, expected) => {
+    const { chats } = loadPreload(() => answer)
+    expect(await chats.resume({ tool: 'copilot', id: ID })).toEqual(expected)
+  })
+
+  it('turns a rejection into an answer', async () => {
+    const { chats } = loadPreload(() => { throw new Error('No handler registered') })
+    expect(await chats.resume({ tool: 'copilot', id: ID })).toEqual(noAnswer)
+    expect(await chats.resumeAvailable()).toEqual({ available: false, terminal: 'terminal' })
+  })
+
+  it('says whether this window can resume, and with which terminal', async () => {
+    const { chats, invoke } = loadPreload(() => ({ available: true, terminal: 'iterm2', extra: true }))
+    expect(await chats.resumeAvailable()).toEqual({ available: true, terminal: 'iterm2' })
+    expect(invoke.mock.calls).toEqual([['agent-inbox:chat-resume-available']])
+    expect(await chats.resumeAvailable('x')).toEqual({ available: false, terminal: 'terminal' })
+    for (const answer of [{ available: true, terminal: 'Hyper' }, { available: 'yes', terminal: 'terminal' }, null]) {
+      expect(await loadPreload(() => answer).chats.resumeAvailable()).toEqual({ available: false, terminal: 'terminal' })
+    }
   })
 })

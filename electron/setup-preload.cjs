@@ -343,6 +343,47 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
   },
 })
 
+// #586 PR 3: Resume a chat in Terminal. The page sends a fresh { tool, id } and nothing
+// else; main reads the folder from the index, and alone decides whether anything opens.
+const CHAT_TOOLS = new Set(['claude', 'copilot'])
+// the index's id rule: a lowercase UUID
+const CHAT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const CHAT_RESUME_REASONS = new Set(['unavailable', 'invalid', 'quitting', 'busy', 'index', 'missing', 'live', 'opened', 'folder', 'write', 'open'])
+const chatNoAnswer = () => ({ ok: false, reason: 'unavailable', error: 'Agent Inbox did not answer.' })
+const chatResumeOff = () => ({ available: false, terminal: 'terminal' })
+
+function chatResumeResult(value) {
+  if (!isPlainObject(value)) return chatNoAnswer()
+  if (value.ok === true && TERMINAL_IDS.has(value.terminal)) {
+    const out = { ok: true, terminal: value.terminal }
+    if (typeof value.notice === 'string') out.notice = value.notice.slice(0, 500)
+    return out
+  }
+  if (value.ok === false && CHAT_RESUME_REASONS.has(value.reason) && typeof value.error === 'string') {
+    return { ok: false, reason: value.reason, error: value.error.slice(0, 500) }
+  }
+  return chatNoAnswer()
+}
+
+contextBridge.exposeInMainWorld('agentInboxChats', {
+  resumeAvailable(...args) {
+    if (args.length !== 0) return Promise.resolve(chatResumeOff())
+    return ipcRenderer.invoke('agent-inbox:chat-resume-available').then(
+      (value) => (isPlainObject(value) && value.available === true && TERMINAL_IDS.has(value.terminal)
+        ? { available: true, terminal: value.terminal } : chatResumeOff()),
+      chatResumeOff,
+    )
+  },
+  resume(...args) {
+    const request = args[0]
+    if (args.length !== 1 || !isPlainObject(request) || !CHAT_TOOLS.has(request.tool) ||
+        typeof request.id !== 'string' || !CHAT_ID.test(request.id)) {
+      return Promise.resolve({ ok: false, reason: 'invalid', error: 'This chat can’t be resumed.' })
+    }
+    return ipcRenderer.invoke('agent-inbox:chat-resume', { tool: request.tool, id: request.id }).then(chatResumeResult, chatNoAnswer)
+  },
+})
+
 function isByteCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }

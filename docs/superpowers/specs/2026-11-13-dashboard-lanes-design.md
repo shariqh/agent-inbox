@@ -139,7 +139,7 @@ G I still opens the Inbox.
   mark), branch (and a launch's worktree), last caption, since, and the state's main action:
   Open (the session panel) and Message for an idle session, Take over and Resume… for a parked
   one, and each other state's action as before. When a message reaches the session is in
-  Message's tooltip, since the row has one line. Under 620px each row becomes two lines. It is
+  Message's tooltip, since the row has one line. Under 900px each row becomes two lines. It is
   a list of rows with a header row hidden from assistive tech, not a `<table>`: below 1280px the
   session panel opens inline between rows, which a table cannot hold, so each row's accessible
   name says every column.

@@ -285,6 +285,8 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
     expect(body('.ah-group-head')).not.toMatch(/uppercase/)
     expect(body('.working-lane .sc-doing')).toMatch(/font-size: var\(--fs-lead\);/)
     expect(body('.working-lane .sc-state')).toMatch(/display: none;/)
+    // the hidden label would leave its "·" in front of the agent
+    expect(body('.working-lane .sc-chips > :first-child::before')).toMatch(/content: none;/)
   })
 
   it('line the Quiet table up with one template of zero-minimum tracks, so no cell widens the page', () => {
@@ -308,8 +310,8 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
     expect(css).toMatch(/:is\(\.sc, \.qt-row\)\.tone-idle \.sc-dot, :is\(\.sc, \.qt-row\)\.tone-dormant \.sc-dot, :is\(\.sc, \.qt-row\)\.tone-ended \.sc-dot \{ border: 1\.5px solid/)
   })
 
-  it('put a Quiet row on two lines below 620px, on its own template, with no header', () => {
-    const narrow = block('@container operations-desk (max-width: 620px) {')
+  it('put a Quiet row on two lines below 900px, on its own template, with no header', () => {
+    const narrow = block('@container operations-desk (max-width: 900px) {')
     const sheet = [...narrow.matchAll(/\n\s*([^{}\n]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
     expect(body('.qt-head', sheet)).toMatch(/display: none;/)
     const row = body('.qt-row', sheet)

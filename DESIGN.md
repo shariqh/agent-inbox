@@ -196,10 +196,10 @@ No portal or duplicate action component is permitted.
   before they shrink; two Working cards a row, and the session panel inline under
   its card or Quiet row.
 - **620–899px:** stacked dashboard regions, one Needs you card and one Working
-  card a row, and reflowed metadata.
+  card a row, reflowed metadata, and each Quiet row on two lines with no header.
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
   count; dashboard is single-column, the Needs you lane's Later and Review
-  queue wrap under its title, and each Quiet row takes two lines with no header. The masthead uses three compact rows:
+  queue wrap under its title. The masthead uses three compact rows:
   identity/settings, tabs, then project and agent selectors side by side.
 - **440px and below:** full-viewport action card. Verify at 320px, 375px, and
   430px. Project and agent selectors remain side by side rather than adding a

@@ -2300,6 +2300,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
    The lane names the state, so the label is left to the card's aria-label. */
 .working-lane .sc-top { font-size: var(--fs-meta); }
 .working-lane .sc-state { display: none; }
+.working-lane .sc-chips > :first-child::before { content: none; }
 .working-lane .sc-doing { font-size: var(--fs-lead); }
 /* §3.4: the Quiet table. The header and every row share one template of
    fractional tracks with a zero minimum, so the columns line up without
@@ -2307,7 +2308,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
    ends in an ellipsis, and the actions wrap within their column. A list, not a
    <table>, so the session panel can open between rows below 1280px. */
 .qt-rows { display: grid; }
-.qt-head, .qt-row { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 9fr) minmax(0, 7fr) minmax(0, 13fr) minmax(0, 7fr) minmax(0, 8fr); column-gap: var(--sp-3); align-items: center; padding: var(--sp-2) var(--sp-3); }
+.qt-head, .qt-row { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 12fr) minmax(0, 6fr) minmax(0, 13fr) minmax(0, 7fr) minmax(0, 7fr); column-gap: var(--sp-3); align-items: center; padding: var(--sp-2) var(--sp-3); }
 .qt-head { padding-top: 0; color: var(--app-muted); font-size: var(--fs-meta); font-weight: 600; }
 .qt-head > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qt-row { border-top: 1px solid var(--app-border); color: var(--app-text); font-size: var(--fs-body); cursor: default; }
@@ -2339,12 +2340,8 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .needs-you-lane { --fs-lane: 24px; --lane-gap: 40px; }
   .ny-cards { grid-template-columns: minmax(0, 1fr); }
   .dashboard-activity, .dashboard-outcomes { grid-column: span 12; }
-}
-
-@container operations-desk (max-width: 620px) {
-  /* Later and Review queue wrap under the lane's title (§3.2) */
-  .ny-head > h2 { flex-basis: 100%; }
-  /* §3.4: each Quiet row on two lines, with no header; a row's own template, not the table's */
+  /* §3.4: each Quiet row on two lines, with no header; a row's own template, not the table's.
+     Six columns in under 900px left the session and its caption a few letters each. */
   .qt-head { display: none; }
   /* a bounded third track: an auto one grew to Since's and the actions' one-line width first */
   .qt-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr); grid-template-areas: "state session since" "branch caption act"; row-gap: var(--sp-1); }
@@ -2354,6 +2351,11 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .qt-branch { grid-area: branch; }
   .qt-caption { grid-area: caption; }
   .qt-act { grid-area: act; }
+}
+
+@container operations-desk (max-width: 620px) {
+  /* Later and Review queue wrap under the lane's title (§3.2) */
+  .ny-head > h2 { flex-basis: 100%; }
   .dash-ribbon-lane { grid-template-columns: minmax(48px, 80px) minmax(0, 1fr); }
   .dash-ribbon-axis { padding-left: 90px; }
   .dash-ribbon-legend { display: none; }

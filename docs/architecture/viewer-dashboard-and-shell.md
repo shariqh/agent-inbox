@@ -18,7 +18,7 @@ applyTo: "public/dashboard.js,public/ribbon.js,public/lanes.js,public/motion.js,
 
 # Viewer dashboard, Agents home and shell
 
-The Dashboard 2.0 surfaces (#302–#307), the Agents home (#454), the editorial desk shell, layout and search, and the attention-first cold launch.
+The Dashboard 2.0 surfaces (#302–#307), the Agents home (#454, since the dashboard lanes PR 4 the Working and Quiet lanes), the editorial desk shell, layout and search, and the attention-first cold launch.
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
@@ -34,14 +34,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `docs/superpowers/specs/2026-11-13-dashboard-lanes-design.md` §3.1–3.2) come first:
   `public/dash-head.js` draws one row of lane chips (Needs you, Working, Quiet) with New
   session… at its right end, and `public/needs-you-lane.js` draws one card per attention
-  entry, above the grid. The chips replaced the Now strip, so the Needs you count shows only
-  on its chip (the Agents card's state filters keep their per-state counts until PR 4, and
-  its Quiet filter counts idle cards only); a chip scrolls to its lane and focuses its first card, never filters, and
-  says "…" before the first `/api/activity` read. The lane is `buildDashboard().needsYou`
+  entry, above the grid. The chips replaced the Now strip, so each lane is counted once, on
+  its chip: Working and Quiet are `laneCounts` over the same `splitLanes` the lanes draw, so a
+  chip always equals its lane. A chip scrolls to its own lane and focuses its first card or row
+  (`agentsHome.focusFirst`), never filters, and says "…" before the first `/api/activity` read. The lane is `buildDashboard().needsYou`
   (`waitingEntries` in `sortRail` order): with All projects it equals the badge, each entry
   once. A card never answers: a click or Enter opens the ask in the Inbox's detail panel
   (`jumpToAsk` → `openAskInInbox`), and Esc or the card's close comes back (`dashReturn`).
-  Its header holds "Later N ›" (above 0 only) and Review queue, which left the Agents header.
+  Its header holds "Later N ›" (above 0 only) and Review queue, which left the old Agents header.
 - Motion (#302, Dashboard 2.0 proposal §10) is CSS-only: keyframes animate only
   `transform` and `opacity`, transitions take `--motion-*` tokens, at most 12
   infinite animations are on screen (none for activity, which is one-shot per event, #304), and motion never moves focus, scrolls or
@@ -53,8 +53,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `data-page-hidden` (CSS pauses animations), and gives `scrollIntoView` its
   behaviour. The setting is layout only and never reaches attention.
 - The session panel's Asking you section (#454 A.2) is the Dashboard's one answer surface;
-  #454's PR 6 retired the Needs you rail (#303) that was before it, and the Agents
-  home spans the grid. A session card holds at most one copy of each ask (`sessions.js`)
+  #454's PR 6 retired the Needs you rail (#303) that was before it, and the Working and
+  Quiet lanes span the grid. A session card holds at most one copy of each ask (`sessions.js`)
   and only counts it ("Asking you · N"); the asks themselves are in the Needs you lane.
   The panel lists the card's asks and mounts `answerEl`/`rowAnswerEl` (`surface: 'compact'`) and the shared
   `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery, durable drafts and
@@ -67,16 +67,40 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   session is working when its claim is not idle and its `last_call_at ?? started_at` is
   within 30 minutes (`isWorking`; `updated_at` is never read). #454 retired the lanes it
   once drew (and the Live footer strip and drawer), and the lanes PR 3 the Now strip it fed:
-  sessions are the Agents home's cards, counted by the page head's Working and Quiet chips
-  (`laneCounts` in `sessions.js`). Activity motion is one-shot per real event, a pulse when
+  sessions are the Working and Quiet lanes' cards and rows, counted by the page head's Working
+  and Quiet chips (`laneCounts` in `sessions.js`). Activity motion is one-shot per real event, a pulse when
   `last_call_at` moves forward on a poll, never on first paint, an unchanged poll or a
   forced repaint, and only when `motion.activityMotion()` allows it (Full, no OS reduced
   motion, page visible); nothing infinite (a loop measured +5.6 pp renderer, +34 pp GPU
   CPU). Nothing reaches attention. A cancelled one-shot (`animationcancel`) drops its
   class like a finished one (#305).
-- The Agents home (#454, design `docs/superpowers/specs/2026-11-04-agents-home-design.md`)
-  is the Dashboard's one home for sessions, mounted once in the grid's main column
-  (`agentsHome.element()`). `public/sessions.js` (pure) builds one card per session from
+- The Agents home (#454, design `docs/superpowers/specs/2026-11-04-agents-home-design.md`),
+  since the dashboard lanes PR 4 (§3.3, §3.4) the **Working and Quiet lanes**, is the
+  Dashboard's one home for sessions: `public/agents-home.js` paints both lanes into one
+  `.agents-home` wrapper mounted once in the grid (`agentsHome.element()`), after Needs you
+  and before the ribbon and Just landed; the session panel's sheet sits after the wrapper.
+  `laneOf`/`splitLanes` (`sessions.js`) put every main card in exactly one lane: Working when
+  its base state is working (`isWorking`, or a running host turn, `isBusy`), Quiet otherwise;
+  a card in a fold is in neither. Working groups its cards by project under a head (dot, name,
+  "N sessions"; no group-by); a card's first button is **Open** (`openSession(key, 'head')`,
+  routed before any launch action, launch cards included), then Message. Quiet is a
+  `role="list"` table of `div.qt-row` rows with an `aria-hidden` header row (`.qt-head`): a
+  list, so the narrow session panel can sit between rows; each row's `aria-label` names every
+  column. Rows reuse the card's part classes (`sc-state`, `sc-agent`, `sc-branch`, `sc-doing`,
+  `sc-when`, `sc-asking`, `sc-actions`) and `tone-*`, and keep each state's actions (an idle
+  row Open and Message, with `messageHint` in Message's title; a parked one Take over and
+  Resume…); fold cards keep theirs, with no Open. Cards and rows live in separate node maps,
+  so a session that changes lane gets a node of its new lane's shape. Each lane pins its own
+  order (`pinLaneOrder`, Working's project groups too) between forced paints, and holds it
+  through a forced paint while the pointer (`pointerenter`/`pointerleave` on the lane) or
+  focus is in it; a move between lanes is never held. Each lane has one roving tab stop; J/K
+  and the arrows never leave the lane. A focused card or row that leaves hands focus to its
+  lane's heading (`#workingLaneTitle`, `#quietLaneTitle`); `agentsHome.laneTitle(key)` gives
+  the heading of a key's lane (Quiet for a row or a fold's card), which the panel's close
+  uses. An empty lane keeps its header and shows one `.ah-lane-empty` line; with no session
+  at all, Working shows the first-run `.ah-empty`, and before the first read it says
+  "Reading sessions…". The state filters, group-by and the session count beside the old
+  heading are gone. `public/sessions.js` (pure) builds one card per session from
   the frame's reads: each launch (switch on only, §9) joined with its live driven rows
   (`launchSessions`), and every other `/api/activity` row under the sidebar's project and
   agent lens (`liveInLens()`, never narrowed by closure). A card's asks (read from
@@ -84,10 +108,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   names, a plan row to the card of the session that stamped the plan, else to the newest
   working card `linkedPlan`'s project + branch + agent join links, else to the newest idle
   or dormant card the same join matches; anything left is on no card) never change its
-  state or place (lanes design §3.3): the card carries an "Asking you · N" chip
-  (`.sc-asking`) that focuses its first ask in Needs you. There are no ask-only cards and no
-  Needs you filter. States: Didn't start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle or Quiet, Parked
-  (parked, or stopped with its session kept, labelled Stopped, #478; the filter reads "Parked or stopped"), In Terminal, Ended, Dormant (`isDormant`).
+  state or place (lanes design §3.3): the card or row carries an "Asking you · N" chip
+  (`.sc-asking`) that focuses its first ask in Needs you. There are no ask-only cards. States: Didn't start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle or Quiet, Parked
+  (parked, or stopped with its session kept, labelled Stopped, #478; both are Quiet rows), In Terminal, Ended, Dormant (`isDormant`).
   Quiet (#466) is the idle state's label when nothing can tell: a terminal session reports
   only through Agent Inbox calls, so one busy with `gh`, a shell or another server reads
   exactly like one waiting at its prompt. Only a driven row or a running launch whose
@@ -95,36 +118,38 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   stamped its turn ended (#466 PR 2, "turn ended 12m ago"), says Idle; a hook-stamped
   running turn with no claim is Working, "Task not reported" (`isBusy`, `hostState`). A quiet card's time says "no Agent Inbox call for
   40m" ("last Agent Inbox call just now", or "connected 3m · no Agent Inbox call yet"),
-  never "idle 40m", on a line of its own under the head (`.sc.quiet`); the Idle filter is labelled Quiet and keeps its `idle` key. A claim
+  never "idle 40m", on a line of its own under the head (`.sc.quiet`) on a fold's card; its state key stays `idle`. A claim
   that is no longer live reads "Last reported: <claim> · 52m ago", dated by the last call
   (`card.line`, shared by the card and the panel); a launch's own status text keeps
   "was:". The ages follow the existing 30-second clock, like the card's recency.
-  Grouped by project (or agent kind), sorted by state then newest call, order pinned
-  between forced paints (`pinLaneOrder`). Working cards carry the plan bar, subagents and
-  call trace; folds hold Ended (the newest five plus kept worktrees, with Earlier sessions
+  Sorted by state then newest call, order pinned per lane as above. Working cards carry the
+  plan bar, subagents and call trace; the folds, at Quiet's end, hold Ended (the newest five plus kept worktrees, with Earlier sessions
   inside; its summary counts the worktrees ended launches still keep), Dormant, In closed
   projects and the global Not delivered. Cards update in place keyed by id, each part
   rebuilt only when its own key changes (the foot's facts and buttons apart, so a new call
   never replaces a focused button), and classes change through `classList`, never
-  `className`, so a running pulse survives; a closed fold paints no cards. Filter,
-  grouping and folds are window-local and in `frameInputs()` (`agentsHome.state()`). A
+  `className`, so a running pulse survives; a closed fold paints no cards, and the folds'
+  row shows only with something in it. The open folds are window-local and in
+  `frameInputs()` (`agentsHome.state()`). A
   working card pulses once on a new call (`.sc.pulse`, in the Calm and reduced-motion
   lists). Card actions reuse the launch UI's own handlers (`launchUi.run`), Remove
   worktree… included on an ended launch whose worktree is kept, and Forget… (#478) on an
   ended launch with none left (main checks and asks, as in the panel; only with the launch
   grant; a forgotten card goes on the next read, and its open panel closes); one that fails opens the launch's panel,
-  where its note shows. A card's click or Enter opens its panel. Launches the project
-  and agent lens hides that are not ended are named in one quiet line ("N sessions
-  outside this filter · Show all", which clears the lens), and a session started, or a
+  where its note shows. A card's or row's click toggles its panel and Enter opens it; a
+  trusted click on a row is not an outside click (`closeSessionFocusOnClick` tests
+  `[data-session-card]`). Launches the project and agent lens hides that are not ended are
+  named in one quiet line under Working's heading ("N sessions outside this filter · Show
+  all", which clears the lens), and a session started, or a
   `launch:` panel opened, outside the lens scopes the lens to its project first, as Jump
   to session does, so no launch is ever unreachable. Subagents carry `status()`'s
   optional `state` into the panel's list and the card's tooltip. Nothing it draws
   reaches attention.
 - The Agents home's **Mesh agents** section (agent cards view V3, design
   `docs/superpowers/specs/2026-11-09-agent-cards-view-design.md` §2, §4.5) is
-  `public/mesh-section.js`, mounted by `agents-home.js` after the groups and before the folds,
-  in a slot no filter or lens touches: the state filters and the project and agent lens never
-  narrow it, and it shows under the empty state's text with no session. Its body is a strip of
+  `public/mesh-section.js`, mounted by `agents-home.js` in the Quiet lane after its rows and
+  before the folds, in a slot no lens touches: the project and agent lens never narrow it,
+  and it shows with no session. Its body is a strip of
   cards (cards view V5c2, V5 design §2): `<ul class="ma-strip" role="list">`, one `<li>` per agent
   by `mesh.json` name, keyed by the server's `key`, each holding one native
   `<button class="ma-card">`, updated in place (never rebuilt), so the strip's horizontal scroll
@@ -212,7 +237,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M
   connected", "N on an older build"; with none working, "M connected" over "all quiet",
-  never "no task reported", #466). It and G L open the Dashboard with the Agents home's
+  never "no task reported", #466). It and G L open the Dashboard with the Working lane's
   heading focused, and each re-reads `/api/version`.
   Under 1280px the compact masthead keeps the tabs alone on its first row (scrolling in
   their own cell when they do not fit) and puts the line on the selectors' row as a chip
@@ -375,15 +400,16 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   over the Plans tab's own `countable`, where "waiting on you" is only rows
   `isBlockedRowAttention` counts. The page head's chips count the lanes from the same
   frame (Needs you the lane's cards; Working the main-list cards whose base state is
-  working, a running host turn included; Quiet the other main-list cards); the Needs you
-  lane's heading carries no number. A Working or Quiet chip clears an Agents state filter
-  that hides every card it counts, then focuses and reveals the first one. The Agents home keeps cards keyed by id and writes only changed text and
+  working, a running host turn included; Quiet the other main-list cards), each what its lane
+  shows; no lane heading carries a number. A Working or Quiet chip focuses and reveals its
+  own lane's first card or row. The lanes keep cards and rows keyed by id and write only changed text and
   attributes, so an unchanged card keeps its nodes and selection; a rail draft never stops
   it, and a held pointer stops it with the rest of `paintAmbient`. A focused card control
-  that leaves hands focus to the Agents heading only when the document had focus before the
+  that leaves hands focus to its lane's heading only when the document had focus before the
   update: removing the focused node can itself make `hasFocus()` false. A background
-  window's remembered focus is never moved. Order is pinned (`pinLaneOrder`): a card keeps
-  its place, new ones append, and only a forced paint (`forcedAmbient`) re-sorts. **Session
+  window's remembered focus is never moved. Order is pinned per lane (`pinLaneOrder`): a card
+  keeps its place, new ones append, and only a forced paint (`forcedAmbient`) re-sorts, and
+  not while the pointer or focus is in that lane. **Session
   activity uses no infinite animation; motion is one-shot per real event.** Measured A/B
   against main with four working sessions, the lanes' first loops (pulses and a top-edge
   sweep) cost +5.6 pp of renderer and +34 pp of GPU CPU just for being on screen, undoing

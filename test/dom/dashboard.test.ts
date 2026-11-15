@@ -25,8 +25,9 @@ const chip = (key: 'needs' | 'working' | 'quiet'): string =>
 // the Needs you lane: every ask once (§3.2)
 const askCount = (): number => document.querySelectorAll('#dashboard .needs-you-lane .ny-card').length
 
-// #454: the Agents home's cards, past its folds
-const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .ah-groups [data-session-card]')]
+// #454: the session cards and rows of the Working and Quiet lanes, past the folds (dashboard lanes design §3.3, §3.4)
+const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .ah-groups [data-session-card], #dashboard .agents-home .qt-rows [data-session-card]')]
+const quietRows = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .qt-rows [data-session-card]')]
 const working = (): HTMLElement[] => cards().filter((card) => card.classList.contains('tone-working'))
 
 describe('Live Operations Desk dashboard', () => {
@@ -128,7 +129,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(chip('quiet')).toBe('8')
     expect(working()).toHaveLength(2)
     expect(cards()).toHaveLength(10)
-    expect(document.querySelector('[data-ah-filter="idle"] .ah-filter-count')?.textContent).toBe('8')
+    expect(quietRows()).toHaveLength(8)
     expect(document.querySelector<HTMLElement>('.agents-home .ah-empty')?.hidden).toBe(true)
   })
 
@@ -191,7 +192,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('[data-dash-chip="working"]')?.getAttribute('aria-label')).toBe('Working: 0')
     expect(working()).toHaveLength(0)
     expect(cards()[0]!.querySelector('.sc-state')?.textContent).toBe('Quiet')
-    // the Agents home (#454) draws it only as what the session was doing
+    // the Quiet lane draws it only as what the session was doing (#454)
     expect(document.querySelector('.sc-doing')?.textContent).toMatch(/^Last reported: Checking the build · /)
   })
 
@@ -211,7 +212,7 @@ describe('Live Operations Desk dashboard', () => {
     await settle()
 
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(document.querySelector('.agents-home [data-ah-filter="all"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('.agents-home [data-ah-filter]')).toBeNull()
     expect(document.activeElement).toBe(document.querySelector(`#dashboard [data-ny-ask="${id}"]`))
   })
 

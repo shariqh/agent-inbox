@@ -431,10 +431,11 @@ describe('the panel’s draft rules (#454 A.2)', () => {
 // #454 PR 6: the rail retired; the session cards and their panel carry its abilities (A.2, A.3)
 const key = (target: Element, name: string) =>
   target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }))
-const cardEls = () => [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')]
+// the Working lane's cards (dashboard lanes design §3.3)
+const cardEls = () => [...document.querySelectorAll<HTMLElement>('#dashboard .working-lane .ah-groups [data-session-card]')]
 
 describe('the Dashboard without the rail (#454 PR 6)', () => {
-  it('has no rail: the Agents home spans the grid, and the Needs you lane’s header holds Later and Review queue', async () => {
+  it('has no rail: the Working and Quiet lanes span the grid, and the Needs you lane’s header holds Later and Review queue', async () => {
     db = freshDb()
     question(db, 'Asked here')
     const later = question(db, 'Pinned for later')
@@ -483,11 +484,12 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     expect(panel().hidden).toBe(false)
     expect(block(ask)).not.toBeNull()
     expect(document.activeElement).toBe(document.getElementById('dashFocusTitle'))
-    // never on the card's own controls
-    const message = card('session:one')!.querySelector<HTMLElement>('[data-ah-action]')!
-    message.focus()
-    key(message, 'j')
-    expect(document.activeElement).toBe(message)
+    // never on the card's own controls (its first, Open, the lanes' main action)
+    const control = card('session:one')!.querySelector<HTMLElement>('[data-ah-action]')!
+    expect(control.textContent).toBe('Open')
+    control.focus()
+    key(control, 'j')
+    expect(document.activeElement).toBe(control)
   })
 
   it('answers from the keyboard in the panel: 1–4 choose, S snoozes, P pins, R goes to the answer; typing keeps its keys', async () => {
@@ -558,7 +560,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
 
   // #463 review: under 1280px the panel sits in a group's or fold's card grid; whatever
   // takes that grid away must leave the panel connected, in sight, and able to open again
-  describe('a narrow window’s panel is never cut off with its card’s group (#463 review)', () => {
+  describe('a narrow window’s panel is never cut off with its card’s group or row (#463 review)', () => {
     const inSight = () => {
       expect(panel().isConnected).toBe(true)
       expect(panel().parentElement?.closest('[hidden], details:not([open])')).toBeNull()
@@ -583,24 +585,30 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     }
     afterEach(() => setViewport('wide'))
 
-    it('when a filter hides its card', async () => {
+    it('when its session stops working and moves from Working to Quiet (lanes design §3.3)', async () => {
       db = freshDb()
       await twoGroups(db)
-      click(document.querySelector('.agents-home [data-ah-filter="idle"]'))
-      await settle()
-      expect(card('session:one')).toBeNull()
+      upsertActivity(db, { ...AGENT, project: 'beta', session: 'one', doing: 'open', idle: true })
+      await pollTick()
+      expect(card('session:one')?.closest('.quiet-lane')).not.toBeNull()
+      expect(document.querySelector('.working-lane .ah-group')).toBeNull()
       inSight()
       await opensAgain('session:two')
     })
 
-    it('when the cards are grouped by agent', async () => {
+    it('when its Quiet row’s session starts working, leaving Quiet empty (lanes design §3.4)', async () => {
       db = freshDb()
       await twoGroups(db)
-      const select = document.querySelector<HTMLSelectElement>('.agents-home .ah-group-by select')!
-      select.value = 'agent'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
+      click(card('session:two')?.querySelector('.sc-doing'))
+      await settle()
+      expect(panel().parentElement?.classList.contains('qt-rows')).toBe(true)
+      live(db, 'two', { doing: 'Back at it' })
+      recordActivityCall(db, 'two')
+      await pollTick()
+      expect(card('session:two')?.closest('.working-lane')).not.toBeNull()
+      expect(panel().dataset.card).toBe('session:two')
       inSight()
-      await opensAgain('session:two')
+      await opensAgain('session:one')
     })
 
     it('when a poll takes its card’s group away', async () => {
@@ -615,7 +623,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     })
 
     // #463 re-check: the move keeps the focus and caret it held, and paint() sends nothing to the heading
-    it('keeps the answer being typed, caret and all, when a filter drops its card’s group', async () => {
+    it('keeps the answer being typed, caret and all, when its Quiet row moves to Working', async () => {
       db = freshDb()
       upsertActivity(db, { ...AGENT, project: 'beta', session: 'one', doing: 'open', idle: true })
       const ask = question(db, 'Which day?', { project: 'beta', session: 'one' })
@@ -624,22 +632,21 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
       setViewport(760)
       await bootApp(db)
       vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-      click(document.querySelector('.agents-home [data-ah-filter="idle"]'))
-      await settle()
       await answerOn('session:one')
+      expect(panel().parentElement?.classList.contains('qt-rows')).toBe(true)
       const input = editor(ask)!
       input.focus()
       type(input, 'Thursday after the backup')
       input.setSelectionRange(3, 8)
-      // the session starts working: its card leaves the Quiet filter, and its group goes
+      // the session starts working: its row leaves Quiet, which is left empty
       upsertActivity(db, { ...AGENT, project: 'beta', session: 'one', doing: 'Back at it', idle: false })
       recordActivityCall(db, 'one')
       await pollTick()
-      expect(card('session:one')).toBeNull()
+      expect(card('session:one')?.closest('.working-lane')).not.toBeNull()
       inSight()
       expect(document.activeElement).toBe(input)
       expect([input.selectionStart, input.selectionEnd]).toEqual([3, 8])
-      expect(document.activeElement).not.toBe(document.getElementById('agentsHomeTitle'))
+      expect(document.activeElement).not.toBe(document.getElementById('quietLaneTitle'))
     })
 
     it('when the fold it opened in closes', async () => {

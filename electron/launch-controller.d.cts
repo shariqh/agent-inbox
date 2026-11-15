@@ -1,8 +1,11 @@
 // Type declarations for electron/launch-controller.cjs (issue #412 step 3).
+import type { TerminalId } from './terminal-launch.cjs'
 export type WorktreeRoot = { path: string; isDefault: boolean }
 export type LaunchResult = {
   ok: boolean; error?: string; launch?: string; cancelled?: boolean; status?: string; killed?: boolean; reason?: string; worktreeRoot?: WorktreeRoot
   folder?: string; project?: string; repository?: boolean; maxSessions?: number
+  /** #586: set when the chosen terminal could not be opened and Terminal was opened instead */
+  notice?: string
 }
 export interface LaunchController {
   canEnable(options?: { withKeys?: boolean }): LaunchResult | null
@@ -20,6 +23,8 @@ export interface LaunchController {
   maxSessions(): Promise<number | null>
   setMaxSessions(value: unknown): Promise<LaunchResult>
   openWorktree(id: unknown): Promise<LaunchResult>
+  /** #586: the terminal the Settings name, checked against the fixed list; null while launches are off */
+  terminalChoice(): Promise<TerminalId | null>
   /** step 5: Take over in Terminal (or open Terminal again on a launch already handed off) */
   takeOver(id: unknown): Promise<LaunchResult>
   /** #478: forget an ended launch with no kept worktree, after main's own confirmation */
@@ -66,6 +71,8 @@ export function forgetConfirmation(facts: {
 }): { message: string; detail: string; buttons: string[] }
 export function takeOverConfirmation(facts: {
   project: string; folder: string; state: 'running' | 'parked' | 'stopped' | 'handed_off'
+  /** #586: the terminal's name; Terminal when left out */
+  app?: string
 }): { message: string; detail: string; buttons: string[] }
 export function takeOverScript(facts: {
   launchId: string; folder: string; session: string; model?: string | null; reasoningEffort?: string | null

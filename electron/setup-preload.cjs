@@ -135,6 +135,27 @@ function settingsCall(channel, ...args) {
 
 const isText = (value) => typeof value === 'string' && value.length <= 64
 
+// #586: the terminal setting. Main answers with its own view; only these fields get through.
+const TERMINAL_IDS = new Set(['terminal', 'iterm2'])
+
+function terminalView(value) {
+  if (!value || typeof value !== 'object' || typeof value.available !== 'boolean') return null
+  const view = { available: value.available }
+  if (value.available) {
+    if (!TERMINAL_IDS.has(value.terminal)) return null
+    view.terminal = value.terminal
+  }
+  if (SETTINGS_ERRORS.has(value.error)) view.error = value.error
+  return view
+}
+
+function terminalSettingCall(channel, ...args) {
+  return ipcRenderer.invoke(channel, ...args).then(
+    (value) => terminalView(value) ?? { available: false, error: 'failed' },
+    () => ({ available: false, error: 'failed' }),
+  )
+}
+
 contextBridge.exposeInMainWorld('agentInboxLinkSettings', {
   get(...args) {
     if (args.length !== 0) return Promise.resolve(failedSettings('invalid'))
@@ -156,6 +177,14 @@ contextBridge.exposeInMainWorld('agentInboxLinkSettings', {
     if (args.length !== 1 || !isText(args[0])) return Promise.resolve(failedSettings('invalid'))
     return settingsCall('agent-inbox:link-settings-remove-type', args[0])
   },
+  getTerminal(...args) {
+    if (args.length !== 0) return Promise.resolve({ available: false, error: 'invalid' })
+    return terminalSettingCall('agent-inbox:terminal-setting')
+  },
+  setTerminal(...args) {
+    if (args.length !== 1 || !isText(args[0])) return Promise.resolve({ available: false, error: 'invalid' })
+    return terminalSettingCall('agent-inbox:terminal-setting-set', args[0])
+  },
 })
 
 // Issue #412 step 3: driven sessions. Each method takes exactly its arguments,
@@ -169,6 +198,8 @@ function launchResult(value) {
   if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') return { ok: false, error: 'Agent Inbox did not answer.' }
   const out = { ok: value.ok }
   if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  // #586: a launch that worked in Terminal because the chosen app could not be opened
+  if (typeof value.notice === 'string') out.notice = value.notice.slice(0, 500)
   if (typeof value.launch === 'string' && LAUNCH_ID.test(value.launch)) out.launch = value.launch
   if (value.cancelled === true) out.cancelled = true
   if (typeof value.status === 'string') out.status = value.status
@@ -198,6 +229,8 @@ function launchAvailability(value) {
   const root = worktreeRootOf(value.worktreeRoot)
   if (out.available && root) out.worktreeRoot = root
   if (out.available && isSessionCap(value.maxSessions)) out.maxSessions = value.maxSessions
+  // #586: which terminal the Terminal buttons open, for their titles
+  if (out.available && TERMINAL_IDS.has(value.terminal)) out.terminal = value.terminal
   return out
 }
 

@@ -1,6 +1,7 @@
 // Type declarations for electron/link-preferences.cjs (issue #300 part 2).
 import type { LinkRules } from './link-open.cjs'
 import type { UpdatePreferencesFs } from './update-preferences.cjs'
+import type { TerminalId } from './terminal-launch.cjs'
 
 export type SettingsError = 'invalid' | 'covered' | 'blocked' | 'exists' | 'full' | 'not-an-app' | 'runs-code' | 'newer' | 'failed'
 
@@ -25,6 +26,17 @@ export interface LinkSettingsView {
 export interface LinkPreferencesStore {
   read(): Promise<LinkRules>
   update(change: (prefs: LinkRules) => LinkRules | { refused: SettingsError }): Promise<{ prefs: LinkRules; refused?: SettingsError }>
+  /** #586: Terminal unless the file names another app on the fixed list */
+  readTerminal(): Promise<TerminalId>
+  /** rejects a TypeError for an id off the fixed list; refuses over a newer file */
+  setTerminal(terminal: TerminalId): Promise<{ terminal: TerminalId; refused?: 'newer' }>
+}
+
+/** #586: Settings → Terminal. `terminal` is present when available. */
+export interface TerminalSettingView {
+  available: boolean
+  terminal?: TerminalId
+  error?: SettingsError
 }
 
 export function parseLinkPreferences(bytes: string | Buffer): { prefs: LinkRules; record: Record<string, unknown> | null; writable: boolean }
@@ -42,6 +54,8 @@ export interface LinkSettings {
   chooseApp(id: unknown): Promise<LinkSettingsView>
   addType(extension: unknown): Promise<LinkSettingsView>
   removeType(id: unknown): Promise<LinkSettingsView>
+  terminal(): Promise<TerminalSettingView> | TerminalSettingView
+  setTerminal(id: unknown): Promise<TerminalSettingView>
 }
 
 export function createLinkSettings(options: {

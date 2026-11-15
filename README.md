@@ -461,7 +461,7 @@ Letters do not run shortcuts while you are typing or using a select.
 
 | Keys | Action |
 |---|---|
-| `G D` / `G I` / `G P` / `G N` / `G H` | Dashboard / Inbox / Plans / Notes / History |
+| `G D` / `G I` / `G P` / `G N` / `G H` / `G C` | Dashboard / Inbox / Plans / Notes / History / Chats |
 | `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Sessions (the Agents view) |
 | `Cmd/Ctrl K` or `/` | Focus search |
 | `J` / `K`, then `Enter` | Move through the queue and expand an item |

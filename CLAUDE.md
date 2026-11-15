@@ -148,6 +148,7 @@ read or edit a matching file. Read it yourself before changing these areas:
 | update manifests, keys, download, install | `updates.md` |
 | packaging, runtime staging, pruning, locales, MSI, workflows | `packaging-and-release.md` |
 | mesh | `mesh.md` |
+| chat index, `/api/chats` | `chats.md` |
 | `agent-inbox-driver`, ACP | `driven-sessions.md` |
 | tests and the DOM harness | `testing.md` |
 | TS, build, dead exports, hygiene | `conventions.md` |
@@ -157,8 +158,7 @@ Release history: `CHANGELOG.md`. Open backlog (each item has a GitHub issue):
 
 ## Gotchas recap
 
-- Node 26 default → this checkout's `better-sqlite3` binding was built for Node 24's ABI and
-  fails to load; use Node 24.
+- Node 26 default → `better-sqlite3` fails to load; use Node 24.
 - Register the MCP server with the absolute Node 24 path, not bare `node`.
 - New MCP-server registration is picked up only on a **fresh** CLI session.
 - The **reporting snippet** (`docs/reporting-snippet.md`) is what makes agents flag at all —

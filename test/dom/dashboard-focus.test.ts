@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-// Dashboard 2.0 phase 5 (#307): command-center polish. The session cards'
-// filters (#454), the Dashboard keys in the keyboard help, the session focus panel
+// Dashboard 2.0 phase 5 (#307): command-center polish. The Working and Quiet
+// lanes that replaced the session cards' filters (#454, dashboard lanes design
+// §3.3, §3.4), the Dashboard keys in the keyboard help, the session focus panel
 // (read-only, updated in place, never pulling focus in a background window)
 // and the ⌘K actions, which route through focusItem and the deep-link path.
 // None of it reaches attention: PR and CI chips in the panel included.
@@ -41,8 +42,9 @@ function work(d: Database.Database, session: string, what: string, extra: Record
 
 const card = (session: string): HTMLElement | null =>
   document.querySelector<HTMLElement>(`#dashboard [data-session-card="session:${session}"]`)
-const cardIds = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')].map((el) => el.dataset.sessionCard!.slice('session:'.length))
+const cardIds = (lane: 'working' | 'quiet'): string[] =>
+  [...document.querySelectorAll<HTMLElement>(lane === 'working' ? '#dashboard .working-lane .ah-groups [data-session-card]' : '#dashboard .quiet-lane .qt-rows [data-session-card]')]
+    .map((el) => el.dataset.sessionCard!.slice('session:'.length))
 // a card opens its panel from anywhere that is not a control
 const openCard = (session: string): void => click(card(session)?.querySelector('.sc-doing'))
 const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus')
@@ -50,8 +52,6 @@ const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus'
 const chip = (key: 'needs' | 'working' | 'quiet'): string =>
   document.querySelector(`#dashboard [data-dash-chip="${key}"] .dash-chip-count`)?.textContent ?? ''
 const laneCard = (id: string) => [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.dataset.nyAsk === id) ?? null
-
-const pick = (filter: string): void => click(document.querySelector(`#dashboard [data-ah-filter="${filter}"]`))
 
 function keydown(target: Element, key: string): void {
   target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
@@ -70,8 +70,8 @@ async function attentionSurfaces() {
   }
 }
 
-describe('quick filters on session cards (#307, #454)', () => {
-  it('narrow only the cards, never the chips, the Needs you lane, the rail or attention', async () => {
+describe('the Working and Quiet lanes split the cards (#307, #454, dashboard lanes design §3.3, §3.4)', () => {
+  it('a session that stops moves to Quiet, never moving the Needs you lane, the rail or attention', async () => {
     const d = open()
     work(d, 'a', 'Alpha work')
     work(d, 'b', 'Beta work', { project: 'beta', agent: 'claude-code' })
@@ -80,25 +80,17 @@ describe('quick filters on session cards (#307, #454)', () => {
     insertItem(d, { ...A, project: 'beta', kind: 'question', title: 'Beta ask', session: 'b' })
     await bootApp(d)
     const before = await attentionSurfaces()
-    const working = chip('working')
-    expect(cardIds().sort()).toEqual(['a', 'b', 'c'])
+    expect([cardIds('working').sort(), cardIds('quiet')]).toEqual([['a', 'b', 'c'], []])
+    expect([chip('working'), chip('quiet')]).toEqual(['3', '0'])
 
-    pick('working')
-    expect(cardIds().sort()).toEqual(['a', 'b', 'c'])
-    pick('idle')
-    expect(cardIds()).toEqual([])
+    upsertActivity(d, { ...A, project: 'beta', agent: 'claude-code', session: 'b', doing: 'open', idle: true })
     await pollTick()
-    expect(cardIds()).toEqual([])
-    expect(chip('working')).toBe(working)
+    expect([cardIds('working').sort(), cardIds('quiet')]).toEqual([['a', 'c'], ['b']])
+    expect([chip('working'), chip('quiet')]).toEqual(['2', '1'])
+    // its ask still shows once, in Needs you; the row only counts it
     expect(document.querySelectorAll('#dashboard .ny-card')).toHaveLength(2)
+    expect(card('b')?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
     expect(await attentionSurfaces()).toEqual(before)
-
-    pick('parked')
-    expect(cardIds()).toEqual([])
-    expect(document.querySelector<HTMLElement>('.agents-home .ah-none')?.hidden).toBe(false)
-    pick('all')
-    expect(cardIds().sort()).toEqual(['a', 'b', 'c'])
-    expect(document.querySelector<HTMLElement>('.agents-home .ah-none')?.hidden).toBe(true)
   })
 })
 
@@ -167,8 +159,8 @@ describe('the session focus panel (#307)', () => {
     keydown(aside.querySelector('#dashFocusTitle')!, 'Escape')
     expect(aside.hidden).toBe(true)
     expect(card('mine')!.classList.contains('sel')).toBe(false)
-    // back to the card's first action: here its Message
-    expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="message"]'))
+    // back to the card's first action: here Open, the Working lane's main action (dashboard lanes design §3.3)
+    expect(document.activeElement).toBe(card('mine')!.querySelector('[data-ah-action="open"]'))
   })
 
   it('lists every ask of the session and opens one in its Inbox card', async () => {

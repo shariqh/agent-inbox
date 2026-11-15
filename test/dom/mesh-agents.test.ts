@@ -116,7 +116,8 @@ const triggers = (bridge: ViewerBridge) => bridge.posts.filter((p) => p.url === 
 const posted = (bridge: ViewerBridge) => bridge.posts.filter((p) => p.url === '/api/mesh/agents/refresh')
   .map((p) => JSON.parse(String(p.init?.body)) as Json)
 const meshReads = (log: string[]) => log.filter((entry) => entry === 'GET /api/mesh/agents').length
-const section = () => document.querySelector<HTMLElement>('.agents-home .mesh-agents')
+// in the Quiet lane, after its rows and before the folds (dashboard lanes design §3.4)
+const section = () => document.querySelector<HTMLElement>('.agents-home .quiet-lane .mesh-agents')
 const meshRow = (name: string) => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-card')]
   .find((el) => el.querySelector('.ma-name')?.textContent === name) ?? null
 const shown = () => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-card')].map((el) => [
@@ -369,16 +370,16 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       recordActivityCall(d, 'c1')
     }
 
-    it('shows the same cards under every state filter and a project and agent lens that hides every session', async () => {
+    it('shows the same cards whatever the lanes hold, and under a lens that hides every session', async () => {
       await boot({ seed })
       await pollTick()
       const expected = shown()
       expect(expected).toEqual(UP_ROWS)
-      for (const key of ['working', 'parked']) {
-        click(document.querySelector(`.agents-home [data-ah-filter="${key}"]`))
-        expect(shown(), key).toEqual(expected)
-      }
-      click(document.querySelector('.agents-home [data-ah-filter="all"]'))
+      // the one session stops working: it moves to Quiet, beside the section, which stays the same
+      upsertActivity(db!, { session: 'c1', agent: 'copilot', project: 'agent-inbox', stream: 'main', doing: 'open', idle: true })
+      await pollTick()
+      expect(document.querySelector('.agents-home .quiet-lane .qt-rows [data-session-card="session:c1"]')).not.toBeNull()
+      expect(shown()).toEqual(expected)
       click(document.querySelector('#rail button.rail-tab[data-project="zeta"]'))
       await settle()
       const agent = document.getElementById('agentSelect') as HTMLSelectElement

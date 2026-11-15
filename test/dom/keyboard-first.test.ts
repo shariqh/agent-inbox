@@ -36,7 +36,7 @@ describe('keyboard-first workspace', () => {
     expect(document.getElementById('keyboardHints')?.getAttribute('data-shortcut')).toBe('F')
     const destinations = [
       ['i', 'needsYou', 'G I'], ['p', 'boards', 'G P'], ['n', 'notes', 'G N'],
-      ['h', 'done', 'G H'], ['d', 'dashboard', 'G D'],
+      ['h', 'done', 'G H'], ['c', 'chats', 'G C'], ['d', 'dashboard', 'G D'],
     ] as const
     for (const [key, id, label] of destinations) {
       expect(document.querySelector(`[data-tab="${id}"]`)?.getAttribute('data-shortcut')).toBe(label)

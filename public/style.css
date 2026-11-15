@@ -2253,6 +2253,30 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .mar-copy { margin-top: 0; }
 .mar-foot { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--app-border); }
 .mar-command { padding: 1px 5px; border-radius: 5px; background: var(--app-soft); font-size: 11.5px; overflow-wrap: anywhere; user-select: text; }
+/* The Chats tab (#586 PR 2): Run history's table, the queue's header controls, and tokens for
+   every size and gap; chat text wraps anywhere so a long folder never scrolls the page sideways */
+#chats .chats { container: chats-list / inline-size; }
+.tab-header.chats-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.chats-search { flex: 1 1 200px; min-width: 0; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-body); }
+.chats-note, .chats-count { margin: var(--sp-2) 0 0; color: var(--app-muted); font-size: var(--fs-meta); }
+.chats-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-2) 0 0; color: var(--app-warning); font-size: var(--fs-meta); }
+.chats-state { margin: var(--sp-3) 0 0; }
+/* each of these sets a display, which would otherwise beat the UA's [hidden] rule */
+.chats-note[hidden], .chats-error[hidden], .chats-count[hidden], .chats-state[hidden], .chats-table[hidden] { display: none; }
+.chats-table { width: 100%; margin-top: var(--sp-2); border-collapse: collapse; font-size: var(--fs-body); }
+.chats-table th { padding: var(--sp-1) var(--sp-3) var(--sp-1) 0; border-bottom: 1px solid var(--app-border); color: var(--app-text-soft); font-size: var(--fs-meta); font-weight: 600; text-align: left; }
+.chats-table td { padding: var(--sp-2) var(--sp-3) var(--sp-2) 0; border-bottom: 1px solid var(--app-border); vertical-align: top; }
+.chats-tool { white-space: nowrap; }
+.chats-title, .chats-project, .chats-branch, .chats-folder { overflow-wrap: anywhere; }
+.chats-folder { color: var(--app-muted); }
+.chats-active { color: var(--app-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chats-quiet { color: var(--app-muted); }
+.chats-reasons, .chats-pr { margin-left: var(--sp-1); }
+.chats-reasons:empty, .chats-pr:empty { display: none; }
+.chats-reasons { display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); vertical-align: middle; }
+.chip.chats-live { background: color-mix(in srgb, var(--app-agent) 10%, transparent); color: var(--app-agent); }
+.chats-copy { padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; white-space: nowrap; cursor: pointer; }
+.chats-copy[aria-disabled="true"], .chats-refresh[aria-disabled="true"] { opacity: .45; cursor: default; }
 /* the session card */
 /* #454 A.3 V1–V5: one quiet meta line, what it is doing leading, pink only for
    asks and green only for the working dot, one visible action as a text button */
@@ -2344,6 +2368,27 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   }
   .queue-sort select { width: 100%; min-width: 0; }
   .relay-btn, .triage-btn { white-space: nowrap; }
+}
+
+/* #586: below 620px a chat is two lines, tool, title and Live over project, branch, folder,
+   last active and Copy, like the queue's rows. A wrapping flex row, not a grid: at phone width
+   five content-sized grid tracks left the folder 0px wide, so here the folder takes the slack
+   and drops to a line of its own when less than 12em is left. */
+@container chats-list (max-width: 620px) {
+  .chats-search { flex-basis: 100%; }
+  .chats-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .chats-table, .chats-table tbody { display: block; }
+  .chats-table tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--app-border); }
+  .chats-table td { display: block; flex: 0 1 auto; order: 2; min-width: 0; padding: 0; border-bottom: 0; overflow-wrap: anywhere; }
+  /* the line break: a full-width item between the two lines, its extra row gap taken back */
+  .chats-table tr::after { content: ""; flex: 0 0 100%; order: 1; margin-top: calc(-1 * var(--sp-1)); }
+  .chats-table .chats-tool, .chats-table .chats-title, .chats-table .chats-live { order: 0; }
+  .chats-table .chats-title { flex: 1 1 0; }
+  .chats-table .chats-folder { flex: 1 1 12em; }
+  /* the project filter takes a line of its own and its select shrinks with it: a long project
+     name would otherwise make the label wider than the panel and clip its own text */
+  label.chats-project { flex: 1 1 100%; min-width: 0; }
+  label.chats-project select { flex: 1 1 auto; min-width: 0; }
 }
 
 @container needs-queue (max-width: 620px) {

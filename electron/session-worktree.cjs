@@ -87,6 +87,36 @@ function isRepositoryTop(folder, { fsImpl = fs } = {}) {
   }
 }
 
+// #586 phase 2: how far up a continued chat's folder is searched for a .git (the chat index's walk)
+const REPOSITORY_WALK = 10
+
+/**
+ * #586 phase 2 (design §3.2): whether `folder` is inside a git repository: a `.git` folder or file
+ * at it or up to 10 levels above it, the first one found deciding. lstat only, no git; a `.git`
+ * that is something else, or a folder that cannot be read, is not a repository.
+ */
+function insideRepository(folder, { fsImpl = fs } = {}) {
+  if (typeof folder !== 'string' || !path.isAbsolute(folder)) return false
+  try {
+    let dir = folder
+    for (let i = 0; i <= REPOSITORY_WALK; i++) {
+      let git = null
+      try {
+        git = fsImpl.lstatSync(path.join(dir, '.git'))
+      } catch (error) {
+        if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') return false
+      }
+      if (git) return git.isDirectory() || git.isFile()
+      const up = path.dirname(dir)
+      if (up === dir) break
+      dir = up
+    }
+  } catch {
+    // unreadable: not a repository
+  }
+  return false
+}
+
 /**
  * Why a worktree root chosen in Settings cannot be used, or null: an absolute,
  * existing real directory, owned by this user, not writable by others, with no
@@ -134,4 +164,4 @@ function worktreeProblem({ folder, root, defaultRoot, plan, fsImpl = fs }) {
   return null
 }
 
-module.exports = { isRepositoryTop, planWorktree, worktreeProblem, worktreeRepoName, worktreeRootProblem, worktreeSlug }
+module.exports = { insideRepository, isRepositoryTop, planWorktree, worktreeProblem, worktreeRepoName, worktreeRootProblem, worktreeSlug }

@@ -87,6 +87,19 @@ page, the refusals and the script are in `chats.md`).
   start, drive or approve for a session. It needs no driven-sessions switch, holds no `launch`
   grant and shows no dialog, because the person runs the tool's own interactive command in their
   own terminal, as with the copied command.
+- **Beside driven sessions (#586 phase 2).** With the switch on (main's `launchEnabled`, read on each
+  resume), it also reads a Copilot chat through the viewer's `GET /api/chats/copilot/:id` and refuses
+  one a launch of this app holds, and, before that read, one Continue here… is starting now
+  (`isContinuing`, the launch controller's read-only accessor; no controller made means none is).
+  With the switch off it reads nothing new and asks nothing.
+
+**Continue a chat here (#586 phase 2).** `agent-inbox:launch-continue-chat` is one more launch
+channel: exactly one argument, behind the `launch` grant like every other launch action, and
+`agentInboxLaunch.continueChat` in the preload sends a fresh object of `tool`, `id`, `mode`, `prompt`
+and `startId`. Main reads the chat, its folder, title and project through the viewer and confirms in
+its own dialog; the page names no folder, argv or env. `homeDir` (`app.getPath('home')`) is what main
+matches the shell's `COPILOT_HOME` against. The flow and its refusals are in `driven-sessions.md`
+("Continue a chat … part 2").
 
 ## History (shipped since v1)
 

@@ -255,6 +255,36 @@ const launchCall = (channel, arg) => ipcRenderer.invoke(channel, arg).then(launc
 const isLaunchId = (value) => typeof value === 'string' && LAUNCH_ID.test(value)
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
+// #586 phase 2: Continue here…'s request, exactly the tool, the chat id, a mode, the message and an
+// optional start tag, rebuilt as a fresh object; anything else is refused before main is asked
+const CONTINUE_KEYS = new Set(['tool', 'id', 'mode', 'prompt', 'startId'])
+const CONTINUE_MODES = new Set(['ask', 'read-only'])
+const CONTINUE_REASONS = new Set([
+  'invalid', 'busy', 'index', 'missing', 'driven', 'live', 'kind', 'folder', 'sessions', 'worktree', 'environment', 'copilot_home', 'outdated',
+])
+
+function continueRequest(value) {
+  if (!isPlainObject(value) || Object.keys(value).some((key) => !CONTINUE_KEYS.has(key))) return null
+  const { tool, id, mode, prompt, startId } = value
+  if (tool !== 'claude' && tool !== 'copilot') return null
+  if (typeof id !== 'string' || !LAUNCH_ID.test(id) || !CONTINUE_MODES.has(mode)) return null
+  if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 65536) return null
+  if (startId !== undefined && !isStartId(startId)) return null
+  return { tool, id, mode, prompt, ...(startId === undefined ? {} : { startId }) }
+}
+
+// the checked answer: whether it started, its launch, a cancel, and a refusal's text and reason,
+// so the page knows when to read the list again; nothing else main might send
+function continueResult(value) {
+  if (!isPlainObject(value) || typeof value.ok !== 'boolean') return failedLaunch()
+  const out = { ok: value.ok }
+  if (typeof value.error === 'string') out.error = value.error.slice(0, 500)
+  if (typeof value.launch === 'string' && LAUNCH_ID.test(value.launch)) out.launch = value.launch
+  if (value.cancelled === true) out.cancelled = true
+  if (CONTINUE_REASONS.has(value.reason)) out.reason = value.reason
+  return out
+}
+
 contextBridge.exposeInMainWorld('agentInboxLaunch', {
   available(...args) {
     if (args.length !== 0) return Promise.resolve(launchAvailability(null))
@@ -328,6 +358,12 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
     if (args.length !== 1 || !isLaunchId(args[0])) return Promise.resolve({ ok: false, error: 'invalid' })
     return launchCall('agent-inbox:launch-forget', args[0])
   },
+  // #586 phase 2: Continue here… on a chat; a fresh object of the five allowed keys, which main checks again
+  continueChat(...args) {
+    const request = args.length === 1 ? continueRequest(args[0]) : null
+    if (!request) return Promise.resolve({ ok: false, reason: 'invalid', error: 'This chat can’t be continued here.' })
+    return ipcRenderer.invoke('agent-inbox:launch-continue-chat', request).then(continueResult, failedLaunch)
+  },
   // #432: main's own folder dialogs choose these; the page names no folder
   chooseFolder(...args) {
     if (args.length !== 0) return Promise.resolve({ ok: false, error: 'invalid' })
@@ -348,7 +384,7 @@ contextBridge.exposeInMainWorld('agentInboxLaunch', {
 const CHAT_TOOLS = new Set(['claude', 'copilot'])
 // the index's id rule: a lowercase UUID
 const CHAT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const CHAT_RESUME_REASONS = new Set(['unavailable', 'invalid', 'quitting', 'busy', 'index', 'missing', 'live', 'opened', 'folder', 'write', 'open'])
+const CHAT_RESUME_REASONS = new Set(['unavailable', 'invalid', 'quitting', 'busy', 'index', 'missing', 'driven', 'live', 'opened', 'folder', 'write', 'open'])
 const chatNoAnswer = () => ({ ok: false, reason: 'unavailable', error: 'Agent Inbox did not answer.' })
 const chatResumeOff = () => ({ available: false, terminal: 'terminal' })
 

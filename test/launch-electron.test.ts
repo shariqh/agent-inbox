@@ -585,6 +585,8 @@ describe('the launch controller', () => {
       await r.controller.start(REQUEST), await r.controller.resume(ID), await r.controller.approve({ item: 'item-1', revision: 2, optionId: 'allow_once' }),
       await r.controller.start({ ...REQUEST, worktree: true }), await r.controller.chooseWorktreeRoot(), await r.controller.resetWorktreeRoot(),
       await r.controller.chooseFolder(),
+      // #586 phase 2: Continue here… reads no chat, no launch list and no folder
+      await r.controller.continueChat({ tool: 'copilot', id: ID, mode: 'ask', prompt: 'Go on.' }),
     ]) expect(result.ok).toBe(false)
     // #432 §8 (e): no worktree setting read, no folder dialog, no folder made, and no cap read or written
     expect(await r.controller.worktreeRoot()).toBeNull()
@@ -1547,6 +1549,664 @@ describe('Take over in Terminal (step 5, §3.5)', () => {
   })
 })
 
+// #586 phase 2, PR 5: Continue here… on a Copilot CLI chat (design §3.2–§3.7). The chat comes
+// from the viewer's one-chat route, never the page; every refusal spawns nothing. Fixtures are synthetic.
+const CHAT = '00000000-0000-4000-8000-0000000000c1'
+const CHAT2 = '00000000-0000-4000-8000-0000000000c2'
+const HOME = '/Users/tester'
+const CHAT_FOLDER = '/Users/tester/dev/alpha'
+const OLD_DRIVER = 'launch spec: kind must be new or resume'
+const CONTINUE = { tool: 'copilot', id: CHAT, mode: 'ask', prompt: 'Carry on with the parser tests.', startId: 'tag-0123456789abcdef' }
+
+function chatEntry(over: Json = {}): Json {
+  return {
+    id: CHAT, tool: 'copilot', title: 'Fix the parser', titleAuto: false, project: 'alpha', cwd: CHAT_FOLDER, branch: 'main',
+    createdAt: '2026-11-14T10:00:00.000Z', lastActiveAt: '2026-11-14T11:00:00.000Z', live: false, pr: null, hidden: [], ...over,
+  }
+}
+
+// the controller rig, with the one-chat route, the whole chat list and the launch list answered from `chat`
+function chatRig(over: Json = {}) {
+  const chat = {
+    lookup: { chat: chatEntry(), launch: null } as unknown,
+    list: { chats: [chatEntry()] } as unknown,
+    launches: [] as unknown,
+    env: { ok: true, env: { PATH: '/opt/bin:/usr/bin', HOME, SECRET: 's', ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--x', COPILOT_ALLOW_ALL: '1' } } as Json,
+    repository: true,
+  }
+  const r: ReturnType<typeof rig> = rig({
+    homeDir: HOME,
+    inRepository: (folder: string) => { r.calls.push(`inRepository ${folder}`); return chat.repository },
+    captureEnv: async (cwd: string) => { r.calls.push(`captureEnv ${cwd}`); return chat.env },
+    ...over,
+  })
+  r.deps.viewer.getJson = async (route: string) => {
+    r.calls.push(`GET ${route}`)
+    if (route === `/api/chats/copilot/${CHAT}`) return chat.lookup
+    if (route === '/api/chats?all=1') return chat.list
+    if (route === '/api/launches') return chat.launches
+    if (route.startsWith('/api/launches/')) return r.state.launches[route.slice('/api/launches/'.length)] ?? null
+    return null
+  }
+  const steps = () => r.calls.filter((c) => c !== 'keys.available')
+  return { ...r, chat, steps }
+}
+
+const LOOKUP = `GET /api/chats/copilot/${CHAT}`
+const confirmationOf = (r: { spawned: Json[] }) => r.spawned.find((s) => s.confirmation)!.confirmation as { message: string; detail: string; buttons: string[] }
+
+describe('Continue a chat (#586 phase 2)', () => {
+  it('reads the chat through the one-chat route, confirms natively, and sends exactly the chat spec it showed', async () => {
+    const r = chatRig()
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    // no shell before the human confirmed, and the runtime verified again right before the spawn
+    expect(r.steps()).toEqual([
+      LOOKUP, 'GET /api/launches', 'driverRuntime', 'GET /api/chats?all=1', `inRepository ${CHAT_FOLDER}`, 'confirm',
+      `captureEnv ${CHAT_FOLDER}`, 'keys.launchKey', 'driverRuntime', 'startDriver',
+    ])
+    const args = r.spawned.at(-1)!
+    expect(args).toMatchObject({ launchId: ID, hubPath: '/hub/inbox.db', logPath: `/hub/launches/${ID}/driver.log` })
+    expect(args).not.toHaveProperty('timeoutMs')
+    const spec = args.spec as Json
+    expect(Object.keys(spec).sort()).toEqual(['chatId', 'cwd', 'env', 'host', 'kind', 'launchId', 'launchKey', 'maxDrivers', 'mode', 'prompt', 'v'])
+    expect(spec).toMatchObject({ v: 1, kind: 'chat', launchId: ID, host: 'copilot', chatId: CHAT, cwd: CHAT_FOLDER, mode: 'ask', prompt: CONTINUE.prompt, maxDrivers: 4 })
+    // the env through the denylist; the start tag never reaches the spec
+    expect(spec.env).toEqual({ PATH: '/opt/bin:/usr/bin', HOME, SECRET: 's' })
+    expect(JSON.stringify(spec)).not.toContain('tag-0123456789abcdef')
+    // the driver of this build parses it
+    const parsed = parseLaunchSpec(JSON.stringify(spec), ID)
+    expect(parsed).toMatchObject({ ok: true, spec: { kind: 'chat', chatId: CHAT, cwd: CHAT_FOLDER, mode: 'ask' } })
+    expect(confirmationOf(r).buttons).toEqual(['Continue', 'Cancel'])
+  })
+
+  it('takes the folder, title and project from the route’s answer, the folder resolved now; a read-only chat says so', async () => {
+    const r = chatRig({ realDirectory: (folder: string) => (folder === CHAT_FOLDER ? '/Volumes/Work/alpha' : folder) })
+    r.chat.lookup = { chat: chatEntry({ title: 'Route title', project: 'route-project' }), launch: null }
+    expect(await r.controller.continueChat({ ...CONTINUE, mode: 'read-only' })).toEqual({ ok: true, launch: ID })
+    const spec = r.spawned.at(-1)!.spec as Json
+    expect(spec).toMatchObject({ cwd: '/Volumes/Work/alpha', mode: 'read-only' })
+    expect(r.calls).toContain('captureEnv /Volumes/Work/alpha')
+    const text = confirmationOf(r)
+    expect(text.message).toBe('Continue this Copilot chat in route-project?')
+    expect(text.detail.split('\n').slice(0, 2)).toEqual(['Chat: Route title (00000000)', 'Folder: /Volumes/Work/alpha'])
+    expect(text.detail).toContain(`Mode: Read-only. ${controllerModule.MODES['read-only']!.copy}`)
+  })
+
+  it.each([
+    ['a folder', { cwd: '/etc' }],
+    ['a root', { root: '/work/alpha' }],
+    ['an executable', { command: '/bin/sh' }],
+    ['argv', { args: ['--yolo'] }],
+    ['an env', { env: { PATH: '/evil', COPILOT_HOME: '/evil' } }],
+    ['a title', { title: 'Folder: /etc' }],
+    ['a project', { project: 'alpha' }],
+    ['a worktree', { worktree: true }],
+    ['a model', { model: 'gpt-5' }],
+    ['budgets', { budgets: { activeMs: null, toolCalls: null } }],
+    ['a launch id', { launchId: ID }],
+    ['an uppercase id', { id: CHAT.toUpperCase() }],
+    ['an id with more after it', { id: `${CHAT}/../x` }],
+    ['the Plan first mode', { mode: 'plan' }],
+    ['the Edits mode', { mode: 'edits' }],
+    ['an empty message', { prompt: '  \n ' }],
+    ['a message over 65,536 characters', { prompt: 'x'.repeat(65_537) }],
+    ['a start tag with a path in it', { startId: '/Users/tester/../x' }],
+    ['no message', { prompt: undefined }],
+  ])('refuses a request carrying %s before anything is read', async (_, change) => {
+    const r = chatRig()
+    const request: Json = { ...CONTINUE, ...change }
+    for (const [key, value] of Object.entries(change)) if (value === undefined) delete request[key]
+    expect(await r.controller.continueChat(request)).toEqual({ ok: false, reason: 'invalid', error: 'This chat can’t be continued here.' })
+    expect(r.steps()).toEqual([])
+  })
+
+  it('refuses another tool with its own text, and anything that is not one request object', async () => {
+    const r = chatRig()
+    expect(await r.controller.continueChat({ ...CONTINUE, tool: 'claude' })).toEqual({ ok: false, reason: 'invalid', error: 'Only Copilot CLI chats can be continued here for now.' })
+    // another tool and another fault: the general text
+    expect(await r.controller.continueChat({ ...CONTINUE, tool: 'claude', cwd: '/x' })).toEqual({ ok: false, reason: 'invalid', error: 'This chat can’t be continued here.' })
+    for (const bad of [null, 'copilot', [CONTINUE], CHAT, { ...CONTINUE, tool: undefined }]) {
+      expect(await r.controller.continueChat(bad)).toMatchObject({ ok: false, reason: 'invalid' })
+    }
+    // the request main checks is exactly what chatRequest keeps
+    expect(controllerModule.chatRequest({ ...CONTINUE })).toEqual(CONTINUE)
+    const { startId: _tag, ...untagged } = CONTINUE
+    expect(controllerModule.chatRequest(untagged)).toEqual(untagged)
+    expect(r.steps()).toEqual([])
+  })
+
+  it('refuses in §3.7’s order, and nothing spawns, runs a shell or confirms for any refusal', async () => {
+    const runtimes: Array<Json | null> = []
+    let started: Json = { ok: false, error: OLD_DRIVER }
+    const r: ReturnType<typeof chatRig> = chatRig({
+      driverRuntime: () => { r.calls.push('driverRuntime'); return runtimes.length ? runtimes.shift() : { node: '/rt/bin/node', entry: '/rt/dist/driver-cli.js' } },
+      startDriver: async (args: Json) => { r.calls.push('startDriver'); r.spawned.push(args); return started },
+    })
+    // every fault at once; each step fixes the one the last refusal named
+    r.state.enabled = false
+    let request: Json = { ...CONTINUE, cwd: '/etc' }
+    r.chat.lookup = null
+    r.chat.launches = null
+    r.chat.list = null
+    r.chat.env = { ok: false, reason: 'timeout' }
+    r.state.confirm = false
+    const seen: string[] = []
+    const steps: Array<[string, () => void]> = [
+      ['blocked', () => { r.state.enabled = true }],
+      ['invalid', () => { request = { ...CONTINUE } }],
+      ['index', () => { r.chat.lookup = { chat: null, launch: null } }],
+      ['missing', () => {
+        r.chat.lookup = { chat: chatEntry({ live: true, hidden: ['non-interactive', 'folder-gone'], cwd: '/missing/alpha' }), launch: { id: ID, status: 'parked', resumable: true } }
+      }],
+      ['driven', () => { (r.chat.lookup as Json).launch = { id: ID, status: 'ended', end_reason: 'handed_off', resumable: true } }],
+      ['live', () => { ((r.chat.lookup as Json).chat as Json).live = false }],
+      ['kind', () => { ((r.chat.lookup as Json).chat as Json).hidden = ['folder-gone'] }],
+      ['folder', () => { ((r.chat.lookup as Json).chat as Json).hidden = [] }],
+      // a folder that is not a directory now
+      ['folder', () => { ((r.chat.lookup as Json).chat as Json).cwd = CHAT_FOLDER }],
+      ['sessions', () => { r.chat.launches = [{ id: ID, status: 'ended', worktree_path: '/Users/tester/dev', worktree_removed_at: null }] }],
+      ['worktree', () => {
+        r.chat.launches = [{ id: ID, status: 'ended', worktree_path: '/Users/tester/dev', worktree_removed_at: '2026-11-14T12:00:00.000Z' }]
+        runtimes.push({ error: 'The installed runtime failed integrity verification: reinstall it from Settings → Setup.' })
+      }],
+      ['runtime', () => {}],
+      ['index', () => { r.chat.list = { chats: [] } }],
+      ['cancelled', () => { r.state.confirm = true }],
+      ['environment', () => { r.chat.env = { ok: true, env: { PATH: '/usr/bin', HOME, COPILOT_HOME: '/Users/tester/.copilot-work' } } }],
+      ['copilot_home', () => { r.chat.env = { ok: true, env: { PATH: '/usr/bin', HOME } } }],
+      ['outdated', () => { started = { ok: true, launch: ID } }],
+    ]
+    for (const [name, fix] of steps) {
+      const before = r.calls.length
+      const result = await r.controller.continueChat(request) as Json
+      const reason = result.ok ? 'ok'
+        : result.cancelled ? 'cancelled'
+          : typeof result.reason === 'string' ? result.reason
+            : /is off/.test(String(result.error)) ? 'blocked'
+              : /integrity/.test(String(result.error)) ? 'runtime' : `? ${String(result.error)}`
+      seen.push(reason)
+      const made = r.calls.slice(before)
+      // only a runtime older than the app got as far as the driver, which wrote no row
+      if (name !== 'outdated') expect(made, name).not.toContain('startDriver')
+      if (!['cancelled', 'environment', 'copilot_home', 'outdated'].includes(name)) expect(made, name).not.toContain('confirm')
+      if (!['environment', 'copilot_home', 'outdated'].includes(name)) expect(made.some((c) => c.startsWith('captureEnv')), name).toBe(false)
+      if (name !== 'outdated') expect(made, name).not.toContain('keys.launchKey')
+      if (typeof result.reason === 'string' && result.reason !== 'environment') expect(result.error, name).toBe(controllerModule.CHAT_REFUSALS[result.reason])
+      fix()
+    }
+    expect(seen).toEqual(steps.map(([name]) => name))
+    expect(await r.controller.continueChat(request)).toEqual({ ok: true, launch: ID })
+    expect(r.calls.filter((c) => c === 'startDriver')).toHaveLength(2)
+  })
+
+  it.each([
+    ['running', { status: 'running' }],
+    ['parked', { status: 'parked', resumable: false }],
+    ['stopped with its session', { status: 'ended', end_reason: 'stopped', resumable: true }],
+    ['ended by a budget with its session', { status: 'ended', end_reason: 'budget:tool_calls', resumable: true }],
+  ])('refuses a chat a launch here holds (%s) as driven', async (_, launch) => {
+    const r = chatRig()
+    r.chat.lookup = { chat: chatEntry(), launch }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: false, reason: 'driven', error: 'This chat already has a session here: use Show session.' })
+    expect(r.steps()).toEqual([LOOKUP])
+  })
+
+  it.each([
+    ['handed off', { status: 'ended', end_reason: 'handed_off', resumable: true }],
+    ['ended in an error', { status: 'ended', end_reason: 'error:load', resumable: false }],
+    ['stopped before its first message', { status: 'ended', end_reason: 'stopped', resumable: false }],
+  ])('continues a chat whose launch here has let it go (%s)', async (_, launch) => {
+    const r = chatRig()
+    r.chat.lookup = { chat: chatEntry(), launch }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+  })
+
+  it.each([
+    ['no answer', null],
+    ['no launch key', { chat: chatEntry() }],
+    ['another chat', { chat: chatEntry({ id: CHAT2 }), launch: null }],
+    ['a Claude chat', { chat: chatEntry({ tool: 'claude' }), launch: null }],
+    ['no project', { chat: chatEntry({ project: null }), launch: null }],
+    ['no hidden list', { chat: chatEntry({ hidden: 'empty' }), launch: null }],
+    ['a list for a launch', { chat: chatEntry(), launch: [] }],
+  ])('refuses a route answer it cannot read (%s) as the index', async (_, lookup) => {
+    const r = chatRig()
+    r.chat.lookup = lookup
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: false, reason: 'index', error: 'Agent Inbox could not read the chat list.' })
+    expect(r.steps()).toEqual([LOOKUP])
+  })
+
+  it.each([
+    ['live', { live: true }, 'live'],
+    ['of unknown liveness', { live: undefined }, 'live'],
+    ['empty', { hidden: ['empty'] }, 'kind'],
+    ['non-interactive', { hidden: ['temp', 'non-interactive'] }, 'kind'],
+    ['folder-gone', { hidden: ['folder-gone'] }, 'folder'],
+    ['without a folder', { cwd: null }, 'folder'],
+    ['in a relative folder', { cwd: 'dev/alpha' }, 'folder'],
+    ['in a folder with a newline', { cwd: '/Users/tester/a\nb' }, 'folder'],
+    ['in a folder with U+2028', { cwd: '/Users/tester/a\u2028b' }, 'folder'],
+    ['in a folder that is gone', { cwd: '/missing/alpha' }, 'folder'],
+  ])('refuses a chat that is %s', async (_, change, reason) => {
+    const r = chatRig()
+    r.chat.lookup = { chat: chatEntry(change), launch: null }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: false, reason, error: controllerModule.CHAT_REFUSALS[reason] })
+    expect(r.steps()).toEqual([LOOKUP])
+  })
+
+  it('a temp folder is no refusal', async () => {
+    const r = chatRig()
+    r.chat.lookup = { chat: chatEntry({ hidden: ['temp'], cwd: '/private/tmp/scratch' }), launch: null }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+  })
+
+  it('refuses a folder at or under a worktree a launch here has not removed, as the same launch list reads (§3.2)', async () => {
+    for (const [worktree, removed, refusedHere] of [
+      [CHAT_FOLDER, null, true], ['/Users/tester/dev', null, true], ['/Users/tester/dev/', null, true],
+      ['/Users/tester/dev/alp', null, false], [`${CHAT_FOLDER}/sub`, null, false], ['/Users/tester/dev', '2026-11-14T12:00:00.000Z', false],
+    ] as const) {
+      const r = chatRig()
+      r.chat.launches = [{ id: ID, status: 'parked', cwd: worktree, worktree_path: worktree, worktree_removed_at: removed }]
+      const result = await r.controller.continueChat(CONTINUE)
+      if (refusedHere) {
+        expect(result, worktree).toEqual({ ok: false, reason: 'worktree', error: 'This chat’s folder is a worktree of another session here. Continue that session instead.' })
+        expect(r.steps(), worktree).toEqual([LOOKUP, 'GET /api/launches'])
+      } else {
+        expect(result, worktree).toEqual({ ok: true, launch: ID })
+      }
+    }
+    // the recorded folder counts as well as the resolved one
+    const linked = chatRig({ realDirectory: (folder: string) => (folder === CHAT_FOLDER ? '/Volumes/Work/alpha' : folder) })
+    linked.chat.launches = [{ id: ID, status: 'ended', worktree_path: CHAT_FOLDER, worktree_removed_at: null }]
+    expect(await linked.controller.continueChat(CONTINUE)).toMatchObject({ ok: false, reason: 'worktree' })
+  })
+
+  it('warns, without refusing, about another session in the folder: one of this app’s running there without a worktree, and a live chat', async () => {
+    const r = chatRig()
+    r.chat.repository = false
+    r.chat.launches = [
+      { id: ID, status: 'running', cwd: CHAT_FOLDER, worktree_path: null },
+      { id: '33333333-3333-4333-8333-333333333333', status: 'running', cwd: '/elsewhere', worktree_path: null },
+    ]
+    r.chat.list = { chats: [chatEntry(), chatEntry({ id: CHAT2, live: true, cwd: CHAT_FOLDER })] }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    const lines = confirmationOf(r).detail.split('\n')
+    expect(lines.slice(2, 6)).toEqual([
+      'It works in this folder itself, not in a worktree: what it changes, it changes in your files there, uncommitted work included.',
+      'This folder is not inside a git repository, so git cannot show or undo what it changes.',
+      'Another session Agent Inbox started is running in this folder itself, not in a worktree.',
+      'Another session is live in this folder.',
+    ])
+    // none of them for a repository with nothing else in it: a session in its own worktree, a live chat elsewhere
+    const quiet = chatRig()
+    quiet.chat.launches = [{ id: ID, status: 'running', cwd: CHAT_FOLDER, worktree_path: '/w/alpha/fix-22222222', worktree_removed_at: null }]
+    quiet.chat.list = { chats: [chatEntry(), chatEntry({ id: CHAT2, live: true, cwd: '/Users/tester/dev/beta' })] }
+    expect(await quiet.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(confirmationOf(quiet).detail).not.toMatch(/git repository|Another session/)
+  })
+
+  it('finds a repository by a .git folder or file at the folder or up to 10 levels above it, lstat only (§3.2)', () => {
+    const base = realpathSync(scratchDir('continue-repo-'))
+    const deep = (n: number) => join(base, ...Array.from({ length: n }, (_, i) => `d${i}`))
+    mkdirSync(deep(11), { recursive: true })
+    expect(sessionWorktree.insideRepository(deep(11))).toBe(false)
+    mkdirSync(join(deep(1), '.git'))
+    expect(sessionWorktree.insideRepository(deep(11))).toBe(true)
+    expect(sessionWorktree.insideRepository(deep(12))).toBe(false)
+    // a linked worktree's .git file counts; a .git link decides it is not one
+    writeFileSync(join(deep(5), '.git'), 'gitdir: /elsewhere\n')
+    expect(sessionWorktree.insideRepository(deep(11))).toBe(true)
+    symlinkSync(join(deep(1), '.git'), join(deep(9), '.git'))
+    expect(sessionWorktree.insideRepository(deep(11))).toBe(false)
+    expect(sessionWorktree.insideRepository('relative/folder')).toBe(false)
+  })
+
+  it('shows §3.4’s lines exactly', () => {
+    const text = controllerModule.chatConfirmation({
+      project: 'alpha', title: 'Fix the parser', chatId: CHAT, folder: CHAT_FOLDER, repository: false, shared: true, liveHere: true, mode: 'ask', prompt: 'Carry on.',
+    })
+    expect(text.message).toBe('Continue this Copilot chat in alpha?')
+    expect(text.buttons).toEqual(['Continue', 'Cancel'])
+    expect(text.detail.split('\n')).toEqual([
+      'Chat: Fix the parser (00000000)',
+      `Folder: ${CHAT_FOLDER}`,
+      'It works in this folder itself, not in a worktree: what it changes, it changes in your files there, uncommitted work included.',
+      'This folder is not inside a git repository, so git cannot show or undo what it changes.',
+      'Another session Agent Inbox started is running in this folder itself, not in a worktree.',
+      'Another session is live in this folder.',
+      'Agent Inbox drives it from this window: the agent acts in that folder, its approvals come here, and your messages reach it as turns.',
+      'Mode: Ask for everything. Each tool call asks you first, except what your own Copilot settings already allow, such as a command you told Copilot not to ask about again in this folder.',
+      'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.',
+      'Budgets: no limit on active turn time or tool calls.',
+      'Each turn spends Copilot premium requests, as it would in your terminal.',
+      '',
+      'Message: Carry on.',
+    ])
+    const plain = controllerModule.chatConfirmation({
+      project: 'alpha', title: null, chatId: CHAT, folder: CHAT_FOLDER, repository: true, shared: false, liveHere: false, mode: 'read-only', prompt: 'x'.repeat(310),
+    })
+    const lines = plain.detail.split('\n')
+    expect(lines[0]).toBe('Chat: Untitled (00000000)')
+    expect(lines).toHaveLength(10)
+    expect(lines).toContain('Mode: Read-only. File-edit tools are denied; shell commands still ask. This does not make writes impossible.')
+    expect(lines.at(-1)).toBe(`Message: ${'x'.repeat(300)}…`)
+  })
+
+  it('keeps the end of a long folder, and shows look-alike spaces and blanks and a trailing space, on the Folder line only (review)', async () => {
+    const folderOf = (folder: string) => controllerModule.chatConfirmation({
+      project: 'alpha', title: null, chatId: CHAT, folder, repository: true, shared: false, liveHere: false, mode: 'ask', prompt: 'x',
+    }).detail.split('\n')[1]!
+    const long = `/Users/tester/${'deep/'.repeat(40)}the-folder-it-runs-in`
+    const line = folderOf(long)
+    expect(line.startsWith('Folder: /Users/tester/deep/deep/')).toBe(true)
+    expect(line.endsWith('/deep/the-folder-it-runs-in')).toBe(true)
+    expect(Array.from(line.slice('Folder: '.length))).toHaveLength(120)
+    expect(line.match(/…/g)).toHaveLength(1)
+    // a cut never splits an escape, and the end keeps its escapes
+    expect(folderOf(`/Users/tester/${'d'.repeat(200)}/proj `).endsWith('/proj<U+00A0>')).toBe(true)
+    expect(folderOf(`/Users/tester/${'ㅤ'.repeat(200)}`)).toBe(`Folder: /Users/tester/${'<U+3164>'.repeat(40 - '/Users/tester/'.length)}…${'<U+3164>'.repeat(79)}`)
+    for (const [end, shown] of [
+      [' ', '<U+00A0>'], ['ㅤ', '<U+3164>'], [' ', '<U+0020>'], ['⠀', '<U+2800>'], ['ᅟ', '<U+115F>'], ['ᅠ', '<U+1160>'],
+      ['ﾠ', '<U+FFA0>'], [' ', '<U+2003>'], ['　', '<U+3000>'], [' ', '<U+202F>'],
+    ]) expect(folderOf(`/Users/x/proj${end}`), JSON.stringify(end)).toBe(`Folder: /Users/x/proj${shown}`)
+    // an ordinary space inside a name stays as it is; so does a folder that is short and plain
+    expect(folderOf('/Users/x/my proj')).toBe('Folder: /Users/x/my proj')
+    expect(folderOf('/Users/x/a b ')).toBe('Folder: /Users/x/a<U+00A0>b<U+0020>')
+    // displayLine is unchanged for its other callers: the New session confirmation, projects, titles
+    expect(controllerModule.displayLine('proj  ')).toBe('proj  ')
+    expect(controllerModule.displayLine(`/${'f'.repeat(500)}`)).toBe(`/${'f'.repeat(118)}…`)
+    expect(controllerModule.confirmation({ project: 'alpha', folder: '/w/proj ', mode: 'ask', budgets: { activeMs: null, toolCalls: null }, prompt: 'x' }).detail.split('\n')[0]).toBe('Folder: /w/proj ')
+    // through main: the folder the route names, as the dialog shows it
+    const r = chatRig({ realDirectory: (folder: string) => folder })
+    r.chat.lookup = { chat: chatEntry({ cwd: '/Users/tester/dev/alphaㅤ' }), launch: null }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(confirmationOf(r).detail.split('\n')[1]).toBe('Folder: /Users/tester/dev/alpha<U+3164>')
+    expect((r.spawned.at(-1)!.spec as Json).cwd).toBe('/Users/tester/dev/alphaㅤ')
+  })
+
+  it('says when the chat list was cut, so a live chat in the folder may be missing from it (review)', async () => {
+    const note = 'Agent Inbox could not check every chat for another live session in this folder.'
+    const r = chatRig()
+    r.chat.list = { chats: [chatEntry()], truncated: true }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    const lines = confirmationOf(r).detail.split('\n')
+    expect(lines[3]).toBe(note)
+    expect(lines).toHaveLength(11)
+    // a live chat found is the warning itself; a whole list says nothing
+    const found = chatRig()
+    found.chat.list = { chats: [chatEntry(), chatEntry({ id: CHAT2, live: true })], truncated: true }
+    await found.controller.continueChat(CONTINUE)
+    expect(confirmationOf(found).detail).toContain('Another session is live in this folder.')
+    expect(confirmationOf(found).detail).not.toContain(note)
+    for (const truncated of [false, undefined, 'true']) {
+      const whole = chatRig()
+      whole.chat.list = { chats: [chatEntry()], truncated }
+      await whole.controller.continueChat(CONTINUE)
+      expect(confirmationOf(whole).detail, String(truncated)).not.toMatch(/could not check|is live in this folder/)
+    }
+  })
+
+  it('resolves only live chats’ folders to find one live in this folder through a link, and one that cannot be resolved is not (review)', async () => {
+    const resolved: string[] = []
+    const links: Record<string, string | null> = { '/tmp/alpha': CHAT_FOLDER, '/tmp/beta': '/Users/tester/dev/beta', '/tmp/gone': null }
+    const make = () => chatRig({
+      realDirectory: (folder: string) => {
+        if (folder.startsWith('/tmp/')) resolved.push(folder)
+        return folder in links ? links[folder]! : folder
+      },
+    })
+    const r = make()
+    r.chat.list = { chats: [chatEntry(), chatEntry({ id: CHAT2, live: true, cwd: '/tmp/alpha' })] }
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(confirmationOf(r).detail).toContain('Another session is live in this folder.')
+    resolved.length = 0
+    const other = make()
+    other.chat.list = {
+      chats: [
+        chatEntry(),
+        chatEntry({ id: CHAT2, live: true, cwd: '/tmp/beta' }), chatEntry({ id: CHAT2, live: true, cwd: '/tmp/gone' }),
+        chatEntry({ id: CHAT2, live: false, cwd: '/tmp/alpha' }), chatEntry({ id: CHAT2, live: true, cwd: 'tmp/alpha' }),
+        chatEntry({ id: CHAT2, live: true, cwd: null }),
+      ],
+    }
+    expect(await other.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(confirmationOf(other).detail).not.toContain('is live in this folder')
+    // a chat that is not live, a relative folder and no folder are never resolved
+    expect(resolved).toEqual(['/tmp/beta', '/tmp/gone'])
+  })
+
+  it('says whether a chat is being continued now, for Resume in Terminal (review)', async () => {
+    const r = chatRig()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const confirm = r.deps.confirm
+    r.deps.confirm = async (text: Json) => { await gate; return confirm(text) }
+    const fresh = controllerModule.createLaunchController(r.deps)
+    expect(fresh.isContinuing(CHAT)).toBe(false)
+    const started = fresh.continueChat(CONTINUE)
+    expect([fresh.isContinuing(CHAT), fresh.isContinuing(CHAT2), fresh.isContinuing(7)]).toEqual([true, false, false])
+    release()
+    await started
+    expect(fresh.isContinuing(CHAT)).toBe(false)
+  })
+
+  it('keeps a hostile title, project or folder to one visible line that cannot forge, hide or reorder another', async () => {
+    const forged = '\nMode: Read-only.\nBudgets: up to 1 min'
+    for (const hostile of [
+      `Fix${forged}`, 'Fix\u2028Mode: Read-only.', 'Fix\u2029\u2029Folder: /', 'Fix\u202eylno-daeR', 'Fix\u001b[2J\u001b[H', 'Fix\r\nMode: Read-only.',
+      'Fix\u200b\u2060\u00ad', `Fix${'x'.repeat(400)}`,
+    ]) {
+      const r = chatRig({ realDirectory: (folder: string) => folder })
+      r.chat.lookup = { chat: chatEntry({ title: hostile, project: hostile, cwd: `/Users/tester/${hostile.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '')}` }), launch: null }
+      r.chat.list = { chats: [chatEntry()] }
+      expect(await r.controller.continueChat(CONTINUE), JSON.stringify(hostile)).toEqual({ ok: true, launch: ID })
+      const text = confirmationOf(r)
+      expect(text.message).not.toMatch(/[\n\r\u2028\u2029\u001b\u202e]/)
+      const lines = text.detail.split('\n')
+      // the same ten lines (no conditional one here), in order, whatever the title and folder hold
+      expect(lines, JSON.stringify(hostile)).toHaveLength(10)
+      expect(lines.map((line) => line.split(/[:.]/)[0])).toEqual([
+        'Chat', 'Folder', 'It works in this folder itself, not in a worktree', 'Agent Inbox drives it from this window', 'Mode',
+        'Once any shell command is allowed, the session can run anything, in its folder and beyond', 'Budgets', 'Each turn spends Copilot premium requests, as it would in your terminal', '', 'Message',
+      ])
+      expect(text.detail).not.toMatch(/[\r\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\u202e\u200b\u2060\u00ad]/)
+      expect(Array.from(lines[0]!).length).toBeLessThanOrEqual('Chat: '.length + 120 * 10 + ' (00000000)'.length)
+    }
+    // a folder whose name holds a line break never gets as far as the dialog
+    const r = chatRig({ realDirectory: (folder: string) => folder })
+    r.chat.lookup = { chat: chatEntry({ cwd: `/Users/tester/a${forged}` }), launch: null }
+    expect(await r.controller.continueChat(CONTINUE)).toMatchObject({ ok: false, reason: 'folder' })
+    expect(r.calls).not.toContain('confirm')
+  })
+
+  it('sends the shell’s COPILOT_HOME only when it is the folder the index reads, <home>/.copilot (§3.3)', async () => {
+    const homes: Array<[Json, boolean]> = [
+      [{ HOME }, true],
+      [{ HOME, COPILOT_HOME: '/Users/tester/.copilot' }, true],
+      [{ HOME, COPILOT_HOME: '/Users/tester/.copilot/' }, true],
+      // a link that resolves there is the same folder
+      [{ HOME, COPILOT_HOME: '/Users/tester/copilot-link' }, true],
+      [{ HOME, COPILOT_HOME: '/Users/tester/.copilot-work' }, false],
+      [{ HOME, COPILOT_HOME: '.copilot' }, false],
+      [{ HOME, COPILOT_HOME: '' }, false],
+      [{ HOME, COPILOT_HOME: '/missing/copilot' }, false],
+      [{ HOME: '/Users/other' }, false],
+      [{}, false],
+    ]
+    for (const [env, ok] of homes) {
+      const r = chatRig({
+        realDirectory: (folder: string) => (folder.startsWith('/missing') ? null : folder === '/Users/tester/copilot-link' ? '/Users/tester/.copilot' : folder.replace(/\/+$/, '')),
+      })
+      r.chat.env = { ok: true, env: { PATH: '/usr/bin', ...env } }
+      const result = await r.controller.continueChat(CONTINUE)
+      if (ok) {
+        expect(result, JSON.stringify(env)).toEqual({ ok: true, launch: ID })
+        expect((r.spawned.at(-1)!.spec as Json).env, JSON.stringify(env)).toEqual({ PATH: '/usr/bin', ...env })
+      } else {
+        expect(result, JSON.stringify(env)).toEqual({ ok: false, reason: 'copilot_home', error: 'Your shell sets COPILOT_HOME to another folder, so Copilot would not find this chat.' })
+        expect(r.calls, JSON.stringify(env)).not.toContain('startDriver')
+      }
+    }
+    // no home folder given to main, or none there: nothing to match, so nothing starts
+    for (const over of [{ homeDir: undefined }, { homeDir: 'Users/tester' }, { homeDir: '/missing/home' }]) {
+      const r = chatRig(over)
+      expect(await r.controller.continueChat(CONTINUE)).toMatchObject({ ok: false, reason: 'copilot_home' })
+    }
+  })
+
+  it('reads an older runtime’s refusal of the kind from the driver’s status line, and says to update', async () => {
+    const dir = scratchDir('continue-old-driver-')
+    const entry = join(dir, 'driver-cli.js')
+    // what a driver before the chat kind does with a chat spec (refuseStart): its status line, then exit 65
+    writeFileSync(entry, `process.stdout.write(JSON.stringify({ ok: false, error: ${JSON.stringify(OLD_DRIVER)} }) + '\\n'); process.exit(65)`)
+    const run = (answer?: string) => {
+      if (answer) writeFileSync(entry, answer)
+      return chatRig({
+        hubPath: join(dir, 'hub', 'inbox.db'),
+        driverRuntime: () => ({ node: process.execPath, entry }),
+        startDriver: (args: Json) => driverProcess.startDriver({ ...args, spawnImpl: spawn } as unknown as Parameters<typeof driverProcess.startDriver>[0]),
+      })
+    }
+    const r = run()
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: false, reason: 'outdated', error: 'This Agent Inbox runtime is older than the app. Update agents in Setup.' })
+    // any other refusal on the status line is the driver's own text
+    const capped = run(`process.stdout.write(JSON.stringify({ ok: false, error: 'at the driver cap' }) + '\\n'); process.exit(75)`)
+    expect(await capped.controller.continueChat(CONTINUE)).toEqual({ ok: false, error: 'at the driver cap' })
+    const newer = run(`process.stdout.write(JSON.stringify({ ok: false, error: 'launch spec: kind must be new, resume or chat' }) + '\\n'); process.exit(65)`)
+    expect(await newer.controller.continueChat(CONTINUE)).toEqual({ ok: false, error: 'launch spec: kind must be new, resume or chat' })
+  })
+
+  it('one chat, one launch: two concurrent calls spawn one driver, and the chat is free again on every way out', async () => {
+    const r = chatRig()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const confirm = r.deps.confirm
+    r.deps.confirm = async (text: Json) => { await gate; return confirm(text) }
+    const fresh = controllerModule.createLaunchController(r.deps)
+    const first = fresh.continueChat(CONTINUE)
+    expect(await fresh.continueChat(CONTINUE)).toEqual({ ok: false, reason: 'busy', error: 'This chat is already starting.' })
+    expect(await fresh.continueChat({ ...CONTINUE, prompt: 'Something else.' })).toMatchObject({ ok: false, reason: 'busy' })
+    release()
+    expect(await first).toEqual({ ok: true, launch: ID })
+    expect(r.calls.filter((c) => c === 'startDriver')).toHaveLength(1)
+    // after a success, a refusal, a cancel and a throw, the next call is not busy
+    expect(await fresh.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    r.chat.lookup = { chat: null, launch: null }
+    expect(await fresh.continueChat(CONTINUE)).toMatchObject({ reason: 'missing' })
+    r.chat.lookup = { chat: chatEntry(), launch: null }
+    r.state.confirm = false
+    expect(await fresh.continueChat(CONTINUE)).toMatchObject({ ok: false, cancelled: true })
+    r.state.confirm = true
+    const read = r.deps.viewer.getJson
+    r.deps.viewer.getJson = async () => { throw new Error('viewer gone') }
+    expect(await fresh.continueChat(CONTINUE)).toEqual({ ok: false, error: 'The session could not be started.' })
+    r.deps.viewer.getJson = read
+    expect(await fresh.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+  })
+
+  it('another chat is not held back by one starting', async () => {
+    const r = chatRig()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const confirm = r.deps.confirm
+    r.deps.confirm = async (text: Json) => { await gate; return confirm(text) }
+    const fresh = controllerModule.createLaunchController(r.deps)
+    const first = fresh.continueChat(CONTINUE)
+    // CHAT2 is not listed in this rig, so it gets as far as the route
+    expect(await fresh.continueChat({ ...CONTINUE, id: CHAT2 })).toMatchObject({ ok: false, reason: 'index' })
+    release()
+    expect(await first).toEqual({ ok: true, launch: ID })
+  })
+
+  it('reports its environment phase with the page’s start tag, and starts nothing when the switch goes off or a quit begins in the dialog', async () => {
+    const phases: string[] = []
+    const r = chatRig({ progress: (phase: string, launch: string, startId?: string) => { phases.push(`${phase} ${launch} ${startId}`) } })
+    expect(await r.controller.continueChat(CONTINUE)).toEqual({ ok: true, launch: ID })
+    expect(phases).toEqual([`environment ${ID} tag-0123456789abcdef`, `runtime ${ID} tag-0123456789abcdef`])
+    for (const late of ['off', 'quit'] as const) {
+      const l: ReturnType<typeof chatRig> = chatRig({
+        confirm: async () => { if (late === 'off') l.state.enabled = false; else l.controller.beginQuit(); return true },
+      })
+      expect(await l.controller.continueChat(CONTINUE), late).toMatchObject({ ok: false })
+      expect(l.calls.some((c) => c.startsWith('captureEnv')), late).toBe(false)
+      expect(l.calls, late).not.toContain('startDriver')
+    }
+  })
+
+  it('off means off: no read, no dialog, no shell and no spawn, everywhere but macOS and without safeStorage too', async () => {
+    const off = chatRig()
+    off.state.enabled = false
+    expect(await off.controller.continueChat(CONTINUE)).toEqual({ ok: false, error: 'Starting sessions from Agent Inbox is off. Turn it on in Settings → Agent sessions.' })
+    // even a request that is not valid is refused by the gate first, and reads nothing
+    expect(await off.controller.continueChat({ ...CONTINUE, cwd: '/etc' })).toMatchObject({ ok: false, error: expect.stringMatching(/is off/) })
+    expect(off.calls).toEqual([])
+    expect(await chatRig({ platform: 'linux' }).controller.continueChat(CONTINUE)).toMatchObject({ ok: false, error: expect.stringMatching(/macOS only/) })
+    const noKeys = chatRig()
+    noKeys.deps.keys.available = () => false
+    expect(await controllerModule.createLaunchController(noKeys.deps).continueChat(CONTINUE)).toMatchObject({ ok: false, error: expect.stringMatching(/cannot encrypt/) })
+    const quitting = chatRig()
+    quitting.controller.beginQuit()
+    expect(await quitting.controller.continueChat(CONTINUE)).toMatchObject({ ok: false, error: expect.stringMatching(/quitting/) })
+    for (const r of [noKeys, quitting]) expect(r.steps(), 'no read').toEqual([])
+  })
+
+  it('settled() waits for a continue in flight, so the quit prompt sees its launch', async () => {
+    const r = chatRig()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const confirm = r.deps.confirm
+    r.deps.confirm = async (text: Json) => { await gate; return confirm(text) }
+    const fresh = controllerModule.createLaunchController(r.deps)
+    const started = fresh.continueChat(CONTINUE)
+    let settled = false
+    const waiting = fresh.settled().then(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(settled).toBe(false)
+    release()
+    await waiting
+    expect(await started).toEqual({ ok: true, launch: ID })
+  })
+
+  describe('Resume of a launch that continues a chat (§3.3)', () => {
+    const PARKED = { id: ID, status: 'parked', cwd: CHAT_FOLDER, chat_id: CHAT, resumable: true }
+
+    it('re-reads the chat and refuses when a terminal now holds it live, starting nothing', async () => {
+      const r = chatRig()
+      r.state.launches[ID] = PARKED
+      r.chat.lookup = { chat: chatEntry({ live: true }), launch: PARKED }
+      expect(await r.controller.resume(ID)).toEqual({ ok: false, reason: 'live', error: 'This chat is live in another process.' })
+      expect(r.steps()).toEqual([`GET /api/launches/${ID}`, LOOKUP])
+      r.chat.lookup = null
+      expect(await r.controller.resume(ID)).toMatchObject({ ok: false, reason: 'index' })
+      r.chat.lookup = { chat: null, launch: PARKED }
+      expect(await r.controller.resume(ID)).toMatchObject({ ok: false, reason: 'missing' })
+      expect(r.calls.some((c) => c === 'startDriver' || c.startsWith('captureEnv'))).toBe(false)
+    })
+
+    it('resumes it as any launch once the chat is not live, and stopped with its session too', async () => {
+      for (const launch of [PARKED, { ...PARKED, status: 'ended', end_reason: 'stopped' }]) {
+        const r = chatRig()
+        r.state.launches[ID] = launch
+        r.chat.lookup = { chat: chatEntry(), launch }
+        expect(await r.controller.resume(ID)).toEqual({ ok: true, launch: ID })
+        expect(r.steps()).toEqual([`GET /api/launches/${ID}`, LOOKUP, 'driverRuntime', `captureEnv ${CHAT_FOLDER}`, 'keys.launchKey', 'driverRuntime', 'startDriver'])
+        expect(parseLaunchSpec(JSON.stringify(r.spawned.at(-1)!.spec), ID)).toMatchObject({ ok: true, spec: { kind: 'resume' } })
+      }
+    })
+
+    it('reads no chat for a launch that continues none, and refuses a chat id it cannot use', async () => {
+      const r = chatRig()
+      r.state.launches[ID] = { id: ID, status: 'parked', cwd: CHAT_FOLDER, chat_id: null }
+      expect(await r.controller.resume(ID)).toEqual({ ok: true, launch: ID })
+      expect(r.calls.some((c) => c.startsWith('GET /api/chats'))).toBe(false)
+      for (const chatId of ['../x', CHAT.toUpperCase(), 7]) {
+        r.state.launches[ID] = { id: ID, status: 'parked', cwd: CHAT_FOLDER, chat_id: chatId }
+        expect(await r.controller.resume(ID)).toEqual({ ok: false, error: 'The launch is not valid.' })
+      }
+    })
+  })
+})
+
 describe('the launch IPC and its grants (§8)', () => {
   function world({ owned = true, granted = true } = {}) {
     const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
@@ -1563,10 +2223,10 @@ describe('the launch IPC and its grants (§8)', () => {
     return { call, r, settings, onEnabled, handlers, made: () => made }
   }
 
-  it('registers the sixteen channels, and makes no controller until one is used', () => {
+  it('registers the seventeen channels, and makes no controller until one is used', () => {
     const w = world()
     expect([...w.handlers.keys()].sort()).toEqual([
-      'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'forget', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
+      'available', 'approve', 'choose-folder', 'choose-worktree-root', 'close', 'continue-chat', 'forget', 'open-worktree', 'remove-worktree', 'reset-worktree-root', 'resume',
       'resume-with-budget', 'set-enabled', 'set-max-sessions', 'start', 'stop', 'take-over',
     ].map((name) => `agent-inbox:launch-${name}`).sort())
     expect(w.made()).toBe(0)
@@ -1643,6 +2303,26 @@ describe('the launch IPC and its grants (§8)', () => {
     expect(await w.call('launch-forget', ID, 1)).toEqual({ ok: false, error: 'invalid' })
     expect(await w.call('launch-open-worktree', ID)).toEqual({ ok: true })
     expect(await w.call('launch-remove-worktree', ID)).toEqual({ ok: true })
+  })
+
+  it('continues a chat only for the granted window, with exactly one request, and reads nothing with the switch off (#586 phase 2)', async () => {
+    const request = { tool: 'copilot', id: ID, mode: 'ask', prompt: 'Go on.' }
+    for (const w of [world({ owned: false, granted: false }), world({ owned: true, granted: false })]) {
+      expect(await w.call('launch-continue-chat', request)).toEqual({ ok: false, error: 'Agent sessions work only in Agent Inbox’s own window, with Settings → Agent sessions on.' })
+      expect(w.r.calls).toEqual([])
+      expect(w.made()).toBe(0)
+    }
+    const w = world()
+    expect(await w.call('launch-continue-chat')).toEqual({ ok: false, error: 'invalid' })
+    expect(await w.call('launch-continue-chat', request, '/Users/tester/dev')).toEqual({ ok: false, error: 'invalid' })
+    expect(w.made()).toBe(0)
+    w.r.state.enabled = false
+    expect(await w.call('launch-continue-chat', request)).toMatchObject({ ok: false, error: expect.stringMatching(/is off/) })
+    expect(w.r.calls).toEqual([])
+    // with the switch on, the controller gets exactly the one argument and reads the chat itself
+    w.r.state.enabled = true
+    expect(await w.call('launch-continue-chat', request)).toMatchObject({ ok: false, reason: 'index' })
+    expect(w.r.calls).toContain(`GET /api/chats/copilot/${ID}`)
   })
 
   it('takes exactly its arguments, and refuses turning the switch off while sessions run', async () => {
@@ -1902,10 +2582,10 @@ describe('the preload bridge (§8)', () => {
     return { launch: exposed.agentInboxLaunch as Record<string, (...args: unknown[]) => Promise<Json>>, invoke }
   }
 
-  it('has exactly its seventeen methods, each with exact arity, and passes nothing it was not given', async () => {
+  it('has exactly its eighteen methods, each with exact arity, and passes nothing it was not given', async () => {
     const { launch, invoke } = loadPreload(() => ({ ok: true, launch: ID, path: '/secret', enabled: true }))
     expect(Object.keys(launch).sort()).toEqual([
-      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'forget', 'onStartProgress', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume',
+      'approve', 'available', 'chooseFolder', 'chooseWorktreeRoot', 'close', 'continueChat', 'forget', 'onStartProgress', 'openWorktree', 'removeWorktree', 'resetWorktreeRoot', 'resume',
       'resumeWithBudget', 'setEnabled', 'setMaxSessions', 'start', 'stop', 'takeOver',
     ])
     // #432 §5: a cap of 1 to 8 only
@@ -1931,6 +2611,33 @@ describe('the preload bridge (§8)', () => {
     // a checked answer: nothing beyond the known fields comes back
     expect(await launch.start!(REQUEST)).toEqual({ ok: true, launch: ID, enabled: true })
     expect(invoke).toHaveBeenCalledWith('agent-inbox:launch-start', REQUEST)
+  })
+
+  it('continueChat sends a fresh object of the five allowed keys, refuses any other shape before asking main, and keeps a known reason (#586 phase 2)', async () => {
+    const request = { tool: 'copilot', id: ID, mode: 'read-only', prompt: 'Go on.', startId: 'tag-0123456789abcdef' }
+    const { launch, invoke } = loadPreload(() => ({ ok: false, reason: 'driven', error: 'This chat already has a session here: use Show session.', folder: '/secret', extra: 1 }))
+    const invalid = { ok: false, reason: 'invalid', error: 'This chat can’t be continued here.' }
+    for (const args of [
+      [], [request, 'extra'], [null], [ID], [[request]],
+      [{ ...request, cwd: '/Users/tester/dev' }], [{ ...request, env: { PATH: '/evil' } }], [{ ...request, args: ['--yolo'] }], [{ ...request, title: 'x' }],
+      [{ ...request, tool: 'sh' }], [{ ...request, id: ID.toUpperCase().replace('2222', 'AAAA') }], [{ ...request, id: `${ID};id` }],
+      [{ ...request, mode: 'edits' }], [{ ...request, prompt: ' ' }], [{ ...request, prompt: 'x'.repeat(65_537) }], [{ ...request, startId: 'short' }],
+    ]) expect(await launch.continueChat!(...args), JSON.stringify(args).slice(0, 80)).toEqual(invalid)
+    expect(invoke).not.toHaveBeenCalled()
+    expect(await launch.continueChat!(request)).toEqual({ ok: false, reason: 'driven', error: 'This chat already has a session here: use Show session.' })
+    const { startId: _tag, ...untagged } = request
+    await launch.continueChat!({ ...untagged, tool: 'claude' })
+    expect(invoke.mock.calls).toEqual([['agent-inbox:launch-continue-chat', request], ['agent-inbox:launch-continue-chat', { ...untagged, tool: 'claude' }]])
+    // a fresh object, not the page's
+    expect(invoke.mock.calls[0]![1]).not.toBe(request)
+    // an unknown reason is dropped; a launch and a cancel pass as for every other start
+    expect(await loadPreload(() => ({ ok: false, reason: 'shell', error: 'x' })).launch.continueChat!(request)).toEqual({ ok: false, error: 'x' })
+    expect(await loadPreload(() => ({ ok: true, launch: ID })).launch.continueChat!(request)).toEqual({ ok: true, launch: ID })
+    expect(await loadPreload(() => ({ ok: false, error: 'Not continued.', cancelled: true })).launch.continueChat!(request)).toEqual({ ok: false, error: 'Not continued.', cancelled: true })
+    expect(await loadPreload(() => { throw new Error('gone') }).launch.continueChat!(request)).toEqual({ ok: false, error: 'Agent Inbox did not answer.' })
+    for (const reason of Object.keys(controllerModule.CHAT_REFUSALS).filter((key) => key !== 'tool').concat('environment')) {
+      expect(await loadPreload(() => ({ ok: false, reason, error: 'e' })).launch.continueChat!(request), reason).toEqual({ ok: false, reason, error: 'e' })
+    }
   })
 
   it('onStartProgress keeps one listener, passes only known phases, and null removes it (#432 PR 5)', async () => {
@@ -2036,6 +2743,10 @@ describe('main’s wiring (source)', () => {
     expect(main).toContain('if (launchEnabled && viewerOwned && !launchQuitAsked) {')
     // the master key lives in userData, encrypted by safeStorage, never anywhere else
     expect(main).toContain("createLaunchKeys({ safeStorage, filePath: path.join(app.getPath('userData'), 'launch-master-key') })")
+    // #586 phase 2: Continue here… matches COPILOT_HOME against the home folder whose .copilot the index reads
+    expect(main).toContain("homeDir: app.getPath('home'),")
+    // ...and Resume in Terminal asks it, through its accessor, whether a chat is being continued
+    expect(main).toContain('isContinuing: (id) => launchController !== null && launchController.isContinuing(id) === true,')
     expect(main).not.toMatch(/console\.(log|error)\([^)]*(launchKey|masterKey|spec)/)
   })
 })

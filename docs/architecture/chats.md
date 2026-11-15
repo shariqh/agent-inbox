@@ -118,7 +118,7 @@ Decisions beyond the issue's two reasons (temp, non-interactive), made while bui
 
 ### One Copilot chat: `GET /api/chats/copilot/:id` (#586 phase 2, PR 4)
 
-A second read-only route answers `{ chat, launch }` for one Copilot chat. **Nothing calls it yet**: main's continue-a-chat path (a later PR) is its reader, so with this merged the app behaves as before. Calling the route changes nothing the list answers (`test/chat-index.test.ts` reads both lists before and after calls to the route and compares the text); the list's own tests cover the entry-building code the two share. It follows the same local-only Host and Origin rules as `/api/chats` (the boundary in `src/viewer-network.ts` wraps every route), is GET only (any other method finds no route) and sends `Cache-Control: no-store`.
+A second read-only route answers `{ chat, launch }` for one Copilot chat. Its readers are Electron main: Continue here… (`continueChat`), Resume of a launch that continues a chat, and Resume in Terminal with the driven-sessions switch on (`driven-sessions.md`, "Continue a chat … part 2"). No page reads it. Calling the route changes nothing the list answers (`test/chat-index.test.ts` reads both lists before and after calls to the route and compares the text); the list's own tests cover the entry-building code the two share. It follows the same local-only Host and Origin rules as `/api/chats` (the boundary in `src/viewer-network.ts` wraps every route), is GET only (any other method finds no route) and sends `Cache-Control: no-store`.
 
 - **The id.** It must be a lowercase UUID (`isChatId`), checked in the route and again in `readCopilot` before any path is built from it, because it becomes a path segment under `<home>/.copilot/session-state/`. Anything else is a 400 `{ ok: false, error: 'expected a chat id' }`. An id Copilot has no chat for is a 200 `{ chat: null, launch: ... }`.
 - **`chat`** is the same `ChatEntry` the list builds for that chat, hidden chats included (`hidden` says why), or `null`. `ChatIndex.readCopilot(id)` builds it from the chat's own folder only: `lstat` of `session-state/<id>` (it must be a real folder, never a link), `lstat` and one read of its `workspace.yaml` (a regular file this user owns, at most 64 KiB, naming the same id), a listing of the folder for its `inuse.<pid>.lock` files, and one `lstat` of `events.jsonl`. Then the same reads the list makes for an entry: the chat's folder for `folder-gone` and the git files for the project. It reads fresh: no cache is read or written (not the `workspace.yaml` stamp cache, the lock-list cache or the 60-second folder and origin cache), and neither the 2,000-chat cap, the scan caps nor the 64 MiB fresh-read budget applies, so it finds a chat the list left out and sees a change the list has not caught up with. Entry building is shared with the list (`copilotRaw`, `finish`), so the two cannot drift.
@@ -167,9 +167,11 @@ In the desktop app's own viewer window on macOS, each row gets **Resume** before
 | `invalid` | a bad request; or a folder the script cannot quote (a control or line-break character) | This chat can’t be resumed. |
 | `quitting` | a quit has begun | Agent Inbox is quitting, so nothing was opened. |
 | `busy` | another resume is in flight (one at a time) | Another chat is opening. Try again in a moment. |
-| `index` | the index could not be read | Agent Inbox could not read the chat list. |
+| `busy` | switch on, Copilot only, before any read: Continue here… is starting this chat now | This chat is already starting. |
+| `index` | the index could not be read (with the switch on, for Copilot, also the one-chat route) | Agent Inbox could not read the chat list. |
 | `missing` | the index does not list that tool and id | This chat is no longer listed. |
-| `live` | the index says the chat is live | This chat is live in another process. |
+| `driven` | switch on, Copilot only: the one-chat route's launch holds the chat (running, parked, or stopped with its session) | This chat has a session here: use Show session, then Take over. |
+| `live` | the index says the chat is live (with the switch on, for Copilot, also the one-chat route) | This chat is live in another process. |
 | `opened` | main opened this chat less than two minutes ago | This chat was opened in iTerm2 moments ago. If it did not open, try again in two minutes. |
 | `folder` | no folder, a relative one, or one that is not a directory now | Its folder no longer exists. |
 | `write` | the script could not be written | Agent Inbox could not write the Terminal script. |
@@ -203,6 +205,8 @@ Copilot's line is `exec copilot --resume=<id>`. The folder is single-quoted with
 - **Re-reading the list.** After a `live`, `folder`, `missing` or `opened` refusal the list is read again, so the row's off state catches up.
 
 **No driven-sessions switch.** Resume is the person opening their own terminal with the tool's own interactive command, like typing the copied command. Agent Inbox does not drive, approve for or message that session, so it needs neither the switch nor the `launch` grant (#412), and it shows no confirmation dialog.
+
+**A chat driven here (#586 phase 2).** With the switch on, main also reads a Copilot chat through `GET /api/chats/copilot/:id` after the list finds it, and refuses it (`driven`) when the answer's launch holds it, so a terminal never opens a second Copilot on a chat a driven session holds, whether or not the ACP host has taken its lock. An unreadable answer is `index`, and a chat the route reads live is `live`. Before any read, a chat Continue here… is starting now (main's launch controller, `isContinuing`) is `busy` ("This chat is already starting."), since until the driver writes its row the route shows no launch and the chat is not live. Claude chats read nothing new. With the switch off nothing new is read and every answer is phase 1's (`test/chat-resume.test.ts` replays phase 1's cases with the switch off against a route that would refuse each). The page shows a `driven` refusal in the row's note like any other.
 
 ## Not in this PR
 

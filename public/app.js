@@ -2326,7 +2326,8 @@ function returnToDashboard(back) {
   selectTab('dashboard', { paint: false, open: false })
   forceRender()
   if (window.scrollY !== back.scrollY) window.scrollTo(0, back.scrollY)
-  needsYouLane.focusAsk(back.id, { scroll: false })
+  // an ask outside the restored lens (⌘K "answer…") has no card: land on the lane
+  if (!needsYouLane.focusAsk(back.id, { scroll: false })) document.getElementById('needsYouLaneTitle')?.focus({ preventScroll: true })
 }
 
 // #454 A.2: "Show on Agents ›" on an Inbox card: the ask in its session's

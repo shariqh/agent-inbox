@@ -619,17 +619,28 @@ export function installAgentsHome(deps) {
   // focus on its first shown card of that kind, else its heading. It never filters.
   function focusFirst(kind) {
     if (!mounted) return
-    mounted.scrollIntoView?.({ block: 'start', behavior: deps.scrollBehavior?.() ?? 'auto' })
-    const match = [...mounted.querySelectorAll('.ah-groups [data-session-card]')].find((el) => {
+    const behavior = deps.scrollBehavior?.() ?? 'auto'
+    mounted.scrollIntoView?.({ block: 'start', behavior })
+    const find = () => [...mounted.querySelectorAll('.ah-groups [data-session-card]')].find((el) => {
       const card = byId.get(el.dataset.sessionCard)
       return card && (card.base === 'working') === (kind === 'working')
     })
+    let match = find()
+    // §3.1: the chip counts every main card, so a state filter that hides them
+    // is cleared (never applied) before landing; the chip still never filters
+    if (!match && filter !== 'all' && (lanes?.[kind === 'working' ? 'working' : 'quiet'] ?? 0) > 0) {
+      filter = 'all'
+      repaint()
+      match = find()
+    }
     const target = match ?? mounted.querySelector('#agentsHomeTitle')
     if (match) {
       roving = match.dataset.sessionCard
       for (const other of mounted.querySelectorAll('[data-session-card]')) other.tabIndex = other === match ? 0 : -1
     }
     target?.focus({ preventScroll: true })
+    // a card deep in a long group is revealed, not focused off-screen
+    match?.scrollIntoView?.({ block: 'nearest', behavior })
   }
 
   return {

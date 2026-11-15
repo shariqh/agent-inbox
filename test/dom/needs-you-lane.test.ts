@@ -15,7 +15,7 @@ import { installAgentsHome } from '../../public/agents-home.js'
 import { NEEDS_YOU_EMPTY } from '../../public/needs-you-lane.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, changedPollTick, click, collapseRow, freshDb,
-  pollTick, row, rows, sendButton, settle, setViewport, showInbox, type, useDomTest,
+  pollTick, row, rows, searchFor, sendButton, settle, setViewport, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -342,6 +342,28 @@ describe('a card opens its ask in the Inbox, and Esc comes back (§3.2)', () => 
     Object.defineProperty(window, 'scrollY', { configurable: true, value: 0 })
   })
 
+  it('an ask outside the restored lens (⌘K "answer…") returns focus to the lane’s heading', async () => {
+    db = freshDb()
+    question(db, 'Alpha ask')
+    const beta = question(db, 'Beta ask', { project: 'beta' })
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
+    await settle()
+    document.getElementById('search')!.focus()
+    await searchFor('answer beta')
+    const option = [...document.querySelectorAll<HTMLElement>('#searchResults [role="option"]')]
+      .find((el) => el.querySelector('.search-result-main')?.textContent === 'Beta ask')
+    click(option!)
+    await settle()
+    expect(row(beta)?.dataset.open).toBe('1')
+    await collapseRow(beta)
+    expect(shown('dashboard')).toBe(true)
+    expect(laneCard(beta)).toBeNull()
+    expect(document.activeElement).toBe(document.getElementById('needsYouLaneTitle'))
+  })
+
   it('answering leaves you in the Inbox', async () => {
     db = freshDb()
     const id = question(db, 'Answer me')
@@ -529,10 +551,32 @@ describe('the page head’s lane chips (§3.1)', () => {
     expect(document.activeElement).toBe(sessionCard('session:w'))
     click(chip('quiet'))
     expect(document.activeElement).toBe(sessionCard('session:q1'))
-    expect(scroll).toHaveBeenCalledTimes(3)
+    // each chip scrolls to its lane; a Working or Quiet card deep in the Agents card is revealed too
+    expect(scroll).toHaveBeenCalledTimes(5)
+    expect(scroll.mock.contexts.filter((el) => el === sessionCard('session:w') || el === sessionCard('session:q1'))).toHaveLength(2)
     expect(document.querySelector('.agents-home .ah-filter[aria-pressed="true"]')?.getAttribute('data-ah-filter')).toBe('all')
     expect([...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].map((el) => el.dataset.sessionCard)).toEqual(before)
     expect(shown('dashboard')).toBe(true)
+  })
+
+  it('a Working or Quiet chip clears an Agents filter that hides every card it counts, and applies none', async () => {
+    db = freshDb()
+    idle(db, 'q1', { project: 'beta' })
+    live(db, 'w')
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const pressed = () => document.querySelector('.agents-home .ah-filter[aria-pressed="true"]')?.getAttribute('data-ah-filter')
+    click(document.querySelector('.agents-home [data-ah-filter="working"]'))
+    expect(sessionCard('session:q1')).toBeNull()
+    expect(chipCount('quiet')).toBe('1')
+    click(chip('quiet'))
+    expect(pressed()).toBe('all')
+    expect(document.activeElement).toBe(sessionCard('session:q1'))
+    // a filter that still shows a counted card is left alone
+    click(document.querySelector('.agents-home [data-ah-filter="working"]'))
+    click(chip('working'))
+    expect(pressed()).toBe('working')
+    expect(document.activeElement).toBe(sessionCard('session:w'))
   })
 
   it('an empty lane’s chip lands on its heading', async () => {

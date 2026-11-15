@@ -223,7 +223,7 @@ export function installChatsView({ doc, host, fetch, now }) {
     const branchCell = make('td', 'chats-branch')
     branchCell.append(make('span', 'chats-branch-text'), make('span', 'chats-pr'))
     const control = button('chats-copy', COPY_LABEL, () => copy(key, control))
-    control.setAttribute('aria-label', 'Copy resume command')
+    // no aria-label: the visible text is the name, so "Copied" and "Copy failed" reach a screen reader
     const actions = make('td', 'chats-actions')
     actions.append(control)
     tr.append(make('td', 'chats-tool'), titleCell, make('td', 'chats-project'), branchCell, make('td', 'chats-folder'),

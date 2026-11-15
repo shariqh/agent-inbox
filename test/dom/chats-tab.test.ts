@@ -236,7 +236,8 @@ describe('Chats tab (#586 PR 2)', () => {
     await boot()
     await openChats()
     const claude = cell(1, 'actions')!.querySelector<HTMLButtonElement>('.chats-copy')!
-    expect([claude.textContent, claude.getAttribute('aria-label')]).toEqual(['Copy resume', 'Copy resume command'])
+    // the visible text is the accessible name, so the confirmation is announced
+    expect([claude.textContent, claude.hasAttribute('aria-label')]).toEqual(['Copy resume', false])
     expect(claude.title).toBe(`cd '/Users/tester/dev/alpha' && claude --resume ${uuid(1)}`)
     click(claude)
     await settle()

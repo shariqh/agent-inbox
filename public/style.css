@@ -2100,43 +2100,32 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .history-row[open] .history-arrow { transform: rotate(90deg); }
 .history-row > .card { padding: 2px 14px 16px 34px; }
 
-/* The Dashboard's Sessions | Agents lens (#397, #454), drawn by public/agents-home.js. */
-/* #454: the Agents home, drawn by public/agents-home.js: one card per session
-   (design docs/superpowers/specs/2026-11-04-agents-home-design.md §3). Static
-   but for the one-shot pulse a new call starts on a working card (#304). */
-.agents-home { position: relative; grid-column: span 12; }
-.agents-home[hidden], .ah-empty[hidden], .ah-none[hidden], .ah-note[hidden], .ah-outside[hidden], .ah-fold[hidden], .ah-new[hidden], .sc-asking[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
-.agents-home.reading .ah-filters, .agents-home.reading .ah-group-by, .agents-home.reading .ah-groups, .agents-home.reading .ah-folds { display: none; }
-.agents-home.ah-is-empty .ah-filters, .agents-home.ah-is-empty .ah-group-by, .agents-home.ah-is-empty .ah-count { display: none; }
-.ah-head { gap: 10px; }
-.ah-head h2 { margin: 0; }
-.ah-count { color: var(--app-text-soft); font-size: 11.5px; }
+/* Dashboard lanes design §3.3, §3.4: the Working and Quiet lanes, drawn by
+   public/agents-home.js (grown from the #454 Agents home), one lane gap apart
+   after Needs you. Static but for the one-shot pulse a new call starts on a
+   working card (#304). */
+.agents-home { position: relative; display: grid; grid-column: span 12; row-gap: var(--lane-gap); }
+.agents-home[hidden], .ah-empty[hidden], .ah-lane-empty[hidden], .ah-note[hidden], .ah-outside[hidden], .ah-fold[hidden], .ah-folds[hidden], .ah-new[hidden], .qt-rows[hidden], .sc-asking[hidden], .sc-where[hidden], .sc-foot[hidden] { display: none; }
+.agents-home.reading .ah-groups, .agents-home.reading .qt-rows, .agents-home.reading .ah-folds { display: none; }
+/* a lane with nothing keeps its header and says so in one quiet line */
+.ah-lane-empty { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
 .ah-spacer { flex: 1; }
-.ah-filters { display: inline-flex; overflow: hidden; border: 1px solid var(--app-border); border-radius: 9px; }
-.ah-filter { padding: 4px 9px; border: 0; border-left: 1px solid var(--app-border); background: transparent; color: var(--app-muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
-.ah-filter:first-child { border-left: 0; }
-.ah-filter b { margin-left: 4px; color: var(--app-text-soft); font-weight: 700; font-variant-numeric: tabular-nums; }
-.ah-filter[aria-pressed="true"] { background: var(--app-accent-soft); color: var(--app-text); }
-.ah-group-by { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 9px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); font-size: 11.5px; font-weight: 600; }
-.ah-group-by select { padding: 3px 2px; border: 0; background: transparent; color: var(--app-text); font: inherit; }
 .ah-new { padding: 4px 10px; border: 1px solid var(--app-accent); border-radius: 7px; background: var(--app-accent); color: var(--app-on-accent); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
 .ah-new:disabled { opacity: .45; cursor: default; }
 .ah-note { margin: var(--sp-2) 0 0; color: var(--app-muted); font-size: var(--fs-meta); text-align: right; } /* under the page head's New session… */
 .ah-outside { margin: calc(-1 * var(--sp-2)) 0 var(--sp-3); color: var(--app-muted); font-size: 12px; }
 .ah-outside-all { padding: 0; border: 0; background: none; color: var(--app-link); font: inherit; font-weight: 600; cursor: pointer; }
 .ah-outside-all:hover { text-decoration: underline; }
-.ah-group + .ah-group { margin-top: var(--sp-4); }
-.ah-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: var(--sp-3); padding-bottom: 6px; border-bottom: 1px solid var(--app-border); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.ah-group-head i { width: 8px; height: 8px; border-radius: 50%; background: var(--ah-group, var(--app-text-soft)); }
-.ah-group-count { color: var(--app-text-soft); font-weight: 600; }
-.ah-group-count::before { margin-right: 8px; content: "·"; }
+.ah-group + .ah-group { margin-top: var(--sp-5); }
+/* §3.3: Working's project head (dot, name, count) at the group-head size (§4) */
+.ah-group-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--app-border); font-size: var(--fs-title); font-weight: 650; }
+.ah-group-head i { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--ah-group, var(--app-text-soft)); }
+.ah-group-count { color: var(--app-text-soft); font-size: var(--fs-meta); font-weight: 600; }
+.ah-group-count::before { margin-right: var(--sp-2); content: "·"; }
 /* min(): a card narrower than 300px (a phone) takes the full width rather than overflowing */
 .ah-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: var(--sp-3); }
 .ah-empty { display: grid; justify-items: center; gap: 8px; padding: 28px 12px; color: var(--app-muted); text-align: center; font-size: 13px; }
 .ah-empty p { max-width: 520px; margin: 0; }
-.ah-none { display: grid; justify-items: center; gap: 10px; padding: 22px 12px; color: var(--app-muted); font-size: 13px; }
-.ah-none p { margin: 0; }
-.ah-show-all { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
 .ah-folds { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: var(--sp-4); padding-top: 10px; border-top: 1px solid var(--app-border); }
 .ah-folds:empty { display: none; }
 .ah-fold > summary, .ah-undelivered .msg-undelivered > summary { color: var(--app-muted); font-size: 12px; cursor: pointer; }
@@ -2260,18 +2249,19 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sc.sel { outline: 2px solid var(--app-focus); outline-offset: -1px; }
 .sc:focus { outline: none; }
 .sc:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
-.sc.tone-working { --sc-tone: var(--app-success); }
-.sc.tone-parked, .sc.tone-terminal { --sc-tone: var(--app-warning); }
-.sc.tone-failed, .sc.tone-lost { --sc-tone: var(--app-danger); }
-.sc.tone-starting, .sc.tone-stopping { --sc-tone: var(--app-agent); }
-.sc.tone-idle, .sc.tone-dormant, .sc.tone-ended { --sc-tone: var(--app-text-soft); }
+/* a Quiet row carries the same tones as a card (dashboard lanes design §3.4) */
+:is(.sc, .qt-row).tone-working { --sc-tone: var(--app-success); }
+:is(.sc, .qt-row).tone-parked, :is(.sc, .qt-row).tone-terminal { --sc-tone: var(--app-warning); }
+:is(.sc, .qt-row).tone-failed, :is(.sc, .qt-row).tone-lost { --sc-tone: var(--app-danger); }
+:is(.sc, .qt-row).tone-starting, :is(.sc, .qt-row).tone-stopping { --sc-tone: var(--app-agent); }
+:is(.sc, .qt-row).tone-idle, :is(.sc, .qt-row).tone-dormant, :is(.sc, .qt-row).tone-ended { --sc-tone: var(--app-text-soft); }
 .sc-top { display: flex; min-width: 0; align-items: center; gap: 7px; }
 /* #466: a quiet card's time is a sentence ("no Agent Inbox call for 40m"), so it takes its own line */
 .sc.quiet .sc-top { flex-wrap: wrap; row-gap: 2px; }
 .sc.quiet .sc-when { flex-basis: 100%; }
 .sc.quiet .sc-when::before { content: none; }
 .sc-dot { position: relative; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--sc-tone, var(--app-text-soft)); }
-.sc.tone-idle .sc-dot, .sc.tone-dormant .sc-dot, .sc.tone-ended .sc-dot { border: 1.5px solid var(--app-text-soft); background: transparent; }
+:is(.sc, .qt-row).tone-idle .sc-dot, :is(.sc, .qt-row).tone-dormant .sc-dot, :is(.sc, .qt-row).tone-ended .sc-dot { border: 1.5px solid var(--app-text-soft); background: transparent; }
 .sc.pulse .sc-dot::after { position: absolute; inset: 0; border-radius: 50%; background: var(--sc-tone); content: ""; opacity: 0; animation: dash-lane-pulse var(--motion-slow) var(--motion-ease-out) 1; }
 .sc-top { color: var(--app-muted); font-size: 11.5px; }
 .sc-state { flex: none; color: var(--app-text); font-size: 11.5px; font-weight: 650; }
@@ -2306,6 +2296,40 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sc-action { flex: none; padding: 2px 0; border: 0; background: transparent; color: var(--app-accent); font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
 .sc-action:hover { text-decoration: underline; }
 .sc-action:disabled { opacity: .45; cursor: default; }
+/* §3.3: a Working card leads with its meta line; what it is doing is the lead size, two lines.
+   The lane names the state, so the label is left to the card's aria-label. */
+.working-lane .sc-top { font-size: var(--fs-meta); }
+.working-lane .sc-state { display: none; }
+.working-lane .sc-doing { font-size: var(--fs-lead); }
+/* §3.4: the Quiet table. The header and every row share one template of
+   fractional tracks with a zero minimum, so the columns line up without
+   subgrid and no cell's text can widen the page: each cell is one line that
+   ends in an ellipsis, and the actions wrap within their column. A list, not a
+   <table>, so the session panel can open between rows below 1280px. */
+.qt-rows { display: grid; }
+.qt-head, .qt-row { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 9fr) minmax(0, 7fr) minmax(0, 13fr) minmax(0, 7fr) minmax(0, 8fr); column-gap: var(--sp-3); align-items: center; padding: var(--sp-2) var(--sp-3); }
+.qt-head { padding-top: 0; color: var(--app-muted); font-size: var(--fs-meta); font-weight: 600; }
+.qt-head > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qt-row { border-top: 1px solid var(--app-border); color: var(--app-text); font-size: var(--fs-body); cursor: default; }
+.qt-row:hover { background: var(--app-soft); }
+.qt-row.sel { outline: 2px solid var(--app-focus); outline-offset: -2px; }
+.qt-row:focus { outline: none; }
+.qt-row:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
+.qt-state, .qt-session, .qt-branch, .qt-caption, .qt-since { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); overflow: hidden; white-space: nowrap; }
+.qt-state > *, .qt-session > *, .qt-branch > *, .qt-caption > *, .qt-since > * { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.qt-row .sc-dot, .qt-dot, .qt-row .sc-here, .qt-row .sc-asking { flex: none; }
+.qt-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ah-group, var(--app-text-soft)); }
+.qt-project { font-weight: 650; }
+.qt-row .sc-state { font-size: var(--fs-body); }
+.qt-row .sc-agent, .qt-row .sc-origin, .qt-since { color: var(--app-muted); }
+.qt-row .sc-worktree { color: var(--app-muted); font-size: var(--fs-meta); }
+/* the card's two-line clamp and its "·" before the time are a card's, not a cell's */
+.qt-row .sc-doing { display: block; font-size: var(--fs-body); font-weight: 500; white-space: nowrap; -webkit-line-clamp: none; }
+.qt-row .sc-when::before { content: none; }
+.qt-row .sc-asking { align-self: center; }
+.qt-act { display: flex; min-width: 0; justify-content: flex-end; }
+.qt-act .sc-actions { flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-1) var(--sp-2); }
+.qt-act .sc-action { white-space: normal; text-align: end; }
 
 @container operations-desk (max-width: 900px) {
   /* Compact desk: a 24px lane header and a 40px gap between lanes (§4). */
@@ -2318,6 +2342,15 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 @container operations-desk (max-width: 620px) {
   /* Later and Review queue wrap under the lane's title (§3.2) */
   .ny-head > h2 { flex-basis: 100%; }
+  /* §3.4: each Quiet row on two lines, with no header; a row's own template, not the table's */
+  .qt-head { display: none; }
+  .qt-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, auto); grid-template-areas: "state session since" "branch caption act"; row-gap: var(--sp-1); }
+  .qt-state { grid-area: state; }
+  .qt-session { grid-area: session; }
+  .qt-since { grid-area: since; }
+  .qt-branch { grid-area: branch; }
+  .qt-caption { grid-area: caption; }
+  .qt-act { grid-area: act; }
   .dash-ribbon-lane { grid-template-columns: minmax(48px, 80px) minmax(0, 1fr); }
   .dash-ribbon-axis { padding-left: 90px; }
   .dash-ribbon-legend { display: none; }
@@ -2544,6 +2577,10 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
   @container operations-desk (max-width: 900px) {
     .ah-cards { grid-template-columns: minmax(0, 1fr); }
   }
+  /* inline in a lane's list, after its card or Quiet row: the pull-up above is for
+     the panel after the lanes, and inside a list it would cover the card above */
+  .ah-cards > .dash-focus { margin-top: 0; }
+  .qt-rows > .dash-focus { margin: var(--sp-2) 0; }
   .sp-body { overflow: visible; }
   body { padding: 0 10px 48px; }
   .layout { gap: 10px; }

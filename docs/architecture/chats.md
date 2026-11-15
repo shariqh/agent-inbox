@@ -4,12 +4,13 @@ paths:
   - "src/chat-parse.ts"
   - "public/chats.js"
   - "public/chats-view.js"
-applyTo: "src/chat-index.ts,src/chat-parse.ts,public/chats.js,public/chats-view.js"
+  - "electron/chat-resume.cjs"
+applyTo: "src/chat-index.ts,src/chat-parse.ts,public/chats.js,public/chats-view.js,electron/chat-resume.cjs"
 ---
 
 # Chat index, `GET /api/chats` and the Chats tab (#586)
 
-PR 1 of the chat directory: the viewer server lists the Claude Code and Copilot CLI chats on this Mac from their metadata. PR 2 adds the Chats tab, which lists them with a copy-resume-command control ([Chats tab](#chats-tab-pr-2)). Resume in Terminal and the terminal setting come in a later PR and build on this API.
+PR 1 of the chat directory: the viewer server lists the Claude Code and Copilot CLI chats on this Mac from their metadata. PR 2 adds the Chats tab, which lists them with a copy-resume-command control ([Chats tab](#chats-tab-pr-2)). PR 3 adds Resume in Terminal in the desktop app ([Resume in Terminal](#resume-in-terminal-pr-3)), using the terminal setting (`electron-app.md`).
 
 Both modules are **viewer process only**. `src/chat-parse.ts` is pure (no import, clock, process or disk, pinned by `test/chat-parse.test.ts`). `src/chat-index.ts` holds the file reads, the cache, liveness and the response body. Neither may enter the stdio MCP import graph (`test/prstate.test.ts`).
 
@@ -143,6 +144,57 @@ A tab after History (`G C`, `#chats`) lists the chats as a table. `public/chats.
 
 **Show session** is left out: nothing the viewer already holds links a chat id to a session card (`activity.session` is the MCP server's own id, a chat entry carries no pid, and a launch's ACP session is not served).
 
+## Resume in Terminal (PR 3)
+
+In the desktop app's own viewer window on macOS, each row gets **Resume** before Copy resume. It opens the terminal chosen in Settings → Terminal in the chat's folder and runs the tool's own resume command there. The browser viewer, a reused or failed-over viewer and other platforms keep only Copy resume. `electron/chat-resume.cjs` is main's side; who may call it and what it can make happen is in `electron-app.md` ("Resume a chat in Terminal").
+
+**The request.** The page sends main `{ tool, id }` through `window.agentInboxChats.resume` and nothing else. The preload rebuilds that object from the two keys, and main reads only those two keys of a plain object. `tool` must be `claude` or `copilot` and `id` a lowercase UUID. Main finds the chat by both in `GET /api/chats?all=1`, which it reads through the viewer as the launchers reach the hub (`launchViewer`), so there is no second parser. The folder is always the index's `cwd`. A chat past the 2,000-chat response cap is not found, so it is refused as no longer listed.
+
+**Refusals**, checked in this order. Nothing is written or opened for any of them except `open`:
+
+| Reason | When | Text the row shows |
+|---|---|---|
+| `unavailable` | not macOS, or not the owned viewer window | Resume in Terminal works only in Agent Inbox’s own window on macOS. |
+| `invalid` | a bad request; or a folder the script cannot quote (a control or line-break character) | This chat can’t be resumed. |
+| `quitting` | a quit has begun | Agent Inbox is quitting, so nothing was opened. |
+| `busy` | another resume is in flight (one at a time) | Another chat is opening. Try again in a moment. |
+| `index` | the index could not be read | Agent Inbox could not read the chat list. |
+| `missing` | the index does not list that tool and id | This chat is no longer listed. |
+| `live` | the index says the chat is live | This chat is live in another process. |
+| `opened` | main opened this chat less than two minutes ago | This chat was opened in iTerm2 moments ago. If it did not open, try again in two minutes. |
+| `folder` | no folder, a relative one, or one that is not a directory now | Its folder no longer exists. |
+| `write` | the script could not be written | Agent Inbox could not write the Terminal script. |
+| `open` | the terminal did not open | Could not open iTerm2. (or Terminal, or "iTerm2 or Terminal" after the fallback failed too) |
+
+`live` comes before `folder`, because when someone is in the chat that is the message that matters. `opened` closes a gap: a chat reads as live only once its tool has started (Claude writes its session file, Copilot takes its lock), and iTerm2 starts nothing until the person answers "OK to run?". Without it, a second press in that window would open a second copy, which #586 rules out.
+
+**The script.** One pure function (`chatResumeScript`) builds its whole text:
+
+```
+#!/bin/sh
+# Agent Inbox: Resume a chat in Terminal (#586, claude 1a2b3c4d)
+cd -- '<folder>' || exit 1
+exec claude --resume <id>
+```
+
+Copilot's line is `exec copilot --resume=<id>`. The folder is single-quoted with each `'` written as `'\''`, and refused with a C0, DEL, C1, U+2028 or U+2029 character, exactly as Copy resume quotes it. A test pins that the run command equals the copied one. The id goes in only after the UUID check. `exec` leaves no extra shell behind (Take over keeps a login shell open; this does not need one). The script `cd`s to the recorded path as given, not its real path, because Claude Code finds a chat by the folder it recorded.
+
+**The file.** `<hub dir>/chat-resume/<tool>-<id>-<16 hex>.command`, a fresh name for every open, so a script a terminal is still about to run (iTerm2 types its path only after its dialog) is never replaced. The folder is created 0700, must be a real directory (not a link) owned by this user, and is tightened to 0700 if it is wider. The file is created with `O_CREAT | O_EXCL | O_NOFOLLOW` at mode 0700, so an existing name or a link is never written through. Before each write, the folder is swept of our own scripts older than 24 hours (by name pattern and `lstat`; links, folders and other names are left alone). The files hold only a folder and an id. Take over's writer (`take-over.command`, temp file and rename) is unchanged.
+
+**Opening.** The terminal is read once per resume, as the launchers read it (`terminalId`, so a missing or unknown value means Terminal), and the script is opened with `openInTerminal({ kind: 'script' })` through the same runner as Take over (`runTerminalCommand`: `/usr/bin/open -b <bundle id> -- <path>`, 10 s timeout). The fallback to Terminal and the no-retry-after-timeout rule are that module's.
+
+**The page.** `resumeTerminalControl` and `resumeOutcome` (`public/chats.js`) are the model; `chats-view.js` draws it.
+
+- **Availability.** It is asked of the bridge on every entry into the tab (`resumeAvailable()`), so a reload's re-proof and a Settings → Terminal change both show. With no bridge, or `available: false`, no Resume and no note are drawn.
+- **Label and name.** The label is "Resume" and the `title` is "Resume in Terminal" or "Resume in iTerm2". For iTerm2 the `aria-label` names it too, the terminal setting's rule for the other Terminal buttons.
+- **Off states.** The control is `aria-disabled` with the reason in its `title` for a live chat ("This chat is live in another process, so it is not resumed a second time."), and wherever Copy resume is off (no folder, folder gone, an id or folder that cannot be quoted). Main's refusal is the second line of defence, not the first.
+- **While main works.** The label is "Opening…" and the control is `aria-disabled`. A press, a repaint or a poll does not start a second resume.
+- **Success.** "Opened in iTerm2" (the app main actually used) takes the label for 1.5 s, as "Copied" does. The `aria-label` is dropped meanwhile, so the confirmation is announced.
+- **Notes.** The fallback notice and each refusal's text go in the row's `.chats-resume-note` (`role="status"`), under both buttons. The note stays until the next press on that row.
+- **Re-reading the list.** After a `live`, `folder`, `missing` or `opened` refusal the list is read again, so the row's off state catches up.
+
+**No driven-sessions switch.** Resume is the person opening their own terminal with the tool's own interactive command, like typing the copied command. Agent Inbox does not drive, approve for or message that session, so it needs neither the switch nor the `launch` grant (#412), and it shows no confirmation dialog.
+
 ## Not in this PR
 
-Resume in Terminal and the terminal setting, resuming inside Agent Inbox, Show session, and the Dashboard's link to the Chats tab.
+Resuming inside Agent Inbox (phase 2), Show session, and the Dashboard's link to the Chats tab.

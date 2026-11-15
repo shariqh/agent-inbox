@@ -4,7 +4,8 @@ paths:
   - "electron/setup-runner.cjs"
   - "electron/viewer-navigation.cjs"
   - "electron/terminal-launch.cjs"
-applyTo: "electron/main.cjs,electron/setup-runner.cjs,electron/viewer-navigation.cjs,electron/terminal-launch.cjs"
+  - "electron/chat-resume.cjs"
+applyTo: "electron/main.cjs,electron/setup-runner.cjs,electron/viewer-navigation.cjs,electron/terminal-launch.cjs,electron/chat-resume.cjs"
 ---
 
 # Electron app: window install binding
@@ -64,6 +65,28 @@ Terminal (the default) or iTerm2.
   as "could not be opened".
 - **Buttons.** The labels stay the generic words; the `title` and, for iTerm2, the `aria-label`
   name the app ("Open in Terminal (iTerm2)"), because a tooltip alone is not read on keyboard focus.
+
+**Resume a chat in Terminal (#586 PR 3).** The Chats tab's Resume (`electron/chat-resume.cjs`; the
+page, the refusals and the script are in `chats.md`).
+
+- **Who may call it.** Two channels, `agent-inbox:chat-resume-available` (no argument) and
+  `agent-inbox:chat-resume` (exactly one), registered right after the launch IPC and only on macOS:
+  on any other platform neither channel exists. Each waits for a re-proof in flight
+  (`installBinding.settled()`) and then answers only the owned viewer window's top frame on the viewer
+  origin (`linkSender(event) && linkFilesPermitted(event)`, the check `launch-available` and Settings →
+  Terminal use). Any other window, a browser, or a reused or failed-over viewer gets
+  `{ available: false }` or the `unavailable` refusal, and the handler is never made. Nothing is
+  accepted once a quit has begun.
+- **What it can make happen.** At most one terminal at a time, opened by bundle id
+  (`openInTerminal`, kind `script`, the launchers' `runTerminalCommand`) on a fresh 0700 file
+  `<hub dir>/chat-resume/<tool>-<id>-<random>.command`. That script `cd`s to the folder the
+  index records for a listed chat that is not live and was not opened in the last two minutes,
+  and execs `claude --resume <id>` or `copilot --resume=<id>`.
+- **What it cannot do.** The page names only a tool and an id from fixed patterns. It cannot name
+  a folder, an executable, argv or env. It cannot resume a live chat, run any other command, or
+  start, drive or approve for a session. It needs no driven-sessions switch, holds no `launch`
+  grant and shows no dialog, because the person runs the tool's own interactive command in their
+  own terminal, as with the copied command.
 
 ## History (shipped since v1)
 

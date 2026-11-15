@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
-  cleanPath, cleanTitle, hiddenReasons, isChatId, isTempFolder, lockPid, parseClaudeLiveFile, parseClaudeWindows,
+  cleanCopilotName, cleanPath, cleanTitle, hiddenReasons, isChatId, isTempFolder, lockPid, parseClaudeLiveFile, parseClaudeWindows,
   parseGitdirPointer, parseGitOrigin, parseWorkspaceYaml, readYamlScalars, retentionDays, sessionFilePid,
 } from '../src/chat-parse.js'
 
@@ -82,6 +82,14 @@ describe('chat-parse (#586)', () => {
     // counted in characters, not UTF-16 units
     const emoji = Array.from(parseWorkspaceYaml(`id: ${ID}\nname: ${'\u{1F600}'.repeat(130)}`)!.title!)
     expect(emoji).toHaveLength(120)
+  })
+
+  it('cleanCopilotName never returns half a surrogate pair when the opening is cut', () => {
+    for (const pad of [9998, 9999]) {
+      const out = cleanCopilotName(`a${' '.repeat(pad)}\u{1F600}abc`)!
+      expect(out).not.toMatch(/[\ud800-\udbff]$/)
+      expect(out).not.toMatch(/^[\udc00-\udfff]/)
+    }
   })
 
   it('parseWorkspaceYaml: control, bidi and zero-width characters are removed from a name', () => {

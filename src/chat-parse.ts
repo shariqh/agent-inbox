@@ -93,7 +93,9 @@ const ZERO_WIDTH = /[\u{200b}-\u{200d}\u{2060}\u{feff}]/gu
 export function cleanCopilotName(s: unknown): string | null {
   if (typeof s !== 'string') return null
   // a name can run to the size of workspace.yaml; the opening is all that is read
-  for (const raw of s.slice(0, 10_000).split(/\r\n|[\n\r\u{2028}\u{2029}]/u)) {
+  let head = s.slice(0, 10_000)
+  if (/[\ud800-\udbff]$/.test(head)) head = head.slice(0, -1) // the slice must not leave half a surrogate pair
+  for (const raw of head.split(/\r\n|[\n\r\u{2028}\u{2029}]/u)) {
     const line = raw.replace(ZERO_WIDTH, '').replace(/\s+/gu, ' ').replace(CONTROLS, '').replace(/ {2,}/g, ' ').trim()
     if (!line) continue
     const chars = Array.from(line)

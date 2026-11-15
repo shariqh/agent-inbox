@@ -333,6 +333,19 @@ describe('chat index: hidden reasons (#586)', () => {
       }
     })
 
+    it('a symlink loop and a path too long to exist are gone, for both tools', () => {
+      const h = home()
+      const dir = scratchDir('chat-loop-')
+      const loop = join(dir, 'loop')
+      symlinkSync(loop, loop)
+      const long = `/${'a'.repeat(2000)}`
+      claude(h, 'a', id(1), [{ type: 'user', cwd: loop, entrypoint: 'cli', timestamp: at(1) }])
+      copilot(h, id(2), [...yaml(id(2)).filter((l) => !l.startsWith('cwd:')), `cwd: ${loop}`], { events: true })
+      claude(h, 'a', id(3), [{ type: 'user', cwd: long, entrypoint: 'cli', timestamp: at(1) }])
+      const read = open(h).read()
+      for (const n of [1, 2, 3]) expect(byId(read, id(n)).hidden).toContain('folder-gone')
+    })
+
     it('a folder whose parent cannot be searched is not gone either', () => {
       if (process.getuid?.() === 0) return // root searches every folder
       const h = home()

@@ -84,7 +84,7 @@ These are the reused-pid checks the files allow: a pid from before this boot, an
 
 `folder-gone` exists because Resume needs the folder: `--resume` runs in the chat's own `cwd`, so a chat whose folder was deleted cannot be resumed in place. The default list is then the chats that can be continued. The rule:
 
-- Only a folder that is not there is gone: `stat` says `ENOENT`, or a path component is a file (`ENOTDIR`), or the path is not a directory. A folder that exists but cannot be read or searched (permissions) is **not** gone, because the chat resumes once that is fixed.
+- Only a folder that is not there is gone: `stat` says `ENOENT`, or a path component is a file (`ENOTDIR`), or the path is a symlink loop (`ELOOP`) or too long to exist (`ENAMETOOLONG`), or the path is not a directory. A folder that exists but cannot be read or searched (permissions) is **not** gone, because the chat resumes once that is fixed.
 - It is the chat's `cwd` that counts, not the folder the project name comes from (Copilot's `git_root` when it has one). The check reuses the existence result the origin cache already holds for the folder, so a chat adds no stat of its own; only a Copilot chat whose `cwd` differs from its `git_root` adds one more, cached the same way. The result is cached for 60 seconds with the origin, so a folder that is deleted or restored shows within a minute.
 
 Decisions beyond the issue's two reasons (temp, non-interactive), made while building PR 1 and open to change:
@@ -115,7 +115,7 @@ Decisions beyond the issue's two reasons (temp, non-interactive), made while bui
 
 ## Measured on the author's Mac (counts and times only)
 
-31 Claude transcripts and 1,507 Copilot folders; the default list shows 1,239 of them (hidden: 25 `temp`, 26 `non-interactive`, 254 `empty`, some overlapping). A cold read opened 1,574 files and read about 5 MB: roughly 0.65 to 0.9 seconds with the machine heavily loaded. A warm read took 40 to 70 milliseconds. The default response is about 410 KB. Nothing was truncated.
+31 Claude transcripts and 1,512 Copilot folders; the default list shows 71 of the 1,543 chats (11 Claude, 60 Copilot). Hidden, some overlapping: 26 `temp`, 26 `non-interactive`, 254 `empty` and 1,211 `folder-gone` (8 Claude, 1,203 Copilot). A cold read took about 0.4 seconds and a warm read 20 to 25 milliseconds, taken with the machine under ordinary load (an earlier read, before `folder-gone`, opened 1,574 files and read about 5 MB in 0.65 to 0.9 seconds under heavy load). Nothing was truncated.
 
 ## Not in this PR
 

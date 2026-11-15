@@ -282,14 +282,15 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
     return originOfConfig(join(common ? resolve(gitdir, common) : gitdir, 'config'))
   }
 
-  // Only a folder that is not there (ENOENT, or a path through a file) is gone. A folder that exists but cannot
-  // be read or searched still exists: the chat can be resumed once permissions are fixed (#586).
+  // Only a folder that is not there is gone: ENOENT, a path through a file (ENOTDIR), a symlink loop (ELOOP) or a
+  // path too long to exist (ENAMETOOLONG). A folder that exists but cannot be read or searched still exists: the
+  // chat can be resumed once permissions are fixed (#586).
   function folderExists(folder: string): boolean {
     try {
       return statSync(folder).isDirectory()
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
-      return code !== 'ENOENT' && code !== 'ENOTDIR'
+      return !(code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP' || code === 'ENAMETOOLONG')
     }
   }
 

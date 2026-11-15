@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-// The Agents home's session cards (#454), carrying what the Dashboard's live
-// lanes did (#304, #306): they are updated in place by the ambient painter, keyed
-// by card; a rail draft, a held pointer and a background window never stop them
+// The Working lane's session cards (#454, dashboard lanes design §3.3), carrying
+// what the Dashboard's live lanes did (#304, #306): they are updated in place by
+// the ambient painter, keyed by card, in an order pinned per lane; a rail draft, a held pointer and a background window never stop them
 // or pull focus; a working card pulses once on a new call and carries the
 // 30-minute call trace and its plan; the page head's chips count them; and
 // nothing here reaches attention.
@@ -30,8 +30,9 @@ function open(): Database.Database {
 
 const card = (session: string): HTMLElement | null =>
   [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === `session:${session}`) ?? null
+// the Working lane's cards, in order
 const cardIds = (): string[] =>
-  [...document.querySelectorAll<HTMLElement>('#dashboard .ah-groups [data-session-card]')].map((el) => el.dataset.sessionCard!.replace(/^session:/, ''))
+  [...document.querySelectorAll<HTMLElement>('#dashboard .working-lane .ah-groups [data-session-card]')].map((el) => el.dataset.sessionCard!.replace(/^session:/, ''))
 const doing = (session: string): string => card(session)?.querySelector('.sc-doing')?.textContent ?? ''
 // the page head's lane chips (dashboard lanes design §3.1)
 const chip = (key: 'needs' | 'working' | 'quiet'): string =>
@@ -92,6 +93,8 @@ describe('session cards carry the lanes (#304, #454)', () => {
     touchActivity(d, 'heads-down')
     await pollTick()
     expect(card('heads-down')!.querySelector('.sc-state')?.textContent).toBe('Quiet')
+    // never dropped: it moved to the Quiet lane, a row there
+    expect(card('heads-down')!.closest('.quiet-lane .qt-rows')).not.toBeNull()
     expect([chip('working'), chip('quiet')]).toEqual(['0', '1'])
   })
 
@@ -158,7 +161,9 @@ describe('cards keep moving while the rest of the Dashboard holds (#304)', () =>
     await bootApp(d)
     const mutations: MutationRecord[] = []
     const observer = new MutationObserver((records) => mutations.push(...records))
-    observer.observe(document.querySelector('.agents-home .ah-groups')!, { subtree: true, childList: true, characterData: true, attributes: true })
+    for (const list of document.querySelectorAll('.agents-home .ah-groups, .agents-home .qt-rows')) {
+      observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true })
+    }
 
     await pollTick()
     insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'note', title: 'Unrelated' })
@@ -309,7 +314,7 @@ describe('one-shot activity motion (#304: no infinite animation)', () => {
 })
 
 describe('focus when a card leaves (#304 review, #454)', () => {
-  it('hands focus to the Agents heading when the card holding it leaves', async () => {
+  it('hands focus to its lane’s heading when the card holding it leaves', async () => {
     const d = open()
     work(d, 'first', 'Working', { receives_messages: true })
     await bootApp(d)
@@ -318,7 +323,7 @@ describe('focus when a card leaves (#304 review, #454)', () => {
     endActivity(d, 'first')
     await pollTick()
     expect(card('first')).toBeNull()
-    expect(document.activeElement).toBe(document.getElementById('agentsHomeTitle'))
+    expect(document.activeElement).toBe(document.getElementById('workingLaneTitle'))
   })
 
   it('never pulls focus in a background window when a focused card leaves', async () => {

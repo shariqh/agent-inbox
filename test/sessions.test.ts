@@ -2,7 +2,7 @@
 // docs/superpowers/specs/2026-11-04-agents-home-design.md §2). Pure, so plain
 // objects in, cards out; the clock is NOW.
 import { describe, expect, it } from 'vitest'
-import { FILTERS, cardMatches, filterCounts, groupCards, hostLabel, laneCounts, messageHint, sessionCards } from '../public/sessions.js'
+import { groupCards, hostLabel, laneCounts, laneOf, messageHint, sessionCards, splitLanes } from '../public/sessions.js'
 import { attentionEntries } from '../public/attention.js'
 import { buildDashboard } from '../public/dashboard.js'
 
@@ -80,7 +80,8 @@ describe('sessionCards: one card per session', () => {
     expect(cards['session:woken']).toMatchObject({ state: 'working', label: 'Working', line: 'Task not reported', recency: 'last tool just now' })
     expect(cards['session:late']).toMatchObject({ state: 'idle', label: 'Idle' })
     expect(cards['session:late2']).toMatchObject({ state: 'idle', label: 'Idle' })
-    expect(filterCounts(Object.values(cards))).toMatchObject({ working: 3, idle: 5 })
+    // a running host turn is in the Working lane; the turns that ended are Quiet (dashboard lanes design §3.3)
+    expect(laneCounts(Object.values(cards))).toEqual({ working: 3, quiet: 5 })
   })
 
   it('says Quiet only when it cannot know: a driven row idles as Idle, and a session with no call says so (#466)', () => {
@@ -98,8 +99,9 @@ describe('sessionCards: one card per session', () => {
     expect(cards['session:busy']).toMatchObject({ state: 'idle', label: 'Quiet', recency: 'no Agent Inbox call for 40m' })
     expect(cards['session:new']).toMatchObject({ label: 'Quiet', recency: 'connected 3m · no Agent Inbox call yet', line: 'No task reported yet' })
     expect(cards['session:now']).toMatchObject({ label: 'Quiet', recency: 'last Agent Inbox call just now' })
-    // a quiet card still counts and filters as idle: the state key is unchanged
-    expect(filterCounts(Object.values(cards))).toMatchObject({ idle: 4, working: 0 })
+    // a quiet card is still idle: the state key is unchanged, and it is in the Quiet lane
+    expect(Object.values(cards).map((card) => card.state)).toEqual(['idle', 'idle', 'idle', 'idle'])
+    expect(laneCounts(Object.values(cards))).toEqual({ working: 0, quiet: 4 })
   })
 
   it('reads a running launch as Idle only while its driver reports no turn (#466)', () => {
@@ -261,13 +263,12 @@ describe('sessionCards: asks', () => {
     expect(two.filter((card) => card.asks.length).map((card) => card.id)).toEqual(['session:W2'])
   })
 
-  it('holds a card’s asks in rail order, and the filters have no Needs you', () => {
+  it('holds a card’s asks in rail order, and its asks never move it out of its lane', () => {
     const items = [item('newer', { project: 'alpha', session: 's', created_at: at(1000) }), item('older', { project: 'alpha', session: 's', created_at: at(9000) })]
     const cards = sessionCards({ activity: [row({ session: 's', project: 'alpha', doing: 'Working', last_call_at: at(1000) })], attention: items as never, nowMs: NOW })
     expect(cards[0]!.asks.map((entry) => (entry as unknown as { item: { id: string } }).item.id)).toEqual(['older', 'newer'])
     expect(cards[0]).toMatchObject({ state: 'working', label: 'Working' })
-    expect(FILTERS.map(([key]) => key)).toEqual(['all', 'working', 'idle', 'parked'])
-    expect(filterCounts(cards)).toEqual({ all: 1, working: 1, idle: 0, parked: 0 })
+    expect(laneOf(cards[0]!)).toBe('working')
   })
 
   it('laneCounts counts main cards: Working by base working (a running host turn included), Quiet the rest', () => {
@@ -368,27 +369,69 @@ describe('every ask once: in the lane, on at most one card', () => {
 
 const needsId = (entry: { kind: string; item?: { id: string }; row?: { id: string } }) => (entry.kind === 'item' ? entry.item!.id : entry.row!.id)
 
-describe('filters, groups and the Message hint', () => {
+describe('the lanes: Working, Quiet or a fold (dashboard lanes design §3.3, §3.4, §8)', () => {
+  // working, a running host turn, idle, quiet, dormant, a working session in a closed
+  // project, and the launch states: running idle, parked, stopped, ended, failed, starting
   const cards = sessionCards({
     activity: [
-      row({ session: 'a', project: 'zeta', doing: 'Working', last_call_at: at(1000) }),
-      row({ session: 'b', project: 'alpha', agent: 'claude-code', doing: 'Working', last_call_at: at(2000) }),
-      row({ session: 'c', project: 'zeta', agent: 'claude-code', doing: 'open', idle: true, last_call_at: at(HOUR) }),
+      row({ session: 'w', project: 'alpha', doing: 'Writing', last_call_at: at(1000) }),
+      row({ session: 'turn', project: 'alpha', doing: 'open', idle: true, host_turn_at: at(2 * MIN) }),
+      row({ session: 'i', project: 'beta', doing: 'open', idle: true, host_turn_at: at(15 * MIN), host_idle_at: at(12 * MIN), last_call_at: at(20 * MIN) }),
+      row({ session: 'q', project: 'beta', doing: 'open', idle: true, last_call_at: at(47 * MIN) }),
+      row({ session: 'd', project: 'alpha', doing: 'open', idle: true, last_call_at: at(9 * HOUR) }),
+      row({ session: 'x', project: 'shut', doing: 'Working', last_call_at: at(1000) }),
+      driven('run', 1, { doing: 'open', idle: true, last_call_at: at(12 * MIN) }),
     ],
+    launches: [
+      launch(1, { sessions: ['run'] }),
+      launch(2, { status: 'parked', parked_at: at(MIN) }),
+      launch(3, { status: 'ended', end_reason: 'stopped', copilot_session_id: 'cs-3', ended_at: at(MIN) }),
+      launch(4, { status: 'ended', end_reason: 'exited', ended_at: at(2 * MIN) }),
+      launch(5, { status: 'failed', ended_at: at(3 * MIN) }),
+      launch(6, { status: 'starting' }),
+    ],
+    closed: ['shut'],
     nowMs: NOW,
   })
 
-  it('counts the states, and a filter shows its own', () => {
-    expect(filterCounts(cards)).toEqual({ all: 3, working: 2, idle: 1, parked: 0 })
-    expect(cards.filter((card) => cardMatches(card, 'idle')).map((card) => card.id)).toEqual(['session:c'])
-    expect(cards.filter((card) => cardMatches(card, 'all'))).toHaveLength(3)
+  it('puts each card in exactly one place: Working, Quiet or a fold', () => {
+    for (const card of cards) {
+      const lane = laneOf(card)
+      if (card.place !== 'main') expect(lane, card.id).toBeNull()
+      else expect(lane, card.id).toBe(card.base === 'working' ? 'working' : 'quiet')
+    }
+    const { working, quiet } = splitLanes(cards)
+    const folded = cards.filter((card) => card.place !== 'main')
+    const placed = [...working, ...quiet, ...folded].map((card) => card.id)
+    expect(new Set(placed).size).toBe(placed.length)
+    expect([...placed].sort()).toEqual(cards.map((card) => card.id).sort())
+    expect(working.map((card) => card.id).sort()).toEqual(['session:turn', 'session:w'])
+    // a working session in a closed project keeps its fold, out of both lanes
+    expect(cards.find((card) => card.id === 'session:x')).toMatchObject({ base: 'working', place: 'closed' })
+    expect(quiet.map((card) => card.id)).toContain('launch:' + ID(2))
+    expect(quiet.map((card) => card.id)).toContain('launch:' + ID(6))
+    // splitLanes keeps the order the cards come in
+    expect(working.map((card) => card.id)).toEqual(cards.filter((card) => laneOf(card) === 'working').map((card) => card.id))
   })
 
-  it('groups by project or by agent kind, each group where its first card is', () => {
-    expect(groupCards(cards).map((group) => [group.label, group.cards.map((card) => card.id)])).toEqual([
-      ['zeta', ['session:a', 'session:c']], ['alpha', ['session:b']],
+  it('laneCounts equals the lanes', () => {
+    const { working, quiet } = splitLanes(cards)
+    expect(laneCounts(cards)).toEqual({ working: working.length, quiet: quiet.length })
+    expect(laneCounts([])).toEqual({ working: 0, quiet: 0 })
+  })
+
+  it('groups Working by project, each group where its first card is', () => {
+    const shown = sessionCards({
+      activity: [
+        row({ session: 'a', project: 'zeta', doing: 'Working', last_call_at: at(1000) }),
+        row({ session: 'b', project: 'alpha', agent: 'claude-code', doing: 'Working', last_call_at: at(2000) }),
+        row({ session: 'c', project: 'zeta', agent: 'claude-code', doing: 'Working', last_call_at: at(3000) }),
+      ],
+      nowMs: NOW,
+    })
+    expect(groupCards(shown).map((group) => [group.key, group.label, group.cards.map((card) => card.id)])).toEqual([
+      ['zeta', 'zeta', ['session:a', 'session:c']], ['alpha', 'alpha', ['session:b']],
     ])
-    expect(groupCards(cards, 'agent').map((group) => [group.label, group.cards.length])).toEqual([['Copilot', 1], ['Claude Code', 2]])
   })
 
   it('says when a message reaches the session', () => {

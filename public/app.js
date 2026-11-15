@@ -726,7 +726,8 @@ function openMeshAgent(key, name) {
   reloadAndPaint()
 }
 // Close: the Dashboard (an open for every agent, from another tab); focus, if it was in the
-// page, goes to the agent's card, else the Agents heading, only in a focused window.
+// page, goes to the agent's card, else the Quiet lane's heading (the section sits in that
+// lane), only in a focused window.
 function closeMeshAgent() {
   const key = meshAgentPage.current()?.key
   const hadFocus = document.hasFocus() && Boolean(activeFocusElement()?.closest?.('#agentPage'))
@@ -735,7 +736,7 @@ function closeMeshAgent() {
   if (activeTab === 'agent') selectTab('dashboard')
   if (!hadFocus) return
   const row = [...document.querySelectorAll('#dashboard .mesh-agents [data-mesh-key]')].find((el) => el.dataset.meshKey === key)
-  ;(row?.querySelector('[data-mesh-open]') ?? document.getElementById('agentsHomeTitle'))?.focus({ preventScroll: true })
+  ;(row?.querySelector('[data-mesh-open]') ?? document.getElementById('quietLaneTitle'))?.focus({ preventScroll: true })
 }
 
 // #412 step 3 (§9 b): the launches are read only in the viewer the app owns,
@@ -2174,8 +2175,8 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     // #412 step 3: this app's launches, only with its switch on (§9: otherwise none is read or drawn)
     launches: launchesOn() ? launchesInLens() : null,
     outside: launchesOn() ? launchesOutsideLens() : 0,
-    nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession,
-    // global: the lens and filters never narrow it; nothing it draws reaches attention
+    nowMs: Date.now(), forced, selected: focusSession,
+    // global: the lens never narrows it; nothing it draws reaches attention
     mesh: meshWanted() && lastData.mesh?.body?.on === true ? lastData.mesh : null,
     // the agent the agent tab holds: its card carries aria-current (cards view V5 §2.2)
     meshOpen: meshAgentPage.current()?.key ?? null,
@@ -2208,14 +2209,15 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 // relMs says "moments" under a minute; a chip says "<1m".
 const ageText = (ms) => relMs(ms) === 'moments' ? '<1m' : relMs(ms)
 
-// ── the Agents home (#454, design §3) ───────────────────────────────────────
+// ── the Working and Quiet lanes (#454 design §3, dashboard lanes design §3.3–3.4) ──
 // The session panel's key, if open (#307, #454): a session id, or `launch:<id>` for a
 // launch's card, which outlives its sessions. agentsHome.cardFor() resolves it.
 let focusSession = null
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
-// Its filters, grouping and folds are window-local.
+// Its folds are window-local.
 const agentsHome = installAgentsHome({
-  // a card's click toggles its panel; Enter, Message, Transcript and Resume… open it at that part
+  // a card's or row's click toggles its panel; Enter and Open open it at its head, Message,
+  // Transcript and Resume… at that part
   openSession: (key, part, ask) => (part ? openSessionFocus(key, part, ask) : toggleSessionFocus(key)),
   // "Asking you · N": that session's first ask in the Needs you lane (dashboard lanes design §3.3)
   showAsk: (id) => { if (id) needsYouLane.focusAsk(id) },
@@ -2229,7 +2231,7 @@ const agentsHome = installAgentsHome({
   scrollBehavior: () => motion.scrollBehavior(),
   pulse: (el) => { if (dashboardMotion()) playOnce(el, 'pulse', 'dash-lane-pulse') },
   paintUndelivered,
-  // its own repaints (filters, grouping, folds) can remove the group the panel sits in (#463 review)
+  // its own repaints (folds, the mesh section) can remove the list the panel sits in (#463 review)
   afterRepaint: () => placeFocusPanel(),
   refreshMesh: () => { meshRefresh() },
   openMeshAgent,
@@ -2246,7 +2248,7 @@ const agentsHome = installAgentsHome({
 // ── the Needs you lane and the page head (dashboard lanes design §3.1–3.2) ───
 // The lane never answers: a card opens its ask in the Inbox's detail panel
 // (jumpToAsk). "Later N ›" and Review queue moved to its header from the
-// Agents card's.
+// old Agents card's.
 const needsYouLane = installNeedsYouLane({
   open: (entry) => jumpToAsk(entry),
   openLater,
@@ -2817,12 +2819,13 @@ function paintSessionFocus() {
 }
 
 // #454 A.3: under 1280px the panel opens after its card's row, spanning the
-// cards' grid (one card a row below 900px, so inline under it); on a desktop,
-// and with no card drawn, it is the Dashboard grid's own sheet after the
-// Agents home. An open panel never moves while it holds focus: moving a
-// focused node drops the focus (the next paint after it leaves places it),
-// unless the panel has been cut off (#463 review: a removed group took it
-// along, or a fold or filter hid it), when it goes home whatever held it.
+// cards' grid (one card a row below 900px, so inline under it), or after its
+// Quiet row (dashboard lanes design §3.6); on a desktop, and with no card
+// drawn, it is the Dashboard grid's own sheet after the lanes. An open panel
+// never moves while it holds focus: moving a focused node drops the focus (the
+// next paint after it leaves places it), unless the panel has been cut off
+// (#463 review: a removed group took it along, or a fold hid it), when it goes
+// home whatever held it.
 const narrowPanel = window.matchMedia('(max-width: 1279px)')
 const outOfSight = (el) => !el.isConnected || Boolean(el.parentElement?.closest('[hidden], details:not([open])'))
 function placeFocusPanel(aside = focusPanelEl) {
@@ -2891,6 +2894,8 @@ function openSessionFocus(session, part = null, ask = null) {
 function closeSessionFocus() {
   const session = focusSession
   const card = agentsHome.cardFor(session)?.id
+  // the heading of the lane its card is in, read before the panel lets go of it
+  const title = agentsHome.laneTitle(session)
   const aside = focusPanelEl
   const owned = Boolean(aside?.contains(activeFocusElement()))
   focusSession = null
@@ -2899,19 +2904,19 @@ function closeSessionFocus() {
   agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
   if (!owned || !document.hasFocus()) return
   const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
-  ;[own?.querySelector('[data-ah-action]'), document.getElementById('agentsHomeTitle')]
+  ;[own?.querySelector('[data-ah-action]'), title]
     .find(isShown)?.focus({ preventScroll: true })
 }
 
-// A trusted click outside the panel that is not on a card (a card toggles it
-// itself) closes it, moving no focus. A click, never a pointerdown: it fires
+// A trusted click outside the panel that is not on a card or a Quiet row (each
+// toggles it itself) closes it, moving no focus. A click, never a pointerdown: it fires
 // once the press has completed on one element, so nothing moves under the
 // pointer mid-press. In the compact layout the panel is in flow (static) and
 // part of the page, with its own close and Esc, so an outside click never
 // closes it there: the cards below it would jump up under the press.
 function closeSessionFocusOnClick(event) {
   if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
-  if (event.target.closest('#dashboard .dash-focus, #dashboard .sc')) return
+  if (event.target.closest('#dashboard .dash-focus, #dashboard [data-session-card]')) return
   const aside = focusPanelEl
   if (!aside || getComputedStyle(aside).position === 'static') return
   focusSession = null
@@ -3322,9 +3327,10 @@ function renderDashboard(model) {
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
-  // #454: the Agents home spans the grid; the session panel is never inside
-  // a card that could hide it: a sheet over the grid's right side on a
-  // desktop, after its card's row on a narrow screen (placeFocusPanel).
+  // #454, dashboard lanes design §3.3–3.4: the Working and Quiet lanes span the
+  // grid; the session panel is never inside a card that could hide it: a sheet
+  // over the grid's right side on a desktop, after its card's row or its Quiet
+  // row on a narrow screen (placeFocusPanel).
   grid.appendChild(agentsHome.element())
   grid.appendChild(dashFocusEl())
   grid.appendChild(dashRibbonEl())
@@ -3397,7 +3403,7 @@ function paintAmbient() {
   return { agents, g, boards, archived, live, dashboard }
 }
 
-// The Agents home's input (#397, #454): the sessions the
+// The Working and Quiet lanes' input (#397, #454): the sessions the
 // rail's project and agent lens shows, never narrowed by closure (closed
 // projects' sessions have a fold of their own).
 function liveInLens() {
@@ -3411,7 +3417,7 @@ function launchesInLens() {
   return (lastData?.launches ?? []).filter(launchInLens)
 }
 
-// The launches the lens hides that still run or can resume: the Agents home says so (#454).
+// The launches the lens hides that still run or can resume: the Working lane says so (#454).
 function launchesOutsideLens() {
   return (lastData?.launches ?? []).filter((launch) => launch.status !== 'ended' && !launchInLens(launch)).length
 }
@@ -6685,7 +6691,7 @@ async function retryMessageRecovery(session) {
   await reloadAndPaint()
 }
 
-// The Agents home's "Not delivered" fold (#411, #454): every open message whose
+// The Quiet lane's "Not delivered" fold (#411, #454): every open message whose
 // session /api/activity no longer lists, until the human withdraws it or a later
 // send's 30-day prune deletes it. Global, like the Sessions line: a lens never
 // hides an undelivered message. Rebuilt only when what it shows changes, keeping
@@ -6749,7 +6755,7 @@ function undeliveredFold(focusAttr) {
 // dot with the freshest working session's tone, "2 working · 5 connected" and
 // "1 on an older build". Global (never lens- or closed-filtered), presence only:
 // no attention tone, badge or "needs you" number. A click opens the Dashboard
-// with the Agents home focused. Ambient: it never steals focus.
+// with its Working lane's heading focused. Ambient: it never steals focus.
 function renderSessionsIndicator(activity) {
   const el = document.getElementById('sessionsIndicator')
   if (!el) return
@@ -6762,10 +6768,10 @@ function renderSessionsIndicator(activity) {
   setHidden(older, !s.older)
   const title = ['Sessions', s.label, s.sub, older.textContent].filter(Boolean).join(' · ')
   setAttr(el, 'title', title)
-  setAttr(el, 'aria-label', `${title}. Open the Agents home`)
+  setAttr(el, 'aria-label', `${title}. Open the Dashboard’s sessions`)
 }
 
-// The indicator and G L: the Dashboard, its Agents home focused.
+// The indicator and G L: the Dashboard, its Working lane's heading focused.
 // Each re-reads the build state (#197), as opening the Live drawer did; the next tick paints it.
 // "Later N ›" (#454 A.2, the rail's "N in Later" before it): the Inbox, its Later section open.
 function openLater() {
@@ -6780,7 +6786,7 @@ function showAgentsHome() {
   // one navigation, one open: after the read, never a second from selectTab
   refreshLiveVersion().then(() => { if (activeTab === 'dashboard') meshOpen() })
   if (activeTab !== 'dashboard') selectTab('dashboard', { open: false })
-  const title = document.getElementById('agentsHomeTitle')
+  const title = document.getElementById('workingLaneTitle')
   title?.scrollIntoView?.({ block: 'nearest' })
   title?.focus({ preventScroll: true })
 }

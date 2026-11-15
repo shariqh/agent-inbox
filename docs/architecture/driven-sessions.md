@@ -920,8 +920,8 @@ keeps its session but resumes only with a new allowance, each one an explicit hu
   **Forget…** in the granted window; the panel's action bar shows it on every ended launch, disabled
   with "Remove its worktree first" while the worktree is kept. Success reloads the launches, so the card
   goes without a page reload, and closes the panel showing it; a refusal shows in the panel; Cancel
-  shows nothing. A launch stopped (or budget-ended) with its session kept is listed and filtered with
-  Parked (the filter reads "Parked or stopped") for its Resume…, but its card says **Stopped**: it has
+  shows nothing. A launch stopped (or budget-ended) with its session kept is listed with Parked, a
+  row in the Quiet lane (dashboard lanes PR 4), for its Resume…, but it says **Stopped**: it has
   ended, so there is no End.
 - **Not built.** End and forget for a parked launch with no worktree (End, then Forget, works). A
   forgotten launch's removed worktree path is no longer left out of New session's folders when its

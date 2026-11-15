@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // The Agents home (#454, design docs/superpowers/specs/2026-11-04-agents-home-design.md
-// §3, §4): one card per session, always on. It reads nothing new (the page
-// makes exactly the requests it made before) and never feeds attention: the
-// human's attention surfaces read the same with it drawn.
+// §3, §4), now the Working and Quiet lanes (dashboard lanes design §3.3, §3.4):
+// one card or row per session, always on. It reads nothing new (the page makes
+// exactly the requests it made before) and never feeds attention: the human's
+// attention surfaces read the same with it drawn.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, recordActivityCall, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
@@ -65,9 +66,10 @@ const SURFACES = {
 }
 
 const card = (id: string) => [...document.querySelectorAll<HTMLElement>('[data-session-card]')].find((el) => el.dataset.sessionCard === id) ?? null
-const groups = () => [...document.querySelectorAll<HTMLElement>('.agents-home .ah-groups > .ah-group')]
+// Working's project groups, and Quiet's rows
+const groups = () => [...document.querySelectorAll<HTMLElement>('.agents-home .working-lane .ah-groups > .ah-group')]
   .map((group) => [group.querySelector('.ah-group-name')?.textContent, [...group.querySelectorAll<HTMLElement>('[data-session-card]')].map((el) => el.dataset.sessionCard)])
-const filterButton = (key: string) => document.querySelector<HTMLButtonElement>(`.agents-home [data-ah-filter="${key}"]`)
+const quietRows = () => [...document.querySelectorAll<HTMLElement>('.agents-home .quiet-lane .qt-rows [data-session-card]')].map((el) => el.dataset.sessionCard)
 
 describe('the Agents home (#454)', () => {
   it('opens on Agents with one card per session, reads nothing new and leaves every attention surface alone', async () => {
@@ -83,15 +85,16 @@ describe('the Agents home (#454)', () => {
     // the lanes and their lens are gone (#454): the Agents home is the Dashboard's one list of sessions
     expect(document.querySelector('.dash-lanes, .mesh-lens')).toBeNull()
     expect(document.querySelector<HTMLElement>('.agents-home')?.hidden).toBe(false)
-    // grouped by project; by state, then the newest call. Asks never move a card (lanes design §3.3)
+    // Working grouped by project, the newest call first; the quiet one is a Quiet row.
+    // Asks never move a card (lanes design §3.3)
     expect(groups()).toEqual([
       ['agent-inbox', ['session:k1', 'session:c1']],
-      ['demo', ['session:c2', 'session:k2']],
+      ['demo', ['session:c2']],
     ])
-    expect(document.querySelector('.agents-home .ah-count')?.textContent).toBe('4 sessions')
-    expect([...document.querySelectorAll('.agents-home [data-ah-filter]')].map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([
-      ['All4', 'true'], ['Working3', 'false'], ['Quiet1', 'false'], ['Parked or stopped0', 'false'],
-    ])
+    expect(quietRows()).toEqual(['session:k2'])
+    // one count per lane, on the chips; no filter, group-by or count beside a heading
+    expect(['working', 'quiet'].map((k) => document.querySelector(`#dashboard [data-dash-chip="${k}"] .dash-chip-count`)?.textContent)).toEqual(['3', '1'])
+    expect(document.querySelector('.agents-home [data-ah-filter], .agents-home .ah-count, .agents-home .ah-group-by')).toBeNull()
     // a question naming no session is in the Needs you lane only
     const orphan = [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.dataset.nyAsk === ids.retry)!
     expect([orphan.querySelector('.ny-session')?.textContent, orphan.querySelector('.ny-agent')?.textContent, orphan.querySelector('.ny-title')?.textContent])
@@ -123,26 +126,17 @@ describe('the Agents home (#454)', () => {
     expect(await surfaces()).toEqual(SURFACES)
   })
 
-  it('filters by state, says when nothing matches, and groups by agent kind', async () => {
+  it('groups Working by project with no filter or group-by, the agent kind on each card (lanes design §3.3)', async () => {
     db = freshDb()
     seed(db)
     await bootApp(db)
     await pollTick()
     await settle()
-    click(filterButton('working'))
-    // a group sits where its first shown card does: k1's call is the newest
+    // a group sits where its first card does: k1's call is the newest
     expect(groups()).toEqual([['agent-inbox', ['session:k1', 'session:c1']], ['demo', ['session:c2']]])
-    click(filterButton('parked'))
-    expect(groups()).toEqual([])
-    const none = document.querySelector<HTMLElement>('.agents-home .ah-none')!
-    expect([none.hidden, none.querySelector('p')?.textContent]).toEqual([false, 'No session matches these filters.'])
-    click(none.querySelector('.ah-show-all'))
-    expect(filterButton('all')?.getAttribute('aria-pressed')).toBe('true')
-    expect(none.hidden).toBe(true)
-    const select = document.querySelector<HTMLSelectElement>('.agents-home .ah-group-by select')!
-    select.value = 'agent'
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-    expect(groups()).toEqual([['Claude Code', ['session:k1', 'session:k2']], ['Copilot', ['session:c2', 'session:c1']]])
+    expect(['session:k1', 'session:c1', 'session:c2'].map((id) => card(id)?.querySelector('.sc-agent')?.textContent)).toEqual(['Claude Code', 'Copilot', 'Copilot'])
+    expect(card('session:k2')?.querySelector('.sc-agent')?.textContent).toBe('Claude Code')
+    expect(document.querySelector('.agents-home .ah-none, .agents-home .ah-show-all, .agents-home select')).toBeNull()
   })
 
   it('a card’s click opens the session panel listing the card’s asks, which agree with its chip; a click toggles the panel', async () => {
@@ -194,8 +188,9 @@ describe('the Agents home (#454)', () => {
     expect([fold('closed').hidden, fold('closed').querySelector('summary')?.textContent]).toEqual([false, 'In closed projects (2)'])
     expect(fold('ended').hidden).toBe(true)
     expect(fold('dormant').querySelectorAll('[data-session-card]')).toHaveLength(0)
-    // 9 h on, their claims have gone cold: idle; k1 still takes its plan's ask by the join (#454 A.1 step 2)
-    expect(groups().flatMap(([, list]) => list)).toEqual(['session:c1', 'session:k1'])
+    // 9 h on, their claims have gone cold: idle, in Quiet; k1 still takes its plan's ask by the join (#454 A.1 step 2)
+    expect(groups()).toEqual([])
+    expect(quietRows()).toEqual(['session:c1', 'session:k1'])
     expect(card('session:k1')?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
     // opening the fold paints its cards at once, not at the next poll
     fold('closed').open = true
@@ -203,7 +198,7 @@ describe('the Agents home (#454)', () => {
     expect([...fold('closed').querySelectorAll<HTMLElement>('[data-session-card]')].map((el) => el.dataset.sessionCard)).toEqual(['session:c2', 'session:k2'])
   })
 
-  it('with no session, says how one appears and offers no filter (§3.6)', async () => {
+  it('with no session, says how one appears in the Working lane (§3.6, lanes design §3.3)', async () => {
     db = freshDb()
     await bootApp(db)
     await pollTick()
@@ -211,7 +206,7 @@ describe('the Agents home (#454)', () => {
     const home = document.querySelector<HTMLElement>('.agents-home')!
     expect(home.querySelector<HTMLElement>('.ah-empty')?.hidden).toBe(false)
     expect(home.querySelector('.ah-empty-text')?.textContent).toBe('No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.')
-    expect(home.classList.contains('ah-is-empty')).toBe(true)
+    expect(home.querySelector('.working-lane .ah-empty')).not.toBeNull()
     // with the switch off (a browser), no New session either (it sits in the page head, §3.1)
     expect(document.querySelector<HTMLElement>('#dashboard .dash-head .ah-new')?.hidden).toBe(true)
   })
@@ -223,7 +218,8 @@ describe('the Agents home (#454)', () => {
     await bootApp(db)
     await pollTick()
     await settle()
-    expect(card('session:k2')?.querySelector('.sc-meta')?.textContent).toBe('It sees a message when it next checks')
+    // a Quiet row's one line has no room for it: when a message reaches it is in Message's title
+    expect(card('session:k2')?.querySelector<HTMLElement>('[data-ah-action="message"]')?.title).toBe('Message this session. It sees a message when it next checks')
     click(card('session:k2')?.querySelector('[data-ah-action="message"]'))
     await settle()
     const aside = document.querySelector<HTMLElement>('#dashboard .dash-focus')!

@@ -195,8 +195,8 @@ These landed after v1 and still hold invariants; the release history itself is i
   key stamps (identity, size, mtime, ctime) the runtime root, each installed runtime directory and its
   manifest, and the source payload and its manifest, so an install, removal, atomic rename-over or
   manifest edit re-verifies on the next read; a 10-minute backstop covers edits deep inside a
-  runtime. The viewer reads it at page load, when the Agents home (the Sessions line, G L, the Working
-  tile) or a session panel opens, and after a Setup install — never on the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
+  runtime. The viewer reads it at page load, when the Dashboard's session lanes (the Sessions line, G L)
+  or a session panel opens, and after a Setup install — never on the poll. `sessionBuild()` in `public/livebar.js` compares strict semver only and **gives only the
   advice that backs THAT session**: a checkout session is told to update and rebuild its checkout; a
   runtime session's advice follows its host's registration (part 2, in `setup-and-installers.md`) in a release viewer; anything
   else, including a legacy row with no source, says only "older build (vY)". Unknown versions on either

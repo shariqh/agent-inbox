@@ -39,6 +39,7 @@ const { captureShellEnv } = require('./shell-env.cjs')
 const { runWorktreeCommand, startDriver } = require('./driver-process.cjs')
 const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-controller.cjs')
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
+const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -549,6 +550,13 @@ function launchProcessStart(pid) {
   })
 }
 
+// #586: the one runner for terminal-launch.cjs's argv, shared by the launchers and Resume a chat
+function runTerminalCommand(command) {
+  return new Promise((resolve) => {
+    execFile(command.file, command.args, { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(runOutcome(error)))
+  })
+}
+
 function launchControllerFor() {
   if (launchController) return launchController
   const owner = () => (linkWindow && !linkWindow.isDestroyed() ? linkWindow : undefined)
@@ -604,9 +612,7 @@ function launchControllerFor() {
     // the argv, and a run says whether the app was missing or the open was killed by the timeout
     terminal: {
       read: () => linkPrefs().readTerminal(),
-      run: (command) => new Promise((resolve) => {
-        execFile(command.file, command.args, { env: { PATH: '/usr/bin:/bin' }, timeout: 10_000 }, (error) => resolve(runOutcome(error)))
-      }),
+      run: runTerminalCommand,
     },
     // step 5: the Take over script, 0700 in the launch's 0700 log folder, by temp file and rename
     writeScript: (file, text) => {
@@ -658,6 +664,32 @@ registerLaunchIpc({
     launchEnabled = enabled
     installBinding?.refresh()
   },
+})
+
+// #586 PR 3: Resume a chat in Terminal. The page sends { tool, id }; main reads the folder from the
+// index through the viewer, as the launchers reach the hub. The owned viewer on macOS only, and no
+// driven-sessions switch: it opens the person's own terminal on the tool's own resume command.
+let chatResume = null
+const chatResumeFor = () => (chatResume ??= createChatResume({
+  platform: process.platform,
+  isQuitting: () => installGate.quitting(),
+  viewer: launchViewer,
+  isDirectory: (folder) => {
+    try {
+      return statSync(folder).isDirectory()
+    } catch {
+      return false
+    }
+  },
+  terminal: { read: () => linkPrefs().readTerminal(), run: runTerminalCommand },
+  scriptDir: path.join(path.dirname(launchHubPath()), 'chat-resume'),
+}))
+registerChatResumeIpc({
+  ipcMain,
+  platform: process.platform,
+  settled: () => installBinding?.settled() ?? Promise.resolve(),
+  isOwned: (event) => linkSender(event) && linkFilesPermitted(event),
+  chatResume: chatResumeFor,
 })
 
 // The quit prompt (§7): sessions keep running unless the human stops them all.

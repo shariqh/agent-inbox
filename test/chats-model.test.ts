@@ -7,9 +7,10 @@ import { mkdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   allSwitchText, chatsUrl, displayFolder, emptyText, filterChats, hiddenLabel, inferHome, isChatsHash,
-  lastActiveView, projectOptions, readChatsBody, resumeCommand, resumeControl, retentionText, shouldFetchOnOpen,
-  shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
+  lastActiveView, projectOptions, readChatsBody, resumeCommand, resumeControl, resumeOutcome, resumeTerminalControl,
+  retentionText, shouldFetchOnOpen, shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
 } from '../public/chats.js'
+import chatResume from '../electron/chat-resume.cjs'
 import type { Chat, ChatFilter } from '../public/chats.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -246,5 +247,51 @@ describe('chats model (#586 PR 2)', () => {
   it('names the deep link and the two reads', () => {
     expect([isChatsHash('#chats'), isChatsHash('chats'), isChatsHash('#item/x'), isChatsHash(undefined)]).toEqual([true, true, false, false])
     expect([chatsUrl(false), chatsUrl(true)]).toEqual(['/api/chats', '/api/chats?all=1'])
+  })
+
+  describe('Resume in Terminal (#586 PR 3)', () => {
+    it('is on with a title naming the app, and an aria-label only for iTerm2', () => {
+      expect(resumeTerminalControl(chat(), 'terminal')).toEqual({ enabled: true, title: 'Resume in Terminal', ariaLabel: null })
+      expect(resumeTerminalControl(chat(), 'iterm2')).toEqual({ enabled: true, title: 'Resume in iTerm2', ariaLabel: 'Resume in iTerm2' })
+      expect(resumeTerminalControl(chat(), 'Hyper')).toEqual({ enabled: true, title: 'Resume in Terminal', ariaLabel: null })
+    })
+
+    it.each([
+      ['no folder', { cwd: null, hidden: ['folder-gone'] }, "The chat's files name no folder to resume in."],
+      ['a folder that is gone', { hidden: ['folder-gone'] }, "The chat's folder no longer exists, so it cannot be resumed there."],
+      ['a live chat', { live: true }, 'This chat is live in another process, so it is not resumed a second time.'],
+      ['a live chat whose folder is gone', { live: true, hidden: ['folder-gone'] }, 'This chat is live in another process, so it is not resumed a second time.'],
+      ['an id that is not a UUID', { id: '--help' }, "This chat's id or folder can't be made into a safe command."],
+      ['a folder with a newline', { cwd: '/Users/tester/a\nb' }, "This chat's id or folder can't be made into a safe command."],
+    ] as Array<[string, Partial<Chat>, string]>)('is off for %s, with the reason as its title', (_, over, title) => {
+      expect(resumeTerminalControl(chat(over), 'iterm2')).toEqual({ enabled: false, title, ariaLabel: null })
+    })
+
+    it('reads main’s answer into a label, a note and whether to read the list again', () => {
+      expect(resumeOutcome({ ok: true, terminal: 'iterm2' })).toEqual({ label: 'Opened in iTerm2', note: null, refresh: false })
+      const notice = 'iTerm2 could not be opened, so Terminal was opened instead.'
+      expect(resumeOutcome({ ok: true, terminal: 'terminal', notice })).toEqual({ label: 'Opened in Terminal', note: notice, refresh: false })
+      for (const reason of ['live', 'folder', 'missing', 'opened']) {
+        expect(resumeOutcome({ ok: false, reason, error: `because ${reason}` })).toEqual({ label: null, note: `because ${reason}`, refresh: true })
+      }
+      for (const reason of ['open', 'busy', 'write', 'invalid', 'unavailable']) {
+        expect(resumeOutcome({ ok: false, reason, error: 'x' })).toMatchObject({ label: null, refresh: false })
+      }
+      expect(resumeOutcome({ ok: false, reason: 'open' })).toEqual({ label: null, note: 'Could not resume this chat.', refresh: false })
+      expect(resumeOutcome(null)).toEqual({ label: null, note: 'Could not resume this chat.', refresh: false })
+    })
+
+    it.each([
+      '/Users/tester/dev/alpha', "/Users/tester/it's here", '/Users/tester/say "hi"', '/Users/tester/$(touch pwned)',
+      '/Users/tester/`id`', '/Users/tester/a; b', "/Users/tester/''",
+    ])('runs exactly the command Copy resume copies, in %s', (cwd) => {
+      for (const tool of ['claude', 'copilot']) {
+        const copied = resumeCommand({ id: ID, tool, cwd })!
+        const lines = chatResume.chatResumeScript({ tool, id: ID, cwd })!.split('\n')
+        const cd = /^cd -- (.*) \|\| exit 1$/.exec(lines[2]!)![1]
+        expect(lines[3]!.startsWith('exec ')).toBe(true)
+        expect(`cd ${cd} && ${lines[3]!.slice('exec '.length)}`).toBe(copied)
+      }
+    })
   })
 })

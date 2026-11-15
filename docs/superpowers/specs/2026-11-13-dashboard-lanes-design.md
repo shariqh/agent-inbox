@@ -1,8 +1,8 @@
 # Design: the Dashboard as attention lanes
 
 Status: direction picked by the owner on 2026-11-13 (mockup A, "Attention lanes"). PR 2 (tokens
-and window size) and PR 3 (the page head chips and the Needs you lane) are built; §7 says what each
-remaining PR holds. Mockups were shared with the owner separately and are not committed.
+and window size), PR 3 (the page head chips and the Needs you lane) and PR 4 (the Working and
+Quiet lanes) are built; §7 says what each remaining PR holds. Mockups were shared with the owner separately and are not committed.
 
 ## §0 Summary
 
@@ -116,14 +116,18 @@ G I still opens the Inbox.
   `isBusy`), from `sessionCards` as today.
 - **Grouping.** By project, with a project head (dot, name, count). Group-by goes; the agent kind
   is on each card.
-- **Order.** Within a project, `pinLaneOrder` keeps cards still between forced paints. A move
-  between lanes is never held back, so a session that starts or stops working changes lane on
-  the next paint. Held pointers and drafts still defer the rebuild, as the 10-22 constraints
-  require.
-- **Card.** What the session is doing at 15px, up to two lines; one meta line with the state
-  dot, agent, branch and time since its last call; subagents and plan progress when present. If
-  the session also has open asks, a pink "Asking you · N" chip scrolls to them in Needs you. The
-  main action is **Open** (the session panel); **Message** stays where it is today.
+- **Order.** Within a project, `pinLaneOrder` keeps cards still between forced paints, and the
+  project groups keep their order too, so a card leaving never swaps the groups under the
+  pointer. While the pointer or keyboard focus is in the lane, a forced paint holds the order as
+  well (as Needs you does), so a card under the pointer never re-sorts. A move between lanes is
+  never held back, so a session that starts or stops working changes lane on the next paint.
+  Held pointers and drafts still defer the rebuild, as the 10-22 constraints require.
+- **Card.** One meta line first, with the state dot, agent, branch and time since its last call
+  (the lane names the state, so the card's label is left to its accessible name); then what the
+  session is doing at 15px, up to two lines; subagents and plan progress when present. If the
+  session also has open asks, a pink "Asking you · N" chip scrolls to them in Needs you. The
+  main action is **Open** (the session panel, at its head), the card's first button;
+  **Message** stays where it is today.
 - **Columns.** Three at 1440px, two at 1280px, one below 900px, as the 11-04 V4 cleanup set.
 
 ### 3.4 Quiet
@@ -131,11 +135,21 @@ G I still opens the Inbox.
 - **Entries.** Every other live card in the main place: idle, quiet and parked sessions. A
   session with open asks carries the same "Asking you · N" chip as in Working. The ask itself
   shows only in Needs you.
-- **Table.** Columns: state, session (project and agent), branch, last caption, since, and the
-  state's main action (Open in Terminal, Resume, or Open). Under 620px each row becomes two
-  lines.
+- **Table.** Columns: state, session (project dot, project and agent, with the "A" or "driven"
+  mark), branch (and a launch's worktree), last caption, since, and the state's main action:
+  Open (the session panel) and Message for an idle session, Take over and Resume… for a parked
+  one, and each other state's action as before. When a message reaches the session is in
+  Message's tooltip, since the row has one line. Under 620px each row becomes two lines. It is
+  a list of rows with a header row hidden from assistive tech, not a `<table>`: below 1280px the
+  session panel opens inline between rows, which a table cannot hold, so each row's accessible
+  name says every column.
+- **Mesh agents** (agent cards view V3) stays where it sat relative to the sessions: after the
+  rows, before the folds, outside every lens.
 - **Folds** at its end, unchanged in rule: Ended (N) with Earlier sessions inside, Dormant (N),
-  Closed projects (N) and Not delivered (N).
+  Closed projects (N) and Not delivered (N). The folds' row shows only with something in it.
+- **Empty.** Each lane keeps its header and says so in one quiet line ("No session in this view
+  is working." / "… is quiet."). With no session at all, Working shows the first-run message
+  instead.
 - **Ask-only cards go.** Their asks are in Needs you, which is where the 11-04 amendment wanted
   them to be visible.
 
@@ -217,7 +231,9 @@ land with the PR that builds them, so it never describes a layout that doesn't e
   and `test/sessions.test.ts`, `test/dom/dashboard.test.ts` (Now strip), `test/editorial-shell.test.ts`
   and `test/motion-css.test.ts` (the lane and chip selectors). PR 4: `test/dom/agents-home.test.ts`
   (filters, group-by), `test/dom/dashboard-cards.test.ts` (pinned order per lane),
-  `test/editorial-shell.test.ts` (`.ah-cards`). PR 5: `test/dom/dashboard-focus.test.ts` (split at
+  `test/editorial-shell.test.ts` (`.ah-cards`, the Quiet table), `test/dom/dashboard-focus.test.ts`
+  (quick filters), `test/dom/agents-asks.test.ts` (the narrow panel's cases), `test/dom/needs-you-lane.test.ts`
+  (the chips), `test/dom/mesh-agents.test.ts` (filters) and `test/dom/driven-sessions.test.ts` (Open). PR 5: `test/dom/dashboard-focus.test.ts` (split at
   1280px), `test/editorial-shell.test.ts` (`.dash-focus`).
 - **New.** PR 2: the window's default bounds clamp to a small work area. PR 3
   (`test/dom/needs-you-lane.test.ts`): a session that starts asking gains its chip and its ask
@@ -225,6 +241,12 @@ land with the PR that builds them, so it never describes a layout that doesn't e
   panel at that ask, and Esc or its close returns to the Dashboard with focus on the card, while
   answering stays in the Inbox; the lane's count equals the badge and each entry shows once; its
   order is `sortRail`'s, held under the pointer or keyboard focus; the chips scroll and focus and
-  never filter; the empty text; Later shows only when N > 0.
+  never filter; the empty text; Later shows only when N > 0. PR 4
+  (`test/dom/working-quiet-lanes.test.ts`): every live card is in exactly one place; a session
+  that starts or stops working changes lane on the next paint, even with the pointer in the
+  other lane; order inside a lane, and its project groups, are pinned under the pointer; the
+  Quiet table's columns and each state's action; the folds; the chips equal and focus their own
+  lane; the empty states; the session panel opens from a Working card and a Quiet row, wide and
+  narrow.
 - **Docs.** `docs/architecture/viewer-dashboard-and-shell.md`, `attention-and-later.md` (Later's
   entry point), `electron-app.md` (window size) and `CHANGELOG.md`.

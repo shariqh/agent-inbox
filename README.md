@@ -248,7 +248,7 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
 
 - **The page head** has one row of lane chips, **Needs you**, **Working** and
   **Quiet**, each with its count, and **New session…** at its right end. A chip
-  scrolls to its lane and moves focus to its first card; it never filters.
+  scrolls to its lane and moves focus to its first card or row; it never filters.
 - **Needs you** lists the requests waiting on you, the same set the badge counts,
   with requests whose agent is still waiting on the answer first. Each card leads
   with what its Inbox row leads with, the step you are asked to take, and shows its
@@ -257,20 +257,24 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
   a click or `Enter` opens the request in the Inbox, and `Esc` brings you back to
   the Dashboard where you were. `J`/`K` or the arrow keys move between cards. The
   lane's header links to **Later** when something is there, and to the Review queue.
-- **Agents** has a card for every session, grouped by project (or by agent): what
-  it reports, whether it is working, quiet, idle or parked, and for a working
-  session its plan's progress (done, in progress, waiting on you, to do), its
-  subagents and a small trace of its MCP calls over the last 30 minutes. A session
-  that is asking you something shows an **Asking you · N** chip, which takes you to
-  its first request in Needs you. A terminal
+- **Working** has a card for every session with live work, grouped by project: what
+  it reports, its agent, branch and time since its last call, its plan's progress
+  (done, in progress, waiting on you, to do), its subagents and a small trace of its
+  MCP calls over the last 30 minutes. **Open** opens its session panel.
+- **Quiet** lists every other session in a compact table, one row each: its state,
+  project and agent, branch, last caption, how long since, and its main action
+  (**Open**, or **Take over** and **Resume…** for a parked one). A terminal
   session with no live claim reads **Quiet** ("no Agent Inbox call for 40m"), because
   one busy with other tools makes no Agent Inbox call either; **Idle** is kept for an
   app-driven session whose driver reports no running turn. A claim that is no longer
   live shows as "Last reported: … · 52m ago". A session with no call for 8 hours
-  folds under **Dormant**, and ended sessions under **Ended**. Filter by state with
-  **All**, **Working**, **Quiet** and **Parked or stopped**.
-  Click a card to open its session panel: its requests, its plan, its recent
-  outcomes, PR and CI state, links, and a place to message it.
+  folds under **Dormant**, and ended sessions under **Ended**, at the end of the lane.
+  A session moves between Working and Quiet as soon as it starts or stops working,
+  but a card under your pointer stays where it is. A session that is asking you
+  something shows an **Asking you · N** chip in either lane, which takes you to its
+  first request in Needs you. Click a card or row to open its session panel: its
+  requests, its plan, its recent outcomes, PR and CI state, links, and a place to
+  message it.
 - **The Today ribbon** draws one line per project over the last 24 hours, 7 days or
   30 days: when its agents worked, ◆ where one asked you something and ● where an
   outcome landed.
@@ -288,7 +292,7 @@ setting turns motion off whichever you choose.
 ## Messaging a running session
 
 You can write to a connected session without finding its terminal. Each session's
-card in the Dashboard's Agents view has a **Message** button, which opens its session
+card or row in the Dashboard's Working and Quiet lanes has a **Message** button, which opens its session
 panel at the **Message** section. Messages go to the whole CLI
 session: any of its agents, a subagent included, may pick one up first. A message
 can be up to 4,000 characters, and it never changes a badge or a count.
@@ -304,7 +308,7 @@ Before you send, the composer says how the message will arrive:
 Each message then shows **Sent · not picked up yet**, **Picked up · working on it**
 or **Acknowledged**, with the outcome the agent recorded through `ack_message`.
 **Withdraw** takes back a message the session has not acknowledged; after pickup the
-agent may already have started. **Not delivered**, at the foot of the Agents view, lists
+agent may already have started. **Not delivered**, at the foot of the Quiet lane, lists
 messages to sessions that ended, with **Copy text** and **Withdraw**. An unsent
 message is kept like any other draft, and a send that was not confirmed never sends
 twice.
@@ -352,7 +356,7 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 1. Open **Settings → Agent sessions** and turn on **Start sessions from Agent Inbox**.
    The key that signs your approvals is protected by the macOS Keychain, so macOS
    may ask once to allow Agent Inbox to use it.
-2. On the Dashboard, choose **New session…** at the top of the Agents view. Pick a project Agent Inbox has seen (or **Choose folder…**), a
+2. On the Dashboard, choose **New session…** at the right end of its page head. Pick a project Agent Inbox has seen (or **Choose folder…**), a
    mode, optionally a model and reasoning effort, the budgets, and the task. Don't
    paste secrets into the task: it is stored with the session.
 3. Agent Inbox shows its own confirmation of exactly what will start. **Start** runs
@@ -371,7 +375,7 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
    Once it has no worktree, **Forget…** removes the session from Agent Inbox for good: its
    card, transcript and logs. Its branch and commits, and Copilot's own session files, stay.
    A session you stopped whose Copilot session is kept reads **Stopped**, offers Resume… and
-   Forget…, and is listed under **Parked or stopped**.
+   Forget…, and is listed with the parked sessions in the Quiet lane.
 7. **Take over in Terminal** moves a running or parked session to a Terminal window:
    after your confirmation, Agent Inbox stops driving it (cancelling its current turn
    and approvals) and runs `copilot --resume` there with its history. From then on you
@@ -627,9 +631,10 @@ Links itself, work only in the viewer the app started itself.
 
 ## Agents view
 
-The Dashboard's Agents view is the one home for your sessions: a card for each,
-grouped by project with its agent kind as a chip (or grouped by agent). The sidebar's
-**Sessions** line, on every tab, says how many are working and connected and opens it.
+The Dashboard's Working and Quiet lanes are the one home for your sessions: a card for
+each working session, grouped by project with its agent kind on the card, and a row for
+each other one. The sidebar's **Sessions** line, on every tab, says how many are working
+and connected and opens them.
 The view adds no poll read, no network traffic beyond this machine and nothing to
 your badges.
 

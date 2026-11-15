@@ -175,8 +175,11 @@ As built (PR 5):
   Open (`.dash-split.open`, set by `syncSplit` in `public/app.js` only while the panel is shown,
   the window is 1280px or wider and the panel is the split's own), it is a two-column grid: the
   lanes in `minmax(0, 1fr)`, the panel in `clamp(360px, 34%, 460px)`. 360px keeps the panel's
-  action bar and composer readable; 34%, capped at 460px, leaves Working two card columns at
-  1440px with the default 220px sidebar (with a wider sidebar, one).
+  action bar and composer readable; 34%, capped at 460px, keeps the lanes 556px or wider at
+  1280px with the default 220px sidebar. Beside the panel Working has one card column at 1280px
+  and 1440px with any expanded sidebar, and two from about 1485px wide with the default 220px
+  sidebar (or with the sidebar collapsed); `main`'s 1460px cap keeps the lanes column under
+  about 865px, so never more than two, and Quiet's rows always take their two-line layout.
 - **The panel column.** Sticky under the top bar (`top: 116px`, the Inbox inspector's offset),
   at most the window's height below it, with its own scroll. It has no z-index and no shadow,
   and its grid area keeps it off Needs you and the ribbon.

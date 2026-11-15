@@ -1913,8 +1913,9 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .dash-focus[hidden], .dash-focus [hidden] { display: none; }
 /* closed, the split is no box at all, so the lanes and the grid lay out as without it */
 .dash-split { display: contents; }
-/* 360px keeps the panel's action bar and composer readable; 34%, capped at 460px,
-   leaves Working two card columns at 1440px with the default 220px sidebar */
+/* 360px keeps the panel's action bar and composer readable; 34%, capped at 460px, keeps
+   the lanes 556px or wider at 1280px with the default 220px sidebar. Beside the panel
+   Working has one card column up to about 1485px wide and two above (spec §3.6) */
 .dash-split.open { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) clamp(360px, 34%, 460px); column-gap: var(--sp-4); align-items: start; }
 .dash-split.open > .agents-home { grid-column: 1; grid-row: 1; }
 .dash-split.open > .dash-focus { grid-column: 2; grid-row: 1; }

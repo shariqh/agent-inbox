@@ -199,7 +199,8 @@ No portal or duplicate action component is permitted.
 - **1280px and wider:** fixed project library, resizable queue/inspector split,
   the lane chips on one row; with the session panel closed, Working cards three a row
   at 1440px and two at 1280px; an open session panel splits the lanes: lanes left,
-  panel right, nothing covered.
+  panel right, nothing covered, with one Working card a row beside it up to about
+  1485px wide and two above, and each Quiet row on two lines.
 - **900–1279px:** compact masthead, inline queue detail; the lane chips wrap
   before they shrink; two Working cards a row, and the session panel inline under
   its card or Quiet row.

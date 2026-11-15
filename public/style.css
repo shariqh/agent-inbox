@@ -2328,8 +2328,10 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .qt-row .sc-when::before { content: none; }
 .qt-row .sc-asking { align-self: center; }
 .qt-act { display: flex; min-width: 0; justify-content: flex-end; }
-.qt-act .sc-actions { flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-1) var(--sp-2); }
-.qt-act .sc-action { white-space: normal; text-align: end; }
+/* the card's `flex: none` would hold the group and each action at one line's
+   width and spill them over Since; here they shrink, so the wrap takes effect */
+.qt-act .sc-actions { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-1) var(--sp-2); }
+.qt-act .sc-action { flex: 0 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: end; }
 
 @container operations-desk (max-width: 900px) {
   /* Compact desk: a 24px lane header and a 40px gap between lanes (§4). */
@@ -2344,7 +2346,8 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .ny-head > h2 { flex-basis: 100%; }
   /* §3.4: each Quiet row on two lines, with no header; a row's own template, not the table's */
   .qt-head { display: none; }
-  .qt-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, auto); grid-template-areas: "state session since" "branch caption act"; row-gap: var(--sp-1); }
+  /* a bounded third track: an auto one grew to Since's and the actions' one-line width first */
+  .qt-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr); grid-template-areas: "state session since" "branch caption act"; row-gap: var(--sp-1); }
   .qt-state { grid-area: state; }
   .qt-session { grid-area: session; }
   .qt-since { grid-area: since; }

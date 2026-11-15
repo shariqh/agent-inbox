@@ -297,6 +297,9 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
     expect(body('.qt-row .sc-doing')).toMatch(/white-space: nowrap;/)
     expect(body('.qt-row .sc-when::before')).toMatch(/content: none;/)
     expect(body('.qt-act .sc-actions')).toMatch(/flex-wrap: wrap;/)
+    // the card's `flex: none` is overridden, or the group holds one line's width and spills over Since
+    expect(body('.qt-act .sc-actions')).toMatch(/flex: 0 1 auto; min-width: 0;/)
+    expect(body('.qt-act .sc-action')).toMatch(/flex: 0 1 auto; min-width: 0; white-space: normal;/)
   })
 
   it('give a Quiet row the card’s tones and its hollow dot for an idle state', () => {
@@ -311,7 +314,9 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
     expect(body('.qt-head', sheet)).toMatch(/display: none;/)
     const row = body('.qt-row', sheet)
     expect(row).toMatch(/grid-template-areas: "state session since" "branch caption act";/)
-    expect(row).toMatch(/grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1\.5fr\) minmax\(0, auto\);/)
+    // every track bounded: an auto third track took Since's and the actions' one-line width first
+    expect(row).toMatch(/grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1\.5fr\) minmax\(0, 1fr\);/)
+    expect(row).not.toMatch(/auto/)
     for (const [cell, area] of [['qt-state', 'state'], ['qt-session', 'session'], ['qt-since', 'since'], ['qt-branch', 'branch'], ['qt-caption', 'caption'], ['qt-act', 'act']]) {
       expect(body(`.${cell}`, sheet), cell).toMatch(new RegExp(`grid-area: ${area};`))
     }

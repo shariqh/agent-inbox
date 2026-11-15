@@ -43,6 +43,19 @@ export const RESUME_LABEL: 'Resume'
 export const RESUME_BUSY_LABEL: string
 export function resumeTerminalControl(chat: Chat, terminal: unknown): { enabled: boolean; title: string; ariaLabel: string | null }
 export function resumeOutcome(result: unknown): { label: string | null; note: string | null; refresh: boolean }
+export const CONTINUE_LABEL: 'Continue here…'
+export const SHOW_SESSION_LABEL: 'Show session'
+export const HERE_TEXT: '· here'
+export const CHECKING_TEXT: string
+export const SESSIONS_UNREAD_TEXT: string
+/** The launch fields the Chats tab reads, as /api/launches serves them. */
+export interface ChatLaunchRow { id: string; chat_id?: string | null; status?: string; end_reason?: string | null; resumable?: boolean; created_at?: string }
+export function continueControl(chat: Chat): { enabled: boolean; title: string } | null
+export function chatLaunch<T extends ChatLaunchRow>(launches: readonly T[] | null | undefined, chatId: string): T | null
+export function drivenView(launch: ChatLaunchRow | null): {
+  show: string | null; here: boolean; title: string | null; hereTitle: string | null; offTitle: string | null
+}
+export function continueOutcome(result: unknown): { note: string | null; refresh: boolean }
 export function toolLabel(tool: string): string
 export function hiddenLabel(reason: string): string
 export function titleView(chat: Pick<Chat, 'title' | 'titleAuto'>): { text: string; quiet: boolean; title: string | null }

@@ -216,6 +216,34 @@ DOM but becomes a full-viewport fixed surface. It has:
 
 No portal or duplicate action component is permitted.
 
+## Chats
+
+A row's Actions cell holds, in order: **Resume** (the desktop app only), **Copy resume**,
+and on a Copilot row in the window that may start sessions, with the driven-sessions switch
+on, **Continue here…**. The three are told apart by verb and title: Copy resume copies a
+command, Resume opens your terminal, and Continue here… keeps the chat in this window; its
+ellipsis says a dialog follows. Claude Code rows get no Continue here…, so a row never carries
+a control that is always off. In the wide table the three stay on one line and a row is one
+line tall; below 620px they wrap on the row's second line, spaced with `--sp-2`. A control
+that cannot act is `aria-disabled` with the reason in its title, so the reason stays
+reachable by focus. Main's answer, a refusal or a notice, goes in one quiet line under the
+controls.
+
+A chat a session of this app holds (running, parked, or stopped with its session) offers
+**Show session** in place of Continue here…, which opens that session's panel on the
+Dashboard; Copy resume and Resume are off beside it ("This chat has a session here: use Show
+session, then Take over."). While that session runs, the Live cell reads "Live · here" in the
+agent color. The session panel of a continued chat says "Continued from a Copilot chat
+(1a2b3c4d)", linked to the Chats tab.
+
+The **Continue in Agent Inbox** dialog is New session's dialog in miniature: the chat's title
+and folder as plain text, the mode (Ask for everything, the default, or Read-only, with New
+session's copy), and a required Message with the don't-paste-secrets hint. Continue stays off
+until there is a message. After Continue the dialog stays, saying each step of the start, as
+New session's does, and Cancel becomes Stop starting; main's own confirmation is the consent.
+A refusal shows main's text in the dialog; Cancel in main's confirmation returns to the dialog
+with the message kept. Escape and Cancel close it and return focus to the row's control.
+
 ## Responsive Contract
 
 - **1280px and wider:** fixed project library, resizable queue/inspector split,

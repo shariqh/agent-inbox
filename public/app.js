@@ -719,6 +719,19 @@ const chatsView = installChatsView({
   now: () => Date.now(),
   // #586 PR 3: Resume in Terminal, only where the desktop app's preload exposes it
   resume: () => window.agentInboxChats ?? null,
+  // #586 phase 2: Continue here… and Show session, only in the window main grants launches, with
+  // the driven-sessions switch on; with it off this asks nothing that reads, and draws nothing
+  drive: () => (launchUi ? {
+    available: async () => {
+      await launchUi.refresh()
+      return launchUi.granted()
+    },
+    granted: () => launchUi.granted(),
+    launchesFailed: () => lastData?.launchesFailed === true,
+    launches: () => (launchesOn() ? lastData?.launches ?? null : null),
+    continueChat: (chat, hooks) => launchUi.openContinueChat(chat, hooks),
+    showSession: (id) => openSessionFocus(`launch:${id}`),
+  } : null),
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
@@ -748,6 +761,12 @@ function launchesOn() {
   return launchUi?.on() === true
 }
 
+// #586 phase 2: a failed launches read is a frame input, so the Chats tab can say it could not
+// read them; a tick that read none (the switch off) is never one, so an idle tick stays idle
+function launchesReadFailed(read, launches) {
+  return read && !Array.isArray(launches)
+}
+
 async function load() {
   if (reloadRequested) return false
   const generation = ++loadGeneration
@@ -769,6 +788,8 @@ async function load() {
   const lingerUrl = wantArchived ? null : lingeringUrl()
   const historyUrl = activityHistoryUrl(Date.now())
   const wantMesh = meshReadable()
+  // #586 phase 2: decided once per tick, so a switch answered mid-tick is never taken for a failed read
+  const wantLaunches = launchesOn()
   const runsUrl = meshRunsUrl()
   const runsKey = meshAgentPage.current()?.key ?? null
   try {
@@ -804,7 +825,7 @@ async function load() {
       readSnapshot('/api/messages').then(marked),
       // Driven sessions (#412 step 3): read only in the viewer the app owns, with
       // its switch on (§9 b). Off, the tick makes exactly the reads it always made.
-      launchesOn() ? readSnapshot('/api/launches').then(marked) : null,
+      wantLaunches ? readSnapshot('/api/launches').then(marked) : null,
       // The Mesh agents section: only while it can show (meshReadable), with
       // the messages fallback. Off, the tick makes exactly the reads it made.
       wantMesh ? readSnapshot('/api/mesh/agents').then(marked) : null,
@@ -831,7 +852,7 @@ async function load() {
       wantHistory ? closedHistoryBody(closedHistoryRead) : null, issuesBody(issuesRead), linksBody(linksRead),
       wantArchived ? archivedBody(archivedRead) : null, lingerUrl ? lingeringBody(lingerSettled) : null,
       messagesBody(messagesRead),
-      launchesOn() ? messagesBody(launchesRead) : null,
+      wantLaunches ? messagesBody(launchesRead) : null,
       wantMesh ? meshBody(meshRead) : null,
       runsUrl ? meshBody(runsRead) : null,
     ])
@@ -939,6 +960,8 @@ async function load() {
       messages,
       // #412 step 3: null with the switch off, or when the read failed
       launches: Array.isArray(launches) ? launches : null,
+      // #586 phase 2: whether this tick read the launches and could not (never with the switch off)
+      launchesFailed: launchesReadFailed(wantLaunches, launches),
       // the Mesh agents section's last body and whether the last read of it failed
       mesh,
       // Run history's last body, the agent it was read for, and whether the last read failed
@@ -953,7 +976,7 @@ async function load() {
         activityHistory.state, activityHistory.message, activityHistory.state === 'ready' ? activityHistory.spans : null,
         links.length ? links : null, issues, older?.done ?? null, older?.error ?? null,
         complete?.plans ?? null, complete?.error ?? null, lingerReadUrl, linger?.plans ?? null, linger?.error ?? null,
-        messages, launches ?? null, mesh.body, mesh.stale, runs?.key ?? null, runs?.body ?? null, runs?.stale ?? null,
+        messages, launches ?? null, launchesReadFailed(wantLaunches, launches), mesh.body, mesh.stale, runs?.key ?? null, runs?.body ?? null, runs?.stale ?? null,
       ],
     }
     applyProjectMutationIntents()
@@ -2434,6 +2457,7 @@ function dashFocusEl() {
         <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close">×</button>
       </div>
       <p class="dash-focus-meta"></p>
+      <p class="sp-chat" hidden></p>
       <p class="sp-hint" hidden></p>
     </div>
     <div class="sp-actions" role="group" aria-label="Session actions" hidden></div>
@@ -6572,6 +6596,10 @@ function initLaunches() {
     forgotten: (id) => { if (focusSession === `launch:${id}`) closeSessionFocus() },
     // a session started outside the lens would have no card: scope the lens to it
     started: (id) => { if (scopeToLaunch(id)) forceRender() },
+    // #586 phase 2: a continued chat's session, once started, opens as Show session opens it
+    showLaunch: (id) => openSessionFocus(`launch:${id}`),
+    // the session panel's "Continued from a Copilot chat" line
+    openChats: () => selectTab('chats'),
     pending: (action) => withPendingResponse(action),
   })
   // a changed answer is drawn by the next tick, which reads the launches once on

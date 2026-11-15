@@ -1,7 +1,8 @@
 // public/chats.js
 // The Chats tab's pure model (#586 PR 2): reading the /api/chats body, the sort,
 // search and filters, the home folder shown as ~, the labels, the fetch rule and
-// the resume command, and (PR 3) the Resume in Terminal control and its outcome.
+// the resume command, (PR 3) the Resume in Terminal control and its outcome, and
+// (#586 phase 2) Continue here…'s eligibility and a chat's link to a launch of this app.
 // No DOM, clock or fetch; public/chats-view.js paints it.
 // Every chat string here is untrusted text: the view sets it as textContent only.
 
@@ -27,6 +28,29 @@ const RESUME_REFRESH = new Set(['live', 'folder', 'missing', 'opened'])
 
 export const RESUME_LABEL = 'Resume'
 export const RESUME_BUSY_LABEL = 'Opening…'
+
+// #586 phase 2 (design §3.1, §3.5): Continue here… on a Copilot row, and Show session for a chat
+// one of this app's launches holds
+export const CONTINUE_LABEL = 'Continue here…'
+export const SHOW_SESSION_LABEL = 'Show session'
+export const HERE_TEXT = '· here'
+const CONTINUE_TITLE = 'Continue this chat in Agent Inbox, as a session it drives'
+const CONTINUE_OFF = Object.freeze({
+  live: 'This chat is live in another process, so it is not continued a second time.',
+  'folder-gone': 'Its folder no longer exists.',
+  empty: 'Nothing was ever said in this chat.',
+  'non-interactive': 'This was not an interactive chat.',
+  invalid: 'This chat can’t be continued here.',
+})
+// #586 phase 2 review: until the launches are first read, a Copilot chat may be one a session here
+// holds, so nothing is copied or opened for it yet; and if they cannot be read, the tab says so
+export const CHECKING_TEXT = 'Checking for a session here…'
+export const SESSIONS_UNREAD_TEXT = 'Agent Inbox could not read its sessions, so Continue here… is not offered.'
+const DRIVEN_HERE = 'This chat has a session here: use Show session, then Take over.'
+const SHOW_SESSION_TITLE = 'Open the session Agent Inbox drives for this chat'
+const HERE_TITLE = 'Agent Inbox is driving this chat now'
+// main's refusals after which the list is read again (§3.5): the row's off state may have changed
+const CONTINUE_REFRESH = new Set(['live', 'driven', 'folder', 'missing'])
 
 /** Whether a location hash is the Chats tab's deep link. */
 export function isChatsHash(hash) {
@@ -194,6 +218,72 @@ export function resumeOutcome(result) {
   }
   const error = typeof result?.error === 'string' && result.error ? result.error : RESUME_FAILED
   return { label: null, note: error, refresh: RESUME_REFRESH.has(result?.reason) }
+}
+
+/**
+ * #586 phase 2 (§3.1): the Continue here… control, or null for a row that gets none (only Copilot
+ * chats can be continued). Off, with the reason as its title, for a live chat, a folder that is
+ * gone (or none recorded), a chat with nothing said, one that was not interactive, or an id that
+ * is not the index's UUID. Main checks every rule again, and more.
+ */
+export function continueControl(chat) {
+  if (chat.tool !== 'copilot') return null
+  const off = (reason) => ({ enabled: false, title: CONTINUE_OFF[reason] })
+  if (typeof chat.id !== 'string' || !UUID.test(chat.id)) return off('invalid')
+  if (chat.live) return off('live')
+  if (!chat.cwd || chat.hidden.includes('folder-gone')) return off('folder-gone')
+  if (chat.hidden.includes('empty')) return off('empty')
+  if (chat.hidden.includes('non-interactive')) return off('non-interactive')
+  return { enabled: true, title: CONTINUE_TITLE }
+}
+
+/**
+ * #586 phase 2 (§3.6): whether a launch holds its chat, so the chat is not continued or resumed
+ * elsewhere: running or parked, or ended by a Stop (or a budget) with its session kept. Main's
+ * own check (holdsChat in electron/chat-resume.cjs) is the authority; this only draws the row.
+ */
+function launchHoldsChat(launch) {
+  if (!launch || typeof launch !== 'object') return false
+  if (launch.status !== 'ended') return true
+  const kept = launch.end_reason === 'stopped' || /^budget:/.test(String(launch.end_reason))
+  return kept && launch.resumable === true
+}
+
+/**
+ * #586 phase 2 (§3.6): this chat's launch among the launches the page holds, by `chat_id`: the one
+ * that holds the chat first, then the newest. Null when none names the chat, or the list is not read.
+ */
+export function chatLaunch(launches, chatId) {
+  if (!Array.isArray(launches) || typeof chatId !== 'string') return null
+  let best = null
+  for (const launch of launches) {
+    if (!launch || typeof launch !== 'object' || launch.chat_id !== chatId || typeof launch.id !== 'string') continue
+    if (!best) { best = launch; continue }
+    const held = launchHoldsChat(launch)
+    const bestHeld = launchHoldsChat(best)
+    if (held !== bestHeld ? held : String(launch.created_at ?? '') > String(best.created_at ?? '')) best = launch
+  }
+  return best
+}
+
+/**
+ * #586 phase 2 (§3.5): what a chat's launch changes on its row. `show` is the launch id Show session
+ * opens (it replaces Continue here…, and Copy resume and Resume are off beside it); `here` is the
+ * Live cell's "· here", for a running launch. A launch that no longer holds the chat changes nothing.
+ */
+export function drivenView(launch) {
+  if (!launchHoldsChat(launch)) return { show: null, here: false, title: null, hereTitle: null, offTitle: null }
+  return { show: launch.id, here: launch.status === 'running', title: SHOW_SESSION_TITLE, hereTitle: HERE_TITLE, offTitle: DRIVEN_HERE }
+}
+
+/**
+ * #586 phase 2: what the row shows after main answered Continue here…: main's text for the row's
+ * note (none for a start or a cancelled confirmation), and whether to read the list again.
+ */
+export function continueOutcome(result) {
+  if (result?.ok === true || result?.cancelled === true) return { note: null, refresh: false }
+  const error = typeof result?.error === 'string' && result.error ? result.error : 'This chat was not continued.'
+  return { note: error, refresh: CONTINUE_REFRESH.has(result?.reason) }
 }
 
 export function toolLabel(tool) {

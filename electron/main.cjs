@@ -688,6 +688,8 @@ const chatResumeFor = () => (chatResume ??= createChatResume({
   scriptDir: path.join(path.dirname(launchHubPath()), 'chat-resume'),
   // #586 phase 2: with the driven-sessions switch on, a chat driven here is refused
   isEnabled: () => launchEnabled === true,
+  // ...and so is one Continue here… is starting now (no controller made means none is)
+  isContinuing: (id) => launchController !== null && launchController.isContinuing(id) === true,
 }))
 registerChatResumeIpc({
   ipcMain,

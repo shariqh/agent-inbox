@@ -13,6 +13,8 @@ export interface LaunchController {
   start(request: unknown): Promise<LaunchResult>
   /** #586 phase 2: Continue here… on a Copilot CLI chat; refusals carry their `reason` */
   continueChat(request: unknown): Promise<LaunchResult>
+  /** #586 phase 2: whether Continue here… is starting this chat now */
+  isContinuing(id: unknown): boolean
   resume(id: unknown): Promise<LaunchResult>
   /** #451: resume a budget-ended launch after main's own confirmation of the allowance */
   resumeWithBudget(request: unknown): Promise<LaunchResult>

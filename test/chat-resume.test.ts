@@ -191,6 +191,7 @@ interface RigOptions {
   // #586 phase 2: the driven-sessions switch (left out: the handler's default), and the one-chat route's answer
   isEnabled?: () => boolean
   lookup?: unknown
+  isContinuing?: (id: string) => boolean
 }
 
 const DIR = '/Users/tester/.agent-inbox/chat-resume'
@@ -199,7 +200,7 @@ function chatEntry(over: Record<string, unknown> = {}) {
   return { id: ID, tool: 'claude', cwd: FOLDER, live: false, hidden: [], ...over }
 }
 
-function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal', platform = 'darwin', run, writeScript, isEnabled, lookup = null }: RigOptions = {}) {
+function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal', platform = 'darwin', run, writeScript, isEnabled, lookup = null, isContinuing }: RigOptions = {}) {
   const state = { quitting: false, clock: 1_000_000, terminal, chats, lookup }
   const routes: string[] = []
   const runs: string[][] = []
@@ -226,6 +227,7 @@ function rig({ chats = [chatEntry()], folders = [FOLDER], terminal = 'terminal',
     },
     scriptDir: DIR,
     ...(isEnabled ? { isEnabled } : {}),
+    ...(isContinuing ? { isContinuing } : {}),
     writeScript: writeScript ?? ((dir, name, text) => { written.push([dir, name, text]); return join(dir, name) }),
     now: () => state.clock,
     random: () => (n++).toString(16).padStart(16, '0'),
@@ -435,6 +437,33 @@ describe('Resume in Terminal beside driven sessions (#586 phase 2)', () => {
     expect(claude.routes).toEqual(['/api/chats'])
   })
 
+  it('with the switch on, refuses a Copilot chat Continue here… is starting, before any read, and opens it once that ends (review)', async () => {
+    let starting = true
+    const asked: string[] = []
+    const isContinuing = (id: string) => { asked.push(id); return starting }
+    const r = rig({ chats: copilot(), isEnabled: () => true, isContinuing, lookup: { chat: chatEntry({ tool: 'copilot' }), launch: null } })
+    expect(await r.handler.resume({ tool: 'copilot', id: ID })).toEqual({ ok: false, reason: 'busy', error: 'This chat is already starting.' })
+    expect([r.routes, r.runs, r.written]).toEqual([[], [], []])
+    expect(asked).toEqual([ID])
+    starting = false
+    expect(await r.handler.resume({ tool: 'copilot', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
+    expect(r.routes).toEqual(['/api/chats', LOOKUP])
+    // a Claude chat is never one being continued
+    const claude = rig({ isEnabled: () => true, isContinuing: () => { throw new Error('asked for Claude') } })
+    expect(await claude.handler.resume({ tool: 'claude', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
+    // the bridge passes the refusal on as it came
+    expect(await loadPreload(() => ({ ok: false, reason: 'busy', error: 'This chat is already starting.' })).chats.resume({ tool: 'copilot', id: ID }))
+      .toEqual({ ok: false, reason: 'busy', error: 'This chat is already starting.' })
+  })
+
+  it('with the switch off, never asks whether a chat is being continued (review)', async () => {
+    const isContinuing = vi.fn(() => true)
+    const r = rig({ chats: copilot(), isEnabled: () => false, isContinuing })
+    expect(await r.handler.resume({ tool: 'copilot', id: ID })).toEqual({ ok: true, terminal: 'terminal' })
+    expect(isContinuing).not.toHaveBeenCalled()
+    expect(r.routes).toEqual(['/api/chats'])
+  })
+
   it('reads the switch on every resume', async () => {
     let on = false
     const r = rig({ chats: copilot(), isEnabled: () => on, lookup: { chat: chatEntry({ tool: 'copilot' }), launch: { status: 'running' } } })
@@ -460,7 +489,10 @@ describe('Resume in Terminal beside driven sessions (#586 phase 2)', () => {
   ]
   it.each(cases)('with the switch off, %s gets phase 1’s result and no new read', async (_, options, request) => {
     const before = rig(options as RigOptions)
-    const off = rig({ ...(options as RigOptions), isEnabled: () => false, lookup: () => { throw new Error('read with the switch off') } })
+    const off = rig({
+      ...(options as RigOptions), isEnabled: () => false,
+      lookup: () => { throw new Error('read with the switch off') }, isContinuing: () => { throw new Error('asked with the switch off') },
+    })
     const expected = await before.handler.resume(request)
     expect(await off.handler.resume(request)).toEqual(expected)
     expect(off.routes).toEqual(before.routes)
@@ -559,6 +591,7 @@ describe('main’s wiring (source)', () => {
     expect(made).toContain("scriptDir: path.join(path.dirname(launchHubPath()), 'chat-resume'),")
     // #586 phase 2: the driven-sessions switch as main holds it, read on each resume
     expect(made).toContain('isEnabled: () => launchEnabled === true,')
+    expect(made).toContain('isContinuing: (id) => launchController !== null && launchController.isContinuing(id) === true,')
     // one runner, so both callers share its env and its 10 s timeout
     expect(main.match(/execFile\(command\.file, command\.args, \{ env: \{ PATH: '\/usr\/bin:\/bin' \}, timeout: 10_000 \}/g)).toHaveLength(1)
     expect(main).toContain('run: runTerminalCommand,')

@@ -1215,6 +1215,11 @@ function createLaunchController(deps) {
       for (const launch of launches) await viewer.postJson(`/api/launches/${launch.id}/stop`).catch(() => null)
     },
 
+    /** #586 phase 2: whether Continue here… is starting this chat now (Resume in Terminal asks). */
+    isContinuing(id) {
+      return typeof id === 'string' && continuing.has(id)
+    },
+
     /** The launch gate (§7): once a quit begins, no start or resume spawns anything. */
     beginQuit() {
       quitting = true

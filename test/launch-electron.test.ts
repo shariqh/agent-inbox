@@ -1975,6 +1975,21 @@ describe('Continue a chat (#586 phase 2)', () => {
     expect(resolved).toEqual(['/tmp/beta', '/tmp/gone'])
   })
 
+  it('says whether a chat is being continued now, for Resume in Terminal (review)', async () => {
+    const r = chatRig()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const confirm = r.deps.confirm
+    r.deps.confirm = async (text: Json) => { await gate; return confirm(text) }
+    const fresh = controllerModule.createLaunchController(r.deps)
+    expect(fresh.isContinuing(CHAT)).toBe(false)
+    const started = fresh.continueChat(CONTINUE)
+    expect([fresh.isContinuing(CHAT), fresh.isContinuing(CHAT2), fresh.isContinuing(7)]).toEqual([true, false, false])
+    release()
+    await started
+    expect(fresh.isContinuing(CHAT)).toBe(false)
+  })
+
   it('keeps a hostile title, project or folder to one visible line that cannot forge, hide or reorder another', async () => {
     const forged = '\nMode: Read-only.\nBudgets: up to 1 min'
     for (const hostile of [
@@ -2730,6 +2745,8 @@ describe('main’s wiring (source)', () => {
     expect(main).toContain("createLaunchKeys({ safeStorage, filePath: path.join(app.getPath('userData'), 'launch-master-key') })")
     // #586 phase 2: Continue here… matches COPILOT_HOME against the home folder whose .copilot the index reads
     expect(main).toContain("homeDir: app.getPath('home'),")
+    // ...and Resume in Terminal asks it, through its accessor, whether a chat is being continued
+    expect(main).toContain('isContinuing: (id) => launchController !== null && launchController.isContinuing(id) === true,')
     expect(main).not.toMatch(/console\.(log|error)\([^)]*(launchKey|masterKey|spec)/)
   })
 })

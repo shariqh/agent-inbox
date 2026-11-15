@@ -40,6 +40,8 @@ export function createChatResume(deps: {
   scriptDir: string
   /** #586 phase 2: the driven-sessions switch; off when left out */
   isEnabled?: () => boolean
+  /** #586 phase 2: whether Continue here… is starting this chat; asked only with the switch on */
+  isContinuing?: (id: string) => boolean
   writeScript?: (dir: string, name: string, text: string) => string | null
   now?: () => number
   random?: () => string

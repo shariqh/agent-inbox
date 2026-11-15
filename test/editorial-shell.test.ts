@@ -232,19 +232,35 @@ describe('the session panel placement (#307, #454)', () => {
   const desktop = css.slice(0, css.indexOf('@media (max-width: 1279px)'))
   const rule = (sheet: string) => sheet.match(/(?:^|\n)\s*\.dash-focus\s*\{([^}]*)\}/)?.[1] ?? ''
 
-  it('is a sheet over the Dashboard grid on a desktop, mounted in the grid where no lens can hide it', () => {
-    expect(desktop).toMatch(/\.dashboard-grid\s*\{\s*position:\s*relative;\s*\}/)
-    expect(rule(desktop)).toMatch(/position:\s*absolute;/)
-    expect(rule(desktop)).toMatch(/width:\s*min\(620px, calc\(100% - 24px\)\);/)
-    expect(rule(desktop)).not.toMatch(/position:\s*fixed/)
-    expect(app).toMatch(/grid\.appendChild\(dashFocusEl\(\)\)/)
+  // dashboard lanes design §3.6 (PR 5): beside the lanes, never a sheet over them
+  it('sits beside the lanes in a split on a desktop, mounted in the split where no lens can hide it', () => {
+    expect(app).toMatch(/split\.append\(agentsHome\.element\(\), dashFocusEl\(\)\)/)
+    // closed, the split is no box, so the lanes keep the full width
+    expect(desktop).toMatch(/\.dash-split \{ display: contents; \}/)
+    // the sheet's containing block is gone with the sheet
+    expect(desktop).not.toMatch(/\.dashboard-grid\s*\{\s*position:\s*relative;\s*\}/)
+    const panel = rule(desktop)
+    expect(panel).toMatch(/position: sticky;/)
+    expect(panel).toMatch(/top: 116px;/)
+    expect(panel).toMatch(/max-height: calc\(100vh - 116px - var\(--sp-4\)\);/)
+    expect(panel).not.toMatch(/position:\s*(absolute|fixed)|z-index|box-shadow|width:/)
+    expect(desktop).toMatch(/\.dash-split\.open \{ display: grid; grid-column: 1 \/ -1; grid-template-columns: minmax\(0, 1fr\) clamp\(360px, 34%, 460px\); column-gap: var\(--sp-4\); align-items: start; \}/)
+    expect(desktop).toMatch(/\.dash-split\.open > \.agents-home \{ grid-column: 1; grid-row: 1; \}/)
+    expect(desktop).toMatch(/\.dash-split\.open > \.dash-focus \{ grid-column: 2; grid-row: 1; \}/)
+    // held inline by focus across a resize, it lays out as the narrow panel, not as a card cell
+    expect(desktop).toMatch(/:is\(\.ah-cards, \.qt-rows\) > \.dash-focus \{ position: static; grid-column: 1 \/ -1; max-height: none; \}/)
+    // no new motion: the one-shot entrance only
+    expect(panel).toMatch(/animation: dash-focus-in var\(--motion-moderate\) var\(--motion-ease-out\) 1;/)
+    expect(css).not.toMatch(/\n[^{}\n]*\.dash-split[^{}\n]*\{[^}]*(transition|animation)/)
   })
 
   it('joins the flow after the list under 1280px, never over the masthead', () => {
     const narrow = rule(compact)
     expect(narrow).toMatch(/position:\s*static;/)
     expect(narrow).toMatch(/max-height:\s*none;/)
-    expect(narrow).toMatch(/z-index:\s*auto;/)
+    expect(narrow).not.toMatch(/z-index/)
+    // the split never turns on there (app.js syncSplit), so no compact rule needs it
+    expect(compact.slice(0, compact.indexOf('\n}'))).not.toMatch(/\.dash-split/)
   })
 })
 
@@ -311,7 +327,10 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
   })
 
   it('put a Quiet row on two lines below 900px, on its own template, with no header', () => {
-    const narrow = block('@container operations-desk (max-width: 900px) {')
+    // keyed on the lanes' own width (§3.6): narrower than the Dashboard beside an open session panel
+    expect(body('.agents-home')).toMatch(/container: dash-lanes \/ inline-size;/)
+    expect(block('@container operations-desk (max-width: 900px) {')).not.toMatch(/\.qt-/)
+    const narrow = block('@container dash-lanes (max-width: 900px) {')
     const sheet = [...narrow.matchAll(/\n\s*([^{}\n]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
     expect(body('.qt-head', sheet)).toMatch(/display: none;/)
     const row = body('.qt-row', sheet)

@@ -458,6 +458,9 @@ handleLinkSettings('agent-inbox:link-settings-set', 2, (settings, ruleId, handle
 handleLinkSettings('agent-inbox:link-settings-choose-app', 1, (settings, ruleId) => settings.chooseApp(ruleId))
 handleLinkSettings('agent-inbox:link-settings-add-type', 1, (settings, extension) => settings.addType(extension))
 handleLinkSettings('agent-inbox:link-settings-remove-type', 1, (settings, ruleId) => settings.removeType(ruleId))
+// #586: which terminal the launchers open; the renderer names an id off a fixed list, which is checked again here
+handleLinkSettings('agent-inbox:terminal-setting', 0, (settings) => settings.terminal())
+handleLinkSettings('agent-inbox:terminal-setting-set', 1, (settings, id) => settings.setTerminal(id))
 
 ipcMain.handle('agent-inbox:set-theme-preference', (event, preference) => {
   const senderUrl = event.senderFrame?.url ?? ''

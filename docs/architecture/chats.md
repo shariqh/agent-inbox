@@ -167,6 +167,7 @@ In the desktop app's own viewer window on macOS, each row gets **Resume** before
 | `invalid` | a bad request; or a folder the script cannot quote (a control or line-break character) | This chat can’t be resumed. |
 | `quitting` | a quit has begun | Agent Inbox is quitting, so nothing was opened. |
 | `busy` | another resume is in flight (one at a time) | Another chat is opening. Try again in a moment. |
+| `busy` | switch on, Copilot only, before any read: Continue here… is starting this chat now | This chat is already starting. |
 | `index` | the index could not be read (with the switch on, for Copilot, also the one-chat route) | Agent Inbox could not read the chat list. |
 | `missing` | the index does not list that tool and id | This chat is no longer listed. |
 | `driven` | switch on, Copilot only: the one-chat route's launch holds the chat (running, parked, or stopped with its session) | This chat has a session here: use Show session, then Take over. |
@@ -205,7 +206,7 @@ Copilot's line is `exec copilot --resume=<id>`. The folder is single-quoted with
 
 **No driven-sessions switch.** Resume is the person opening their own terminal with the tool's own interactive command, like typing the copied command. Agent Inbox does not drive, approve for or message that session, so it needs neither the switch nor the `launch` grant (#412), and it shows no confirmation dialog.
 
-**A chat driven here (#586 phase 2).** With the switch on, main also reads a Copilot chat through `GET /api/chats/copilot/:id` after the list finds it, and refuses it (`driven`) when the answer's launch holds it, so a terminal never opens a second Copilot on a chat a driven session holds, whether or not the ACP host has taken its lock. An unreadable answer is `index`, and a chat the route reads live is `live`. Claude chats read nothing new. With the switch off nothing new is read and every answer is phase 1's (`test/chat-resume.test.ts` replays phase 1's cases with the switch off against a route that would refuse each). The page shows a `driven` refusal in the row's note like any other.
+**A chat driven here (#586 phase 2).** With the switch on, main also reads a Copilot chat through `GET /api/chats/copilot/:id` after the list finds it, and refuses it (`driven`) when the answer's launch holds it, so a terminal never opens a second Copilot on a chat a driven session holds, whether or not the ACP host has taken its lock. An unreadable answer is `index`, and a chat the route reads live is `live`. Before any read, a chat Continue here… is starting now (main's launch controller, `isContinuing`) is `busy` ("This chat is already starting."), since until the driver writes its row the route shows no launch and the chat is not live. Claude chats read nothing new. With the switch off nothing new is read and every answer is phase 1's (`test/chat-resume.test.ts` replays phase 1's cases with the switch off against a route that would refuse each). The page shows a `driven` refusal in the row's note like any other.
 
 ## Not in this PR
 

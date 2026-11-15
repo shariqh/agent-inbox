@@ -89,7 +89,9 @@ page, the refusals and the script are in `chats.md`).
   own terminal, as with the copied command.
 - **Beside driven sessions (#586 phase 2).** With the switch on (main's `launchEnabled`, read on each
   resume), it also reads a Copilot chat through the viewer's `GET /api/chats/copilot/:id` and refuses
-  one a launch of this app holds. With the switch off it reads nothing new.
+  one a launch of this app holds, and, before that read, one Continue here… is starting now
+  (`isContinuing`, the launch controller's read-only accessor; no controller made means none is).
+  With the switch off it reads nothing new and asks nothing.
 
 **Continue a chat here (#586 phase 2).** `agent-inbox:launch-continue-chat` is one more launch
 channel: exactly one argument, behind the `launch` grant like every other launch action, and

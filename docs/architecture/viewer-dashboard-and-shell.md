@@ -191,9 +191,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   then repaints through `reloadAndPaint()`. The section's open state is window-local and joins
   `agentsHome.state()`, so `frameInputs()`. With no `mesh` the page's requests are unchanged and
   no section exists. Nothing it draws reaches attention.
+- The **Chats tab** (#586) sits after History: `data-tab="chats"` in `#tabs`, `'chats'` before
+  `'agent'` in `TAB_IDS`, `G C`, panel `#chats`, no count. `#chats` opens it on boot and on
+  `hashchange`. It reads `/api/chats` itself (never from the poll) and paints only its own
+  panel; `chats.md` has the rules.
 - The **agent tab** (cards view V5c1, design
   `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §3, §4) is one slot after
-  History: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
+  Chats: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
   `#agentPage`, painted by `public/mesh-agent-page.js` from `paintAmbient()` (so from `load()`
   and `reloadAndPaint()` only). It is `hidden` while no agent is open (`.tab[hidden]` beats
   `.tab`'s `display`), and `wireTablist` skips a hidden tab as it skips one in a closed
@@ -564,7 +568,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.
 
-- **Editorial desk shell** — user-facing navigation is Inbox / Plans / Notes / History, while
+- **Editorial desk shell** — user-facing navigation is Inbox / Plans / Notes / History (and Chats, #586), while
   stored ids and API vocabulary remain `needsYou` / `boards` / `done` / `blocked`. The app is
   light-first with a warm canvas, white surfaces, deep rose accent, Segoe UI/Aptos typography,
   restrained borders and no gradients or glow. At 1280px+ `.nrow-card` is CSS-positioned as a

@@ -752,7 +752,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       tab('dashboard')
       await settle()
       await openAgent('request-post')
-      expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(6)
+      expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(7)
       expect([agentTab().querySelector('.tab-name')?.textContent, page().querySelector('.map-name')?.textContent, heading()[1]])
         .toEqual(['request-post', 'request-post', 'request-post'])
       expect(pageLines()).toContainEqual(['Where', 'Remote · https://request-post.tailnet-name.ts.net'])
@@ -794,16 +794,16 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await pollTick()
       expect([activeTab(), document.activeElement]).toEqual(['dashboard', rowButton('unslop')])
 
-      // roving in the library's tablist skips the hidden tab: End lands on History
+      // roving in the library's tablist skips the hidden tab: End lands on Chats (#586)
       const dashboardTab = document.querySelector<HTMLElement>('#tabs .tab[data-tab="dashboard"]')!
       dashboardTab.focus()
       dashboardTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
-      expect(document.activeElement?.getAttribute('data-tab')).toBe('done')
+      expect(document.activeElement?.getAttribute('data-tab')).toBe('chats')
       document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
       expect(document.activeElement?.getAttribute('data-tab')).toBe('dashboard')
 
       // every G destination: none is the agent tab
-      for (const key of ['d', 'i', 'p', 'n', 'h', 'l']) {
+      for (const key of ['d', 'i', 'p', 'n', 'h', 'c', 'l']) {
         ;(document.activeElement as HTMLElement | null)?.blur()
         pressKey('g')
         pressKey(key)

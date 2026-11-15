@@ -35,6 +35,8 @@ import {
   sessionMessages, snapshotHolds, undeliveredMessages, undeliveredReason,
 } from '/messages.js'
 import { captureSelection, restoreSelection } from '/selection.js'
+import { installChatsView } from '/chats-view.js'
+import { isChatsHash } from '/chats.js'
 import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
 import { cardLinks } from '/link-strip.js'
@@ -706,6 +708,14 @@ const meshAgentPage = installMeshAgentPage({
   wireTablist,
   onRefresh: (name) => { meshRefresh(name) },
   onClose: closeMeshAgent,
+})
+
+// The Chats tab (#586): its own read on open, Refresh and Show all, never the poll's
+const chatsView = installChatsView({
+  doc: document,
+  host: () => document.querySelector('#chats .chats'),
+  fetch: (url) => fetch(url),
+  now: () => Date.now(),
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
@@ -1845,6 +1855,11 @@ function renderSearchResults() {
 let bootFocusDone = false
 
 function applyFocusHash() {
+  // #586: #chats opens the Chats tab; the viewer never writes it
+  if (isChatsHash(location.hash)) {
+    selectTab('chats')
+    return
+  }
   const f = parseFocusHash(location.hash)
   if (f) focusItem(f.id)
 }
@@ -3502,6 +3517,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAl
   const restoreQueueView = renderNeedsYou(g, boards, Date.now())
   if (paintAllPanes || !document.getElementById('notes').hidden) renderGroups('notes', g.notes)
   if (paintAllPanes || !document.getElementById('done').hidden) renderDone(g.done)
+  if (paintAllPanes || !document.getElementById('chats').hidden) chatsView.paint()
   for (const board of boards) sessionActiveBoards.add(board.id)
   if (paintAllPanes || !document.getElementById('boards').hidden) renderBoards(boards, archived)
   // renderGroups may have marked visible notes read. Recount only on a full
@@ -3540,6 +3556,7 @@ function frameInputs() {
     triageHeld,
     agentsHome.state(),
     meshAgentPage.state(),
+    chatsView.state(),
     launchUi?.version() ?? null,
   ]
 }
@@ -5291,7 +5308,10 @@ function selectTab(id, { paint = true, open = true } = {}) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
+  // Settings covers the active tab without changing it, so "entered" is the panel showing (#586)
+  const chatsWasHidden = document.getElementById('chats').hidden
   showPanel(id)
+  if (id === 'chats' && chatsWasHidden) chatsView.opened()
   if (paint) {
     forceRender()
     requestHistoryPaint()
@@ -5334,6 +5354,7 @@ const PAGE_META = {
   boards: { kicker: 'Workspace', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
   done: { kicker: 'Workspace', title: 'History' },
+  chats: { kicker: 'Workspace', title: 'Chats' },
   // the title is the open agent's name
   agent: { kicker: 'Mesh agent', title: '' },
   setup: { kicker: 'Agent Inbox', title: 'Settings' },

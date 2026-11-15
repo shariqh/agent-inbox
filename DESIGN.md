@@ -80,6 +80,7 @@ The primary navigation order is:
 3. Plans
 4. Notes
 5. History
+6. Chats
 
 Dashboard is the cold-launch view. It monitors real current state and truthful local
 claim history. Inbox remains the focused action queue. History is an outcome ledger

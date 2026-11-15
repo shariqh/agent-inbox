@@ -2,12 +2,14 @@
 paths:
   - "src/chat-index.ts"
   - "src/chat-parse.ts"
-applyTo: "src/chat-index.ts,src/chat-parse.ts"
+  - "public/chats.js"
+  - "public/chats-view.js"
+applyTo: "src/chat-index.ts,src/chat-parse.ts,public/chats.js,public/chats-view.js"
 ---
 
-# Chat index and `GET /api/chats` (#586)
+# Chat index, `GET /api/chats` and the Chats tab (#586)
 
-PR 1 of the chat directory: the viewer server lists the Claude Code and Copilot CLI chats on this Mac from their metadata. It has no UI. The Chats tab, Resume in Terminal, the terminal setting and the copy-resume-command button come in later PRs and build on this API.
+PR 1 of the chat directory: the viewer server lists the Claude Code and Copilot CLI chats on this Mac from their metadata. PR 2 adds the Chats tab, which lists them with a copy-resume-command control ([Chats tab](#chats-tab-pr-2)). Resume in Terminal and the terminal setting come in a later PR and build on this API.
 
 Both modules are **viewer process only**. `src/chat-parse.ts` is pure (no import, clock, process or disk, pinned by `test/chat-parse.test.ts`). `src/chat-index.ts` holds the file reads, the cache, liveness and the response body. Neither may enter the stdio MCP import graph (`test/prstate.test.ts`).
 
@@ -117,6 +119,30 @@ Decisions beyond the issue's two reasons (temp, non-interactive), made while bui
 
 31 Claude transcripts and 1,512 Copilot folders; the default list shows 71 of the 1,543 chats (11 Claude, 60 Copilot). Hidden, some overlapping: 26 `temp`, 26 `non-interactive`, 254 `empty` and 1,211 `folder-gone` (8 Claude, 1,203 Copilot). A cold read took about 0.4 seconds and a warm read 20 to 25 milliseconds, taken with the machine under ordinary load (an earlier read, before `folder-gone`, opened 1,574 files and read about 5 MB in 0.65 to 0.9 seconds under heavy load). Nothing was truncated.
 
+## Chats tab (PR 2)
+
+A tab after History (`G C`, `#chats`) lists the chats as a table. `public/chats.js` is the pure model (reading the body, sort, search, filters, the home folder, labels, the fetch rule and the resume command); `public/chats-view.js` is the DOM; `app.js` only wires them.
+
+**Reads.** `/api/chats` is read when the panel is entered from another tab or from Settings and no list is loaded or the last one is over 60 seconds old, and on Refresh, Retry and either change of Show all. Re-selecting the open tab reads nothing. `load()` and the 3 s poll never read it. Each read takes a sequence number and only the newest is applied, so turning Show all on or off mid-read never shows the other set. A failed read keeps the last list ("Couldn't refresh chats (500). Showing the last list.") with Retry; with no list it says "Couldn't load chats (500)." Refresh is `aria-disabled` while a read runs, so a focused button keeps focus.
+
+**Painting.** The view repaints `#chats` alone. `render()` calls its `paint()` from `paintEditableSurfaces` while the panel shows (or on a full frame), and a settled read or a control paints the region directly, as search paints its results, so a Chats read never rebuilds another tab. `renderIfIdle` and `reloadAndPaint`/`forceRender` stay the only entries into `render()`. The view's version joins `frameInputs()` through `chatsView.state()`. The header and table are built once, so the search box keeps its value, caret and focus across every paint. Rows are keyed `tool:id` (`data-chat-key`, which `public/selection.js` matches by identity) and change only where their chat did; a direct paint keeps a text selection with `captureSelection`/`restoreSelection`, and waits while a press is down inside the region (at most the app's 1 s press grace), so a row is never moved or removed between pointerdown and click.
+
+**Table.** Sorted by `lastActiveAt`, newest first (no time last, then id). Columns: tool (Claude Code or Copilot), title, project, branch (with the PR as a link), folder, last active (relative, with the exact local time in `title`), Live and the Copy control. Copilot's automatic name (`titleAuto`) and a missing title ("Untitled") are muted (`.chats-quiet`); the automatic one says so in its `title`. The folder shows the home folder as `~`: the API carries no home folder, so `inferHome` takes the one `/Users/<name>` or `/home/<name>` prefix the listed folders share (none or several show full paths); the full path is always in the cell's `title`. Below 620px of list width each row becomes two lines (tool, title, Live over project, branch, folder, last active, Copy), through the `chats-list` container.
+
+**Search and filters.** One box matches title, project, branch, the raw folder and its `~` form (case-insensitive substring, trimmed). Tool (All, Claude Code, Copilot) and project (the projects in the loaded list) filters combine with it, and the count line says "Showing 2 of 5 chats". They are window-local, never persisted, and kept across tab switches and reads; a project that leaves the list resets to All. The rail's project and agent lens does not apply here, because chat project names come from the index.
+
+**Show all.** The switch label says how many chats the default list leaves out ("Show all (3 hidden)", from `counts.hidden`). On, it reads `?all=1`, and each hidden chat carries a neutral chip per reason: Temp folder, Non-interactive, Empty, Folder gone. With no chat in the default list the empty state says how many are hidden.
+
+**Copy resume.** `resumeCommand` builds `cd '<folder>' && claude --resume <id>` or `cd '<folder>' && copilot --resume=<id>`. The id must be a lowercase UUID; the folder must be an absolute path with no C0, DEL, C1, U+2028 or U+2029 character, and it is single-quoted for a POSIX shell with each `'` written as `'\''`. Anything else gives no command. A test runs each hostile folder through `/bin/sh`. The control (`aria-disabled`, so its reason stays reachable by focus and tooltip) is unavailable with a reason in its `title`: a chat with no folder ("The chat's files name no folder to resume in."; the index also marks it `folder-gone`, so this is checked first), a folder that is gone, or an id or folder that cannot be quoted safely. A live chat still copies; its `title` is the command, then a second line warning that resuming opens a second copy. Copying goes through structured-copy's `writeClipboard`, and the label reads "Copied" or "Copy failed" for 1.5 s; a paint never writes the label, so a poll cannot cut that short.
+
+**Notes.** Above the table: "Claude Code deletes chats that have been untouched for N days. Agent Inbox does not copy them." (`retention.claudeDays`), and, when `truncated` is true, that the list is incomplete.
+
+**Untrusted text.** Title, project, branch and folder reach the DOM only through `textContent` and attributes, never `innerHTML`, `esc()`-built HTML or the structured-text renderer. The one markup write is the PR link, from `textLinkHtml()` and only when `githubRef(url)` is a github.com pull request.
+
+**Deep link.** `#chats` opens the tab on boot and on `hashchange`. The viewer never writes it, as tab clicks never write a hash, so a reload on `#chats` reopens Chats as `#item/<id>` reopens its item.
+
+**Show session** is left out: nothing the viewer already holds links a chat id to a session card (`activity.session` is the MCP server's own id, a chat entry carries no pid, and a launch's ACP session is not served).
+
 ## Not in this PR
 
-The Chats tab, Resume in Terminal and the terminal setting, the copy-resume-command button, and resuming inside Agent Inbox.
+Resume in Terminal and the terminal setting, resuming inside Agent Inbox, Show session, and the Dashboard's link to the Chats tab.

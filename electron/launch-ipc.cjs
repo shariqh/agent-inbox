@@ -24,6 +24,8 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
     const granted = isGranted(event)
     const worktreeRoot = view.available && granted ? await controller().worktreeRoot() : null
     const maxSessions = view.available && granted ? await controller().maxSessions() : null
+    // #586: for the Terminal buttons' titles; a fixed id from main's own list
+    const terminal = view.available && granted ? await controller().terminalChoice() : null
     return {
       owned: true,
       enabled: view.enabled,
@@ -32,6 +34,7 @@ function registerLaunchIpc({ ipcMain, controller, settings, settled, isOwned, is
       canEnable: controller().canEnable() === null,
       ...(worktreeRoot ? { worktreeRoot } : {}),
       ...(maxSessions ? { maxSessions } : {}),
+      ...(terminal ? { terminal } : {}),
     }
   })
 

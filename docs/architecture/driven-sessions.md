@@ -18,7 +18,8 @@ paths:
   - "electron/launch-controller.cjs"
   - "electron/launch-ipc.cjs"
   - "electron/session-worktree.cjs"
-applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts,src/worktree.ts,electron/session-launch.cjs,electron/launch-key.cjs,electron/shell-env.cjs,electron/driver-process.cjs,electron/launch-controller.cjs,electron/launch-ipc.cjs,electron/session-worktree.cjs"
+  - "electron/terminal-launch.cjs"
+applyTo: "src/driver.ts,src/driver-cli.ts,src/driver-link.ts,src/driver-policy.ts,src/driver-tty.ts,src/driver-pin.ts,src/acp-client.ts,src/driver-launch.ts,src/launch-spec.ts,src/launch-sign.ts,src/worktree.ts,electron/session-launch.cjs,electron/launch-key.cjs,electron/shell-env.cjs,electron/driver-process.cjs,electron/launch-controller.cjs,electron/launch-ipc.cjs,electron/session-worktree.cjs,electron/terminal-launch.cjs"
 ---
 
 # Driven sessions (#412)
@@ -601,8 +602,11 @@ Main does not send the field yet (part 2), so nothing changes for anyone today.
   they are only there), that ignored files such as node_modules are deleted, and, with changes, up to 5 of
   them (each through `displayLine`) and how many more, and a separate **Discard N changes and remove**
   button bound to the inspected fingerprint, or, when the driver refused Discard, its reason instead. Cancel is the
-  default. Open in Terminal runs `/usr/bin/open -a Terminal -- <path>`, argv only, on the path a fresh
-  row read names, only while it is its own real folder and not removed.
+  default. Open in Terminal opens the chosen terminal (#586, Settings → Terminal: Terminal or iTerm2)
+  through `openInTerminal` (`electron/terminal-launch.cjs`, `/usr/bin/open -b <bundle id> -- <path>`,
+  argv only), on the path a fresh row read names, only while it is its own real folder and not
+  removed. If the chosen app is not installed it opens Terminal once and the launch carries a
+  `notice`; after a timeout it opens nothing else. See `electron-app.md`.
 - **The page.** A launch's session panel with a kept worktree offers **Open in Terminal**, and
   **Remove worktree…** once the launch ended (in the granted window; before that it is drawn disabled,
   with "Stop it to remove its worktree" beside Stop). Since #454 an ended launch's card offers Remove
@@ -753,8 +757,13 @@ session folder.
   confirmed folder, still its own real folder. `takeOverScript` writes `<hub dir>/launches/<id>/take-over.command` (`0700` in the
   `0700` log folder, temp file and rename): `cd -- '<folder>'`, `copilot --resume=<id>` with the launch's
   model and reasoning effort (each left out unless it matches its own pattern; the session must be a
-  lowercase UUID), then `exec "${SHELL:-/bin/sh}" -l`, every word single-quoted. It is opened with the
-  same `/usr/bin/open -a Terminal -- <path>` argv as Open in Terminal.
+  lowercase UUID), then `exec "${SHELL:-/bin/sh}" -l`, every word single-quoted. It is opened in the
+  chosen terminal through `openInTerminal`, like Open in Terminal (#586), with the choice read once
+  so main's dialog ("Take over the session of x in iTerm2?") and the open name the same app. iTerm2
+  asks "OK to run …?" before it runs a script, so the dialog says so; a **timeout** is never
+  retried in Terminal, or the script could run twice and put two Copilots in one session. The
+  fallback note is written after the page has read the handed-off launch, so it survives the
+  state change.
 - **The page.** A running launch and a parked one with a session offer **Take over in Terminal**
   ("Handing off…" while main works); a handed-off launch reads "Handed off to a terminal: it goes on in
   Copilot there." and offers **Resume in Terminal** and the transcript, which names the take over and its

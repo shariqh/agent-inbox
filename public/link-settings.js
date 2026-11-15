@@ -11,6 +11,12 @@
 // main opens with the system's app (a rule's `systemDefault`). Per-type apps
 // are macOS-only; elsewhere, and in a browser, the section says so. Every
 // string reaches the DOM as textContent.
+//
+// #586: Settings → Terminal, drawn by renderTerminalSettings through the same
+// bridge: which terminal Open in Terminal and Take over / Resume in Terminal
+// open. Desktop only; a browser draws nothing, as it cannot open a terminal.
+import { TERMINAL_CHOICES } from '/launches.js'
+
 const FILE_HANDLERS = [['default', 'System default'], ['quicklook', 'Quick Look'], ['reveal', 'Reveal in Finder']]
 const WEB_HANDLERS = [['default', 'Default browser']]
 const ERRORS = {
@@ -43,7 +49,9 @@ const HINTS = {
 // Asks main for the section again, as Settings does each time it opens: a
 // reload's re-proof may have finished since the section was drawn.
 let refreshShown = null
+let refreshTerminalShown = null
 export function refreshLinkSettings() {
+  void refreshTerminalShown?.()
   return refreshShown ? refreshShown() : Promise.resolve(null)
 }
 
@@ -162,5 +170,74 @@ export function renderLinkSettings(host, {
 
   refreshShown = () => (section.isConnected ? run(() => api.get()) : Promise.resolve(null))
   void run(() => api.get())
+  return section
+}
+
+// Settings → Terminal (#586). Null, and nothing drawn, without the desktop
+// bridge; hidden until main says the choice is available (macOS, in the viewer
+// the app owns). The id sent is one of TERMINAL_CHOICES, and main checks it
+// again on every launch. `onChange` runs after a saved choice, so the Terminal
+// buttons' titles name the new app at once.
+export function renderTerminalSettings(host, {
+  bridge = () => globalThis.agentInboxLinkSettings,
+  documentRef = globalThis.document,
+  onChange = () => {},
+} = {}) {
+  refreshTerminalShown = null
+  const api = bridge()
+  if (!api || typeof api.getTerminal !== 'function' || typeof api.setTerminal !== 'function') return null
+  const make = (tag, className, text) => {
+    const el = documentRef.createElement(tag)
+    if (className) el.className = className
+    if (text !== undefined) el.textContent = text
+    return el
+  }
+  const section = make('section', 'setup-block')
+  section.id = 'terminal-settings'
+  section.hidden = true
+  const hint = make('p', 'setup-hint', 'Open in Terminal, Take over in Terminal and Resume in Terminal open this app on your Mac.')
+  const row = make('div', 'link-rule')
+  const label = make('label', 'link-rule-label', 'Open sessions in')
+  const select = make('select')
+  select.id = 'terminal-setting-select'
+  label.htmlFor = select.id
+  for (const [value, text] of TERMINAL_CHOICES) select.appendChild(option(documentRef, value, text))
+  row.append(label, select)
+  const message = make('p', 'link-settings-message')
+  message.setAttribute('role', 'status')
+  message.setAttribute('aria-live', 'polite')
+  section.append(make('h3', '', 'Terminal'), hint, row, message)
+  host.appendChild(section)
+
+  let busy = false
+  const paint = (view) => {
+    const available = Boolean(view && view.available)
+    section.hidden = !available
+    if (!available) return
+    // main's word for what is stored; a refusal shows that value again, never the one that was refused
+    select.value = TERMINAL_CHOICES.some(([value]) => value === view.terminal) ? view.terminal : TERMINAL_CHOICES[0][0]
+    message.textContent = view.error ? ERRORS[view.error] ?? ERRORS.failed : ''
+  }
+  const run = async (call) => {
+    if (busy) return null
+    busy = true
+    section.setAttribute('aria-busy', 'true')
+    let view
+    try {
+      view = await call()
+    } catch {
+      view = { available: true, terminal: select.value, error: 'failed' }
+    }
+    busy = false
+    section.removeAttribute('aria-busy')
+    paint(view)
+    return view
+  }
+  select.addEventListener('change', async () => {
+    const view = await run(() => api.setTerminal(select.value))
+    if (view && view.available && !view.error) onChange()
+  })
+  refreshTerminalShown = () => (section.isConnected ? run(() => api.getTerminal()) : Promise.resolve(null))
+  void run(() => api.getTerminal())
   return section
 }

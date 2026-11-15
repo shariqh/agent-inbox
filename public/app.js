@@ -39,7 +39,7 @@ import { createCopyOnSelect } from '/copy-on-select.js'
 import { renderStructuredText } from '/structured-text.js'
 import { cardLinks } from '/link-strip.js'
 import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission } from '/link-open.js'
-import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
+import { refreshLinkSettings, renderLinkSettings, renderTerminalSettings } from '/link-settings.js'
 import { createLaunchUi } from '/launch-ui.js'
 import { installAgentsHome, moveKeepingFocus } from '/agents-home.js'
 import { installNeedsYouLane } from '/needs-you-lane.js'
@@ -11459,6 +11459,8 @@ async function renderSetup() {
   renderPlanSettings(host)
   renderCopySettings(host)
   renderLinkSettings(host)
+  // #586: which terminal Open in Terminal and Take over use; the buttons' titles follow at once
+  renderTerminalSettings(host, { onChange: () => launchUi?.refresh() })
   renderLaunchSettings(host, { onChange: (state) => launchUi?.setState(state) })
   try {
     const s = await (await fetch('/api/setup')).json()

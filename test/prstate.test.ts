@@ -717,6 +717,19 @@ describe('the poller runs in the viewer process only', () => {
     }
   })
 
+  // #586: the chat index reads two other tools' folders, so only the viewer process may hold it.
+  it('the chat index never enters the stdio MCP import graph, and only the viewer wires it', () => {
+    const CHAT = ['src/chat-index.ts', 'src/chat-parse.ts']
+    for (const file of CHAT) expect(STDIO_GRAPH, `${file} is in the stdio graph`).not.toContain(file)
+    for (const file of STDIO_GRAPH) {
+      const reached = specifiers(read(file)).map((spec) => resolveSpec(file, spec))
+      expect(reached.filter((target) => CHAT.includes(target) || /chat-/.test(target)), `${file} pulls the chat index into MCP`).toEqual([])
+    }
+    expect(specifiers(read('src/viewer.ts')).map((spec) => resolveSpec('src/viewer.ts', spec))).toContain('src/chat-index.ts')
+    // the index is lazy: the server start-up reads nothing from either tool's folder
+    expect(read('src/viewer-server.ts')).not.toMatch(/chat/i)
+  })
+
   it('the local HTTP boundary never enters the stdio MCP import graph', () => {
     for (const file of STDIO_GRAPH) {
       expect(specifiers(read(file)).map((spec) => resolveSpec(file, spec)), `${file} pulls the local HTTP boundary into MCP`)

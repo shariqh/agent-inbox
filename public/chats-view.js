@@ -11,11 +11,17 @@
 // PR 3: in the desktop app's own window on macOS (the preload's agentInboxChats
 // says so), each row also gets Resume, which asks main to open the chat in the
 // chosen terminal; main reads the folder from the index itself.
+// #586 phase 2: in the window main grants launches, with the driven-sessions switch on, each
+// Copilot row also gets Continue here…, which opens launch-ui.js's dialog; a chat one of this
+// app's launches holds gets Show session in its place, Live "· here" while that launch runs, and
+// Resume and Copy resume off beside it. The link is the launches the page already reads with the
+// switch on (each launch's chat_id); with the switch off none of this is drawn or read.
 
 import {
-  allSwitchText, chatsUrl, displayFolder, emptyText, filterChats, hiddenLabel, inferHome, lastActiveView,
-  projectOptions, readChatsBody, RESUME_BUSY_LABEL, RESUME_LABEL, resumeControl, resumeOutcome, resumeTerminalControl,
-  retentionText, shouldFetchOnOpen, shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
+  allSwitchText, chatLaunch, chatsUrl, CONTINUE_LABEL, continueControl, continueOutcome, displayFolder, drivenView, emptyText,
+  filterChats, HERE_TEXT, hiddenLabel, inferHome, lastActiveView, projectOptions, readChatsBody, RESUME_BUSY_LABEL, RESUME_LABEL,
+  resumeControl, resumeOutcome, resumeTerminalControl, retentionText, SHOW_SESSION_LABEL, shouldFetchOnOpen, shownText, sortChats,
+  titleView, toolLabel, TRUNCATED_TEXT,
 } from './chats.js'
 import { githubRef } from './links.js'
 import { pressHeld, PRESS_GRACE_MS } from './poll.js'
@@ -30,9 +36,13 @@ const COLUMNS = ['Tool', 'Title', 'Project', 'Branch', 'Folder', 'Last active', 
 
 /**
  * @param {{ doc: Document, host: () => HTMLElement | null, fetch: (url: string) => Promise<Response>, now: () => number,
- *   resume?: () => ({ resumeAvailable(): Promise<unknown>, resume(request: { tool: string, id: string }): Promise<unknown> } | null) }} deps
+ *   resume?: () => ({ resumeAvailable(): Promise<unknown>, resume(request: { tool: string, id: string }): Promise<unknown> } | null),
+ *   drive?: () => ({ available(): Promise<boolean>, granted(): boolean, launches(): unknown[] | null,
+ *     continueChat(chat: { tool: string, id: string, title: string | null, folder: string | null },
+ *       hooks: { returnFocus: () => HTMLElement | null, answered: (result: unknown) => void }): boolean,
+ *     showSession(launchId: string): void } | null) }} deps
  */
-export function installChatsView({ doc, host, fetch, now, resume = () => null }) {
+export function installChatsView({ doc, host, fetch, now, resume = () => null, drive = () => null }) {
   const win = doc.defaultView
   // window-local and never persisted, like Show archived: they survive tab switches and reads
   const filter = { query: '', tool: 'all', project: null }
@@ -60,6 +70,12 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
   const resumeConfirm = new Map() // key → "Opened in iTerm2", for CONFIRM_MS
   const resumeTimers = new Map()
   const resumeNotes = new Map()   // key → the fallback notice or main's reason, until the next press
+  // #586 phase 2: Continue here… and Show session, asked again on every entry into the tab like
+  // Resume; each row's link to a launch of this app, from the last paint
+  let canDrive = false
+  let driveSeq = 0
+  const drivenByKey = new Map()
+  const NOT_DRIVEN = drivenView(null)
 
   const make = (tag, className, text) => {
     const el = doc.createElement(tag)
@@ -254,6 +270,8 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
     const chat = chatByKey.get(key)
     const bridge = resume()
     if (!chat || !bridge || !canResume || resumeBusy.has(key) || !resumeTerminalControl(chat, terminal).enabled) return
+    // a chat driven here is never opened in a terminal too (§3.5); main refuses it as well
+    if (drivenByKey.get(key)?.show) return
     resumeBusy.add(key)
     win.clearTimeout(resumeTimers.get(key))
     resumeTimers.delete(key)
@@ -285,25 +303,77 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
     else settlePaint()
   }
 
-  // The Resume button and its note exist only while main says this window can resume.
-  function paintResume(tr, chat) {
+  function setDriveAvailable(available) {
+    if (available === canDrive) return
+    canDrive = available
+    changed()
+    settlePaint()
+  }
+
+  function askDrive() {
+    const mine = ++driveSeq
+    const bridge = drive()
+    if (!bridge || typeof bridge.available !== 'function') {
+      setDriveAvailable(false)
+      return
+    }
+    Promise.resolve().then(() => bridge.available()).then(
+      (answer) => { if (mine === driveSeq) setDriveAvailable(answer === true) },
+      () => { if (mine === driveSeq) setDriveAvailable(false) },
+    )
+  }
+
+  // the drive bridge while this window may continue chats now, else null
+  const driving = () => {
+    if (!canDrive) return null
+    const bridge = drive()
+    return bridge && typeof bridge.granted === 'function' && bridge.granted() === true ? bridge : null
+  }
+
+  // Continue here…: launch-ui.js's dialog; main's answer lands in the row's note, and after a
+  // live, driven, folder or missing refusal the list is read again, as Resume does
+  function continueChat(key) {
+    const chat = chatByKey.get(key)
+    const bridge = driving()
+    if (!chat || !bridge || drivenByKey.get(key)?.show || continueControl(chat)?.enabled !== true) return
+    const opened = bridge.continueChat({ tool: chat.tool, id: chat.id, title: chat.title, folder: chat.cwd }, {
+      returnFocus: () => rowEls.get(key)?.querySelector('.chats-continue, .chats-show') ?? null,
+      answered: (result) => {
+        const outcome = continueOutcome(result)
+        if (outcome.note) resumeNotes.set(key, outcome.note)
+        else resumeNotes.delete(key)
+        changed()
+        if (outcome.refresh) read()
+        else settlePaint()
+      },
+    })
+    if (opened && resumeNotes.delete(key)) {
+      changed()
+      settlePaint()
+    }
+  }
+
+  function showSession(key) {
+    const id = drivenByKey.get(key)?.show
+    const bridge = driving()
+    if (id && bridge) bridge.showSession(id)
+  }
+
+  // The Resume button exists only while main says this window can resume. Beside Show session it
+  // is off (§3.5): this chat has a session here.
+  function paintResume(tr, chat, driven) {
     const key = tr.dataset.chatKey
     const actions = tr.querySelector('.chats-actions')
     let control = actions.querySelector('.chats-resume')
-    let note = actions.querySelector('.chats-resume-note')
     if (!canResume) {
       control?.remove()
-      note?.remove()
       return
     }
     if (!control) {
       control = button('chats-resume', RESUME_LABEL, () => resumeChat(key))
-      note = make('span', 'chats-resume-note')
-      note.setAttribute('role', 'status')
       actions.prepend(control)
-      actions.append(note)
     }
-    const view = resumeTerminalControl(chat, terminal)
+    const view = driven.show ? { enabled: false, title: driven.offTitle, ariaLabel: null } : resumeTerminalControl(chat, terminal)
     const busy = resumeBusy.has(key)
     const confirm = resumeConfirm.get(key) ?? null
     setText(control, busy ? RESUME_BUSY_LABEL : confirm ?? RESUME_LABEL)
@@ -311,6 +381,52 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
     setAttr(control, 'aria-disabled', busy || !view.enabled ? 'true' : null)
     // off while the label says what happened, so "Opening…" and "Opened in …" are what is announced
     setAttr(control, 'aria-label', busy || confirm ? null : view.ariaLabel)
+  }
+
+  // #586 phase 2: Continue here… after Copy resume on a Copilot row, or Show session in its place
+  // for a chat one of this app's launches holds; neither exists unless this window may continue chats
+  function paintContinue(tr, chat, driven, allowed) {
+    const key = tr.dataset.chatKey
+    const actions = tr.querySelector('.chats-actions')
+    const view = allowed ? continueControl(chat) : null
+    let control = actions.querySelector('.chats-continue')
+    let show = actions.querySelector('.chats-show')
+    if (!view || driven.show) control?.remove()
+    if (!view || !driven.show) show?.remove()
+    if (!view) return
+    const copy = actions.querySelector('.chats-copy')
+    if (driven.show) {
+      if (!show) {
+        show = button('chats-show', SHOW_SESSION_LABEL, () => showSession(key))
+        copy.after(show)
+      }
+      setAttr(show, 'title', driven.title)
+      return
+    }
+    if (!control) {
+      control = button('chats-continue', CONTINUE_LABEL, () => continueChat(key))
+      // the dialog it opens is modal
+      control.setAttribute('aria-haspopup', 'dialog')
+      copy.after(control)
+    }
+    setAttr(control, 'title', view.title)
+    setAttr(control, 'aria-disabled', view.enabled ? null : 'true')
+  }
+
+  // The note under the controls: the fallback notice or main's reason, Resume's or Continue here…'s.
+  function paintNote(tr, allowed) {
+    const key = tr.dataset.chatKey
+    const actions = tr.querySelector('.chats-actions')
+    let note = actions.querySelector('.chats-resume-note')
+    if (!canResume && !allowed) {
+      note?.remove()
+      return
+    }
+    if (!note) {
+      note = make('span', 'chats-resume-note')
+      note.setAttribute('role', 'status')
+      actions.append(note)
+    }
     setText(note, resumeNotes.get(key) ?? '')
   }
 
@@ -332,7 +448,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
 
   // A kept row changes only where its chat did. The Copy label is never set
   // here, so a paint cannot cut a "Copied" short.
-  function paintRow(tr, chat, home, nowMs) {
+  function paintRow(tr, chat, home, nowMs, launches) {
     const [tool, titleCell, projectCell, branchCell, folderCell, activeCell, liveCell] = tr.children
     setText(tool, toolLabel(chat.tool))
     const title = titleView(chat)
@@ -361,14 +477,30 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
     const active = lastActiveView(chat.lastActiveAt, nowMs)
     setText(activeCell, active.text)
     setAttr(activeCell, 'title', active.title)
-    const live = liveCell.firstElementChild
-    if (chat.live && !live) liveCell.append(make('span', 'chip chats-live', 'Live'))
-    if (!chat.live && live) live.remove()
+    // #586 phase 2: the launches are read only with the switch on; null otherwise
+    const allowed = launches !== null
+    const driven = allowed && chat.tool === 'copilot' ? drivenView(chatLaunch(launches, chat.id)) : NOT_DRIVEN
+    drivenByKey.set(tr.dataset.chatKey, driven)
+    // Live from the index, or "Live · here" while a launch of this app runs the chat (§3.5)
+    const live = liveCell.querySelector('.chats-live')
+    const showLive = chat.live || driven.here
+    if (showLive && !live) liveCell.prepend(make('span', 'chip chats-live', 'Live'))
+    if (!showLive && live) live.remove()
+    let here = liveCell.querySelector('.chats-here')
+    if (driven.here && !here) {
+      here = make('span', 'chats-here', HERE_TEXT)
+      here.title = driven.hereTitle
+      liveCell.append(here)
+    }
+    if (!driven.here && here) here.remove()
     const control = tr.querySelector('.chats-copy')
     const copyView = resumeControl(chat)
-    setAttr(control, 'title', copyView.title)
-    setAttr(control, 'aria-disabled', copyView.command ? null : 'true')
-    paintResume(tr, chat)
+    // beside Show session nothing is copied: a second Copilot would open on a chat driven here
+    setAttr(control, 'title', driven.show ? driven.offTitle : copyView.title)
+    setAttr(control, 'aria-disabled', copyView.command && !driven.show ? null : 'true')
+    paintResume(tr, chat, driven)
+    paintContinue(tr, chat, driven, allowed)
+    paintNote(tr, allowed)
   }
 
   function paintHeader(projects) {
@@ -431,13 +563,18 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
       rowEls.delete(key)
     }
     chatByKey.clear()
+    drivenByKey.clear()
     const nowMs = now()
+    // #586 phase 2: what Continue here… and Show session are drawn from; null (no grant, or the
+    // launches not read yet) draws neither, so a chat driven here never shows Continue here… first
+    const held = driving()?.launches()
+    const launches = Array.isArray(held) ? held : null
     visible.forEach((chat, index) => {
       const key = keys[index]
       chatByKey.set(key, chat)
       let el = rowEls.get(key)
       if (!el) rowEls.set(key, (el = rowEl(key)))
-      paintRow(el, chat, home, nowMs)
+      paintRow(el, chat, home, nowMs, launches)
       if (tbody.children[index] !== el) tbody.insertBefore(el, tbody.children[index] ?? null)
     })
   }
@@ -447,6 +584,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null })
     opened() {
       opened = true
       askResume()
+      askDrive()
       if (shouldFetchOnOpen({ loadedAt, loading, nowMs: now() })) read()
       else settlePaint()
     },

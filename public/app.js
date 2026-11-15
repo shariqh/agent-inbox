@@ -719,6 +719,18 @@ const chatsView = installChatsView({
   now: () => Date.now(),
   // #586 PR 3: Resume in Terminal, only where the desktop app's preload exposes it
   resume: () => window.agentInboxChats ?? null,
+  // #586 phase 2: Continue here… and Show session, only in the window main grants launches, with
+  // the driven-sessions switch on; with it off this asks nothing that reads, and draws nothing
+  drive: () => (launchUi ? {
+    available: async () => {
+      await launchUi.refresh()
+      return launchUi.granted()
+    },
+    granted: () => launchUi.granted(),
+    launches: () => (launchesOn() ? lastData?.launches ?? null : null),
+    continueChat: (chat, hooks) => launchUi.openContinueChat(chat, hooks),
+    showSession: (id) => openSessionFocus(`launch:${id}`),
+  } : null),
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
@@ -2434,6 +2446,7 @@ function dashFocusEl() {
         <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close">×</button>
       </div>
       <p class="dash-focus-meta"></p>
+      <p class="sp-chat" hidden><a class="sp-chat-link" href="#chats"></a></p>
       <p class="sp-hint" hidden></p>
     </div>
     <div class="sp-actions" role="group" aria-label="Session actions" hidden></div>
@@ -6572,6 +6585,10 @@ function initLaunches() {
     forgotten: (id) => { if (focusSession === `launch:${id}`) closeSessionFocus() },
     // a session started outside the lens would have no card: scope the lens to it
     started: (id) => { if (scopeToLaunch(id)) forceRender() },
+    // #586 phase 2: a continued chat's session, once started, opens as Show session opens it
+    showLaunch: (id) => openSessionFocus(`launch:${id}`),
+    // the session panel's "Continued from a Copilot chat" line
+    openChats: () => selectTab('chats'),
     pending: (action) => withPendingResponse(action),
   })
   // a changed answer is drawn by the next tick, which reads the launches once on

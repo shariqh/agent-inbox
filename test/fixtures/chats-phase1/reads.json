@@ -1,0 +1,14 @@
+[
+ "/api/setup",
+ "/api/items",
+ "/api/boards",
+ "/api/boards/archived/summary",
+ "/api/activity",
+ "/api/activity/history?since_ms=1781949600000",
+ "/api/projects/closed",
+ "/api/links",
+ "/api/issues",
+ "/api/messages",
+ "/api/chats",
+ "/api/chats?all=1"
+]

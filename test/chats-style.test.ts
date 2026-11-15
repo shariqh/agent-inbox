@@ -58,9 +58,9 @@ describe('Chats tab styles (#586 PR 2)', () => {
   })
 
   it('draws Resume as Copy resume is drawn, with its note under both (PR 3)', () => {
-    const button = ruleBody('.chats-copy, .chats-resume')
+    const button = ruleBody('.chats-copy, .chats-resume, .chats-continue, .chats-show')
     for (const rule of [/padding:\s*var\(--sp-1\) var\(--sp-2\);/, /font-size:\s*var\(--fs-meta\);/, /white-space:\s*nowrap;/]) expect(button).toMatch(rule)
-    expect(ruleBody('.chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-refresh[aria-disabled="true"]')).toMatch(/opacity:\s*\.45;/)
+    expect(ruleBody('.chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-continue[aria-disabled="true"], .chats-refresh[aria-disabled="true"]')).toMatch(/opacity:\s*\.45;/)
     // its own rule, not the one it shares with Copy resume
     expect(ruleBody('\n.chats-resume')).toMatch(/margin-right:\s*var\(--sp-1\);/)
     const note = ruleBody('.chats-resume-note')
@@ -71,6 +71,43 @@ describe('Chats tab styles (#586 PR 2)', () => {
     // and the note takes the cell's width instead of widening the column
     expect(ruleBody('\n.chats-actions')).toMatch(/white-space:\s*nowrap;/)
     for (const rule of [/width:\s*0;/, /min-width:\s*100%;/, /white-space:\s*normal;/]) expect(note).toMatch(rule)
+  })
+
+  it('draws Continue here… and Show session as Copy resume is drawn, on the same line, with a focus ring (#586 phase 2)', () => {
+    // the shared button rule: tokens only, never wrapping inside a button
+    const button = ruleBody('.chats-copy, .chats-resume, .chats-continue, .chats-show')
+    expect(button).toMatch(/white-space:\s*nowrap;/)
+    // after Copy resume, spaced with a token; the Actions cell never wraps in the wide table, so the
+    // three controls stay on one line and the row one line tall
+    expect(ruleBody('\n.chats-continue, .chats-show')).toMatch(/margin-left:\s*var\(--sp-1\);/)
+    expect(ruleBody('\n.chats-actions')).toMatch(/white-space:\s*nowrap;/)
+    expect(css).not.toMatch(/\n\.chats-actions[^{\n]*\{[^}]*white-space:\s*normal/)
+    // a visible focus ring on each new control, in the focus color both themes define
+    expect(ruleBody('.chats-continue:focus-visible, .chats-show:focus-visible, .sp-chat-link:focus-visible'))
+      .toMatch(/outline:\s*2px solid var\(--app-focus\);/)
+    // "· here" in the agent color, at the meta size
+    const here = ruleBody('.chats-here')
+    for (const rule of [/margin-left:\s*var\(--sp-1\);/, /color:\s*var\(--app-agent\);/, /font-size:\s*var\(--fs-meta\);/]) expect(here).toMatch(rule)
+  })
+
+  it('wraps the three controls on the row’s second line below 620px, spaced with --sp-2, and leaves a phase 1 row as it was', () => {
+    const actions = ruleBody('.chats-table .chats-actions:has(.chats-continue, .chats-show)', containerStart)
+    for (const rule of [/display:\s*flex;/, /flex-wrap:\s*wrap;/, /gap:\s*var\(--sp-2\);/, /white-space:\s*normal;/]) expect(actions).toMatch(rule)
+    expect(containerBlock).toContain('.chats-table .chats-actions:has(.chats-continue, .chats-show)')
+    // nothing in the narrow block touches an Actions cell without either control
+    expect(containerBlock).not.toMatch(/\.chats-actions\s*\{/)
+  })
+
+  it('takes the dialog’s chat facts and the panel’s chat line from the tokens (#586 phase 2)', () => {
+    const rules = [...css.matchAll(/^\s*([^{}\n]*(?:\.launch-chat-facts|\.sp-chat|\.chats-here)[^{}\n]*)\{([^}]*)\}/gm)]
+    expect(rules.length).toBeGreaterThanOrEqual(5)
+    for (const [, selector, body] of rules) {
+      for (const [, property, value] of body!.matchAll(/(font-size|gap|padding|row-gap|column-gap|margin|margin-left):\s*([^;]+);/g)) {
+        expect(value!.replace(/var\(--(?:fs|sp)-[\w-]+\)|\b0\b/g, '').trim(), `${selector!.trim()} ${property}`).toBe('')
+      }
+      // a focus ring's outline is the app's one 2px ring, not a size or a gap
+      if (!selector!.includes(':focus-visible')) expect(body, selector).not.toMatch(/\d+px/)
+    }
   })
 
   it('lets [hidden] win over the parts that set a display', () => {

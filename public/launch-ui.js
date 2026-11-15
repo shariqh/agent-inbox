@@ -9,6 +9,10 @@
 // budgets and the task; never a path of its own, an executable, argv or env.
 // Agent text reaches the DOM only as textContent. Nothing here reaches
 // public/attention.js, a badge, a count, the rail or the dock.
+//
+// #586 phase 2: Continue here… on a Copilot chat (openContinueChat) names only
+// the chat's tool and id, a mode and the first message; main reads the folder,
+// title and project itself. Its dialog shares New session's start machinery.
 import {
   LAUNCH_MODES, NOT_REPOSITORY, PROMPT_WARNING, REASONING_EFFORTS, SHELL_WARNING, START_PHASES, WORKTREE_COPY,
   budgetAllowance, forgettable, launchSessions, launchStatus, newSessionRequest, terminalName, transcriptLines, worktreeSummaryText,
@@ -20,6 +24,12 @@ const DEFAULT_ADD_CALLS = 250
 const RESUME_WAIT_MS = 60_000
 const TRANSCRIPT_POLL_MS = 2000
 const TRANSCRIPT_MAX_EVENTS = 5000
+// #586 phase 2 (design §7 question 1): a continued chat runs in the person's own folder, so only
+// the two modes in which every tool call asks first; main allows the same two
+const CONTINUE_MODES = Object.freeze(['ask', 'read-only'])
+const CONTINUE_PROMPT_WARNING = 'Don’t paste secrets here: the message is stored with the session.'
+// the chat index's id rule: a lowercase UUID
+const CHAT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /**
  * @param {{
@@ -57,6 +67,8 @@ export function createLaunchUi(deps) {
   // #451: each budget-ended launch's allowance fields, kept across paints
   const budgetInputs = new Map()
   let dialog = null
+  // the draft the open dialog's text is: 'new' for New session, 'continue:<chat id>' for Continue here…
+  let dialogDraft = 'new'
   // #454: the session panel's transcript, read only while the panel shows it
   let transcript = null
   // #432 PR 5 review: the one start in flight, owned by the dialog that started it; the launch id
@@ -278,6 +290,7 @@ export function createLaunchUi(deps) {
   async function openNewSession() {
     if (!granted() || dialog?.open || starting) return
     dialog?.remove()
+    dialogDraft = 'new'
     dialog = make('dialog', 'launch-dialog')
     dialog.setAttribute('aria-labelledby', 'launchDialogTitle')
     const form = make('form', 'launch-form')
@@ -389,13 +402,7 @@ export function createLaunchUi(deps) {
       if (starting?.own === own) stopStarting()
       else closeDialog()
     })
-    const stopStarting = () => {
-      if (!starting || starting.stopAsked) return
-      starting.stopAsked = true
-      cancel.disabled = true
-      message.textContent = 'Stopping the start…'
-      if (starting.launch) bridge().stop(starting.launch).catch(() => null)
-    }
+    const stopStarting = () => stopStart({ cancel, message })
     actions.append(cancel, start)
     form.append(
       heading,
@@ -454,40 +461,8 @@ export function createLaunchUi(deps) {
       }
       if (starting) return
       start.disabled = true
-      message.textContent = 'Agent Inbox is asking you to confirm…'
-      // this start's tag: main echoes it with each phase, so phases of a start an earlier load of
-      // this page made (a reload mid-start) never bind this dialog
-      const startId = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
-      const mine = { own, launch: null, stopAsked: false }
-      starting = mine
-      cancel.textContent = 'Stop starting'
-      bump()
-      // #432 PR 5: the dialog stays open, saying what the start is doing, until Copilot is set up or refused
-      const api = bridge()
-      const token = {}
-      if (typeof api?.onStartProgress === 'function') {
-        progressToken = token
-        api.onStartProgress((phase, launch, tag) => {
-          if (starting !== mine || tag !== startId) return
-          if (phase === 'copilot' && typeof launch === 'string') {
-            mine.launch = launch
-            // a Stop asked for before the launch had a row goes now
-            if (mine.stopAsked) api.stop(launch).catch(() => null)
-          }
-          if (dialog === own && !mine.stopAsked && START_PHASES[phase]) message.textContent = START_PHASES[phase]
-        })
-      }
-      const result = await deps.pending(() => api.start({ ...made.request, startId })).catch(() => null)
-      // only this start's listener, and only this start's dialog
-      if (progressToken === token) {
-        api.onStartProgress(null)
-        progressToken = null
-      }
-      starting = null
-      cancel.textContent = 'Cancel'
-      cancel.disabled = false
+      const result = await runStart(own, { cancel, message }, (api, startId) => api.start({ ...made.request, startId }))
       start.disabled = false
-      bump()
       if (dialog !== own) return
       if (result?.ok) {
         drafts.delete('new')
@@ -511,6 +486,171 @@ export function createLaunchUi(deps) {
     }
     project.append(new Option('Choose folder…', ''))
     previous = project.value
+  }
+
+  // #432 PR 5, shared by New session and Continue here…: the one start in flight, owned by the
+  // dialog that started it. The dialog stays open, saying what the start is doing, until Copilot is
+  // set up or main refuses; its Cancel is Stop starting meanwhile. Resolves with main's answer.
+  async function runStart(own, { cancel, message }, call) {
+    message.textContent = 'Agent Inbox is asking you to confirm…'
+    // this start's tag: main echoes it with each phase, so phases of a start an earlier load of
+    // this page made (a reload mid-start) never bind this dialog
+    const startId = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
+    const mine = { own, launch: null, stopAsked: false }
+    starting = mine
+    cancel.textContent = 'Stop starting'
+    bump()
+    const api = bridge()
+    const token = {}
+    if (typeof api?.onStartProgress === 'function') {
+      progressToken = token
+      api.onStartProgress((phase, launch, tag) => {
+        if (starting !== mine || tag !== startId) return
+        if (phase === 'copilot' && typeof launch === 'string') {
+          mine.launch = launch
+          // a Stop asked for before the launch had a row goes now
+          if (mine.stopAsked) api.stop(launch).catch(() => null)
+        }
+        if (dialog === own && !mine.stopAsked && START_PHASES[phase]) message.textContent = START_PHASES[phase]
+      })
+    }
+    const result = await deps.pending(() => call(api, startId)).catch(() => null)
+    // only this start's listener, and only this start's dialog
+    if (progressToken === token) {
+      api.onStartProgress(null)
+      progressToken = null
+    }
+    starting = null
+    cancel.textContent = 'Cancel'
+    cancel.disabled = false
+    bump()
+    return result
+  }
+
+  function stopStart({ cancel, message }) {
+    if (!starting || starting.stopAsked) return
+    starting.stopAsked = true
+    cancel.disabled = true
+    message.textContent = 'Stopping the start…'
+    if (starting.launch) bridge().stop(starting.launch).catch(() => null)
+  }
+
+  // ── Continue here… (#586 phase 2, design §3.5) ───────────────────────────
+  // A Copilot CLI chat from the Chats tab, carried on as a session this app drives. The dialog
+  // shows the chat's title and folder as text, a mode (Ask for everything or Read-only) and the
+  // required first message; main reads everything else itself, refuses or confirms natively, and
+  // runs it in the chat's own folder. The page sends exactly { tool, id, mode, prompt, startId }.
+  /**
+   * @param {{ tool: string, id: string, title: string|null, folder: string|null }} chat
+   * @param {{ returnFocus?: () => (HTMLElement|null|undefined), answered?: (result: any) => void }} [hooks]
+   */
+  function openContinueChat(chat, { returnFocus, answered } = {}) {
+    if (!granted() || dialog?.open || starting || chat?.tool !== 'copilot' || typeof chat.id !== 'string') return false
+    dialog?.remove()
+    const key = `continue:${chat.id}`
+    dialogDraft = key
+    dialog = make('dialog', 'launch-dialog launch-continue')
+    dialog.setAttribute('aria-labelledby', 'continueDialogTitle')
+    const own = dialog
+    const form = make('form', 'launch-form')
+    form.method = 'dialog'
+    const heading = make('h2', '', 'Continue in Agent Inbox')
+    heading.id = 'continueDialogTitle'
+    // untrusted chat text: textContent only
+    const facts = make('dl', 'launch-chat-facts')
+    facts.append(make('dt', '', 'Chat'), make('dd', 'launch-chat-title', chat.title || 'Untitled'),
+      make('dt', '', 'Folder'), make('dd', 'launch-chat-folder mono', chat.folder || '—'))
+    const modes = make('fieldset', 'launch-modes')
+    modes.append(make('legend', '', 'Mode'))
+    for (const mode of LAUNCH_MODES.filter((m) => CONTINUE_MODES.includes(m.id))) {
+      const wrap = make('label', 'launch-mode')
+      const radio = make('input')
+      radio.type = 'radio'
+      radio.name = 'mode'
+      radio.value = mode.id
+      radio.checked = mode.id === 'ask'
+      wrap.append(radio, make('strong', '', mode.label), make('span', 'launch-mode-copy', mode.copy))
+      modes.append(wrap)
+    }
+    const prompt = make('textarea', 'launch-prompt')
+    prompt.name = 'prompt'
+    prompt.rows = 6
+    prompt.maxLength = 65536
+    prompt.required = true
+    prompt.value = drafts.get(key) ?? ''
+    const promptField = make('label', 'launch-field')
+    promptField.append(make('span', 'launch-field-label', 'Message'), prompt, make('span', 'launch-field-hint', CONTINUE_PROMPT_WARNING))
+    const message = make('p', 'launch-dialog-message')
+    message.setAttribute('role', 'status')
+    const actions = make('div', 'launch-dialog-actions')
+    const start = make('button', 'primary', 'Continue')
+    start.type = 'submit'
+    const cancel = make('button', '', 'Cancel')
+    cancel.type = 'button'
+    actions.append(cancel, start)
+    // off until there is a message, and while its start is in flight
+    const ready = () => { start.disabled = starting?.own === own || !prompt.value.trim() }
+    prompt.addEventListener('input', () => {
+      setDraft(key, prompt.value)
+      ready()
+    })
+    ready()
+    const dismiss = () => {
+      closeDialog()
+      const back = returnFocus?.()
+      if (back?.isConnected) back.focus({ preventScroll: true })
+    }
+    cancel.addEventListener('click', () => {
+      if (starting?.own === own) stopStart({ cancel, message })
+      else dismiss()
+    })
+    // Escape closes it, and does nothing while its start is in flight; focus goes back to the row
+    const onEscape = (event) => {
+      event.preventDefault()
+      if (starting?.own !== own && dialog === own) dismiss()
+    }
+    own.addEventListener('cancel', onEscape)
+    own.addEventListener('keydown', (event) => { if (event.key === 'Escape') onEscape(event) })
+    own.addEventListener('close', () => {
+      own.remove()
+      if (dialog === own) dialog = null
+      bump()
+    })
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      if (starting || !prompt.value.trim()) return
+      const mode = form.querySelector('input[name="mode"]:checked')?.value
+      if (!CONTINUE_MODES.includes(mode)) {
+        message.textContent = 'Choose a mode.'
+        return
+      }
+      const text = prompt.value
+      start.disabled = true
+      const result = await runStart(own, { cancel, message }, (api, startId) => (typeof api?.continueChat === 'function'
+        ? api.continueChat({ tool: chat.tool, id: chat.id, mode, prompt: text, startId })
+        : null))
+      answered?.(result)
+      if (dialog !== own) return
+      ready()
+      if (result?.ok) {
+        drafts.delete(key)
+        closeDialog()
+        await deps.settled()
+        if (typeof result.launch === 'string') deps.showLaunch?.(result.launch)
+        return
+      }
+      // a cancelled confirmation is back in the dialog with the message kept, and says nothing
+      message.textContent = result?.cancelled ? '' : result?.error ?? 'This chat was not continued.'
+      if (result?.cancelled) prompt.focus()
+    })
+    form.append(heading, facts, modes, promptField, message, actions)
+    own.append(form)
+    doc.body.append(own)
+    if (typeof own.showModal === 'function') own.showModal()
+    else own.setAttribute('open', '')
+    bump()
+    prompt.focus()
+    return true
   }
 
   function closeDialog() {
@@ -562,6 +702,24 @@ export function createLaunchUi(deps) {
     const launch = id && on() ? (deps.launches() ?? []).find((l) => l.id === id) ?? null : null
     const parts = ['.sp-actions', '.sp-note', '.sp-worktree', '.sp-transcript', '.sp-resume'].map((sel) => aside.querySelector(sel))
     const [actionsEl, noteEl, worktreeEl, transcriptEl, resumeEl] = parts
+    // #586 phase 2 (design §3.5): a launch that continues a Copilot chat says so, linked to the Chats tab
+    const chatEl = aside.querySelector('.sp-chat')
+    const chatId = typeof launch?.chat_id === 'string' && CHAT_ID.test(launch.chat_id) ? launch.chat_id : null
+    if (chatEl) {
+      const link = chatEl.querySelector('.sp-chat-link')
+      if (!link.dataset.bound) {
+        link.dataset.bound = '1'
+        // the hash may already be #chats, which would fire no hashchange: the app opens the tab itself
+        link.addEventListener('click', (event) => {
+          if (typeof deps.openChats !== 'function') return
+          event.preventDefault()
+          deps.openChats()
+        })
+      }
+      const text = chatId ? `Continued from a Copilot chat (${chatId.slice(0, 8)})` : ''
+      if (link.textContent !== text) link.textContent = text
+      if (chatEl.hidden !== !chatId) chatEl.hidden = !chatId
+    }
     if (!launch) {
       for (const el of parts) if (el && !el.hidden) el.hidden = true
       stopTranscript()
@@ -793,16 +951,18 @@ export function createLaunchUi(deps) {
     on,
     granted,
     version: () => version,
-    /** The drafts that pause the editable rebuild: the open dialog's task. */
-    drafts: () => (dialog && drafts.has('new') ? [['new', drafts.get('new')]] : []),
-    /** Whether typed text would be lost to a viewer restart's reload. */
-    held: () => [...drafts.keys()].some((key) => key !== 'new' || dialog !== null) || busy.size > 0,
+    /** The drafts that pause the editable rebuild: the open dialog's task, or its first message (#586). */
+    drafts: () => (dialog && drafts.has(dialogDraft) ? [[dialogDraft, drafts.get(dialogDraft)]] : []),
+    /** Whether typed text would be lost to a viewer restart's reload. A dialog's text kept after it closed holds nothing. */
+    held: () => [...drafts.keys()].some((key) => (key !== 'new' && !key.startsWith('continue:')) || dialog !== null) || busy.size > 0,
     approve,
     /** The Agents home's New session… (#454): null with the switch off. */
     newSession: () => (on()
       ? { disabled: !granted() || starting !== null, note: granted() ? '' : 'Starting and approving sessions works only in Agent Inbox’s own window.' }
       : null),
     openNewSession,
+    /** #586 phase 2: Continue here… on a Copilot chat; false when it cannot open now. */
+    openContinueChat,
     /** A session card's action on its launch (#454): the panel's own handlers. */
     /** Resolves true when the action left a note, which only the launch's panel shows. */
     async run(id, action) {

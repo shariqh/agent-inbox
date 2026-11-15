@@ -1,14 +1,15 @@
 // test/chats-model.test.ts — the Chats tab's pure model (#586 PR 2): the resume
 // command's quoting, the sort, search and filters, the home folder as ~, labels
-// and the fetch rule. Fixtures are synthetic.
+// and the fetch rule; and (#586 phase 2) Continue here…'s eligibility, a chat's
+// link to a launch of this app, and main's answer in the row. Fixtures are synthetic.
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  allSwitchText, chatsUrl, displayFolder, emptyText, filterChats, hiddenLabel, inferHome, isChatsHash,
-  lastActiveView, projectOptions, readChatsBody, resumeCommand, resumeControl, resumeOutcome, resumeTerminalControl,
-  retentionText, shouldFetchOnOpen, shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
+  allSwitchText, chatLaunch, chatsUrl, continueControl, continueOutcome, displayFolder, drivenView, emptyText, filterChats,
+  hiddenLabel, inferHome, isChatsHash, lastActiveView, projectOptions, readChatsBody, resumeCommand, resumeControl, resumeOutcome,
+  resumeTerminalControl, retentionText, shouldFetchOnOpen, shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
 } from '../public/chats.js'
 import chatResume from '../electron/chat-resume.cjs'
 import type { Chat, ChatFilter } from '../public/chats.js'
@@ -292,6 +293,103 @@ describe('chats model (#586 PR 2)', () => {
         expect(lines[3]!.startsWith('exec ')).toBe(true)
         expect(`cd ${cd} && ${lines[3]!.slice('exec '.length)}`).toBe(copied)
       }
+    })
+  })
+
+  // #586 phase 2 (design §3.1, §3.5, §3.6): Continue here…, and a chat's link to a launch of this app
+  describe('continueControl', () => {
+    const copilot = (over: Partial<Chat> = {}) => chat({ tool: 'copilot', ...over })
+
+    it('is drawn only on a Copilot row, on by default, with its title', () => {
+      expect(continueControl(chat())).toBeNull()
+      expect(continueControl(chat({ tool: 'gemini' }))).toBeNull()
+      expect(continueControl(copilot())).toEqual({ enabled: true, title: 'Continue this chat in Agent Inbox, as a session it drives' })
+      // temp is a list filter, never a refusal
+      expect(continueControl(copilot({ hidden: ['temp'] }))!.enabled).toBe(true)
+    })
+
+    it.each<[string, Partial<Chat>, string]>([
+      ['live', { live: true }, 'This chat is live in another process, so it is not continued a second time.'],
+      ['folder-gone', { hidden: ['folder-gone'] }, 'Its folder no longer exists.'],
+      ['no folder', { cwd: null, hidden: ['folder-gone'] }, 'Its folder no longer exists.'],
+      ['empty', { hidden: ['empty'] }, 'Nothing was ever said in this chat.'],
+      ['non-interactive', { hidden: ['non-interactive'] }, 'This was not an interactive chat.'],
+      ['an id that is not a UUID', { id: 'abc' }, 'This chat can’t be continued here.'],
+    ])('is off for %s, with the reason as its title', (_name, over, title) => {
+      expect(continueControl(copilot(over))).toEqual({ enabled: false, title })
+    })
+
+    it('names the first reason in the design’s order: live, folder, empty, non-interactive', () => {
+      expect(continueControl(copilot({ live: true, hidden: ['folder-gone', 'empty'] }))!.title).toMatch(/live/)
+      expect(continueControl(copilot({ hidden: ['non-interactive', 'empty', 'folder-gone'] }))!.title).toBe('Its folder no longer exists.')
+      expect(continueControl(copilot({ hidden: ['non-interactive', 'empty'] }))!.title).toBe('Nothing was ever said in this chat.')
+    })
+  })
+
+  describe('chatLaunch and drivenView', () => {
+    const L1 = '11111111-2222-4333-8444-000000000001'
+    const L2 = '11111111-2222-4333-8444-000000000002'
+    const L3 = '11111111-2222-4333-8444-000000000003'
+    const launch = (id: string, over: Record<string, unknown> = {}) => ({
+      id, chat_id: ID, status: 'running', end_reason: null, resumable: false, created_at: '2026-07-20T09:00:00.000Z', ...over,
+    })
+
+    it('finds the launch whose chat_id is the chat, and none for another chat or no list', () => {
+      const one = launch(L1)
+      expect(chatLaunch([one], ID)).toBe(one)
+      expect(chatLaunch([one], ID2)).toBeNull()
+      expect(chatLaunch([launch(L2, { chat_id: null }), launch(L3, { chat_id: undefined })], ID)).toBeNull()
+      expect(chatLaunch(null, ID)).toBeNull()
+      expect(chatLaunch([null, 'x', { chat_id: ID }] as never, ID)).toBeNull()
+    })
+
+    it('prefers the launch that holds the chat, then the newest', () => {
+      const failed = launch(L1, { status: 'ended', end_reason: 'error:start', created_at: '2026-07-20T10:00:00.000Z' })
+      const parked = launch(L2, { status: 'parked', created_at: '2026-07-20T09:00:00.000Z' })
+      expect(chatLaunch([failed, parked], ID)).toBe(parked)
+      expect(chatLaunch([parked, failed], ID)).toBe(parked)
+      const older = launch(L3, { status: 'ended', end_reason: 'handed_off', created_at: '2026-07-20T08:00:00.000Z' })
+      expect(chatLaunch([older, failed], ID)).toBe(failed)
+    })
+
+    it.each<[string, Record<string, unknown>, { show: boolean; here: boolean }]>([
+      ['running', { status: 'running' }, { show: true, here: true }],
+      ['parked', { status: 'parked' }, { show: true, here: false }],
+      ['stopped with its session', { status: 'ended', end_reason: 'stopped', resumable: true }, { show: true, here: false }],
+      ['ended by a budget with its session', { status: 'ended', end_reason: 'budget:tool_calls', resumable: true }, { show: true, here: false }],
+      ['stopped before its first message', { status: 'ended', end_reason: 'stopped', resumable: false }, { show: false, here: false }],
+      ['handed off', { status: 'ended', end_reason: 'handed_off', resumable: true }, { show: false, here: false }],
+      ['ended in an error', { status: 'ended', end_reason: 'error:load', resumable: false }, { show: false, here: false }],
+    ])('a %s launch gives Show session and "· here" as the design says', (_name, over, want) => {
+      const row = launch(L1, over)
+      const view = drivenView(row)
+      expect({ show: view.show !== null, here: view.here }).toEqual(want)
+      if (want.show) {
+        expect(view).toMatchObject({ show: L1, offTitle: 'This chat has a session here: use Show session, then Take over.' })
+      }
+      // the page's rule agrees with main's, which refuses Resume in Terminal and Continue here…
+      expect(view.show !== null).toBe(chatResume.holdsChat(row))
+    })
+
+    it('changes nothing for no launch', () => {
+      expect(drivenView(null)).toEqual({ show: null, here: false, title: null, hereTitle: null, offTitle: null })
+    })
+  })
+
+  describe('continueOutcome', () => {
+    it('puts main’s refusal in the note, and reads the list again after live, driven, folder or missing', () => {
+      for (const reason of ['live', 'driven', 'folder', 'missing']) {
+        expect(continueOutcome({ ok: false, reason, error: `because ${reason}` })).toEqual({ note: `because ${reason}`, refresh: true })
+      }
+      for (const reason of ['busy', 'index', 'kind', 'worktree', 'copilot_home', 'outdated', 'sessions', 'invalid', undefined]) {
+        expect(continueOutcome({ ok: false, reason, error: 'x' })).toEqual({ note: 'x', refresh: false })
+      }
+      expect(continueOutcome(null)).toEqual({ note: 'This chat was not continued.', refresh: false })
+    })
+
+    it('shows nothing for a start or a cancelled confirmation', () => {
+      expect(continueOutcome({ ok: true, launch: 'x' })).toEqual({ note: null, refresh: false })
+      expect(continueOutcome({ ok: false, cancelled: true, error: 'Not continued.' })).toEqual({ note: null, refresh: false })
     })
   })
 })

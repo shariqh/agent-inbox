@@ -279,10 +279,15 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `installNeedsYouLane` (`public/needs-you-lane.js`) keeps one card per ask keyed by its id,
   writes only changed text (so a selection survives a poll), and holds the order while the
   pointer is in the lane or focus is in it (`pinLaneOrder`: known cards keep their place, new
-  ones append); the next paint after both leave takes `sortRail`'s order. A card shows the
-  project dot and name, agent kind, branch, age, the title at `--fs-title`, its next step
-  and a blocked row's plan, and holds no control, so no action card is mounted on the
-  Dashboard. Its meta line says "session ended" or "no session" only when no session card
+  ones append); the next paint after both leave takes `sortRail`'s order. A card leads with
+  the Inbox row's headline, `actionPresentation(entity).headline` (`public/card.js`), at
+  `--fs-title`, with the label or title as its tooltip; under it the presentation's `detail`
+  clamped to two lines (or the `next_step` when the headline is not the step); a blocked
+  row's "Plan · <plan> · <label>" on one line; and a meta line of project dot and name,
+  agent kind, branch, age and a "Draft" tag. The tag reads `deps.hasDraft(id)`, which is
+  app.js's `holdsDraft`, the same reply, context and row drafts `suspendState()` counts, so
+  it adds no read and no render entry. The card holds no control, so no action card is
+  mounted on the Dashboard. Its meta line says "session ended" or "no session" only when no session card
   holds the ask (`agentsHome.askKey`) and the session it names is listed nowhere in the
   unlensed activity or launches (`laneSessionTag`), so a lens never makes a live session
   look ended. A click (never one that ends a text selection) or Enter calls `jumpToAsk`,

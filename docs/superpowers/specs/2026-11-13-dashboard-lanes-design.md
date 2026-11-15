@@ -89,8 +89,15 @@ G I still opens the Inbox.
   oldest first. With All projects the count equals the Inbox badge. The
   11-04 amendment's invariant, that every attention entry shows exactly once, moves from the
   session cards to this lane.
-- **Card.** Project dot and name, agent kind, branch, age, the ask's title at 17px, and its
-  `next_step`. A blocked plan row also names its plan. Option labels are not buttons: the card
+- **Card.** It leads with what the Inbox row leads with. One meta line: project dot and name,
+  agent kind, branch, age, and a muted "Draft" tag while the Inbox holds an unsent answer for
+  the ask. Then the headline at 17px, `actionPresentation(entity).headline` from
+  `public/card.js`, the call the Inbox makes: the `next_step` while the ask is unanswered and
+  has one, else the row's label or the item's title, which is also the headline's tooltip.
+  Under it, up to two lines, the presentation's detail (a row's `note`, an item's `detail`), or
+  the `next_step` when the headline is not the step. A blocked plan row ends with one line,
+  "Plan · <plan title> · <row label>", so the label stays findable. The aria-label starts with
+  the headline, and agent text is set as text only. Option labels are not buttons: the card
   does not answer in one click (owner decision 1, 2026-11-04).
 - **Click or Enter** switches to the Inbox tab with that ask open in its detail panel
   (`openAskInInbox`), exactly as a click on an Inbox row opens it. The owner asked for this. The

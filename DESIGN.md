@@ -114,8 +114,13 @@ chip also counts parked and starting ones. PR 4 removes the filters.
 
 The Needs you lane holds the Inbox's attention set under the Dashboard's lens, in rail
 order (asks an agent is waiting on first, oldest first), so with All projects its count is
-the Inbox badge and every ask shows exactly once. A card shows the project, agent kind,
-branch, age, the ask's title and its next step, and a blocked plan row's plan. A card never
+the Inbox badge and every ask shows exactly once. A card leads with what the Inbox row leads
+with: a meta line (project, agent kind, branch, age, and a muted "Draft" tag while the Inbox
+holds an unsent answer for it), then the same headline (`actionPresentation`: the requested
+step while the ask is unanswered, else its title), then up to two lines of its summary (or
+its next step when the headline is not the step), and for a blocked plan row one line,
+"Plan · plan title · row label". A Dashboard card's heading is never narrower than its text:
+the controls beside it wrap to the next line instead. A card never
 answers and holds no control: a click or Enter opens the ask in the Inbox's detail panel,
 which is the one action card per ask. When it was opened from the lane, Esc or the card's
 close returns to the Dashboard, scrolled where it was, with focus on the card; answering

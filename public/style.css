@@ -2387,6 +2387,10 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .chats-table .chats-tool, .chats-table .chats-title, .chats-table .chats-live { order: 0; }
   .chats-table .chats-title { flex: 1 1 0; }
   .chats-table .chats-folder { flex: 1 1 12em; }
+  /* the project filter takes a line of its own and its select shrinks with it: a long project
+     name would otherwise make the label wider than the panel and clip its own text */
+  label.chats-project { flex: 1 1 100%; min-width: 0; }
+  label.chats-project select { flex: 1 1 auto; min-width: 0; }
 }
 
 @container needs-queue (max-width: 620px) {

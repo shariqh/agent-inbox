@@ -29,6 +29,9 @@ export function chatsUrl(all) {
 }
 
 const str = (value) => (typeof value === 'string' ? value : null)
+// A transcript in a folder that is not a repository, or on a detached checkout, records the
+// branch as HEAD: that names no branch, so the list shows none.
+const branchOf = (value) => (typeof value === 'string' && value !== 'HEAD' ? value : null)
 const count = (value) => (Number.isFinite(value) && value >= 0 ? value : 0)
 
 function readPr(pr) {
@@ -45,7 +48,7 @@ function readChat(entry) {
     titleAuto: entry.titleAuto === true,
     project: str(entry.project) ?? '',
     cwd: str(entry.cwd),
-    branch: str(entry.branch),
+    branch: branchOf(entry.branch),
     createdAt: str(entry.createdAt),
     lastActiveAt: str(entry.lastActiveAt),
     live: entry.live === true,

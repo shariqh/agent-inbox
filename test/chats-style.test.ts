@@ -26,6 +26,9 @@ describe('Chats tab styles (#586 PR 2)', () => {
     for (const rule of [/display:\s*flex;/, /flex-wrap:\s*wrap;/]) expect(tr).toMatch(rule)
     const td = ruleBody('.chats-table td', containerStart)
     for (const rule of [/display:\s*block;/, /min-width:\s*0;/, /overflow-wrap:\s*anywhere;/, /order:\s*2;/]) expect(td).toMatch(rule)
+    // the project filter: a line of its own, with a select that can shrink
+    expect(ruleBody('label.chats-project', containerStart)).toMatch(/flex:\s*1 1 100%;[^}]*min-width:\s*0;/)
+    expect(ruleBody('label.chats-project select', containerStart)).toMatch(/min-width:\s*0;/)
     // line 1: tool, title, Live (order 0); a full-width break (order 1); line 2: the rest
     expect(ruleBody('.chats-table tr::after', containerStart)).toMatch(/flex:\s*0 0 100%;[^}]*order:\s*1;/)
     expect(ruleBody('.chats-table .chats-tool, .chats-table .chats-title, .chats-table .chats-live', containerStart)).toMatch(/order:\s*0;/)

@@ -198,6 +198,11 @@ describe('chats model (#586 PR 2)', () => {
       expect(body).toEqual({ chats: [chat()], counts: { total: 3, hidden: 2, claude: 2, copilot: 1, live: 0 }, truncated: true, claudeDays: 21 })
     })
 
+    it('shows no branch for HEAD: a folder that is not a repository, or a detached checkout', () => {
+      const body = readChatsBody({ chats: [chat({ branch: 'HEAD' }), chat({ id: ID2, branch: 'feat/HEAD-fix' })] })
+      expect(body?.chats.map((c) => c.branch)).toEqual([null, 'feat/HEAD-fix'])
+    })
+
     it('refuses a body without a chat list and drops malformed entries', () => {
       expect(readChatsBody({ chats: 'x' })).toBeNull()
       expect(readChatsBody(null)).toBeNull()

@@ -7,7 +7,7 @@ import launch from '../electron/terminal-launch.cjs'
 const { TERMINAL_IDS, TERMINALS, openInTerminal, runOutcome, terminalCommand, terminalId, terminalName } = launch
 const SCRIPT = '/hub/launches/0d1f8a52-1111-4222-8333-444455556666/take-over.command'
 const ITERM = 'com.googlecode.iterm2'
-const bundleOf = (command: { args: string[] }) => command.args[1]
+const bundleOf = (command: { args: string[] }) => command.args[1] ?? ''
 
 describe('Terminal of choice (#586)', () => {
   it('builds open -b argv for Terminal for a folder and a script', () => {

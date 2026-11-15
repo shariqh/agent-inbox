@@ -8,11 +8,14 @@
 // keyed by tool and id, so the search box, focus and a Copy press survive a paint.
 // Chat text (title, project, branch, folder) is untrusted: textContent and
 // attributes only. The one markup write is the PR link, from textLinkHtml.
+// PR 3: in the desktop app's own window on macOS (the preload's agentInboxChats
+// says so), each row also gets Resume, which asks main to open the chat in the
+// chosen terminal; main reads the folder from the index itself.
 
 import {
   allSwitchText, chatsUrl, displayFolder, emptyText, filterChats, hiddenLabel, inferHome, lastActiveView,
-  projectOptions, readChatsBody, resumeControl, retentionText, shouldFetchOnOpen, shownText, sortChats, titleView,
-  toolLabel, TRUNCATED_TEXT,
+  projectOptions, readChatsBody, RESUME_BUSY_LABEL, RESUME_LABEL, resumeControl, resumeOutcome, resumeTerminalControl,
+  retentionText, shouldFetchOnOpen, shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
 } from './chats.js'
 import { githubRef } from './links.js'
 import { pressHeld, PRESS_GRACE_MS } from './poll.js'
@@ -26,9 +29,10 @@ const TOOL_FILTERS = [['all', 'All'], ['claude', 'Claude Code'], ['copilot', 'Co
 const COLUMNS = ['Tool', 'Title', 'Project', 'Branch', 'Folder', 'Last active', 'Live', 'Actions']
 
 /**
- * @param {{ doc: Document, host: () => HTMLElement | null, fetch: (url: string) => Promise<Response>, now: () => number }} deps
+ * @param {{ doc: Document, host: () => HTMLElement | null, fetch: (url: string) => Promise<Response>, now: () => number,
+ *   resume?: () => ({ resumeAvailable(): Promise<unknown>, resume(request: { tool: string, id: string }): Promise<unknown> } | null) }} deps
  */
-export function installChatsView({ doc, host, fetch, now }) {
+export function installChatsView({ doc, host, fetch, now, resume = () => null }) {
   const win = doc.defaultView
   // window-local and never persisted, like Show archived: they survive tab switches and reads
   const filter = { query: '', tool: 'all', project: null }
@@ -47,6 +51,15 @@ export function installChatsView({ doc, host, fetch, now }) {
   let pressedAt = null
   let heldPaint = false
   let heldTimer = null
+  // Resume in Terminal (PR 3): asked again on every entry into the tab, so a reload's re-proof
+  // and a Settings → Terminal change both show; per-row state lives here, so a paint keeps it
+  let canResume = false
+  let terminal = 'terminal'
+  let askSeq = 0
+  const resumeBusy = new Set()
+  const resumeConfirm = new Map() // key → "Opened in iTerm2", for CONFIRM_MS
+  const resumeTimers = new Map()
+  const resumeNotes = new Map()   // key → the fallback notice or main's reason, until the next press
 
   const make = (tag, className, text) => {
     const el = doc.createElement(tag)
@@ -215,6 +228,92 @@ export function installChatsView({ doc, host, fetch, now }) {
     control.dataset.confirmTimer = String(win.setTimeout(() => { control.textContent = COPY_LABEL }, CONFIRM_MS))
   }
 
+  function setResumeAvailable(available, id) {
+    const next = id === 'iterm2' ? 'iterm2' : 'terminal'
+    if (available === canResume && next === terminal) return
+    canResume = available
+    terminal = next
+    changed()
+    settlePaint()
+  }
+
+  function askResume() {
+    const mine = ++askSeq
+    const bridge = resume()
+    if (!bridge || typeof bridge.resumeAvailable !== 'function') {
+      setResumeAvailable(false, 'terminal')
+      return
+    }
+    Promise.resolve().then(() => bridge.resumeAvailable()).then(
+      (answer) => { if (mine === askSeq) setResumeAvailable(answer?.available === true, answer?.terminal) },
+      () => { if (mine === askSeq) setResumeAvailable(false, 'terminal') },
+    )
+  }
+
+  async function resumeChat(key) {
+    const chat = chatByKey.get(key)
+    const bridge = resume()
+    if (!chat || !bridge || !canResume || resumeBusy.has(key) || !resumeTerminalControl(chat, terminal).enabled) return
+    resumeBusy.add(key)
+    win.clearTimeout(resumeTimers.get(key))
+    resumeTimers.delete(key)
+    resumeConfirm.delete(key)
+    resumeNotes.delete(key)
+    changed()
+    settlePaint()
+    let result = null
+    try {
+      result = await bridge.resume({ tool: chat.tool, id: chat.id })
+    } catch {
+      result = null
+    }
+    resumeBusy.delete(key)
+    const outcome = resumeOutcome(result)
+    if (outcome.note) resumeNotes.set(key, outcome.note)
+    if (outcome.label) {
+      resumeConfirm.set(key, outcome.label)
+      resumeTimers.set(key, win.setTimeout(() => {
+        resumeTimers.delete(key)
+        resumeConfirm.delete(key)
+        changed()
+        settlePaint()
+      }, CONFIRM_MS))
+    }
+    changed()
+    // after live, folder, missing or opened the list is read again, so the row's off state catches up
+    if (outcome.refresh) read()
+    else settlePaint()
+  }
+
+  // The Resume button and its note exist only while main says this window can resume.
+  function paintResume(tr, chat) {
+    const key = tr.dataset.chatKey
+    const actions = tr.querySelector('.chats-actions')
+    let control = actions.querySelector('.chats-resume')
+    let note = actions.querySelector('.chats-resume-note')
+    if (!canResume) {
+      control?.remove()
+      note?.remove()
+      return
+    }
+    if (!control) {
+      control = button('chats-resume', RESUME_LABEL, () => resumeChat(key))
+      note = make('span', 'chats-resume-note')
+      note.setAttribute('role', 'status')
+      actions.prepend(control)
+      actions.append(note)
+    }
+    const view = resumeTerminalControl(chat, terminal)
+    const busy = resumeBusy.has(key)
+    const confirm = resumeConfirm.get(key) ?? null
+    setText(control, busy ? RESUME_BUSY_LABEL : confirm ?? RESUME_LABEL)
+    setAttr(control, 'title', view.title)
+    setAttr(control, 'aria-disabled', busy || !view.enabled ? 'true' : null)
+    // off while the label says what happened, so "Opening…" and "Opened in …" are what is announced
+    setAttr(control, 'aria-label', busy || confirm ? null : view.ariaLabel)
+    setText(note, resumeNotes.get(key) ?? '')
+  }
+
   function rowEl(key) {
     const tr = make('tr')
     tr.dataset.chatKey = key
@@ -266,9 +365,10 @@ export function installChatsView({ doc, host, fetch, now }) {
     if (chat.live && !live) liveCell.append(make('span', 'chip chats-live', 'Live'))
     if (!chat.live && live) live.remove()
     const control = tr.querySelector('.chats-copy')
-    const resume = resumeControl(chat)
-    setAttr(control, 'title', resume.title)
-    setAttr(control, 'aria-disabled', resume.command ? null : 'true')
+    const copyView = resumeControl(chat)
+    setAttr(control, 'title', copyView.title)
+    setAttr(control, 'aria-disabled', copyView.command ? null : 'true')
+    paintResume(tr, chat)
   }
 
   function paintHeader(projects) {
@@ -346,6 +446,7 @@ export function installChatsView({ doc, host, fetch, now }) {
     /** The tab was entered from elsewhere: read when nothing is loaded or the list is stale, then paint. */
     opened() {
       opened = true
+      askResume()
       if (shouldFetchOnOpen({ loadedAt, loading, nowMs: now() })) read()
       else settlePaint()
     },

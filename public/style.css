@@ -2310,8 +2310,14 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .chats-reasons:empty, .chats-pr:empty { display: none; }
 .chats-reasons { display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); vertical-align: middle; }
 .chip.chats-live { background: color-mix(in srgb, var(--app-agent) 10%, transparent); color: var(--app-agent); }
-.chats-copy { padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; white-space: nowrap; cursor: pointer; }
-.chats-copy[aria-disabled="true"], .chats-refresh[aria-disabled="true"] { opacity: .45; cursor: default; }
+.chats-copy, .chats-resume { padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; white-space: nowrap; cursor: pointer; }
+.chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-refresh[aria-disabled="true"] { opacity: .45; cursor: default; }
+/* PR 3: Resume sits before Copy resume; its note (the fallback notice or main's reason) goes under both */
+.chats-resume { margin-right: var(--sp-1); }
+/* the two controls stay on one line, so a row is one line tall; the note wraps to the cell and never widens the column */
+.chats-actions { white-space: nowrap; }
+.chats-resume-note { display: block; width: 0; min-width: 100%; max-width: 24em; margin-top: var(--sp-1); color: var(--app-muted); font-size: var(--fs-meta); white-space: normal; }
+.chats-resume-note:empty { display: none; }
 /* the session card */
 /* #454 A.3 V1–V5: one quiet meta line, what it is doing leading, pink only for
    asks and green only for the working dot, one visible action as a text button */

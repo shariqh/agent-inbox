@@ -303,6 +303,10 @@ describe('the Working and Quiet lanes (dashboard lanes PR 4)', () => {
     expect(body('.working-lane .sc-state')).toMatch(/display: none;/)
     // the hidden label would leave its "·" in front of the agent
     expect(body('.working-lane .sc-chips > :first-child::before')).toMatch(/content: none;/)
+    // a long recency wraps under the agent and branch (it squeezed the branch to an ellipsis in a
+    // narrow card), and a wrapped line does not begin with the "·"
+    expect(body('.working-lane .sc-top')).toMatch(/flex-wrap: wrap;/)
+    expect(body('.working-lane .sc-when::before')).toMatch(/content: none;/)
   })
 
   it('line the Quiet table up with one template of zero-minimum tracks, so no cell widens the page', () => {

@@ -213,6 +213,34 @@ function displayLine(text, { tail = false } = {}) {
   return long ? (tail ? `…${line}` : `${line}…`) : line
 }
 
+// #586 phase 2: what else must show on the chat confirmation's Folder line, whose folder comes from the
+// chat index rather than main's own dialog: every space separator but the ordinary space, and the
+// blank-looking letters and pattern (Hangul fillers, the braille blank), so a look-alike folder reads
+// differently. displaySafe already makes the format characters and line breaks visible.
+const FOLDER_LOOKALIKE = /[\p{Zs}\u115f\u1160\u2800\u3164\uffa0]/gu
+// a cut folder keeps this many code points of its start; the rest of the line is its end
+const FOLDER_HEAD = 40
+
+function visibleFolderPart(text, { last = false } = {}) {
+  const shown = displaySafe(text).replace(/\n/g, '\\x0a')
+    .replace(FOLDER_LOOKALIKE, (ch) => (ch === ' ' ? ch : `<U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}>`))
+  // a trailing ordinary space, which no dialog shows
+  return last ? shown.replace(/ $/, '<U+0020>') : shown
+}
+
+/**
+ * #586 phase 2: the chat confirmation's folder, on one line of at most DISPLAY_MAX code points before
+ * escaping. A longer one loses its middle, never its end, which says which folder it is; look-alike
+ * spaces and blanks, and a trailing space, are shown escaped. Each part is cut on the raw text, then
+ * escaped, so a cut never splits an escape.
+ */
+function folderLine(folder) {
+  const chars = Array.from(String(folder))
+  if (chars.length <= DISPLAY_MAX) return visibleFolderPart(chars.join(''), { last: true })
+  const tail = DISPLAY_MAX - 1 - FOLDER_HEAD
+  return `${visibleFolderPart(chars.slice(0, FOLDER_HEAD).join(''))}…${visibleFolderPart(chars.slice(chars.length - tail).join(''), { last: true })}`
+}
+
 function duration(ms) {
   const minutes = Math.round(ms / 60_000)
   const hours = Math.floor(minutes / 60)
@@ -258,18 +286,20 @@ function confirmation({ project, folder, worktree, mode, model, reasoningEffort,
  * title and project from the one-chat route, its real folder, and what main found there. The
  * title, project and folder are untrusted text, one line each. Cancel is the default (main's confirm).
  */
-function chatConfirmation({ project, title, chatId, folder, repository, shared, liveHere, mode, prompt }) {
+function chatConfirmation({ project, title, chatId, folder, repository, shared, liveHere, listIncomplete = false, mode, prompt }) {
   const preview = prompt.length > PROMPT_PREVIEW ? `${prompt.slice(0, PROMPT_PREVIEW)}…` : prompt
   const modeLine = mode === 'read-only' ? `Mode: ${MODES['read-only'].label}. ${MODES['read-only'].copy}` : `Mode: ${MODES.ask.label}. ${CHAT_ASK_COPY}`
   return {
     message: `Continue this Copilot chat in ${displayLine(project)}?`,
     detail: [
       `Chat: ${title ? displayLine(title) : 'Untitled'} (${displayLine(String(chatId).slice(0, 8))})`,
-      `Folder: ${displayLine(folder)}`,
+      `Folder: ${folderLine(folder)}`,
       'It works in this folder itself, not in a worktree: what it changes, it changes in your files there, uncommitted work included.',
       ...(repository ? [] : ['This folder is not inside a git repository, so git cannot show or undo what it changes.']),
       ...(shared ? ['Another session Agent Inbox started is running in this folder itself, not in a worktree.'] : []),
-      ...(liveHere ? ['Another session is live in this folder.'] : []),
+      ...(liveHere ? ['Another session is live in this folder.']
+        // the list is cut at 2,000 chats: a live chat past the cut would go unwarned
+        : listIncomplete ? ['Agent Inbox could not check every chat for another live session in this folder.'] : []),
       'Agent Inbox drives it from this window: the agent acts in that folder, its approvals come here, and your messages reach it as turns.',
       modeLine,
       'Once any shell command is allowed, the session can run anything, in its folder and beyond. Answer each approval with that in mind.',
@@ -655,11 +685,16 @@ function createLaunchController(deps) {
     const listed = await viewer.getJson('/api/chats?all=1')
     if (!isRecord(listed) || !Array.isArray(listed.chats)) return chatRefused('index')
     const here = (folder) => folder === real || folder === cwd
+    // a live chat may name the folder through a link (/tmp, /private/tmp): only live ones are
+    // resolved, by the same rule, and one that cannot be is not this folder
+    const liveIn = (folder) => typeof folder === 'string' && (here(folder)
+      || (path.isAbsolute(folder) && !UNSAFE_PATH.test(folder) && realDirectory(folder) === real))
     const facts = {
       project: chat.project, title: chat.title, chatId: id, folder: real, mode, prompt,
       repository: inRepository(real) === true,
       shared: rows.some((l) => l.status === 'running' && here(l.cwd) && !l.worktree_path),
-      liveHere: listed.chats.some((entry) => isRecord(entry) && entry.live === true && entry.id !== id && here(entry.cwd)),
+      liveHere: listed.chats.some((entry) => isRecord(entry) && entry.live === true && entry.id !== id && liveIn(entry.cwd)),
+      listIncomplete: listed.truncated === true,
     }
     const launchId = randomUUID()
     if (!(await confirm(chatConfirmation(facts)))) return refused('Not continued.', { cancelled: true })

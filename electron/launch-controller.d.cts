@@ -47,6 +47,8 @@ export function chatRequest(value: unknown): { tool: 'copilot'; id: string; mode
 /** #586 phase 2: Continue here…'s own confirmation (design §3.4) */
 export function chatConfirmation(facts: {
   project: string; title: string | null; chatId: string; folder: string; repository: boolean; shared: boolean; liveHere: boolean
+  /** the whole chat list was cut, so a live chat in the folder may be missing from it */
+  listIncomplete?: boolean
   mode: string; prompt: string
 }): { message: string; detail: string; buttons: string[] }
 export function createLaunchController(deps: Record<string, unknown>): LaunchController

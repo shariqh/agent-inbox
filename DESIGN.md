@@ -156,6 +156,13 @@ Keyboard: Tab reaches the chips, then each lane in page order. In a lane, J/K an
 keys move between its cards or rows with one roving tab stop, never into the next lane, and
 Enter opens the card or the session panel. G I still opens the Inbox.
 
+The session panel: at 1280px and wider it opens beside Working and Quiet as a split. The
+lanes take the left column and reflow to it: Working to the card columns that fit, each
+Quiet row on two lines once the lanes are under 900px wide. The panel takes a 360–460px
+right column, stays in view under the top bar with its own scroll, and covers nothing.
+Opening or closing it keeps the card or row you opened where it was on screen, and closing
+gives the lanes their full width back. Below 1280px it opens inline under its card or row.
+
 Every summary is a working entry point into an existing view. Dashboard data never
 enters the attention predicate, badge count, or alert system.
 
@@ -190,13 +197,15 @@ No portal or duplicate action component is permitted.
 ## Responsive Contract
 
 - **1280px and wider:** fixed project library, resizable queue/inspector split,
-  the lane chips on one row; Working cards three a row at 1440px and two at 1280px;
-  the session panel is a sheet over the lanes.
+  the lane chips on one row; with the session panel closed, Working cards three a row
+  at 1440px and two at 1280px; an open session panel splits the lanes: lanes left,
+  panel right, nothing covered.
 - **900–1279px:** compact masthead, inline queue detail; the lane chips wrap
   before they shrink; two Working cards a row, and the session panel inline under
   its card or Quiet row.
 - **620–899px:** stacked dashboard regions, one Needs you card and one Working
-  card a row, reflowed metadata, and each Quiet row on two lines with no header.
+  card a row, reflowed metadata, and each Quiet row on two lines with no header
+  (keyed on the lanes' own width, so also beside an open session panel).
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
   count; dashboard is single-column, the Needs you lane's Later and Review
   queue wrap under its title. The masthead uses three compact rows:

@@ -1776,15 +1776,20 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ny-card:hover { border-color: var(--app-border-strong); border-left-color: var(--app-attention); }
 .ny-card:focus { outline: none; }
 .ny-card:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
-.ny-meta { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); white-space: nowrap; }
+/* one line, and under it the session's note when there is one ("session ended"): held on
+   the line, the note squeezed a short branch down to an ellipsis in a narrow card */
+.ny-meta { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); white-space: nowrap; }
 .ny-meta > span + span::before { margin-right: var(--sp-2); content: "·"; }
 .ny-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--ny-project, var(--app-text-soft)); }
 .ny-project { flex: none; color: var(--app-text); font-weight: 650; }
-.ny-branch { min-width: 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; }
+/* a zero basis, so a long branch never sends itself or the age to a second line; it grows
+   to its own width at most and takes an ellipsis only when the line is too short for it */
+.ny-branch { max-width: max-content; min-width: 0; flex: 1 1 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; }
 .ny-age { flex: none; font-variant-numeric: tabular-nums; }
-.ny-session { flex: none; font-style: italic; }
+.ny-session { order: 2; flex: 0 0 100%; font-style: italic; }
+.ny-meta > .ny-session::before { content: none; }
 /* the Inbox holds an unsent answer for this ask (app.js holdsDraft) */
-.ny-draft { flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-weight: 600; }
+.ny-draft { order: 1; flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-weight: 600; }
 .ny-title { min-width: 0; overflow-wrap: anywhere; color: var(--app-text); font-size: var(--fs-title); font-weight: 650; line-height: 1.3; }
 .ny-title.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }
 .ny-next { display: -webkit-box; overflow: hidden; color: var(--app-text-soft); font-size: var(--fs-body); line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

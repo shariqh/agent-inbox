@@ -104,7 +104,26 @@ function branchName(v: unknown): string | null {
 
 // ── a strict YAML subset (Copilot's workspace.yaml) ─────────────────────────
 
-const KEY_LINE = /^([A-Za-z_][\w-]*):(?:[ \t]+(.*?))?[ \t]*$/
+// Not one regex over the whole line: a lazy value between two runs of blanks backtracks cubically on a
+// line like `key:` + many blanks + a lone \r, and the viewer reads these files on its request path.
+const KEY_PREFIX = /^([A-Za-z_][\w-]*):/
+const LINE_BREAK = /[\n\r\u2028\u2029]/
+
+/** `key`, then a blank-led value (trimmed of blanks) or nothing; null for any other line. Linear in the line. */
+function keyLine(line: string): [string, string | undefined] | null {
+  const m = KEY_PREFIX.exec(line)
+  if (!m) return null
+  const rest = line.slice(m[0].length)
+  if (rest === '') return [m[1]!, undefined]
+  if (rest[0] !== ' ' && rest[0] !== '\t') return null
+  // `.` never crossed a line break in the old pattern, so a stray \r still leaves the line unread
+  if (LINE_BREAK.test(rest)) return null
+  let a = 0
+  let b = rest.length
+  while (a < b && (rest[a] === ' ' || rest[a] === '\t')) a++
+  while (b > a && (rest[b - 1] === ' ' || rest[b - 1] === '\t')) b--
+  return [m[1]!, a === b ? undefined : rest.slice(a, b)]
+}
 const BLOCK = /^([|>])(-?)$/
 
 function singleQuoted(v: string): string | null {
@@ -149,12 +168,12 @@ export function readYamlScalars(text: string, keys: readonly string[]): Map<stri
   const seen = new Set<string>()
   const lines = text.split(/\r?\n/)
   for (let i = 0; i < lines.length; i++) {
-    const m = KEY_LINE.exec(lines[i]!)
-    if (!m || !want.has(m[1]!)) continue
-    const key = m[1]!
+    const m = keyLine(lines[i]!)
+    if (!m || !want.has(m[0])) continue
+    const key = m[0]
     if (seen.has(key)) { out.delete(key); continue }
     seen.add(key)
-    const raw = m[2] ?? ''
+    const raw = m[1] ?? ''
     const block = BLOCK.exec(raw)
     let value: string | null
     if (raw === '') {
@@ -302,7 +321,12 @@ export function parseGitOrigin(configText: string): string | null {
       continue
     }
     if (!inOrigin) continue
-    const url = /^\s*url\s*=\s*(.+?)\s*$/.exec(line)?.[1]
+    // no lazy group between two \s runs: that shape backtracks on a long line of blanks
+    const head = /^\s*url\s*=/.exec(line)
+    if (!head) continue
+    const rest = line.slice(head[0].length)
+    if (LINE_BREAK.test(rest)) continue
+    const url = rest.trim()
     if (url) return url
   }
   return null

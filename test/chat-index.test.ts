@@ -83,7 +83,8 @@ describe('chat index: Claude Code transcripts (#586)', () => {
     expect(entry.title).toBe('Tail title')
     expect(entry.cwd).toBe(CWD)
     expect(read.work.filesRead).toBe(1)
-    expect(read.work.bytesRead).toBeLessThanOrEqual(2 * CHAT_WINDOW_BYTES)
+    // counted from what readSync returned: one head window and one tail window, not the 5 MiB file
+    expect(read.work.bytesRead).toBe(2 * CHAT_WINDOW_BYTES)
   })
 
   it('a tail window with no complete record still sorts by the file mtime', () => {
@@ -147,6 +148,45 @@ describe('chat index: Claude Code transcripts (#586)', () => {
     expect(byId(index.read(), id(1)).title).toBe('Kept title')
     appendFileSync(path, `${Array.from({ length: 120 }, () => rec({ type: 'attachment', pad: 'z'.repeat(1000) })).join('\n')}\n`)
     expect(byId(index.read(), id(1)).title).toBe('Kept title')
+  })
+
+  const prLink = (n: number) => ({ type: 'pr-link', prNumber: n, prRepository: 'example/widget', prUrl: `https://github.com/example/widget/pull/${n}`, timestamp: at(n) })
+
+  it('trusts a fresh read of a chat that fits in one window: a rename and a second PR show up', () => {
+    const h = home()
+    const path = claude(h, '-Users-example-dev-widget', id(1), basicHead, [{ type: 'ai-title', aiTitle: 'First' }, prLink(1)])
+    const index = open(h)
+    expect(byId(index.read(), id(1))).toMatchObject({ title: 'First', pr: { number: 1 } })
+    appendFileSync(path, `${[rec({ type: 'custom-title', customTitle: 'Renamed' }), rec(prLink(2))].join('\n')}\n`)
+    expect(byId(index.read(), id(1))).toMatchObject({ title: 'Renamed', pr: { number: 2 } })
+  })
+
+  it('does not merge a file replaced at the same size into the old entry', () => {
+    const h = home()
+    const slug = '-Users-example-dev-widget'
+    const mk = (cwd: string, title: string) => claude(h, slug, id(1), [{ type: 'user', cwd, timestamp: at(1) }], [{ type: 'ai-title', aiTitle: title }, prLink(1)])
+    const path = mk('/Users/example/dev/one', 'AAAAA')
+    const index = open(h)
+    expect(byId(index.read(), id(1)).title).toBe('AAAAA')
+    const was = lstatSync(path)
+    // the same byte length and a new first record, with no title and no PR of its own
+    writeFileSync(path, `${rec({ type: 'user', cwd: '/Users/example/dev/two', timestamp: at(1) })}\n${' '.repeat(was.size - rec({ type: 'user', cwd: '/Users/example/dev/two', timestamp: at(1) }).length - 1)}`)
+    expect(lstatSync(path).size).toBe(was.size)
+    const later = new Date(Date.now() + 5_000)
+    utimesSync(path, later, later)
+    expect(byId(index.read(), id(1))).toMatchObject({ cwd: '/Users/example/dev/two', title: null, pr: null })
+  })
+
+  it('does not carry a title across a replaced large file whose first record changed', () => {
+    const h = home()
+    const slug = '-Users-example-dev-widget'
+    const path = claude(h, slug, id(1), basicHead, [{ type: 'ai-title', aiTitle: 'Old chat' }], 100_000)
+    const index = open(h)
+    expect(byId(index.read(), id(1)).title).toBe('Old chat')
+    claude(h, slug, id(1), [{ type: 'user', cwd: '/Users/example/dev/other', timestamp: at(2) }], [{ type: 'user', timestamp: at(9) }], 150_000)
+    const later = new Date(Date.now() + 5_000)
+    utimesSync(path, later, later)
+    expect(byId(index.read(), id(1))).toMatchObject({ cwd: '/Users/example/dev/other', title: null })
   })
 })
 
@@ -377,6 +417,19 @@ describe('chat index: project names without spawning git (#586)', () => {
     expect(byId(open(h).read(), id(1)).project).toBe('widget')
   })
 
+  it('names a Claude chat in an existing non-git folder after the folder, not after its PR repository', () => {
+    const h = home()
+    const plain = join(h, 'scratch-notes')
+    mkdirSync(plain, { recursive: true })
+    const pr = { type: 'pr-link', prNumber: 4, prRepository: 'example/elsewhere', prUrl: 'https://github.com/example/elsewhere/pull/4', timestamp: at(4) }
+    claude(h, 'a', id(1), [{ type: 'user', cwd: plain, timestamp: at(1) }], [pr])
+    claude(h, 'b', id(2), [{ type: 'user', cwd: join(h, 'gone-folder'), timestamp: at(1) }], [pr])
+    const read = open(h).read()
+    expect(byId(read, id(1)).project).toBe('scratch-notes')
+    // the folder is gone, so the PR's repository is the best name left
+    expect(byId(read, id(2)).project).toBe('elsewhere')
+  })
+
   it('does not walk up from a folder that is gone', () => {
     const h = home()
     const repo = widget(h)
@@ -462,5 +515,13 @@ describe('GET /api/chats (#586)', () => {
     expect(await days()).toBe(14)
     put(join(h, '.claude', 'settings.json'), '{"cleanupPeriodDays":0}')
     expect(await days()).toBe(30)
+  })
+
+  it('follows a symlinked settings.json, as Claude Code does', async () => {
+    const h = home()
+    put(join(h, 'dotfiles', 'settings.json'), '{"cleanupPeriodDays":7}')
+    mkdirSync(join(h, '.claude'), { recursive: true })
+    symlinkSync(join(h, 'dotfiles', 'settings.json'), join(h, '.claude', 'settings.json'))
+    expect(open(h).claudeDays()).toBe(7)
   })
 })

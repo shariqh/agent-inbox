@@ -29,7 +29,7 @@ Title rules:
 - **Copilot:** `name` only when `user_named` is `true`. Copilot sets `name` to the start of the first prompt otherwise, so reading it would return prompt text; an unnamed chat has a null title. On this Mac that leaves 11 titled Copilot chats out of 1,228 in the default list.
 - A title is one line, free of control and bidi characters, at most 200 characters.
 
-A strict YAML subset reads `workspace.yaml`: only column-0 `key: value` lines for the keys above, with plain, `'single'` and `"double"` scalars and `|`, `|-`, `>`, `>-` blocks. Anything else (flow collections, anchors, tags, a nested map, a duplicate key, an unknown escape) leaves that key missing and the others still read. There is no YAML dependency.
+A strict YAML subset reads `workspace.yaml`: only column-0 `key: value` lines for the keys above, with plain, `'single'` and `"double"` scalars and `|`, `|-`, `>`, `>-` blocks. Anything else (flow collections, anchors, tags, a nested map, a duplicate key, an unknown escape) leaves that key missing and the others still read. There is no YAML dependency. Each line is split by a prefix match and a linear blank trim, never one regex with a lazy value between two blank runs, which backtracks cubically on `key:` + thousands of blanks + a lone `\r`; `parseGitOrigin` follows the same rule. A line holding a `\r`, U+2028 or U+2029 past the key is left unread.
 
 ## What is never read
 
@@ -59,7 +59,7 @@ The index is **POSIX-only for now**: `cleanPath` accepts absolute `/…` paths o
 
 - `folder` is Copilot's `git_root ?? cwd`, or Claude's `cwd`.
 - `origin` is read from git's files when the folder still exists, walking up at most 10 levels to the first `.git`. A `.git` directory gives its `config`; a `.git` file's `gitdir:` pointer gives a gitdir whose `commondir` leads to the shared `config`. The `url` under `[remote "origin"]` is the origin. Pointer files are capped at 4 KiB, a config at 64 KiB, and the result is cached per folder for 60 seconds, misses included. A folder that is gone is not walked, because a parent could belong to an unrelated repository.
-- `slug` is Copilot's `repository` or the Claude `pr-link` repository, when it matches `owner/name`.
+- `slug` is Copilot's `repository` (the chat's own repository), or the Claude `pr-link` repository, when it matches `owner/name`. The Claude slug counts only when the chat's folder is gone: a folder that exists but is not a git repository is named after the folder, as the MCP server names it, and a PR in another repository must not rename it.
 - With no folder at all the project is `unknown`.
 
 ### Live
@@ -90,7 +90,7 @@ Decisions beyond the issue's two reasons (temp, non-interactive), made while bui
 
 ## Bounds and cache
 
-- Per file, keyed by mtime and size: transcripts, `workspace.yaml` files and session files. A Copilot folder's lock list is keyed by the folder's mtime. A transcript that only grew keeps an earlier title and PR when the new tail has none, because a live chat's title scrolls out of the tail window as the chat grows. Keys a pass did not see are dropped.
+- Per file, keyed by mtime and size: transcripts, `workspace.yaml` files and session files. A Copilot folder's lock list is keyed by the folder's mtime. A transcript that only grew keeps an earlier title and PR when the new tail has none, because a live chat's title scrolls out of the tail window as the chat grows. That carry-over applies only when both reads were windowed and the first cwd and start time are unchanged: a chat that fits in one window is read whole and its fresh parse wins (so a rename or a second PR shows), and a file replaced at the same size is not merged with the old entry. Keys a pass did not see are dropped.
 - A warm read does `lstat` calls and a few small rereads of files that changed, and nothing else.
 - Caps per read, each of which sets `truncated`: 2,000 Claude project folders, 10,000 Claude transcripts, 20,000 Copilot folders, and 64 MiB of uncached reads (Claude files are read newest first, so the budget goes to recent chats; an over-budget file keeps showing its older read, or is left out and finishes on the next read). The response is capped at 2,000 chats (`MAX_CHATS`).
 - Reads are synchronous, like the rest of the viewer.
@@ -105,7 +105,7 @@ Decisions beyond the issue's two reasons (temp, non-interactive), made while bui
 
 - Sorted by `lastActiveAt` descending (null last, then by id). Hidden chats are left out unless `?all=1`. Any other `all` value is a 400 `{ ok: false, error: 'expected ?all=1' }`.
 - `counts` are over the full index, before the hidden filter and the cap.
-- `retention.claudeDays` is `cleanupPeriodDays` from `~/.claude/settings.json` when it is a positive number, else 30. Claude Code deletes chats after that many days; Copilot keeps its chats until deleted.
+- `retention.claudeDays` is `cleanupPeriodDays` from `~/.claude/settings.json` when it is a positive number, else 30. The file is the user's own config and often a symlink into a dotfiles repository, which Claude Code follows, so it is read through a link (still a regular file this user owns, at most 64 KiB). Claude Code deletes chats after that many days; Copilot keeps its chats until deleted.
 
 ## Measured on the author's Mac (counts and times only)
 

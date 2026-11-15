@@ -98,10 +98,10 @@ const TRANSCRIPT = /^([0-9a-f-]{36})\.jsonl$/
 interface Opened { fd: number; size: number; mtimeMs: number }
 
 /** Open one regular file this user owns, never through a symlink and never blocking on a FIFO. */
-function openRegular(path: string): Opened | null {
+function openRegular(path: string, follow = false): Opened | null {
   let fd: number
   try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    fd = openSync(path, constants.O_RDONLY | (follow ? 0 : (constants.O_NOFOLLOW ?? 0)) | (constants.O_NONBLOCK ?? 0))
   } catch {
     return null
   }
@@ -115,7 +115,8 @@ function openRegular(path: string): Opened | null {
   return null
 }
 
-function readRange(fd: number, position: number, length: number): string {
+/** Reads up to `length` bytes at `position`; `count.n` gains the bytes readSync really returned. */
+function readRange(fd: number, position: number, length: number, count?: { n: number }): string {
   const buf = Buffer.alloc(length)
   let got = 0
   while (got < length) {
@@ -123,6 +124,7 @@ function readRange(fd: number, position: number, length: number): string {
     if (n === 0) break
     got += n
   }
+  if (count) count.n += got
   return buf.toString('utf8', 0, got)
 }
 
@@ -143,6 +145,8 @@ interface Raw {
   folder: string | null
   /** owner/name when the files give one */
   slug: string | null
+  /** use the slug only when the folder is gone: a PR's repository must not rename a chat in an existing non-git folder */
+  slugIfGone?: boolean
   live: boolean
 }
 
@@ -169,26 +173,28 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
   })
 
   // one Map per kind, keyed by absolute path; keys a pass did not see are dropped
-  const transcripts = new Map<string, { stamp: string; size: number; mtimeMs: number; meta: ClaudeMeta }>()
+  const transcripts = new Map<string, { stamp: string; size: number; mtimeMs: number; whole: boolean; meta: ClaudeMeta }>()
   const workspaces = new Map<string, { stamp: string; meta: CopilotMeta | null }>()
   const folderLocks = new Map<string, { mtimeMs: number; locks: Array<{ pid: number; mtimeMs: number }> }>()
   const sessionFiles = new Map<string, { stamp: string; doc: { sessionId: string; startedAt: number | null } | null }>()
-  const origins = new Map<string, { at: number; origin: string | null }>()
+  const origins = new Map<string, { at: number; origin: string | null; exists: boolean }>()
   let settings: { stamp: string; days: number } | null = null
   let work = { filesRead: 0, bytesRead: 0 }
 
-  function readText(path: string, max: number): { text: string; size: number; mtimeMs: number } | null {
-    const o = openRegular(path)
+  function readText(path: string, max: number, follow = false): { text: string; size: number; mtimeMs: number } | null {
+    const o = openRegular(path, follow)
     if (!o) return null
+    const bytes = { n: 0 }
     try {
       if (o.size > max) return null
       work.filesRead++
-      work.bytesRead += o.size
-      return { text: readRange(o.fd, 0, o.size), size: o.size, mtimeMs: o.mtimeMs }
+      const text = readRange(o.fd, 0, o.size, bytes)
+      return { text, size: o.size, mtimeMs: o.mtimeMs }
     } catch {
       return null
     } finally {
       closeSync(o.fd)
+      work.bytesRead += bytes.n
     }
   }
 
@@ -196,18 +202,19 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
   function readWindows(path: string): { head: string; tail: string | null; whole: boolean; size: number; mtimeMs: number } | null {
     const o = openRegular(path)
     if (!o) return null
+    const bytes = { n: 0 }
     try {
       const W = CHAT_WINDOW_BYTES
       const whole = o.size <= W
-      const head = readRange(o.fd, 0, Math.min(o.size, W))
-      const tail = whole ? null : readRange(o.fd, o.size - W, W)
+      const head = readRange(o.fd, 0, Math.min(o.size, W), bytes)
+      const tail = whole ? null : readRange(o.fd, o.size - W, W, bytes)
       work.filesRead++
-      work.bytesRead += (whole ? o.size : 2 * W)
       return { head, tail, whole, size: o.size, mtimeMs: o.mtimeMs }
     } catch {
       return null
     } finally {
       closeSync(o.fd)
+      work.bytesRead += bytes.n
     }
   }
 
@@ -291,12 +298,14 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
     return null
   }
 
-  function originFor(folder: string, at: number): string | null {
+  function originFor(folder: string, at: number): { origin: string | null; exists: boolean } {
     const hit = origins.get(folder)
-    if (hit && at - hit.at < ORIGIN_TTL_MS) return hit.origin
-    const origin = findOrigin(folder)
-    origins.set(folder, { at, origin })
-    return origin
+    if (hit && at - hit.at < ORIGIN_TTL_MS) return hit
+    let exists = false
+    try { exists = statSync(folder).isDirectory() } catch { /* gone */ }
+    const next = { at, origin: findOrigin(folder), exists }
+    origins.set(folder, next)
+    return next
   }
 
   // ── Claude Code ───────────────────────────────────────────────────────────
@@ -336,15 +345,19 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
             budget.left -= cost
             const meta = parseClaudeWindows(w.head, w.tail, w.whole)
             // A live chat's title scrolls out of the tail window as it grows, so a file that only grew keeps what an
-            // earlier read found unless the new tail has its own. The head's title is older than a cached tail's.
-            if (cached && w.size >= cached.size) {
-              const fresh = w.tail === null ? null : parseClaudeWindows('', w.tail, false)
-              if (fresh?.title == null) meta.title = cached.meta.title ?? meta.title
-              if (fresh?.pr == null) meta.pr = cached.meta.pr ?? meta.pr
+            // earlier read found unless the new tail has its own. Only windowed reads on both sides qualify: a whole
+            // read (the file fit in one window) is complete, and a file whose first record changed was replaced.
+            const sameHead = cached !== undefined && !cached.whole && w.tail !== null && w.size >= cached.size &&
+              (meta.cwd === null || cached.meta.cwd === null || meta.cwd === cached.meta.cwd) &&
+              (meta.createdAt === null || cached.meta.createdAt === null || meta.createdAt === cached.meta.createdAt)
+            if (cached && sameHead) {
+              const fresh = parseClaudeWindows('', w.tail, false)
+              if (fresh.title == null) meta.title = cached.meta.title ?? meta.title
+              if (fresh.pr == null) meta.pr = cached.meta.pr ?? meta.pr
               meta.createdAt ??= cached.meta.createdAt
               meta.entrypoint ??= cached.meta.entrypoint
             }
-            cached = { stamp: `${w.mtimeMs}:${w.size}`, size: w.size, mtimeMs: w.mtimeMs, meta }
+            cached = { stamp: `${w.mtimeMs}:${w.size}`, size: w.size, mtimeMs: w.mtimeMs, whole: w.whole, meta }
             transcripts.set(f.path, cached)
           }
         }
@@ -368,6 +381,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
         },
         folder: meta.cwd,
         slug: meta.pr?.repo ?? null,
+        slugIfGone: true,
         live: live.has(f.id),
       })
     }
@@ -481,11 +495,13 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
       const copilot = scanCopilot(budget, alive, boot)
       const byKey = new Map<string, ChatEntry>()
       for (const raw of [...claude.raws, ...copilot.raws]) {
-        const origin = raw.folder === null ? null : originFor(raw.folder, at)
+        const found = raw.folder === null ? null : originFor(raw.folder, at)
+        const origin = found?.origin ?? null
+        const slug = raw.slugIfGone && found?.exists ? null : raw.slug
         const entry: ChatEntry = {
           ...raw.entry,
           // inferProject is always given its origin (a string or null), so it never runs git
-          project: inferProject(raw.folder ?? '', origin ?? raw.slug ?? null),
+          project: inferProject(raw.folder ?? '', origin ?? slug ?? null),
           live: raw.live,
         }
         const key = `${entry.tool}:${entry.id}`
@@ -498,9 +514,10 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
 
     claudeDays() {
       let s
-      try { s = lstatSync(settingsFile) } catch { return retentionDays(null) }
+      // the user's own config, often a link into a dotfiles repo, and Claude Code follows it too: still a regular, size-capped file
+      try { s = statSync(settingsFile) } catch { return retentionDays(null) }
       if (settings?.stamp === stamp(s)) return settings.days
-      const file = s.isFile() ? readText(settingsFile, MAX_SETTINGS_BYTES) : null
+      const file = s.isFile() ? readText(settingsFile, MAX_SETTINGS_BYTES, true) : null
       const days = retentionDays(file?.text ?? null)
       settings = { stamp: stamp(s), days }
       return days

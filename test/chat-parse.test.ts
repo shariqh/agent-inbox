@@ -67,6 +67,16 @@ describe('chat-parse (#586)', () => {
     }
   })
 
+  it('reads a pathological line of blanks and a lone \\r in linear time', () => {
+    const blanks = ' '.repeat(60_000)
+    const t0 = performance.now()
+    expect(readYamlScalars(`summary:${blanks}\rz\nid: ${ID}`, ['id', 'summary']).get('id')).toBe(ID)
+    expect(parseGitOrigin(`[remote "origin"]\n\turl = a${blanks}\rb\n\turl = ok`)).toBe('ok')
+    expect(performance.now() - t0).toBeLessThan(1000)
+    // blanks around a value are still trimmed, and a tab leads as well as a space
+    expect([...readYamlScalars('a:\t  b c  \t', ['a'])]).toEqual([['a', 'b c']])
+  })
+
   it('parseClaudeWindows: cwd and entrypoint from the first record, branch and times from the last, last ai-title, last pr-link', () => {
     const pr = (n: number) => rec({ type: 'pr-link', prNumber: n, prRepository: 'example/widget', prUrl: `https://github.com/example/widget/pull/${n}`, timestamp: at(n) })
     const head = [

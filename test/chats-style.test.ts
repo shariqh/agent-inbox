@@ -57,6 +57,18 @@ describe('Chats tab styles (#586 PR 2)', () => {
     expect(ruleBody('.chip.chats-live')).toMatch(/color:\s*var\(--app-agent\);/)
   })
 
+  it('draws Resume as Copy resume is drawn, with its note under both (PR 3)', () => {
+    const button = ruleBody('.chats-copy, .chats-resume')
+    for (const rule of [/padding:\s*var\(--sp-1\) var\(--sp-2\);/, /font-size:\s*var\(--fs-meta\);/, /white-space:\s*nowrap;/]) expect(button).toMatch(rule)
+    expect(ruleBody('.chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-refresh[aria-disabled="true"]')).toMatch(/opacity:\s*\.45;/)
+    // its own rule, not the one it shares with Copy resume
+    expect(ruleBody('\n.chats-resume')).toMatch(/margin-right:\s*var\(--sp-1\);/)
+    const note = ruleBody('.chats-resume-note')
+    for (const rule of [/display:\s*block;/, /margin-top:\s*var\(--sp-1\);/, /font-size:\s*var\(--fs-meta\);/]) expect(note).toMatch(rule)
+    expect(note).not.toMatch(/\d+px/)
+    expect(ruleBody('.chats-resume-note:empty')).toMatch(/display:\s*none;/)
+  })
+
   it('lets [hidden] win over the parts that set a display', () => {
     const hidden = ruleBody('.chats-note[hidden], .chats-error[hidden], .chats-count[hidden], .chats-state[hidden], .chats-table[hidden]')
     expect(hidden).toMatch(/display:\s*none;/)

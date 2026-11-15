@@ -716,6 +716,8 @@ const chatsView = installChatsView({
   host: () => document.querySelector('#chats .chats'),
   fetch: (url) => fetch(url),
   now: () => Date.now(),
+  // #586 PR 3: Resume in Terminal, only where the desktop app's preload exposes it
+  resume: () => window.agentInboxChats ?? null,
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.

@@ -30,6 +30,8 @@ import { buildStamp, readBakedInfo } from './stamp.js'
 import type { BakedInfo, BuildStamp } from './stamp.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import type { MeshAgents } from './mesh-agents.js'
+import { chatsResponse, createChatIndex } from './chat-index.js'
+import type { ChatIndex } from './chat-index.js'
 
 const require = createRequire(import.meta.url)
 const {
@@ -85,6 +87,8 @@ export interface ViewerOpts {
   /** The agent cards view (src/mesh-agents.ts); viewer-server.ts passes it. Without it
    *  `/api/version` has no `mesh` key and the mesh routes answer off, touching no file. */
   mesh?: MeshAgents
+  /** #586: the chat index behind GET /api/chats. Production builds one over `agentHome`; a test passes its own. */
+  chatIndex?: ChatIndex
 }
 
 /** Split a fixed `darwin-arm64`/`darwin-x64` runtime key into platform/arch —
@@ -823,6 +827,8 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // its directory and manifest; the current runtime the release lookup above
   // already verified (more strictly) is not hashed again.
   const agentHome = opts.agentHome ?? homedir()
+  // lazy: nothing is read until the first GET /api/chats (#586)
+  const chats = opts.chatIndex ?? createChatIndex({ home: agentHome })
   const ownership = new Map<string, { key: string; at: number; value: { version: string | null } | null }>()
   let hostsCache: { key: string; at: number; value: AgentHosts } | undefined
   const agentHosts = (baked: BakedInfo | null): AgentHosts => {
@@ -1105,6 +1111,14 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const launch = getLaunch(db, c.req.param('id'))
     if (!launch) return c.json({ ok: false, error: 'no such launch' }, 404)
     return c.json({ prompt: launch.prompt })
+  })
+
+  // #586: every Claude Code and Copilot CLI chat on this Mac, from metadata only. Read-only.
+  app.get('/api/chats', (c) => {
+    const all = c.req.query('all')
+    if (all !== undefined && all !== '1') return c.json({ ok: false, error: 'expected ?all=1' }, 400)
+    c.header('Cache-Control', 'no-store')
+    return c.json(chatsResponse(chats.read(), { all: all === '1', claudeDays: chats.claudeDays() }))
   })
 
   // Issue #412 step 3: what Electron main reads and writes for a launch, as it

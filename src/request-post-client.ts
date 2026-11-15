@@ -37,7 +37,7 @@ export const REQUEST_POST_USAGE = `usage: <mesh dir>/bin/request-post file --bra
        <mesh dir>/bin/request-post wait (--key <k> | --page-id <id>) [--through-go] [--report <f>]
 (the shim runs agent-inbox-meshctl request-post with the same arguments; docs/request-post.md)
 Exit 0 ok (JSON on stdout), 11 refused, 12 busy, 13 outcome unknown, 14 off,
-15 unavailable, 16 conflict, 18 the shim is stale (run meshctl enable --request-post again),
+15 unavailable, 16 conflict, 18 the shim is stale (run meshctl enable --request-post --endpoint <url> --token-file <path> --apply again),
 124 wait ran 4 h, 4 usage. stdout is empty unless 0.
 `
 

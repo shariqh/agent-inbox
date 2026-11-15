@@ -27,8 +27,8 @@ edit in-session: return the text unchanged and say that the rules could not be r
      Then edit the original in-session with `rules.md`.
    - Exit 18 (the shim is stale): the same, and also tell the person to run
      `meshctl enable --unslop --apply` again.
-   - If the shell says the shim file does not exist, the agent is off. That is not a
-     failure: edit in-session with `rules.md`.
+   - If the shell says the shim file does not exist, the agent is off: still tell the person
+     the unslop agent was not used (it is off), then edit in-session with `rules.md`.
 3. Anything else: edit in-session with `rules.md`.
 
 ## Email

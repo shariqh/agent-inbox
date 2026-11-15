@@ -371,7 +371,7 @@ describe('the generated text (#584)', () => {
     const text = routingSkill('unslop', '/m', '/h')!
     expect(text).toContain('Exit 18 (the shim is stale)')
     expect(text).toContain('`meshctl enable --unslop --apply` again')
-    expect(text).toContain('If the shell says the shim file does not exist, the agent is off.')
+    expect(text).toContain('If the shell says the shim file does not exist, the agent is off: still tell the person')
     expect(text).toContain('Do not check for the shim first')
   })
 
@@ -505,6 +505,35 @@ describe('the rules.md link (#584)', () => {
       expect(lstatSync(rulesLink(t)).isSymbolicLink() || lstatSync(rulesLink(t)).isFile() || lstatSync(rulesLink(t)).isDirectory()).toBe(true)
       expect(existsSync(join(t.skill, 'SKILL.md'))).toBe(false)
     }
+  })
+
+  it('treats a relative rules.md link as not meshctl\'s: enable leaves it and disable keeps it', () => {
+    const t = setup()
+    const mine = t.rulesFolder('my rules\n')
+    t.writeProfile(t.rulesFolder())
+    mkdirSync(t.skill, { recursive: true })
+    writeFileSync(join(t.skill, 'SKILL.md'), 'hand edit\n')
+    const relative = join('..', '..', '..', mine.slice(1), 'rules.md')
+    symlinkSync(relative, rulesLink(t))
+    const r = t.enable('--apply')
+    expect(r.code).toBe(0)
+    expect(r.err).toContain(`${rulesLink(t)} is not a link meshctl made, so it is not replaced`)
+    expect(readlinkSync(rulesLink(t))).toBe(relative)
+    expect(t.run('disable', '--apply').code).toBe(0)
+    expect(readlinkSync(rulesLink(t))).toBe(relative)
+  })
+
+  it('refuses a profile that reaches the generated folder through a link, so rules.md never points at itself', () => {
+    const t = setup()
+    t.writeProfile(t.rulesFolder())
+    expect(t.enable('--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    t.writeProfile(join(t.home, '.claude', 'skills', 'unslop'))
+    const r = t.run('skills', 'link', '--apply')
+    expect(r.code, r.err).toBe(0)
+    // the alias names no usable rules.md: the old link goes, and none is made that points at itself
+    expect(r.out + r.err).not.toContain('Linked')
+    expect(lstatSync(rulesLink(t), { throwIfNoEntry: false })).toBeUndefined()
   })
 
   it('is absent when the profile, its skill or its rules.md is missing, and goes when the rules do', () => {

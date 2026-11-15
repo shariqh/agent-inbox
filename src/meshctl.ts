@@ -268,7 +268,8 @@ function profileTemplate(start: string[]): string {
 
 const shQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
 
-// The shim never reads a terminal: on a stale path it discards piped input only. A stale shim exits
+// The shim never reads a terminal: on a stale path it discards piped input only, and not at all
+// when the draft came by --in (the skill's form), since a held-open stdin would stall the exit. A stale shim exits
 // 18, not 14: 14 is the agent being off, and a caller must tell a broken install from a switch (#584).
 // It pins the mesh dir it was written for, so the caller's environment (no
 // AGENT_INBOX_MESH_DIR, or an AGENT_INBOX_DB) cannot point it at another one.
@@ -279,7 +280,8 @@ AGENT_INBOX_MESH_DIR=${shQuote(dir)}; export AGENT_INBOX_MESH_DIR
 node=${shQuote(node)}
 meshctl=${shQuote(script)}
 if [ ! -x "$node" ] || [ ! -f "$meshctl" ]; then
-  [ -t 0 ] || cat > /dev/null
+  drain=1; for a in "$@"; do case "$a" in --in|--in=*) drain=0;; esac; done
+  [ "$drain" = 0 ] || [ -t 0 ] || cat > /dev/null
   echo 'agent-inbox ${agent}: this shim is stale: run meshctl enable --${agent} again' >&2
   exit 18
 fi

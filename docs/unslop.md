@@ -153,8 +153,8 @@ edit in-session: return the text unchanged and say that the rules could not be r
      Then edit the original in-session with `rules.md`.
    - Exit 18 (the shim is stale): the same, and also tell the person to run
      `meshctl enable --unslop --apply` again.
-   - If the shell says the shim file does not exist, the agent is off. That is not a
-     failure: edit in-session with `rules.md`.
+   - If the shell says the shim file does not exist, the agent is off: still tell the person
+     the unslop agent was not used (it is off), then edit in-session with `rules.md`.
 3. Anything else: edit in-session with `rules.md`.
 
 ## Email
@@ -182,7 +182,8 @@ yours. meshctl owns the link, and only the link:
   old link goes when its file does.
 - It is removed with the generated folder (`disable --unslop --apply`). `skills unlink` removes
   host links only, so it stays while the folder does.
-- A file, a folder or a link elsewhere that is not a `rules.md` link is not meshctl's, and is never
+- A file, a folder or a link elsewhere that is not a `rules.md` link (a relative link is yours,
+  never meshctl's) is not meshctl's, and is never
   replaced: meshctl says so and leaves it.
 
 If a host cannot read `rules.md`, the skill tells it not to edit in-session: it returns the text

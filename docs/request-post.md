@@ -111,7 +111,7 @@ terminal and never asks anything; the brief comes on stdin or from `--brief-file
 | 14 | Off: no `agents.request-post`, or the device token is missing | The in-session path is fine |
 | 15 | Unavailable: DNS, TLS, refused, a redirect on the card, a refused token, a card that does not match ("update agent-inbox or the service"), or this Mac not on the endpoint's tailnet or its tailnet unreadable; nothing was filed | Retry once, then report to the user; no in-session filing |
 | 16 | Conflict: another row already covers this | Report that row; never change the slug, title or channels to get around it |
-| 18 | The shim is stale (its Node or `meshctl.js` is gone); the shim itself exits 18 before the client runs, and nothing was sent | Tell Shariq to run `meshctl enable --request-post --apply` again; the in-session path is fine |
+| 18 | The shim is stale (its Node or `meshctl.js` is gone); the shim itself exits 18 before the client runs, and nothing was sent | Tell Shariq to run `meshctl enable --request-post --endpoint <url> --token-file <path> --apply` again (the same endpoint and token file as before); the in-session path is fine |
 | 124 | `wait` ran 4 hours without a final phase | Run the same `wait` again if it still matters |
 | 4 | Usage, a terminal on stdin, or an unreadable `--brief-file` | Fix the command |
 
@@ -183,6 +183,7 @@ compete with the private one. So `enable --request-post` writes no routing skill
 > **16:** report the existing row; never change fields to get around it.
 > **15:** retry once, then report to the user; no in-session filing.
 > **14:** the agent is off; the in-session path is fine on the Mac.
-> **18:** the shim is stale; tell Shariq to run `meshctl enable --request-post --apply` again.
+> **18:** the shim is stale; tell Shariq to run `meshctl enable --request-post --endpoint <url> --token-file <path> --apply` again
+> (the same endpoint and token file as before).
 > Monitoring uses `status` and `wait`; repair is in-session. Ready is not approval: at
 > `awaiting-go`, `ready-for-human` or `proposed`, report `humanAction` and stop.

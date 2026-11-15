@@ -313,7 +313,8 @@ to `--report <file>`. On any other exit stdout is empty, and callers edit the or
 | Kind, screen, size or budget refusal | `REJECTED` | 11 |
 | Queue full, expected wait too long, backend 5xx | `REJECTED` with a retry hint | 12 |
 | Backend unreachable, task time exceeded, CLI timeout | `FAILED` | 13 |
-| Key off, no agent, stale shim, card mismatch | no task | 14 |
+| Key off, no agent, card mismatch | no task | 14 |
+| Stale shim (its Node or `meshctl.js` is gone; it exits before the client runs, #584) | no task | 18 |
 | Usage | no task | 4 |
 
 The agent streams status updates only; the text arrives once, after the check, because streamed
@@ -418,7 +419,7 @@ or two PRs per phase", so each stays near 300 production lines; the amendment no
   left; sampling matches the profile; no request carries `tools`.
 - **U2b:** wrong token, `Host` or any `Origin` refused; a non-loopback bind refused; text never sent
   before `COMPLETED`; the log has no canary string from the input.
-- **U3a/U3b:** a non-loopback endpoint refused by `enable` and the CLI; a stale shim exits 14; stdout
+- **U3a/U3b:** a non-loopback endpoint refused by `enable` and the CLI; a stale shim exits 18 (#584); stdout
   empty on every non-zero exit; run under a pseudo-terminal, the CLI never opens `/dev/tty`.
 - **U4:** the scorer flags a planted broken trap in a recorded output.
 

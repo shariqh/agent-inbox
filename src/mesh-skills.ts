@@ -51,8 +51,8 @@ edit in-session: return the text unchanged and say that the rules could not be r
      Then edit the original in-session with \`rules.md\`.
    - Exit 18 (the shim is stale): the same, and also tell the person to run
      \`meshctl enable --unslop --apply\` again.
-   - If the shell says the shim file does not exist, the agent is off. That is not a
-     failure: edit in-session with \`rules.md\`.
+   - If the shell says the shim file does not exist, the agent is off: still tell the person
+     the unslop agent was not used (it is off), then edit in-session with \`rules.md\`.
 3. Anything else: edit in-session with \`rules.md\`.
 
 ## Email
@@ -118,7 +118,7 @@ export interface SkillContext {
 // the mesh dir goes into a shell command in the skill, so it must be one plain word (a leading ~ is the home folder)
 const PLAIN_PATH = /^(~|~?[A-Za-z0-9._/@+-]+)$/
 
-type Entry = { kind: 'missing' } | { kind: 'dir' } | { kind: 'link'; to: string } | { kind: 'other' }
+type Entry = { kind: 'missing' } | { kind: 'dir' } | { kind: 'link'; to: string; raw: string } | { kind: 'other' }
 function entry(path: string): Entry {
   let stat
   try {
@@ -128,7 +128,8 @@ function entry(path: string): Entry {
   }
   if (stat.isSymbolicLink()) {
     try {
-      return { kind: 'link', to: resolve(dirname(path), readlinkSync(path)) }
+      const raw = readlinkSync(path)
+      return { kind: 'link', to: resolve(dirname(path), raw), raw }
     } catch {
       return { kind: 'other' }
     }
@@ -234,6 +235,12 @@ function profileRules(dir: string): string | undefined {
   const rules = join(skill, 'rules.md')
   // a profile that names the generated folder itself would make the link point at itself
   if (rules.startsWith(`${join(dir, 'skills')}/`)) return undefined
+  // ...or reaches it through a link (~/.claude/skills/unslop, which skills link makes)
+  try {
+    if (`${realpathSync(skill)}/`.startsWith(`${realpathSync(join(dir, 'skills'))}/`)) return undefined
+  } catch {
+    // no generated skills folder yet: nothing to alias
+  }
   try {
     return statSync(rules).isFile() ? rules : undefined
   } catch {
@@ -243,7 +250,7 @@ function profileRules(dir: string): string | undefined {
 
 // meshctl's rules.md link: a symlink to an absolute path ending in /rules.md. Any other thing
 // at that name (a file, a folder, a link elsewhere) was not made by meshctl and is never replaced.
-const isRulesLink = (at: Entry): at is { kind: 'link'; to: string } => at.kind === 'link' && isAbsolute(at.to) && basename(at.to) === 'rules.md'
+const isRulesLink = (at: Entry): at is { kind: 'link'; to: string; raw: string } => at.kind === 'link' && isAbsolute(at.raw) && basename(at.raw) === 'rules.md'
 
 export interface SkillPlan {
   steps: SkillStep[]

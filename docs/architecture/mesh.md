@@ -342,7 +342,7 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      (exported as `AGENT_INBOX_MESH_DIR`, so the caller's environment cannot move it) and
      the absolute paths of that Node binary and the built `meshctl.js` (`dist/meshctl.js`, so run
      `npm run build` at the root first). When either is gone it discards piped input
-     (never a terminal), prints "run meshctl enable --unslop again" and exits 18 (#584: 14 stays the agent being off, so
+     (never a terminal, and not at all when `--in` was passed, since a held-open pipe would stall it), prints "run meshctl enable --unslop again" and exits 18 (#584: 14 stays the agent being off, so
      a caller can tell a broken install from a switch);
      otherwise it runs `meshctl unslop` (below);
   4. `agents.unslop` = `{ "endpoint": "http://127.0.0.1:<port>", "profile": "unslop" }` in
@@ -731,7 +731,7 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
     `<mesh dir>/mesh/tokens/request-post` (0600, through an `O_EXCL | O_NOFOLLOW` temporary
     file and a rename; a newer token from the runbook replaces it); 2. the shim
     `<mesh dir>/bin/request-post` (0755), the unslop shim's text with the agent's name: it pins
-    its mesh dir, and when its Node or `meshctl.js` is gone it discards piped input, prints "run
+    its mesh dir, and when its Node or `meshctl.js` is gone it discards piped input (unless `--in` is given), prints "run
     meshctl enable --request-post again" and exits 18 (#584, as unslop's); otherwise it runs
     `meshctl request-post "$@"` (R3, below);
     3. `agents.request-post` = `{ "endpoint": <url> }` in `mesh.json`, every other key kept,
@@ -1230,10 +1230,10 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   only substitution).
 - **The `rules.md` link (#584).** When `<mesh dir>/mesh/wrappers/unslop.json` has an absolute
   `skill` whose folder holds a regular `rules.md` (read through links; a profile naming the
-  generated folder itself is ignored), the plan makes `<mesh dir>/skills/unslop/rules.md` a
+  generated folder itself, by path or through a link such as `~/.claude/skills/unslop`, is ignored), the plan makes `<mesh dir>/skills/unslop/rules.md` a
   symlink to it. Only the path is read: no byte of the file or the profile reaches a skill. meshctl
-  owns the link and nothing else at that name: a symlink to an absolute path ending in `/rules.md`
-  is ours, so it is refreshed when the profile's folder changes and removed when the profile or
+  owns the link and nothing else at that name: a symlink whose own text is an absolute path ending in `/rules.md`
+  (a relative link is not) is ours, so it is refreshed when the profile's folder changes and removed when the profile or
   its `rules.md` goes missing or the folder is removed; a file, a folder or any other link there
   is left alone, with a note (the exit of `skills link` is then 1). `skills unlink` removes host
   links only, so the rules link stays with the folder. The skill's text says that when `rules.md`

@@ -535,7 +535,7 @@ describe('Since you last looked (#305)', () => {
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', metaKey: true, bubbles: true }))
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }))
     expect(since().hidden).toBe(false)
-    document.querySelector('.dash-now')!.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    document.querySelector('.dash-head')!.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     expect(since().hidden).toBe(true)
   })
 

@@ -42,6 +42,8 @@ import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission 
 import { refreshLinkSettings, renderLinkSettings } from '/link-settings.js'
 import { createLaunchUi } from '/launch-ui.js'
 import { installAgentsHome, moveKeepingFocus } from '/agents-home.js'
+import { installNeedsYouLane } from '/needs-you-lane.js'
+import { installDashHead } from '/dash-head.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
@@ -526,6 +528,8 @@ function setOpenRow(id, { resume = true } = {}) {
     clearScrollActivity()
   }
   openRowId = id
+  // another row opened (or none): the way back belonged to the ask that was open (§3.2)
+  if (dashReturn && dashReturn.id !== id) dashReturn = null
   if (resume) resumeRender()
   else showPauseHint()
 }
@@ -1724,7 +1728,7 @@ function runPaletteAction(action) {
     renderSearchResults()
     return
   }
-  // #454 A.2: the ask's session panel, at that ask (jumpToAsk falls back to its Inbox card)
+  // the ask's Inbox card, as a lane card opens it (dashboard lanes design §6)
   resetSearch()
   jumpToAsk(entry)
 }
@@ -2126,24 +2130,6 @@ function dashboardEntryProject(entry) {
   return entry?.kind === 'row' ? entry.board?.project : entry?.item?.project
 }
 
-function dashboardTarget(target) {
-  if (target === 'sessions') {
-    showAgentsHome()
-    return
-  }
-  // #454 A.2: Waiting on you turns on the Needs you filter (G I still opens the Inbox)
-  if (target === 'asks') {
-    if (activeTab !== 'dashboard') selectTab('dashboard')
-    agentsHome.showFilter('ask')
-    return
-  }
-  if (target === 'outcomes') {
-    openRelay()
-    return
-  }
-  selectTab(target)
-}
-
 function dashboardInteractionActive() {
   return activeTab === 'dashboard' && Boolean(activeFocusElement()?.closest?.('#dashboard'))
 }
@@ -2164,22 +2150,24 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
   const host = document.querySelector('#dashboard .dashboard')
   if (!host?.querySelector('.dashboard-grid')) return
   lastDashModel = model
-  renderDashNow(host.querySelector('.dash-now'), model)
   renderDashSince(host.querySelector('.dash-since'), model)
-  // the cards first: the session panel shows one of them (#454)
+  // the cards first: the session panel shows one of them (#454), and the lane's session tags read them
   agentsHome.paint(host, {
     activity: liveInLens(), boards: model.boards, attention: model.waitingEntries, closed: dashboardClosedProjects(),
-    // #454 A.1: answers not picked up yet (shown in the panel, never counted) and the items "last heard" reads
-    answered: model.agentEntries, items: model.items,
+    // #454 A.1: answers not picked up yet (shown in the panel, never counted)
+    answered: model.agentEntries,
     // #412 step 3: this app's launches, only with its switch on (§9: otherwise none is read or drawn)
     launches: launchesOn() ? launchesInLens() : null,
     outside: launchesOn() ? launchesOutsideLens() : 0,
-    nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession, later: model.later,
+    nowMs: Date.now(), forced, lensProject: projectFilter, selected: focusSession,
     // global: the lens and filters never narrow it; nothing it draws reaches attention
     mesh: meshWanted() && lastData.mesh?.body?.on === true ? lastData.mesh : null,
     // the agent the agent tab holds: its card carries aria-current (cards view V5 §2.2)
     meshOpen: meshAgentPage.current()?.key ?? null,
   })
+  // dashboard lanes design §3.1–3.2: every attention entry once, in rail order, and each lane counted once
+  needsYouLane.paint({ entries: model.needsYou, later: model.later, nowMs: Date.now() })
+  dashHead.paint({ needs: model.needsYou.length, ...(agentsHome.counts() ?? { working: null, quiet: null }) })
   renderDashFocus(focusPanelEl, model, { forced })
   placeFocusPanel()
   renderDashRibbon(host.querySelector('.dashboard-activity'), model)
@@ -2205,57 +2193,6 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 // relMs says "moments" under a minute; a chip says "<1m".
 const ageText = (ms) => relMs(ms) === 'moments' ? '<1m' : relMs(ms)
 
-// ── the Now strip (#304) ─────────────────────────────────────────────────────
-// One line of four links, from the same model as the lanes: its plan steps are
-// the lanes' bars added up, each plan once. The headings around it carry no
-// numbers of their own.
-const DASH_NOW = [
-  ['agents', 'Working', 'sessions'],
-  ['waiting', 'Waiting on you', 'asks'],
-  ['plans', 'Plan steps', 'boards'],
-  ['outcomes', 'Recorded outcomes', 'outcomes'],
-]
-
-function dashNowEl() {
-  const strip = document.createElement('div')
-  strip.className = 'dash-now'
-  strip.setAttribute('role', 'group')
-  strip.setAttribute('aria-label', 'Now')
-  for (const [name, label, target] of DASH_NOW) {
-    const item = document.createElement('button')
-    item.type = 'button'
-    item.className = `dash-now-item tone-${name}`
-    item.dataset.dashboardSignal = name
-    item.dataset.dashboardTarget = target
-    item.dataset.dashboardFocusKey = `signal:${name}`
-    item.innerHTML = `<span class="dash-now-label">${esc(label)}</span><span class="dashboard-value"></span>${name === 'plans' ? '<span class="dashboard-value-total"></span>' : ''}<span class="dash-now-sub"></span>`
-    item.addEventListener('click', () => dashboardTarget(target))
-    strip.appendChild(item)
-  }
-  return strip
-}
-
-function renderDashNow(strip, model) {
-  if (!strip) return
-  const now = model.now
-  const oldest = now.oldestWaitingMs == null ? '' : `oldest ${ageText(now.oldestWaitingMs)}`
-  const parts = {
-    agents: [now.working, now.subagents ? `+${plural(now.subagents, 'subagent')}` : '',
-      `Agents working: ${now.working}${now.subagents ? `, plus ${plural(now.subagents, 'subagent')}` : ''}`],
-    waiting: [now.waiting, oldest, `Waiting on you: ${plural(now.waiting, 'open action')}${oldest ? `, ${oldest}` : ''}`],
-    plans: [now.plans.done, 'in sessions',
-      `Plan steps done in the plans agents are working on: ${now.plans.done} of ${now.plans.countable}`],
-    outcomes: [model.signals.outcomes, '', `Recorded outcomes: ${model.signals.outcomes} across items and plan rows`],
-  }
-  for (const [name, [value, sub, label]] of Object.entries(parts)) {
-    const item = strip.querySelector(`[data-dashboard-signal="${name}"]`)
-    setText(item.querySelector('.dashboard-value'), String(value))
-    setText(item.querySelector('.dash-now-sub'), sub)
-    setAttr(item, 'aria-label', label)
-  }
-  setText(strip.querySelector('[data-dashboard-signal="plans"] .dashboard-value-total'), `/${now.plans.countable}`)
-}
-
 // ── the Agents home (#454, design §3) ───────────────────────────────────────
 // The session panel's key, if open (#307, #454): a session id, or `launch:<id>` for a
 // launch's card, which outlives its sessions. agentsHome.cardFor() resolves it.
@@ -2263,21 +2200,18 @@ let focusSession = null
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
 // Its filters, grouping and folds are window-local.
 const agentsHome = installAgentsHome({
-  // a card's click toggles its panel; Review, Message, Transcript and Resume… open it at that part
+  // a card's click toggles its panel; Enter, Message, Transcript and Resume… open it at that part
   openSession: (key, part, ask) => (part ? openSessionFocus(key, part, ask) : toggleSessionFocus(key)),
-  // an ask-only card's Open in Inbox (#454 A.1)
-  openInInbox: (entry) => { if (entry) openAskInInbox(entry) },
-  hasAskDraft: (id) => Boolean(id) && holdsDraft(id),
+  // "Asking you · N": that session's first ask in the Needs you lane (dashboard lanes design §3.3)
+  showAsk: (id) => { if (id) needsYouLane.focusAsk(id) },
   // a card's action that failed says why in the launch's panel
   launchAction: (id, action) => launchUi?.run(id, action).then((noted) => {
     if (noted && focusSession !== `launch:${id}`) openSessionFocus(`launch:${id}`)
   }),
   launches: () => (launchesOn() ? launchUi : null),
   hasDraft: (session) => messageDrafts.has(session),
-  // #454 A.2: the header's "Later N ›" opens the Inbox's Later section; Review queue the deck
-  openLater,
-  openReview: openTriage,
   projectColor: (project) => pcolor(project).dot,
+  scrollBehavior: () => motion.scrollBehavior(),
   pulse: (el) => { if (dashboardMotion()) playOnce(el, 'pulse', 'dash-lane-pulse') },
   paintUndelivered,
   // its own repaints (filters, grouping, folds) can remove the group the panel sits in (#463 review)
@@ -2293,6 +2227,37 @@ const agentsHome = installAgentsHome({
     requestHistoryPaint()
   },
 })
+
+// ── the Needs you lane and the page head (dashboard lanes design §3.1–3.2) ───
+// The lane never answers: a card opens its ask in the Inbox's detail panel
+// (jumpToAsk). "Later N ›" and Review queue moved to its header from the
+// Agents card's.
+const needsYouLane = installNeedsYouLane({
+  open: (entry) => jumpToAsk(entry),
+  openLater,
+  openReview: openTriage,
+  projectColor: (project) => pcolor(project).dot,
+  sessionTag: (entry) => laneSessionTag(entry),
+  scrollBehavior: () => motion.scrollBehavior(),
+})
+const dashHead = installDashHead({
+  onChip: (key) => (key === 'needs' ? needsYouLane.focusFirst() : agentsHome.focusFirst(key)),
+})
+
+// §6: an ask whose session no card holds says why in its meta line: "session
+// ended" when it names a session that is listed nowhere (the unlensed activity
+// and every launch's sessions, so a lens never makes a live session look
+// ended), else "no session". Nothing before /api/activity is read.
+function laneSessionTag(entry) {
+  if (!Array.isArray(lastData?.activity)) return ''
+  if (agentsHome.askKey(needsEntryId(entry)) !== null) return ''
+  const owner = entry.kind === 'row' ? entry.board : entry.item
+  const session = typeof owner?.session === 'string' && owner.session ? owner.session : null
+  if (!session) return 'no session'
+  const listed = lastData.activity.some((row) => row.session === session)
+    || (lastData.launches ?? []).some((launch) => Array.isArray(launch.sessions) && launch.sessions.includes(session))
+  return listed ? '' : 'session ended'
+}
 
 // One iteration of a CSS one-shot, restarted when it is still running and
 // removed when it ends or is cancelled (Calm switched on, the Dashboard left
@@ -2328,10 +2293,46 @@ function playOnce(el, name, animation = `dash-lane-${name}`) {
 // Activity motion runs only where the human allows it and can see it.
 const dashboardMotion = () => motion.activityMotion() && !document.getElementById('dashboard')?.hidden
 
-// #454 A.2: an ask opens in its session's panel, at that ask (an ask-only
-// card's panel included); the lens widens to the ask's project when it hides
-// it. An ask no card holds (deferred, stale) opens in the Inbox instead.
+// Dashboard lanes design §3.2, §6: an ask opens in the Inbox's detail panel,
+// as a click on its Inbox row does. Opened from the Dashboard, the way back is
+// kept (dashReturn): Esc or the card's close returns to the Dashboard, scrolled
+// where it was, focus on the lane card.
+let dashReturn = null // { id, project, agent, scrollY } while an ask opened from the Dashboard is open
+
 function jumpToAsk(entry) {
+  if (!entry) return
+  const id = needsEntryId(entry)
+  const back = activeTab === 'dashboard' ? { id, project: projectFilter, agent: agentFilter, scrollY: window.scrollY } : null
+  dashReturn = null
+  openAskInInbox(entry)
+  // kept only once the ask's row is open in the Inbox: the clears below then guard it
+  if (back && activeTab === 'needsYou' && openRowId === id) dashReturn = back
+}
+
+// Whether the ask is still in the attention set: answered, snoozed, pinned or
+// dismissed, it is not, and closing its card stays in the Inbox (§3.2).
+function askStillWaiting(id) {
+  if (!lastData) return false
+  return attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
+    .some((entry) => needsEntryId(entry) === id)
+}
+
+// The way back (§3.2): the lens the Dashboard had, a round trip (no fresh
+// open), the scroll it was at, and focus on the ask's lane card.
+function returnToDashboard(back) {
+  projectFilter = back.project
+  agentFilter = back.agent
+  resetPaging()
+  selectTab('dashboard', { paint: false, open: false })
+  forceRender()
+  if (window.scrollY !== back.scrollY) window.scrollTo(0, back.scrollY)
+  needsYouLane.focusAsk(back.id, { scroll: false })
+}
+
+// #454 A.2: "Show on Agents ›" on an Inbox card: the ask in its session's
+// panel, at that ask; the lens widens to the ask's project when it hides it.
+// An ask no card holds opens in the Inbox instead.
+function openAskInSession(entry) {
   if (!entry) return
   const id = needsEntryId(entry)
   let key = agentsHome.askKey(id)
@@ -2542,7 +2543,7 @@ function approvalHtml(entry, granted) {
 const panelAsksKey = new WeakMap() // the section → what it was built from
 
 // Held per PANEL (focusSession), never per card: a card's id moves under an
-// open panel (its session ends, an ask-only card's session comes back), and that
+// open panel (its session ends, or comes back under a launch's card), and that
 // must not rebuild an editor being typed in. Only an explicit open, which moves
 // focusSession, or a forced paint rebuilds it.
 function panelAsksHeld(list, asks) {
@@ -2665,8 +2666,8 @@ function panelAnsweredEl(entry, nowMs) {
   return line
 }
 
-// The panel follows a drafted ask only when its own card has VANISHED (an
-// ask-only card whose session came back live, or whose only ask moved): the
+// The panel follows a drafted ask only when its own card has VANISHED (its
+// session ended, or its only ask moved) and another card holds that ask: the
 // held section stays, rebuilding nothing, now under the key of the card that
 // holds that ask. While the panel's card exists it never moves, whatever its
 // asks do (two working sessions trade a joined plan's row on every call), and
@@ -2876,7 +2877,7 @@ function closeSessionFocus() {
   const owned = Boolean(aside?.contains(activeFocusElement()))
   focusSession = null
   paintSessionFocus()
-  // "Answer · draft" or "Message · draft" on the card the panel leaves
+  // "Message · draft" on the card the panel leaves
   agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
   if (!owned || !document.hasFocus()) return
   const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
@@ -3223,7 +3224,7 @@ function renderDashboardOutcomes(list, entries, complete = true, wait = { histor
     }
     if (focused) {
       const next = rows[Math.min(focusedIndex, rows.length - 1)]
-        ?? document.querySelector('[data-dashboard-signal="outcomes"]')
+        ?? document.getElementById('dashLandedTitle')
       next?.focus({ preventScroll: true })
     }
   }
@@ -3272,6 +3273,8 @@ function openAskInInbox(entry) {
   changedOnly = false
   resetSearch()
   selectTab('needsYou', { paint: false })
+  // a protected id, so the first page always holds it, however far down the Inbox sorts it
+  selectedId = id
   forceRender()
   const target = needsYouRowEl(id)
   if (!target) return
@@ -3286,12 +3289,18 @@ function renderDashboard(model) {
   // Keep native controls mounted; ambient updates replace only their data regions.
   if (!host || host.querySelector('.dashboard-grid')) return
 
-  host.appendChild(dashNowEl())
+  // the page head (§3.1): the lane chips, New session… at its right end, then its note
+  const head = dashHead.element()
+  const start = agentsHome.newSessionElements()
+  dashHead.actions().appendChild(start.button)
+  host.append(head, start.note)
   const since = document.createElement('p')
   since.className = 'dash-since'
   since.hidden = true
   host.appendChild(since)
   sinceEl = since
+  // the Needs you lane (§3.2), first and above the grid: the desktop session sheet covers the grid only
+  host.appendChild(needsYouLane.element())
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
@@ -3304,7 +3313,7 @@ function renderDashboard(model) {
 
   const outcomes = document.createElement('section')
   outcomes.className = 'dashboard-card dashboard-outcomes'
-  outcomes.innerHTML = '<div class="dashboard-card-head"><h2>Just landed</h2></div>'
+  outcomes.innerHTML = '<div class="dashboard-card-head"><h2 id="dashLandedTitle" tabindex="-1">Just landed</h2></div>'
   const outcomeList = document.createElement('div')
   outcomeList.className = 'dashboard-outcome-list'
   outcomes.appendChild(outcomeList)
@@ -3370,7 +3379,7 @@ function paintAmbient() {
   return { agents, g, boards, archived, live, dashboard }
 }
 
-// The Agents home's and the Now strip's input (#397, #454): the sessions the
+// The Agents home's input (#397, #454): the sessions the
 // rail's project and agent lens shows, never narrowed by closure (closed
 // projects' sessions have a fold of their own).
 function liveInLens() {
@@ -5221,6 +5230,8 @@ function selectTab(id, { paint = true, open = true } = {}) {
   if (id !== 'done') historyTabPinned = false
   activeTab = id
   if (id !== 'needsYou') triageHeld = false
+  // leaving the Inbox gives up the way back to the Dashboard (§3.2)
+  if (id !== 'needsYou') dashReturn = null
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
@@ -6730,7 +6741,7 @@ function renderSessionsIndicator(activity) {
   setAttr(el, 'aria-label', `${title}. Open the Agents home`)
 }
 
-// The indicator, G L and the Now strip's Working tile: the Dashboard, its Agents home focused.
+// The indicator and G L: the Dashboard, its Agents home focused.
 // Each re-reads the build state (#197), as opening the Live drawer did; the next tick paints it.
 // "Later N ›" (#454 A.2, the rail's "N in Later" before it): the Inbox, its Later section open.
 function openLater() {
@@ -7544,7 +7555,7 @@ function needsRowEl(m, entry, nowMs) {
   el.addEventListener('keydown', (ev) => {
     if (ev.target !== el) return
     if (ev.key === 'Enter') { ev.preventDefault(); activateRow(el, m, entry, nowMs) }
-    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); collapseRow(m.id) }
+    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); collapseRow(m.id, { back: true }) }
   })
   // a full render (poll or user action) rebuilds the open row from openRowId
   if (openRowId === m.id) {
@@ -7572,21 +7583,24 @@ function rowCardBodyEl(entry, m, nowMs) {
   const meta = document.createElement('span')
   meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
   heading.append(title, meta)
-  // #454 A.2: the ask's session, and the way to its card on the Agents view
+  // #454 A.2: the ask's session, and the way to its card on the Agents view,
+  // offered only where a session card can open it (the lanes design §6)
   if (!m.later) {
     const session = askSessionToken(entry)
     const where = document.createElement('div')
     where.className = 'nrow-card-session'
     if (session) where.append(Object.assign(document.createElement('span'), { className: `nrow-session${session.live ? ' live' : ''}`, textContent: session.text }))
-    const show = btn('Show on Agents ›', (ev) => {
-      ev.stopPropagation()
-      jumpToAsk(entry)
-    })
-    show.type = 'button'
-    show.className = 'nrow-show-agents'
-    show.title = 'Open this ask in its session’s panel on the Dashboard'
-    where.append(show)
-    heading.append(where)
+    if (agentsHome.askKey(m.id) !== null || session?.live) {
+      const show = btn('Show on Agents ›', (ev) => {
+        ev.stopPropagation()
+        openAskInSession(entry)
+      })
+      show.type = 'button'
+      show.className = 'nrow-show-agents'
+      show.title = 'Open this ask in its session’s panel on the Dashboard'
+      where.append(show)
+    }
+    if (where.childElementCount) heading.append(where)
   }
   const close = document.createElement('button')
   close.type = 'button'
@@ -7596,7 +7610,7 @@ function rowCardBodyEl(entry, m, nowMs) {
   close.textContent = '×'
   close.addEventListener('click', (ev) => {
     ev.stopPropagation()
-    collapseRow(m.id)
+    collapseRow(m.id, { back: true })
   })
   head.append(heading, close)
 
@@ -7683,8 +7697,13 @@ function activateRow(el, m, entry, nowMs) {
 
 // Explicit collapse is separate from activation so pointer/Enter re-selection is
 // idempotent while Escape still closes and restores focus to the owning row.
-function collapseRow(id) {
+// `back` (Esc and the card's close, never the narrow row toggle) returns to the
+// Dashboard when the ask was opened from its Needs you lane and still waits
+// there (dashboard lanes design §3.2); answering it leaves you in the Inbox.
+function collapseRow(id, { back = false } = {}) {
   if (openRowId !== id) return
+  const ret = back && dashReturn?.id === id && activeTab === 'needsYou' && askStillWaiting(id) ? dashReturn : null
+  dashReturn = null
   selectedId = id
   markSelectedRow(id)
   setOpenRow(null)
@@ -7692,6 +7711,11 @@ function collapseRow(id) {
   el?.removeAttribute('data-open')
   el?.setAttribute('aria-expanded', 'false')
   el?.querySelector('.nrow-card')?.remove()
+  // no Inbox repaint or row focus behind the return: the row is hidden
+  if (ret) {
+    returnToDashboard(ret)
+    return
+  }
   renderIfIdle()
   requestAnimationFrame(() => selectRow(id))
 }
@@ -9865,7 +9889,7 @@ function runIntent(intent) {
     }
     case 'collapse': {
       if (!openRowId) return
-      collapseRow(openRowId)
+      collapseRow(openRowId, { back: true })
       return
     }
     case 'exitPeek': {

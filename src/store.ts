@@ -1613,23 +1613,6 @@ export function acknowledgeHandoff(db: Database.Database, id: string): Acknowled
   }).immediate()
 }
 
-// Issue #612: the human's Acknowledge. One IMMEDIATE transaction: only an open
-// hand-off is resolved, with the outcome "Acknowledged"; anything else is
-// refused and left as it was.
-export type AcknowledgeResult = { ok: true } | { ok: false; reason: 'not_found' | 'not_handoff' }
-
-export function acknowledgeHandoff(db: Database.Database, id: string): AcknowledgeResult {
-  return db.transaction((): AcknowledgeResult => {
-    const row = db.prepare(`SELECT kind, status, handoff FROM items WHERE id = ?`).get(id) as
-      | { kind: Kind; status: Status; handoff: number | null }
-      | undefined
-    if (!row) return { ok: false, reason: 'not_found' }
-    if (row.kind !== 'done' || row.handoff !== 1 || row.status !== 'open') return { ok: false, reason: 'not_handoff' }
-    resolveItem(db, id, 'Acknowledged')
-    return { ok: true }
-  }).immediate()
-}
-
 export function annotateItem(db: Database.Database, id: string, text: string): boolean {
   const info = db.prepare(`UPDATE items SET annotation = ?, updated_at = ? WHERE id = ? AND status = 'open'`)
     .run(text, new Date().toISOString(), id)

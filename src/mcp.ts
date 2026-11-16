@@ -386,14 +386,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         action: z.enum(['file', 'open', 'update', 'close']),
         id: z.string().min(1).optional().describe('The request: its full id or its first 8 characters. Needed by file, update and close.'),
         as: z.enum(['new', 'part_of', 'reply']).optional().describe('file only: new work, more on an open request (needs parent), or no new work.'),
-        title: z.string().max(120).optional().describe('One short line naming the work. Needed by open and by file as new, and by close on an unfiled request.'),
+        title: z.string().optional().describe('One short line naming the work, at most 120 characters after trimming. Needed by open and by file as new, and by close on an unfiled request.'),
         parent: z.string().min(1).optional().describe('file as part_of only: the id of an open request of this session.'),
-        issue: z.string().optional().describe(`The GitHub issue this is about. Accepted forms: ${ISSUE_FORMS}.`),
-        note: z.string().max(240).optional().describe('A one-line note on where the work stands; "" clears it on update.'),
-        outcome: z.string().max(240).optional().describe('close only, required: one line saying what happened (for dropped, why).'),
+        issue: z.string().max(300).optional().describe(`The GitHub issue this is about (open, file as new, update). Accepted forms: ${ISSUE_FORMS}.`),
+        note: z.string().optional().describe('A one-line note on where the work stands, at most 240 characters after trimming; "" clears it on update. Not an input of close.'),
+        outcome: z.string().optional().describe('close only, required: one line saying what happened (for dropped, why), at most 240 characters after trimming.'),
         state: z.enum(['done', 'dropped']).optional().describe('close only: done (the default) or dropped.'),
         review: z.boolean().optional().describe('close only: true when the human should look at or try the result; needs next_step.'),
-        next_step: z.string().max(180).optional().describe('close with review:true only: the ONE concrete action the human should take. Start with a verb.'),
+        next_step: z.string().optional().describe('close with review:true only: the ONE concrete action the human should take, at most 180 characters after trimming. Start with a verb.'),
       },
     },
     async ({ action, id, as, title, parent, issue, note, outcome, state, review, next_step }) => {
@@ -403,10 +403,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         if (value === undefined || value === '') throw new Error(`request ${action} needs ${what}`)
         return value
       }
-      const link = issue === undefined ? undefined : normalizeIssue(issue, s.repo)
+      // close takes no note or issue: an unreadable issue there must not throw
+      const link = action === 'close' || issue === undefined ? undefined : normalizeIssue(issue, s.repo)
       let result: object
       if (action === 'open') {
-        result = openAgentRequest(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, title: need('a title', title), note, issue: link })
+        // a missing title is the refusal file as new gives, not a tool error
+        result = openAgentRequest(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, title: title ?? '', note, issue: link })
       } else if (action === 'file') {
         if (as === undefined) throw new Error('request file needs as: new, part_of or reply')
         result = fileRequest(db, { session: sessionId, id: need('an id', id), as, title, parent, note, issue: link })
@@ -416,10 +418,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         const text = need('an outcome', outcome)
         if (review && state === 'dropped') throw new Error('request close: a dropped request cannot be sent for review; use state "done" with review:true, or drop it without review')
         // the scope fields flag stamps on an item, for the item a done or review close writes
+        // the item carries the scope at close, every field from this one moment, as flag stamps its items
         const stream = s.stream
         result = closeRequest(db, {
           session: sessionId, id: need('an id', id), outcome: text, state, review, next_step, title,
           scope: state === 'dropped' ? undefined : {
+            project: s.project, stream, agent: s.agent,
             repo: s.repo, issue_ref: scope.issueFor(stream), head_repo: s.repo ? scope.headFor(stream) : null, repo_root: scope.rootFor(),
           },
         })

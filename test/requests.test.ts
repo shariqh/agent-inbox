@@ -6,6 +6,7 @@
 // docs/superpowers/specs/2026-11-15-requests-design.md (§3.2, §3.6, §3.8).
 // Fixtures are synthetic.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
@@ -16,6 +17,12 @@ import {
   updateRequest, upsertActivity,
 } from '../src/store.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+
+// randomUUID passes through, except where a test names the next id (to give two requests one 8-character prefix)
+vi.mock('node:crypto', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:crypto')>()
+  return { ...original, randomUUID: vi.fn(() => original.randomUUID()) }
+})
 
 const T0 = Date.parse('2026-11-15T12:00:00.000Z')
 const MIN = 60_000
@@ -46,10 +53,15 @@ function deadPid(): number {
 const CHAT_A = 'claude:11111111-aaaa-4bbb-8ccc-000000000001'
 const CHAT_B = 'claude:11111111-aaaa-4bbb-8ccc-000000000002'
 
+/** the next randomUUID() answers this id */
+function nextId(id: string): void {
+  vi.mocked(randomUUID).mockReturnValueOnce(id as ReturnType<typeof randomUUID>)
+}
+
 function prompt(session: string, over: { chat?: string; turn?: string | null; midturn?: boolean } = {}) {
   const opened = openPromptRequest(db, { session, chat: over.chat ?? CHAT_A, turn: over.turn ?? 'prompt-1', midturn: over.midturn ?? false })
-  expect(opened, 'a prompt request was opened').not.toBeNull()
-  return opened!
+  expect(opened, 'a prompt request was opened').toMatchObject({ ok: true })
+  return opened as { ok: true; id: string; short: string }
 }
 
 function declared(session: string, title = 'Fix the login redirect') {
@@ -112,6 +124,7 @@ describe('opening a prompt request (the hook’s door)', () => {
   it('inserts an unfiled request of origin prompt, with the presence row’s project, stream and agent', () => {
     present('mcp-a', { project: 'homelab', stream: '7-dns', agent: 'claude-code' })
     const opened = prompt('mcp-a', { turn: 'turn-9', midturn: true })
+    expect(opened).toEqual({ ok: true, id: expect.any(String), short: expect.any(String) })
     expect(opened.short).toBe(opened.id.slice(0, 8))
     expect(opened.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
     expect(row(opened.id)).toMatchObject({
@@ -124,39 +137,39 @@ describe('opening a prompt request (the hook’s door)', () => {
 
   it('writes a null turn and a null midturn when the hook has none', () => {
     present('mcp-a')
-    const opened = openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })!
+    const opened = openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A }) as { id: string }
     expect(row(opened.id)).toMatchObject({ turn: null, midturn: null })
-    const plain = openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A, turn: 'p1', midturn: false })!
+    const plain = openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A, turn: 'p1', midturn: false }) as { id: string }
     expect(row(plain.id)).toMatchObject({ turn: 'p1', midturn: null })
   })
 
-  it('opens nothing for a session that is not live, or has no presence row', () => {
-    expect(openPromptRequest(db, { session: 'nobody', chat: CHAT_A })).toBeNull()
+  it('opens nothing for a session that is not live, or has no presence row, and says session_not_live', () => {
+    expect(openPromptRequest(db, { session: 'nobody', chat: CHAT_A })).toEqual({ ok: false, reason: 'session_not_live' })
     present('mcp-a')
     endActivity(db, 'mcp-a')
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toEqual({ ok: false, reason: 'session_not_live' })
     present('mcp-b')
     at(T0 + 16 * MIN)
-    expect(openPromptRequest(db, { session: 'mcp-b', chat: CHAT_A })).toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-b', chat: CHAT_A })).toEqual({ ok: false, reason: 'session_not_live' })
     expect(db.prepare(`SELECT count(*) FROM requests`).pluck().get()).toBe(0)
   })
 
-  it('opens nothing in a reserved project', () => {
+  it('opens nothing in a reserved project, and says reserved_project', () => {
     present('mcp-a', { project: '@sessions' })
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toEqual({ ok: false, reason: 'reserved_project' })
     present('mcp-b', { project: '@mesh' })
-    expect(openPromptRequest(db, { session: 'mcp-b', chat: CHAT_A })).toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-b', chat: CHAT_A })).toEqual({ ok: false, reason: 'reserved_project' })
   })
 
-  it('opens nothing for a chat or turn the harness id rules reject', () => {
+  it('opens nothing for a chat or turn the harness id rules reject, and says bad_chat or bad_turn', () => {
     present('mcp-a')
     for (const chat of ['claude:', 'claude:has space', 'claude:' + 'x'.repeat(65), 'claude:a/b', 'copilot:abc', 'abc', '']) {
-      expect(openPromptRequest(db, { session: 'mcp-a', chat }), chat).toBeNull()
+      expect(openPromptRequest(db, { session: 'mcp-a', chat }), chat).toEqual({ ok: false, reason: 'bad_chat' })
     }
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A, turn: 'bad turn' })).toBeNull()
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A, turn: 'x'.repeat(65) })).toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A, turn: 'bad turn' })).toEqual({ ok: false, reason: 'bad_turn' })
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A, turn: 'x'.repeat(65) })).toEqual({ ok: false, reason: 'bad_turn' })
     expect(db.prepare(`SELECT count(*) FROM requests`).pluck().get()).toBe(0)
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: `claude:${'x'.repeat(64)}` })).not.toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: `claude:${'x'.repeat(64)}` })).toMatchObject({ ok: true })
   })
 
   it('caps unfiled and open requests at 50 a session and counts only those states, per session', () => {
@@ -164,15 +177,15 @@ describe('opening a prompt request (the hook’s door)', () => {
     present('mcp-b')
     const ids: string[] = []
     for (let n = 0; n < 50; n++) ids.push(prompt('mcp-a').id)
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toEqual({ ok: false, reason: 'cap' })
     expect(openAgentRequest(db, { session: 'mcp-a', project: 'alpha', stream: 'main', agent: 'claude-code', title: 'One more' }))
       .toEqual({ ok: false, reason: 'too_many_open' })
     // another session is unaffected
-    expect(openPromptRequest(db, { session: 'mcp-b', chat: CHAT_B })).not.toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-b', chat: CHAT_B })).toMatchObject({ ok: true })
     // a request filed as a reply stops counting
     expect(fileRequest(db, { session: 'mcp-a', id: ids[0]!, as: 'reply' }).ok).toBe(true)
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).not.toBeNull()
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toMatchObject({ ok: true })
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toEqual({ ok: false, reason: 'cap' })
   })
 })
 
@@ -196,10 +209,17 @@ describe('opening an agent request', () => {
   it('refuses a blank or over-long title and an over-long note', () => {
     present('mcp-a')
     const open = (title: string, note?: string) => () => openAgentRequest(db, { session: 'mcp-a', project: 'alpha', stream: 'main', agent: 'claude-code', title, note })
-    expect(open('   ')).toThrow(/title/)
     expect(open('x'.repeat(121))).toThrow(/title/)
     expect(open('Fine', 'n'.repeat(241))).toThrow(/note/)
     expect(open('x'.repeat(120), 'n'.repeat(240))).not.toThrow()
+  })
+
+  it('answers title_required for a blank title, as file as new does', () => {
+    present('mcp-a')
+    for (const title of ['', '   ']) {
+      expect(openAgentRequest(db, { session: 'mcp-a', project: 'alpha', stream: 'main', agent: 'claude-code', title })).toEqual({ ok: false, reason: 'title_required' })
+    }
+    expect(db.prepare(`SELECT count(*) FROM requests`).pluck().get()).toBe(0)
   })
 
   it('refuses a reserved project', () => {
@@ -750,7 +770,7 @@ describe('adoptChatRequests (the only re-address path)', () => {
   it('moves a request whose session has no presence row, a stale one, and one whose server process is dead', () => {
     present('new')
     const noRow = openPromptRequest(db, { session: 'gone', chat: CHAT_A })
-    expect(noRow).toBeNull() // a prompt cannot open for a session without presence; seed the rows directly
+    expect(noRow).toEqual({ ok: false, reason: 'session_not_live' }) // a prompt cannot open for a session without presence; seed the rows directly
     for (const [n, session] of ['gone', 'stale', 'crashed'].entries()) {
       db.prepare(`INSERT INTO requests (id, project, session, chat, origin, state, opened_at, updated_at)
                   VALUES (?, 'alpha', ?, ?, 'prompt', 'unfiled', ?, ?)`).run(`00000000-0000-4000-8000-00000000000${n}`, session, CHAT_A, iso(T0), iso(T0))
@@ -995,6 +1015,124 @@ describe('retention (pruneRequests, run at every open)', () => {
   it('does not count an open request that retention removed toward the cap', () => {
     present('mcp-a')
     for (let n = 0; n < 50; n++) seed(`00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, 'open', { updated: iso(T0 - 31 * DAY), opened: iso(T0 - 31 * DAY) })
-    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).not.toBeNull()
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toMatchObject({ ok: true })
+  })
+})
+
+describe('close: the item and the request are one transaction (the reverse case)', () => {
+  it('writes no item when the request cannot be updated, for done and for review', () => {
+    present('mcp-a')
+    const req = declared('mcp-a')
+    const other = declared('mcp-a', 'Second')
+    db.exec(`CREATE TEMP TRIGGER no_request_updates BEFORE UPDATE ON requests BEGIN SELECT RAISE(ABORT, 'no updates today'); END`)
+    expect(() => closeRequest(db, { session: 'mcp-a', id: req.id, outcome: 'Done.' })).toThrow(/no updates today/)
+    expect(() => closeRequest(db, { session: 'mcp-a', id: other.id, outcome: 'Ready.', review: true, next_step: 'Look.' })).toThrow(/no updates today/)
+    expect(listItems(db)).toEqual([])
+    db.exec(`DROP TRIGGER no_request_updates`)
+    expect(row(req.id)).toMatchObject({ state: 'open', item: null })
+  })
+})
+
+describe('a short id is the full id when its first 8 characters are not unique among the session’s requests', () => {
+  const A1 = 'abcdef01-0000-4000-8000-000000000001'
+  const A2 = 'abcdef01-0000-4000-8000-000000000002'
+  const seedTwin = (session: string, id: string, state = 'unfiled') =>
+    db.prepare(`INSERT INTO requests (id, project, session, origin, state, title, opened_at, updated_at) VALUES (?, 'alpha', ?, 'prompt', ?, 'Twin', ?, ?)`)
+      .run(id, session, state, iso(T0), iso(T0))
+
+  it('openPromptRequest answers it', () => {
+    present('mcp-a')
+    seedTwin('mcp-a', A1)
+    nextId(A2)
+    expect(openPromptRequest(db, { session: 'mcp-a', chat: CHAT_A })).toEqual({ ok: true, id: A2, short: A2 })
+    // the same prefix in another session does not count
+    present('mcp-b')
+    nextId('abcdef01-0000-4000-8000-000000000003')
+    expect(openPromptRequest(db, { session: 'mcp-b', chat: CHAT_A })).toEqual({ ok: true, id: 'abcdef01-0000-4000-8000-000000000003', short: 'abcdef01' })
+  })
+
+  it('openAgentRequest and the changes it leads to answer it', () => {
+    present('mcp-a')
+    seedTwin('mcp-a', A1, 'done')
+    nextId(A2)
+    const out = openAgentRequest(db, { session: 'mcp-a', project: 'alpha', stream: 'main', agent: 'claude-code', title: 'Twin of a done one' })
+    expect(out).toMatchObject({ ok: true, request: { id: A2, short: A2 } })
+    expect(updateRequest(db, { session: 'mcp-a', id: A2, note: 'Hello.' })).toMatchObject({ ok: true, request: { short: A2 } })
+    expect(closeRequest(db, { session: 'mcp-a', id: A2, outcome: 'Done.' })).toMatchObject({ ok: true, request: { id: A2, short: A2 } })
+  })
+
+  it('fileRequest answers it', () => {
+    present('mcp-a')
+    seedTwin('mcp-a', A1, 'done')
+    seedTwin('mcp-a', A2)
+    expect(fileRequest(db, { session: 'mcp-a', id: A2, as: 'new', title: 'Filed' })).toMatchObject({ ok: true, request: { id: A2, short: A2 } })
+  })
+
+  it('listSessionRequests, listUnfiledRequests, markAcksDelivered and listRequests answer it', () => {
+    present('mcp-a')
+    seedTwin('mcp-a', A1)
+    seedTwin('mcp-a', A2)
+    expect(listSessionRequests(db, 'mcp-a').requests.map((r) => r.short)).toEqual([A1, A2])
+    expect(listUnfiledRequests(db, ['mcp-a']).map((r) => r.short)).toEqual([A1, A2])
+    expect(listRequests(db).open.map((r) => r.short)).toEqual([A1, A2])
+    db.prepare(`UPDATE requests SET acked_at = ?, state = 'done' WHERE id = ?`).run(iso(T0), A1)
+    expect(markAcksDelivered(db, 'mcp-a').map((r) => r.short)).toEqual([A1])
+    // a lone prefix stays short, and a full id still resolves
+    present('mcp-b')
+    const lone = prompt('mcp-b')
+    expect(lone.short).toBe(lone.id.slice(0, 8))
+    expect(resolveRequestId(db, 'mcp-a', A2)).toEqual({ ok: true, id: A2 })
+  })
+})
+
+describe('the item a close writes carries the scope at close', () => {
+  const NOW_SCOPE = { project: 'moved', stream: '77-moved', agent: 'copilot', repo: 'owner/moved', issue_ref: 77, head_repo: 'fork/moved', repo_root: '/Users/s/Development/moved' }
+
+  it('a review’s hand-off takes project, stream, agent, repo and issue from the scope the caller gives, and the request keeps its own', () => {
+    present('mcp-a')
+    const req = declared('mcp-a')
+    closeRequest(db, { session: 'mcp-a', id: req.id, outcome: 'Ready.', review: true, next_step: 'Look.', scope: NOW_SCOPE })
+    expect(getItem(db, row(req.id).item as string)).toMatchObject({
+      project: 'moved', stream: '77-moved', agent: 'copilot', repo: 'owner/moved', issue_ref: 77, head_repo: 'fork/moved',
+      repo_root: '/Users/s/Development/moved', session: 'mcp-a',
+    })
+    expect(row(req.id)).toMatchObject({ project: 'alpha', stream: 'main', agent: 'claude-code' })
+  })
+
+  it('a done outcome item does the same', () => {
+    present('mcp-a')
+    const req = declared('mcp-a')
+    closeRequest(db, { session: 'mcp-a', id: req.id, outcome: 'Done.', scope: NOW_SCOPE })
+    expect(getItem(db, row(req.id).item as string)).toMatchObject({ project: 'moved', stream: '77-moved', agent: 'copilot', repo: 'owner/moved', issue_ref: 77 })
+    expect(row(req.id)).toMatchObject({ project: 'alpha', stream: 'main' })
+  })
+
+  it('without a scope the item falls back to the request’s own project, stream and agent', () => {
+    present('mcp-a')
+    const req = declared('mcp-a')
+    closeRequest(db, { session: 'mcp-a', id: req.id, outcome: 'Done.' })
+    expect(getItem(db, row(req.id).item as string)).toMatchObject({ project: 'alpha', stream: 'main', agent: 'claude-code', repo: null })
+  })
+})
+
+describe('length limits apply after trimming', () => {
+  it('accepts a title, note, outcome and next step at their limit followed by spaces', () => {
+    present('mcp-a')
+    const title = `${'t'.repeat(120)} `
+    const note = `${'n'.repeat(240)} `
+    const opened = openAgentRequest(db, { session: 'mcp-a', project: 'alpha', stream: 'main', agent: 'claude-code', title, note })
+    expect(opened).toMatchObject({ ok: true, request: { title: 't'.repeat(120), note: 'n'.repeat(240) } })
+    const id = (opened as { request: { id: string } }).request.id
+    expect(updateRequest(db, { session: 'mcp-a', id, title, note }).ok).toBe(true)
+    const unfiled = prompt('mcp-a')
+    expect(fileRequest(db, { session: 'mcp-a', id: unfiled.id, as: 'new', title, note }).ok).toBe(true)
+    const closing = prompt('mcp-a')
+    expect(closeRequest(db, {
+      session: 'mcp-a', id: closing.id, title, outcome: `${'o'.repeat(240)} `, review: true, next_step: `${'s'.repeat(180)} `,
+    }).ok).toBe(true)
+    expect(row(closing.id)).toMatchObject({ outcome: 'o'.repeat(240), next_step: 's'.repeat(180) })
+    // one character more, after trimming, is still refused
+    expect(() => updateRequest(db, { session: 'mcp-a', id, title: `${'t'.repeat(121)} ` })).toThrow(/title/)
+    expect(() => updateRequest(db, { session: 'mcp-a', id, note: `${'n'.repeat(241)} ` })).toThrow(/note/)
   })
 })

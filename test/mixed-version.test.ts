@@ -2223,6 +2223,62 @@ describe('a v2.9.0 hub, driver and spec sharing launches that continue a chat (#
   })
 })
 
+// The statements of a v2.11.0 process this block needs, copied verbatim from src/store.ts at
+// tag v2.11.0 (upsertActivityTxn, recordActivityCall, touchActivity, resolveItem, dismissItem;
+// its insertItem is V160's, as V2110.insertItem above says).
+const V2110_STATEMENTS = {
+  upsertActivity: `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid, receives_messages, push_wake)
+     VALUES (
+       @session, @project, @stream, @agent, @doing,
+       CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
+       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid, @receives_messages, @push_wake
+     )
+     ON CONFLICT(session) DO UPDATE SET
+       project = @project, stream = @stream, agent = @agent,
+       doing    = CASE WHEN @claim = 1 THEN @doing ELSE doing END,
+       last_doing = CASE
+         WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing
+         ELSE last_doing
+       END,
+       detail   = CASE WHEN @claim = 1 THEN COALESCE(NULLIF(@detail, ''), detail) ELSE detail END,
+       children = CASE WHEN @claim = 1 THEN COALESCE(@children, children) ELSE children END,
+       idle     = CASE WHEN @claim = 1 THEN @idle ELSE idle END,
+       server_version = COALESCE(@server_version, server_version),
+       server_source  = COALESCE(@server_source, server_source),
+       host_pid   = COALESCE(@host_pid, host_pid),
+       server_pid = COALESCE(@server_pid, server_pid),
+       receives_messages = COALESCE(@receives_messages, receives_messages),
+       push_wake = COALESCE(@push_wake, push_wake),
+       updated_at = @now, ended_at = NULL`,
+  recordActivityCall: `UPDATE activity SET
+         doing    = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 'open' ELSE doing END,
+         detail   = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN ''     ELSE detail END,
+         children = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN NULL   ELSE children END,
+         idle     = CASE WHEN COALESCE(last_call_at, started_at) < @cold THEN 1      ELSE idle END,
+         last_call_at = @now,
+         call_minute = @minute, call_counts = @counts,
+         updated_at = @now
+       WHERE session = @session AND ended_at IS NULL`,
+  touchActivity: `UPDATE activity SET updated_at = ? WHERE session = ? AND ended_at IS NULL`,
+  resolveItem: `UPDATE items
+                 SET status = 'resolved',
+                     resolved_at = COALESCE(resolved_at, @now),
+                     updated_at = CASE
+                       WHEN status IS NOT 'resolved'
+                         OR (@text <> '' AND outcome IS NOT @text)
+                       THEN @now ELSE updated_at END,
+                     outcome = CASE WHEN @text <> '' THEN @text ELSE outcome END,
+                     outcome_at = CASE
+                       WHEN @text = '' OR outcome IS @text THEN outcome_at
+                       ELSE @now END
+               WHERE id = @id
+                 AND (@guarded = 0 OR status IN ('open', 'resolved'))
+                 AND (@guarded = 0
+                      OR response_revision = @expected
+                      OR (@expected IS NULL AND response_revision = 0))`,
+  dismissItem: `UPDATE items SET status = 'dismissed', updated_at = ? WHERE id = ?`,
+}
+
 // Issue #612 (PR 2) — requests. No statement an older server runs names the requests
 // table or `activity.tracks_requests`, so its presence, call, item and answer writes
 // can neither change a request nor clear the flag, and the requests domain does not
@@ -2258,14 +2314,15 @@ describe('a v2.11.0 process sharing a hub with requests (#612)', () => {
 
   const presence = (session: string, doing: string, claim: number) => ({
     session, project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing, detail: '', children: null,
-    idle: claim ? 0 : 1, claim, server_version: '2.11.0', server_source: 'runtime', host_pid: 1, server_pid: 2, now: new Date().toISOString(),
+    idle: claim ? 0 : 1, claim, server_version: '2.11.0', server_source: 'runtime', host_pid: 1, server_pid: 2,
+    receives_messages: null, push_wake: null, now: new Date().toISOString(),
   })
   const dump = (db: Database.Database) => JSON.stringify(db.prepare(`SELECT * FROM requests ORDER BY id`).all())
 
   function seedHub(db: Database.Database) {
     upsertActivity(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: 1, server_pid: process.pid })
     db.prepare(`UPDATE activity SET tracks_requests = 1 WHERE session = 'new-mcp'`).run()
-    const unfiled = openPromptRequest(db, { session: 'new-mcp', chat: 'claude:synthetic-chat', turn: 'turn-1' })!
+    const unfiled = openPromptRequest(db, { session: 'new-mcp', chat: 'claude:synthetic-chat', turn: 'turn-1' }) as { id: string }
     const opened = openAgentRequest(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'claude-code', title: 'Write the notes' })
     const reviewed = openAgentRequest(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'claude-code', title: 'Try the flow' }) as { request: { id: string } }
     closeRequest(db, { session: 'new-mcp', id: reviewed.request.id, outcome: 'It is ready.', review: true, next_step: 'Try it once.' })
@@ -2280,15 +2337,15 @@ describe('a v2.11.0 process sharing a hub with requests (#612)', () => {
     const asked = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title: 'Ship it?' })
     const before = { requests: dump(db), version: readSnapshotState(db).domains.requests, flag: listHostSessions(db, 1)[0]!.tracks_requests }
     expect(before.flag).toBe(1)
-    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
-    old.prepare(V170.recordActivityCall).run({ session: 'new-mcp', now: new Date().toISOString(), cold: at(0) })
-    old.prepare(V170.touchActivity).run(new Date().toISOString(), 'new-mcp')
-    old.prepare(V170.insertItem).run({
+    old.prepare(V2110_STATEMENTS.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
+    old.prepare(V2110_STATEMENTS.recordActivityCall).run({ session: 'new-mcp', now: new Date().toISOString(), cold: at(0), minute: 1, counts: '1' })
+    old.prepare(V2110_STATEMENTS.touchActivity).run(new Date().toISOString(), 'new-mcp')
+    old.prepare(V160.insertItem).run({
       id: 'old-done', project: 'agent-inbox', stream: 'main', agent: 'old', session: 'new-mcp', kind: 'done', title: 'Try the flow', detail: '',
       next_step: 'Try it once.', action_owner: null, impact: '', next_after: '', context: '', options: null, repo: REPO, issue_ref: null, head_repo: null,
       repo_root: null, created_at: at(1), updated_at: at(1),
     })
-    old.prepare(V140.replyItem).run({ id: asked, reply: 'Ship it', replyContext: null, kind: 'answer', now: new Date().toISOString() })
+    old.prepare(V2110_STATEMENTS.resolveItem).run({ now: new Date().toISOString(), text: 'Shipped.', id: asked, guarded: 0, expected: null })
     // its day-old housekeeping removes presence rows, never requests
     old.prepare(`DELETE FROM activity WHERE (ended_at IS NOT NULL AND ended_at < ?) OR updated_at < ?`).run(at(0), at(0))
     expect({ requests: dump(db), version: readSnapshotState(db).domains.requests, flag: listHostSessions(db, 1)[0]!.tracks_requests }).toEqual(before)
@@ -2301,7 +2358,7 @@ describe('a v2.11.0 process sharing a hub with requests (#612)', () => {
     const seeded = seedHub(db)
     const before = dump(db)
     const now = new Date().toISOString()
-    old.prepare(V140.resolveItem).run({ now, text: 'Looked fine.', id: seeded.item, guarded: 0, expected: null })
+    old.prepare(V2110_STATEMENTS.resolveItem).run({ now, text: 'Looked fine.', id: seeded.item, guarded: 0, expected: null })
     expect(dump(db)).toBe(before)
     expect(db.prepare(`SELECT state FROM requests WHERE id = ?`).pluck().get(seeded.review)).toBe('review')
     const view = listRequests(db)
@@ -2314,7 +2371,7 @@ describe('a v2.11.0 process sharing a hub with requests (#612)', () => {
     const old = connect(true)
     const seeded = seedHub(db)
     const before = dump(db)
-    old.prepare(V140.dismissItem).run(new Date().toISOString(), seeded.item)
+    old.prepare(V2110_STATEMENTS.dismissItem).run(new Date().toISOString(), seeded.item)
     expect(dump(db)).toBe(before)
     expect(listRequests(db).closed).toEqual([expect.objectContaining({ id: seeded.review, state: 'done' })])
   })

@@ -19,7 +19,8 @@ import {
   setSourcePreview, touchActivity, updateBoardRow, upsertActivity, upsertBoard, upsertIssueSnapshot,
   upsertSourceLink, sendSessionMessage, markMessageDelivered, ackMessage, withdrawSessionMessage,
   createLaunch, fileLaunchAsk, recordLaunchProgress, parkLaunch, endLaunch, requestLaunchStop,
-  acknowledgeHandoff, closeRequest, fileRequest, markAcksDelivered, openAgentRequest, openPromptRequest,
+  acknowledgeHandoff, adoptChatRequests, closeRequest, dropOrphanRequest, fileRequest, markAcksDelivered, openAgentRequest, openPromptRequest,
+  updateRequest,
 } from '../src/store.js'
 import { SNAPSHOT_SOURCES, createViewer } from '../src/viewer.js'
 import { snapshot } from './issue-fixtures.js'
@@ -261,7 +262,7 @@ function seed(db: Hub): Fixture {
   // #612: an unfiled prompt request, an open one, a review with its hand-off, and a review
   // acknowledged and handed to its session
   tick()
-  const unfiled = openPromptRequest(db, { session: 'mcp-1', chat: 'claude:snapshot-chat', turn: 'turn-1', midturn: true })!
+  const unfiled = openPromptRequest(db, { session: 'mcp-1', chat: 'claude:snapshot-chat', turn: 'turn-1', midturn: true }) as { id: string }
   const declared = (title: string) => (openAgentRequest(db, { session: 'mcp-1', project: 'alpha', stream: '', agent: 'claude-code', title }) as { request: { id: string } }).request.id
   declared('Open request')
   const review = declared('Review request')
@@ -670,7 +671,7 @@ describe('snapshot domains (issue #297)', () => {
       ]).itemId !== '', [...ITEMS, 'links', 'issues']],
       // #612: a request's writes move the requests domain, which no snapshot reads yet (PR 4
       // adds /api/requests), so they rebuild nothing; the items a close writes rebuild the items
-      ['a prompt request opened', () => openPromptRequest(on(), { session: 'mcp-1', chat: 'claude:snapshot-chat' }) !== null, []],
+      ['a prompt request opened', () => openPromptRequest(on(), { session: 'mcp-1', chat: 'claude:snapshot-chat' }).ok, []],
       ['an unfiled request filed', (f: Fixture) => fileRequest(on(), { session: 'mcp-1', id: f.unfiled, as: 'new', title: 'Filed' }).ok, []],
       ['a request closed with its hand-off', (f: Fixture) => closeRequest(on(), {
         session: 'mcp-1', id: f.unfiled, outcome: 'Ready.', title: 'Filed', review: true, next_step: 'Look at it.',
@@ -685,6 +686,44 @@ describe('snapshot domains (issue #297)', () => {
       if (prepare) expect(prepare(fixture)).not.toBe(false)
       expect(await rebuiltBy(() => write(fixture))).toEqual(SNAPSHOTS.filter((name) => expected.includes(name)))
     })
+  })
+
+  // The requests domain has no snapshot yet (AWAITING_ROUTE), so no body proves its version moves;
+  // PR 4's /api/requests will rest on it, so each kind of write is pinned here to move it, and a
+  // refused one or a re-delivery to leave it.
+  it('moves the requests domain for every write to a request, and for no refused or repeated one', () => {
+    const version = () => readSnapshotState(db).domains.requests
+    const moves = (label: string, write: () => unknown) => {
+      const before = version()
+      expect(write(), label).not.toBe(false)
+      expect(version(), label).not.toBe(before)
+      expect(typeof version(), label).toBe('number')
+    }
+    const stays = (label: string, write: () => unknown) => {
+      const before = version()
+      write()
+      expect(version(), label).toBe(before)
+    }
+    const item = (id: string) => db.prepare(`SELECT item FROM requests WHERE id = ?`).pluck().get(id) as string
+    moves('a prompt request opened', () => openPromptRequest(db, { session: 'mcp-1', chat: 'claude:domain-chat' }).ok)
+    moves('an agent request opened', () => openAgentRequest(db, { session: 'mcp-1', project: 'alpha', stream: '', agent: 'claude-code', title: 'Declared' }).ok)
+    moves('a request filed', () => fileRequest(db, { session: 'mcp-1', id: fixture.unfiled, as: 'new', title: 'Filed' }).ok)
+    moves('a request updated', () => updateRequest(db, { session: 'mcp-1', id: fixture.unfiled, note: 'Going.' }).ok)
+    stays('a request update that names nothing', () => updateRequest(db, { session: 'mcp-1', id: fixture.unfiled }))
+    stays('a refused file', () => fileRequest(db, { session: 'mcp-1', id: fixture.unfiled, as: 'reply' }))
+    moves('a request closed', () => closeRequest(db, { session: 'mcp-1', id: fixture.unfiled, outcome: 'Done.' }).ok)
+    moves('a review settled by Acknowledge', () => acknowledgeHandoff(db, item(fixture.review)).ok)
+    moves('an acknowledgement handed over', () => markAcksDelivered(db, 'mcp-1').length === 1)
+    stays('an acknowledgement handed over again', () => markAcksDelivered(db, 'mcp-1'))
+    // a request adopted by a new session, and one an orphan close drops
+    upsertActivity(db, { session: 'mcp-9', project: 'alpha', stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false })
+    const adopted = openPromptRequest(db, { session: 'mcp-9', chat: 'claude:adopt-chat' }) as { id: string }
+    const orphan = openPromptRequest(db, { session: 'mcp-9', chat: 'claude:orphan-chat' }) as { id: string }
+    endActivity(db, 'mcp-9')
+    moves('a chat adopted', () => adoptChatRequests(db, { chat: 'claude:adopt-chat', to: 'mcp-1' }).moved.length === 1)
+    const revision = db.prepare(`SELECT revision FROM requests WHERE id = ?`).pluck().get(orphan.id) as number
+    moves('an orphan dropped', () => dropOrphanRequest(db, { id: orphan.id, revision }).ok)
+    expect(db.prepare(`SELECT session FROM requests WHERE id = ?`).pluck().get(adopted.id)).toBe('mcp-1')
   })
 
   it('rebuilds nothing for presence, claims and liveness written by another Node process', async () => {

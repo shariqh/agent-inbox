@@ -261,14 +261,12 @@ come back up for air, which you should be sending anyway. Re-asserting is instan
 
 ## Requests (what the human asked you)
 
-When the human hands you work, track it with `request`. With the Claude Code hooks, each prompt
-they submit opens an unfiled request and the hook names its id: file it with
-`request({ action: "file", id, as: "new", title })` (or `as: "part_of"` with `parent`, or
-`as: "reply"` when it asks for no new work). Without the hooks, declare one with
-`request({ action: "open", title })`. Keep a one-line `note` with `update` at real progress, and
-end with `close` and a one-line `outcome`. Set `review: true` with a `next_step` when they should
-look at the result: that is the hand-off, so do not also flag a milestone for it. `pending()`
-returns your open requests in `requests`. A subagent never files, updates or closes a request.
+A request is one piece of work the human asked you to do. When they hand you some, you may
+declare it with `request({ action: "open", title })`; whatever you open you must close, with
+`request({ action: "close", id, outcome })` and a one-line outcome. Keep a one-line `note` with
+`update` at real progress. Set `review: true` with a `next_step` on `close` when they should look
+at the result: that is the hand-off, so do not also flag a milestone for it. `pending()` returns
+your open requests in `requests`. A subagent never opens, updates or closes a request.
 
 ## Messages from the human
 

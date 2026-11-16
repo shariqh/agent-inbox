@@ -42,9 +42,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   is scoped to this server's own session, so another session's request reads `not_found`. It
   runs through `agentScope()`, so a reserved project is refused, and a call that lacks what its
   action needs, an issue it cannot read, or `review: true` with `state: "dropped"` is a tool
-  error. A `close` computes the item scope (`repo`, `issue_ref`, `head_repo`, `repo_root`) from
-  the current scope, as `flag` does, and the store writes the request and its item in one
-  transaction. An untargeted `pending()` also returns `requests`, `requests_more` (past 20) and
+  error. A `close` reads the current scope once (`project`, `stream`, `agent`, `repo`, `issue_ref`,
+  `head_repo`, `repo_root`), as `flag` does, and the item it writes carries all of it, so after a
+  `register` the item is in the new project while the request row keeps the one it opened in. The
+  store writes the close and its item in one transaction. `open` with no title answers
+  `title_required`, `close` reads no `note` or `issue`, and lengths are limited after trimming. An untargeted `pending()` also returns `requests`, `requests_more` (past 20) and
   `requests_acknowledged` (once); a targeted one returns none. The tool description is pinned
   verbatim by `test/mcp.integration.test.ts`; the rules are in `requests.md`.
 

@@ -2533,7 +2533,7 @@ describe('requests (#612)', () => {
     try {
       await call(client, 'pending', {})
       const session = (await waitUntil(() => listActivity(db).find((row) => row.agent === 'claude-code'), 'the server’s presence')).session
-      const hook = (n: number) => openPromptRequest(db, { session, chat: `claude:synthetic-chat-${n}`, turn: `turn-${n}` })!
+      const hook = (n: number) => openPromptRequest(db, { session, chat: `claude:synthetic-chat-${n}`, turn: `turn-${n}` }) as { id: string; short: string }
       const [first, second, third, fourth] = [hook(1), hook(2), hook(3), hook(4)]
       const poll = await call(client, 'pending', {})
       expect(poll.requests.map((r: { id: string; state: string; origin: string }) => [r.id, r.state, r.origin]).sort())
@@ -2660,7 +2660,7 @@ describe('requests (#612)', () => {
       }
       // nor can it name it as a parent
       const session = (await waitUntil(() => listActivity(db).find((row) => row.agent === 'copilot'), 'the sibling’s presence')).session
-      const theirs = openPromptRequest(db, { session, chat: 'claude:sibling-chat' })!
+      const theirs = openPromptRequest(db, { session, chat: 'claude:sibling-chat' }) as { id: string }
       expect(await request(b, { action: 'file', id: theirs.id, as: 'part_of', parent: mine.id })).toEqual({ ok: false, reason: 'parent_not_open' })
       expect(db.prepare(`SELECT state, note FROM requests WHERE id = ?`).get(mine.id)).toEqual({ state: 'open', note: '' })
     } finally {
@@ -2675,7 +2675,7 @@ describe('requests (#612)', () => {
     const client = await connect(dbPath, 'claude-code')
     try {
       for (const args of [
-        { action: 'open' }, { action: 'file' }, { action: 'file', id: 'abcdef01' }, { action: 'update' }, { action: 'close', id: 'abcdef01' },
+        { action: 'file' }, { action: 'file', id: 'abcdef01' }, { action: 'update' }, { action: 'close', id: 'abcdef01' },
         { action: 'close', outcome: 'Done.' }, { action: 'open', title: 'Bad issue', issue: 'not an issue' },
       ]) {
         const result = await client.callTool({ name: 'request', arguments: args })
@@ -2683,6 +2683,98 @@ describe('requests (#612)', () => {
       }
       expect((await call(client, 'pending', {})).requests).toEqual([])
     } finally {
+      await client.close()
+    }
+  }, 40000)
+
+  it('writes the item of a close with the scope at close: project, stream, repo and issue all from after a register', async () => {
+    const dbPath = join(scratchDir('mcp-requests-moved-'), 'inbox.db')
+    const client = await connect(dbPath, 'claude-code')
+    const db = openDb(dbPath)
+    try {
+      const first = (await request(client, { action: 'open', title: 'Opened before the move' })).request
+      const second = (await request(client, { action: 'open', title: 'Also opened before the move' })).request
+      const before = db.prepare(`SELECT project, stream FROM requests WHERE id = ?`).get(first.id) as { project: string; stream: string }
+      expect(before.project).not.toBe('moved-project')
+      await call(client, 'register', { project: 'moved-project', stream: '77-moved', repo: 'owner/moved', issue: 77 })
+      expect(await request(client, { action: 'close', id: first.id, outcome: 'Ready.', review: true, next_step: 'Look at it.' })).toMatchObject({ ok: true, request: { state: 'review' } })
+      expect(await request(client, { action: 'close', id: second.id, outcome: 'Done.' })).toMatchObject({ ok: true, request: { state: 'done' } })
+      for (const id of [first.id, second.id]) {
+        const stored = db.prepare(`SELECT item FROM requests WHERE id = ?`).pluck().get(id) as string
+        expect(getItem(db, stored), id).toMatchObject({ project: 'moved-project', stream: '77-moved', repo: 'owner/moved', issue_ref: 77, agent: 'claude-code' })
+        // the request keeps the scope it was opened in
+        expect(db.prepare(`SELECT project, stream FROM requests WHERE id = ?`).get(id)).toEqual(before)
+      }
+    } finally {
+      db.close()
+      await client.close()
+    }
+  }, 40000)
+
+  it('answers open with no title as title_required, a refusal rather than an error', async () => {
+    const dbPath = join(scratchDir('mcp-requests-notitle-'), 'inbox.db')
+    const client = await connect(dbPath, 'claude-code')
+    try {
+      for (const args of [{ action: 'open' }, { action: 'open', title: '' }, { action: 'open', title: '   ' }]) {
+        const result = await client.callTool({ name: 'request', arguments: args })
+        expect(result.isError, JSON.stringify(args)).not.toBe(true)
+        expect(JSON.parse(text(result)), JSON.stringify(args)).toEqual({ ok: false, reason: 'title_required' })
+      }
+    } finally {
+      await client.close()
+    }
+  }, 40000)
+
+  it('never reads note or issue on a close, and bounds issue at 300 like the other issue fields', async () => {
+    const dbPath = join(scratchDir('mcp-requests-closeinputs-'), 'inbox.db')
+    const client = await connect(dbPath, 'claude-code')
+    try {
+      const { request: opened } = await request(client, { action: 'open', title: 'Closes with stray inputs' })
+      const closed = await client.callTool({ name: 'request', arguments: { action: 'close', id: opened.id, outcome: 'Done.', issue: 'not an issue', note: 'x'.repeat(300) } })
+      expect(closed.isError).not.toBe(true)
+      expect(JSON.parse(text(closed))).toMatchObject({ ok: true, request: { state: 'done', note: '' } })
+      const long = await client.callTool({ name: 'request', arguments: { action: 'open', title: 'Long issue', issue: `owner/name#${'1'.repeat(300)}` } })
+      expect(long.isError).toBe(true)
+      const tools = new Map((await client.listTools()).tools.map((tool) => [tool.name, tool]))
+      const schema = tools.get('request')!.inputSchema as unknown as { properties: Record<string, { maxLength?: number }> }
+      expect(schema.properties['issue']!.maxLength).toBe(300)
+    } finally {
+      await client.close()
+    }
+  }, 40000)
+
+  it('applies the length limits after trimming, for title, note, outcome and next step', async () => {
+    const dbPath = join(scratchDir('mcp-requests-trim-'), 'inbox.db')
+    const client = await connect(dbPath, 'claude-code')
+    try {
+      const opened = await request(client, { action: 'open', title: `${'t'.repeat(120)} `, note: `${'n'.repeat(240)} ` })
+      expect(opened).toMatchObject({ ok: true, request: { title: 't'.repeat(120), note: 'n'.repeat(240) } })
+      expect(await request(client, { action: 'close', id: opened.request.id, outcome: `${'o'.repeat(240)} `, review: true, next_step: `${'s'.repeat(180)} ` }))
+        .toMatchObject({ ok: true, request: { state: 'review' } })
+      const tooLong = await client.callTool({ name: 'request', arguments: { action: 'open', title: `${'t'.repeat(121)} ` } })
+      expect(tooLong.isError).toBe(true)
+    } finally {
+      await client.close()
+    }
+  }, 40000)
+
+  it('answers a short that is the full id where 8 characters are not unique, in results and in pending()', async () => {
+    const dbPath = join(scratchDir('mcp-requests-short-'), 'inbox.db')
+    const client = await connect(dbPath, 'claude-code')
+    const db = openDb(dbPath)
+    try {
+      await call(client, 'pending', {})
+      const session = (await waitUntil(() => listActivity(db).find((row) => row.agent === 'claude-code'), 'the server’s presence')).session
+      const twins = ['abcdef01-0000-4000-8000-000000000001', 'abcdef01-0000-4000-8000-000000000002']
+      for (const id of twins) {
+        db.prepare(`INSERT INTO requests (id, project, session, origin, state, title, opened_at, updated_at) VALUES (?, 'p', ?, 'agent', 'open', 'Twin', ?, ?)`)
+          .run(id, session, new Date().toISOString(), new Date().toISOString())
+      }
+      expect((await call(client, 'pending', {})).requests.map((r: { short: string }) => r.short).sort()).toEqual(twins)
+      expect(await request(client, { action: 'update', id: twins[0], note: 'Hi.' })).toMatchObject({ ok: true, request: { id: twins[0], short: twins[0] } })
+      expect(await request(client, { action: 'update', id: 'abcdef01', note: 'Hi.' })).toEqual({ ok: false, reason: 'ambiguous_id' })
+    } finally {
+      db.close()
       await client.close()
     }
   }, 40000)

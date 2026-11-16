@@ -15,7 +15,8 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 - No prompt text is ever stored, logged or hashed. A request holds an agent-written title, note and outcome only.
 - Every write of the `request` tool is scoped to the calling server's own session. Another session's request reads `not_found`. No call takes a session or project argument.
 - `activity.tracks_requests` exists as a column, and `listHostSessions` returns it with `started_at`, but **nothing writes it**. PR 4 turns it on. Until then no hook may act on requests, and main is safe at every commit. Tests set the column directly.
-- `closeRequest` writes the request and its item in one `.immediate()` transaction. Neither exists without the other.
+- `closeRequest` writes the request's close and its item in one `.immediate()` transaction, so a close never leaves an item without its request being closed, or a closed request without its item. A `dropped` close writes no item. An item is not deleted with its request: retention prunes a request 30 days after it closed and leaves its item, which is an ordinary closed item.
+- The item a close writes carries the **scope at close** (project, stream, agent, repo, issue, head repo and repo root, all read from the session's scope at that moment, as `flag` stamps its items). The request row keeps the project and stream it opened in, so after a `register` or a branch change the two can differ.
 - A request is never an attention item, a badge or a count of its own. A review reaches Needs you through its hand-off item (`delivery-and-responses.md`), and a done request reaches Just landed and History through its outcome item.
 
 ## The table
@@ -36,14 +37,14 @@ The snapshot domain is `requests = { table: 'requests', restamped: ['ack_deliver
 
 ## Ids
 
-A tool id is the full id or a prefix of at least 8 characters of lowercase hex and dashes that is unique among the **session's own** requests, whatever their states (`resolveRequestId`). Otherwise the call answers `ambiguous_id` or `not_found`. The short id is the first 8 characters.
+A tool id is the full id or a prefix of at least 8 characters of lowercase hex and dashes that is unique among the **session's own** requests, whatever their states (`resolveRequestId`). Otherwise the call answers `ambiguous_id` or `not_found`. The short id is the first 8 characters, or the **full id** when another request of the same session shares those 8 characters. Every `short` the store returns follows that rule (the open and change results, `pending()`, `listUnfiledRequests`, `listRequests`), so a short always resolves to its own request.
 
 ## Store functions (`src/store.ts`)
 
 | Function | Does |
 |---|---|
-| `openPromptRequest` | the hook's door: prunes, checks the cap, copies project, stream and agent from the live presence row, inserts an `unfiled` request of origin `prompt`. Returns `{ id, short }` or null (reserved project, session not live, bad chat or turn, cap reached) |
-| `openAgentRequest` | the tool's `open`: an `open` request of origin `agent`, or `too_many_open` |
+| `openPromptRequest` | the hook's door: prunes, checks the cap, copies project, stream and agent from the live presence row, inserts an `unfiled` request of origin `prompt`. Returns `{ ok: true, id, short }` or `{ ok: false, reason }` with `bad_chat`, `bad_turn`, `session_not_live`, `reserved_project` or `cap`, so the hook can log `request: cap` |
+| `openAgentRequest` | the tool's `open`: an `open` request of origin `agent`, or `too_many_open`, or `title_required` for a blank title |
 | `fileRequest` | `unfiled` to `open` (as new, needs a title), `merged` (as part_of; the note moves to the parent and the parent's `updated_at` moves) or `reply`. A request that is not `unfiled` answers `not_unfiled` with its state |
 | `updateRequest` | `open` only: note, title, issue. A field left out is kept; `""` clears the note and `null` clears the issue |
 | `closeRequest` | see below |
@@ -55,6 +56,8 @@ A tool id is the full id or a prefix of at least 8 characters of lowercase hex a
 | `dropOrphanRequest` | the viewer's Close for a request whose session is gone (PR 4) |
 | `pruneRequests` | retention, run at the start of every request open |
 
+`adoptChatRequests` does **not** apply the cap of 50. A session that adopts a dead session's requests can hold more than 50, after which nothing new opens there (`cap`, `too_many_open`) until some close.
+
 `adoptChatRequests` and `dropOrphanRequest` call a session live while its presence row is not ended, was refreshed inside the 15-minute window, and its `server_pid`, when it has one, still runs (`kill(pid, 0)`). `adoptChatRequests` also needs the target to be live, and never takes a live session's requests.
 
 ### Closing
@@ -64,7 +67,7 @@ A tool id is the full id or a prefix of at least 8 characters of lowercase hex a
 - `done` (the default) inserts a **resolved outcome item** with `insertItemRow`, never `insertItem`, so there is no dedupe: `kind: 'done'`, `next_step: 'No action'`, `outcome`, `resolved_at` and `outcome_at` set. Just landed, History, the ribbon and "Since you last looked" show it with no new code.
 - `dropped` writes no item.
 - `review: true` needs a next step that is a real action (`isHandoffInput`: "No action", "None" and the like answer `next_step_required`) and refuses `dropped`. It sets `review` and inserts an open **hand-off item** (`handoff = 1`, `action_owner: 'task'`, title the request's, detail the outcome, `next_step` the request's) in the same transaction.
-- The item carries the scope fields `flag` sets (`session`, `repo`, `issue_ref`, `head_repo`, `repo_root`), read by the tool from the current scope. `requests.item` names it.
+- The item carries the scope at close: `project`, `stream`, `agent`, `repo`, `issue_ref`, `head_repo` and `repo_root` all come from the tool's scope at that moment, and `session` from the request. Without a scope the store falls back to the request's own project, stream and agent. `requests.item` names the item.
 
 ### Settling a review
 
@@ -79,13 +82,17 @@ A `review` request is settled by its hand-off item:
 
 An untargeted `pending()` carries `requests` (the session's unfiled and open requests, on every poll until filed or closed), `requests_more` (only when more than 20), and `requests_acknowledged` (`{ id, short, title, acked_at }`, handed over once). `markAcksDelivered` can be taken by a subagent's poll first; that is acceptable because it is informational. A targeted `pending({ item_id })` carries none of them and consumes no acknowledgement.
 
+## Limits
+
+Title (1 to 120), note (0 to 240), outcome (1 to 240) and next step (1 to 180) are limited **after trimming**, so a title of 120 characters followed by a space is accepted. The tool schema sets no length on them for that reason; the store refuses an over-long one with an error. `issue` is bounded at 300 characters, like the other issue fields.
+
 ## Caps and retention
 
 At most 50 `unfiled` and `open` requests per session. Past that the tool's `open` answers `too_many_open` and `openPromptRequest` returns null. `pruneRequests` deletes `done` and `dropped` 30 days after `closed_at`, `reply` and `merged` 1 day after, `unfiled` and `open` 30 days after `updated_at`, and a `review` 30 days after its item closed (never while the item is open).
 
 ## The tool
 
-`request` takes `action` (`file`, `open`, `update`, `close`) and the fields in the table of the design (§3.6). It returns `{ ok: true, request: { id, short, state, title, note } }` or `{ ok: false, reason, state? }` with the reasons `not_found`, `ambiguous_id`, `not_unfiled`, `not_open`, `parent_not_open`, `title_required`, `next_step_required` and `too_many_open`. A call that lacks what its action needs, an issue it cannot read, and a `dropped` close with `review: true` are tool errors, not reasons, so the reason list in the description stays as the design wrote it. The description is pinned verbatim by `test/mcp.integration.test.ts`. `agentScope()` refuses a reserved project (`@sessions`, `@mesh`).
+`request` takes `action` (`file`, `open`, `update`, `close`) and the fields in the table of the design (§3.6). It returns `{ ok: true, request: { id, short, state, title, note } }` or `{ ok: false, reason, state? }` with the reasons `not_found`, `ambiguous_id`, `not_unfiled`, `not_open`, `parent_not_open`, `title_required`, `next_step_required` and `too_many_open`. `open` with no title answers `title_required`, as `file` as new does. A call that lacks another input its action needs, an issue it cannot read, and a `dropped` close with `review: true` are tool errors, not reasons, so the reason list in the description stays as the design wrote it. `close` does not read `note` or `issue`. The description is pinned verbatim by `test/mcp.integration.test.ts`. `agentScope()` refuses a reserved project (`@sessions`, `@mesh`).
 
 ## Older processes
 

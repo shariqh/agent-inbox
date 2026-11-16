@@ -732,6 +732,9 @@ const chatsView = installChatsView({
     continueChat: (chat, hooks) => launchUi.openContinueChat(chat, hooks),
     showSession: (id) => openSessionFocus(`launch:${id}`),
   } : null),
+  // Jump to session (#586): a live chat's own session card, in any window. A session that started
+  // since the last poll is read once before the answer is no.
+  jump: async (session) => jumpToSession(session) || (await reloadAndPaint(), jumpToSession(session)),
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
@@ -3014,8 +3017,8 @@ function toggleSessionFocus(session) {
 // "Jump to session…" (#307): the Dashboard, scoped to the session's project as
 // a deep link scopes to its item's, with that session's panel open.
 function jumpToSession(session) {
-  const row = (lastData.activity ?? []).find((candidate) => candidate.session === session)
-  if (!row) return
+  const row = (lastData?.activity ?? []).find((candidate) => candidate.session === session)
+  if (!row) return false
   projectFilter = row.project
   agentFilter = null
   focusSession = session
@@ -3026,6 +3029,7 @@ function jumpToSession(session) {
   // older history is read, so it finds nothing omitted on the path that exists.
   requestHistoryPaint()
   if (document.hasFocus()) document.getElementById('dashFocusTitle')?.focus({ preventScroll: true })
+  return true
 }
 
 function formatDuration(ms) {

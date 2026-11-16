@@ -16,10 +16,12 @@
 // app's launches holds gets Show session in its place, Live "· here" while that launch runs, and
 // Resume and Copy resume off beside it. The link is the launches the page already reads with the
 // switch on (each launch's chat_id); with the switch off none of this is drawn or read.
+// Jump to session (#586): in any window, a live chat the list names a session for gets Jump to
+// session, which asks the app to open that session's card. The list's own `session` is the link.
 
 import {
   allSwitchText, chatLaunch, chatsUrl, CHECKING_TEXT, CONTINUE_LABEL, continueControl, continueOutcome, displayFolder, drivenView, emptyText,
-  filterChats, HERE_TEXT, hiddenLabel, inferHome, lastActiveView, projectOptions, readChatsBody, RESUME_BUSY_LABEL, RESUME_LABEL,
+  filterChats, HERE_TEXT, hiddenLabel, inferHome, JUMP_GONE_TEXT, JUMP_LABEL, jumpControl, lastActiveView, projectOptions, readChatsBody, RESUME_BUSY_LABEL, RESUME_LABEL,
   resumeControl, resumeOutcome, resumeTerminalControl, retentionText, SESSIONS_UNREAD_TEXT, SHOW_SESSION_LABEL, shouldFetchOnOpen, shownText, sortChats,
   titleView, toolLabel, TRUNCATED_TEXT,
 } from './chats.js'
@@ -40,9 +42,10 @@ const COLUMNS = ['Tool', 'Title', 'Project', 'Branch', 'Folder', 'Last active', 
  *   drive?: () => ({ available(): Promise<boolean>, granted(): boolean, launches(): unknown[] | null, launchesFailed(): boolean,
  *     continueChat(chat: { tool: string, id: string, title: string | null, folder: string | null },
  *       hooks: { returnFocus: () => HTMLElement | null, answered: (result: unknown) => void }): boolean,
- *     showSession(launchId: string): void } | null) }} deps
+ *     showSession(launchId: string): void } | null),
+ *   jump?: ((session: string) => boolean | Promise<boolean>) | null }} deps
  */
-export function installChatsView({ doc, host, fetch, now, resume = () => null, drive = () => null }) {
+export function installChatsView({ doc, host, fetch, now, resume = () => null, drive = () => null, jump = null }) {
   const win = doc.defaultView
   // window-local and never persisted, like Show archived: they survive tab switches and reads
   const filter = { query: '', tool: 'all', project: null }
@@ -364,6 +367,43 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     if (id && bridge) bridge.showSession(id)
   }
 
+  // Jump to session (#586): the app opens the chat's session card. When it is no longer listed the
+  // row's note says so and the list is read again, which drops the control with the session.
+  function jumpChat(key) {
+    const chat = chatByKey.get(key)
+    const view = chat && jump && !drivenByKey.get(key)?.show ? jumpControl(chat) : null
+    if (!view) return
+    if (resumeNotes.delete(key)) {
+      changed()
+      settlePaint()
+    }
+    const gone = () => {
+      resumeNotes.set(key, JUMP_GONE_TEXT)
+      changed()
+      read()
+    }
+    Promise.resolve().then(() => jump(view.session)).then((went) => { if (went !== true) gone() }, gone)
+  }
+
+  // Jump to session after Copy resume on a live chat whose process has a session card. A chat a
+  // session here holds has Show session for that. Returns whether the row has the control.
+  function paintJump(tr, chat, driven) {
+    const key = tr.dataset.chatKey
+    const actions = tr.querySelector('.chats-actions')
+    const view = jump && !driven.show ? jumpControl(chat) : null
+    let control = actions.querySelector('.chats-jump')
+    if (!view) {
+      control?.remove()
+      return false
+    }
+    if (!control) {
+      control = button('chats-jump', JUMP_LABEL, () => jumpChat(key))
+      actions.querySelector('.chats-copy').after(control)
+    }
+    setAttr(control, 'title', view.title)
+    return true
+  }
+
   // The Resume button exists only while main says this window can resume. Beside Show session it
   // is off (§3.5): this chat has a session here.
   function paintResume(tr, chat, offTitle) {
@@ -418,12 +458,13 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     setAttr(control, 'aria-disabled', view.enabled ? null : 'true')
   }
 
-  // The note under the controls: the fallback notice or main's reason, Resume's or Continue here…'s.
+  // The note under the controls: the fallback notice or main's reason, Resume's or Continue here…'s,
+  // or that a jump found no session. A row with none of the three keeps phase 1's cell.
   function paintNote(tr, allowed) {
     const key = tr.dataset.chatKey
     const actions = tr.querySelector('.chats-actions')
     let note = actions.querySelector('.chats-resume-note')
-    if (!canResume && !allowed) {
+    if (!canResume && !allowed && !resumeNotes.has(key)) {
       note?.remove()
       return
     }
@@ -507,7 +548,9 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     setAttr(control, 'title', offTitle ?? copyView.title)
     setAttr(control, 'aria-disabled', copyView.command && !offTitle ? null : 'true')
     paintResume(tr, chat, offTitle)
-    paintContinue(tr, chat, driven, allowed)
+    // a live Copilot chat's Continue here… could only be off: Jump to session takes its place
+    const jumping = paintJump(tr, chat, driven)
+    paintContinue(tr, chat, driven, allowed && !jumping)
     paintNote(tr, allowed)
   }
 

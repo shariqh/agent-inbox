@@ -58,7 +58,7 @@ describe('Chats tab styles (#586 PR 2)', () => {
   })
 
   it('draws Resume as Copy resume is drawn, with its note under both (PR 3)', () => {
-    const button = ruleBody('.chats-copy, .chats-resume, .chats-continue, .chats-show')
+    const button = ruleBody('.chats-copy, .chats-resume, .chats-continue, .chats-show, .chats-jump')
     for (const rule of [/padding:\s*var\(--sp-1\) var\(--sp-2\);/, /font-size:\s*var\(--fs-meta\);/, /white-space:\s*nowrap;/]) expect(button).toMatch(rule)
     expect(ruleBody('.chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-continue[aria-disabled="true"], .chats-refresh[aria-disabled="true"]')).toMatch(/opacity:\s*\.45;/)
     // its own rule, not the one it shares with Copy resume
@@ -75,15 +75,15 @@ describe('Chats tab styles (#586 PR 2)', () => {
 
   it('draws Continue here… and Show session as Copy resume is drawn, on the same line, with a focus ring (#586 phase 2)', () => {
     // the shared button rule: tokens only, never wrapping inside a button
-    const button = ruleBody('.chats-copy, .chats-resume, .chats-continue, .chats-show')
+    const button = ruleBody('.chats-copy, .chats-resume, .chats-continue, .chats-show, .chats-jump')
     expect(button).toMatch(/white-space:\s*nowrap;/)
     // after Copy resume, spaced with a token; the Actions cell never wraps in the wide table, so the
     // three controls stay on one line and the row one line tall
-    expect(ruleBody('\n.chats-continue, .chats-show')).toMatch(/margin-left:\s*var\(--sp-1\);/)
+    expect(ruleBody('\n.chats-continue, .chats-show, .chats-jump')).toMatch(/margin-left:\s*var\(--sp-1\);/)
     expect(ruleBody('\n.chats-actions')).toMatch(/white-space:\s*nowrap;/)
     expect(css).not.toMatch(/\n\.chats-actions[^{\n]*\{[^}]*white-space:\s*normal/)
     // a visible focus ring on each new control, in the focus color both themes define
-    expect(ruleBody('.chats-continue:focus-visible, .chats-show:focus-visible, .sp-chat-link:focus-visible'))
+    expect(ruleBody('.chats-continue:focus-visible, .chats-show:focus-visible, .chats-jump:focus-visible, .sp-chat-link:focus-visible'))
       .toMatch(/outline:\s*2px solid var\(--app-focus\);/)
     // "· here" in the agent color, at the meta size
     const here = ruleBody('.chats-here')
@@ -91,9 +91,12 @@ describe('Chats tab styles (#586 PR 2)', () => {
   })
 
   it('wraps the three controls on the row’s second line below 620px, spaced with --sp-2, and leaves a phase 1 row as it was', () => {
-    const actions = ruleBody('.chats-table .chats-actions:has(.chats-continue, .chats-show)', containerStart)
+    const actions = ruleBody('.chats-table .chats-actions:has(.chats-continue, .chats-show, .chats-jump)', containerStart)
     for (const rule of [/display:\s*flex;/, /flex-wrap:\s*wrap;/, /gap:\s*var\(--sp-2\);/, /white-space:\s*normal;/]) expect(actions).toMatch(rule)
-    expect(containerBlock).toContain('.chats-table .chats-actions:has(.chats-continue, .chats-show)')
+    expect(containerBlock).toContain('.chats-table .chats-actions:has(.chats-continue, .chats-show, .chats-jump)')
+    // in the wrapping line the gap spaces the controls, so each one's own margin goes, Jump to session's included
+    expect(ruleBody('.chats-actions:has(.chats-continue, .chats-show, .chats-jump) .chats-resume, .chats-actions .chats-continue, .chats-actions .chats-show, .chats-actions .chats-jump', containerStart))
+      .toMatch(/margin:\s*0;/)
     // nothing in the narrow block touches an Actions cell without either control
     expect(containerBlock).not.toMatch(/\.chats-actions\s*\{/)
   })
@@ -107,6 +110,15 @@ describe('Chats tab styles (#586 PR 2)', () => {
       }
       // a focus ring's outline is the app's one 2px ring, not a size or a gap
       if (!selector!.includes(':focus-visible')) expect(body, selector).not.toMatch(/\d+px/)
+    }
+  })
+
+  it('draws Jump to session with the other controls’ rule, and names no rule of its own with a raw size', () => {
+    const rules = [...css.matchAll(/^\s*([^{}\n]*\.chats-jump[^{}\n]*)\{([^}]*)\}/gm)]
+    // the shared button rule, the margin after Copy resume, the focus ring, and the two narrow-layout rules
+    expect(rules).toHaveLength(5)
+    for (const [, selector, body] of rules) {
+      if (!selector!.includes(':focus-visible')) expect(body!.replace(/border:\s*1px solid[^;]*;|border-radius:\s*7px;/g, ''), selector).not.toMatch(/\d+px/)
     }
   })
 

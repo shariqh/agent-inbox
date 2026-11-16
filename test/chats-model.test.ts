@@ -8,7 +8,7 @@ import { mkdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   allSwitchText, chatLaunch, chatsUrl, continueControl, continueOutcome, displayFolder, drivenView, emptyText, filterChats,
-  hiddenLabel, inferHome, isChatsHash, lastActiveView, projectOptions, readChatsBody, resumeCommand, resumeControl, resumeOutcome,
+  hiddenLabel, inferHome, isChatsHash, JUMP_GONE_TEXT, JUMP_LABEL, jumpControl, lastActiveView, projectOptions, readChatsBody, resumeCommand, resumeControl, resumeOutcome,
   resumeTerminalControl, retentionText, shouldFetchOnOpen, shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
 } from '../public/chats.js'
 import chatResume from '../electron/chat-resume.cjs'
@@ -373,6 +373,39 @@ describe('chats model (#586 PR 2)', () => {
 
     it('changes nothing for no launch', () => {
       expect(drivenView(null)).toEqual({ show: null, here: false, title: null, hereTitle: null, offTitle: null })
+    })
+  })
+
+  describe('Jump to session', () => {
+    const SESSION = '11111111-2222-4333-8444-555555555555'
+
+    it('is for a live chat the list named a session for, on either tool', () => {
+      expect(JUMP_LABEL).toBe('Jump to session')
+      expect(jumpControl(chat({ live: true, session: SESSION }))).toEqual({ session: SESSION, title: 'Open this chat’s session on the Dashboard' })
+      expect(jumpControl(chat({ tool: 'copilot', live: true, session: SESSION }))?.session).toBe(SESSION)
+    })
+
+    it('is none for a chat that is not live, or a live one with no session', () => {
+      expect(jumpControl(chat({ live: false, session: SESSION }))).toBeNull()
+      expect(jumpControl(chat({ live: true }))).toBeNull()
+      expect(jumpControl(chat({ live: true, session: '' }))).toBeNull()
+      expect(jumpControl(chat({ live: true, session: 7 as unknown as string }))).toBeNull()
+    })
+
+    it('reads a session from the list only as a string on a live chat, and adds no key otherwise', () => {
+      const entry = (over: object) => ({ ...chat(), ...over })
+      const body = readChatsBody({ chats: [
+        entry({ id: ID, live: true, session: SESSION }),
+        entry({ id: ID2, live: false, session: SESSION }),
+        entry({ id: '00000000-0000-4000-8000-000000000003', live: true, session: { id: SESSION } }),
+        entry({ id: '00000000-0000-4000-8000-000000000004', live: true, session: '' }),
+      ] })!
+      expect(body.chats.map((c) => c.session)).toEqual([SESSION, undefined, undefined, undefined])
+      expect(body.chats.filter((c) => 'session' in c).map((c) => c.id)).toEqual([ID])
+    })
+
+    it('says a session that is gone is no longer listed', () => {
+      expect(JUMP_GONE_TEXT).toBe('This chat’s session is no longer listed.')
     })
   })
 

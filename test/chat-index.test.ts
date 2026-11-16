@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { chatsResponse, CHAT_WINDOW_BYTES, createChatIndex, MAX_CHATS } from '../src/chat-index.js'
 import type { ChatEntry, ChatIndexOpts, ChatIndexRead } from '../src/chat-index.js'
-import { createLaunch, openDb } from '../src/store.js'
+import { createLaunch, endActivity, openDb, upsertActivity } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
@@ -437,6 +437,35 @@ describe('chat index: live chats (#586)', () => {
     const read = createChatIndex({ home: h }).read()
     expect([byId(read, id(1)).live, byId(read, id(2)).live]).toEqual([true, false])
   })
+
+  // Jump to session (#586): the route joins a live chat to its session card by these, and never serves them
+  it('names the processes that make a chat live, beside the entries and never in one', () => {
+    const h = home()
+    for (const n of [1, 2, 3]) claude(h, 'a', id(n), basicHead)
+    session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
+    // one chat open in two processes, and one whose process is gone
+    session(h, 4002, { sessionId: id(2), startedAt: Date.now() })
+    session(h, 4003, { sessionId: id(2), startedAt: Date.now() })
+    session(h, 4004, { sessionId: id(3), startedAt: Date.now() })
+    copilot(h, id(4), yaml(id(4)), { events: true, locks: [5001, 5009] })
+    // one pid in two folders holds only the newer
+    const a = copilot(h, id(5), yaml(id(5)), { events: true, locks: [5002] })
+    const b = copilot(h, id(6), yaml(id(6)), { events: true, locks: [5002] })
+    utimesSync(join(a, 'inuse.5002.lock'), new Date(Date.now() - 1000), new Date(Date.now() - 1000))
+    utimesSync(join(b, 'inuse.5002.lock'), new Date(), new Date())
+    const read = open(h, { isAlive: alive(4001, 4002, 4003, 5001, 5002) }).read()
+    const pids = Object.fromEntries([...read.livePids!].map(([key, list]) => [key, [...list].sort()]))
+    expect(pids).toEqual({
+      [`claude:${id(1)}`]: [4001],
+      [`claude:${id(2)}`]: [4002, 4003],
+      [`copilot:${id(4)}`]: [5001],
+      [`copilot:${id(6)}`]: [5002],
+    })
+    // exactly the live chats have one
+    expect(read.chats.filter((c) => c.live).map((c) => `${c.tool}:${c.id}`).sort()).toEqual(Object.keys(pids).sort())
+    for (const chat of read.chats) expect(Object.keys(chat)).not.toContain('pid')
+    expect(JSON.stringify(read.chats)).not.toMatch(/"pids?"/)
+  })
 })
 
 describe('chat index: cache and bounds (#586)', () => {
@@ -614,6 +643,30 @@ describe('GET /api/chats (#586)', () => {
     expect(MAX_CHATS).toBe(2000)
   })
 
+  it('chatsResponse gives a shown live chat its session, asked by its processes, and no other entry a key', () => {
+    const chats = [
+      entry(1, { live: true }), entry(2, { live: true }), entry(3), entry(4, { live: true, hidden: ['temp'] }), entry(5, { live: true, tool: 'copilot' }),
+    ]
+    const livePids = new Map([
+      [`claude:${id(1)}`, [4001]], [`claude:${id(2)}`, [4002]], [`claude:${id(3)}`, [4003]], [`claude:${id(4)}`, [4004]],
+    ])
+    const asked: number[][] = []
+    const sessionFor = (pids: readonly number[]) => {
+      asked.push([...pids])
+      return pids[0] === 4001 ? 'session-one' : null
+    }
+    const res = chatsResponse({ ...read(chats), livePids }, { all: false, claudeDays: 30, sessionFor })
+    expect(res.chats.map((c) => [c.id, c.session])).toEqual([[id(5), undefined], [id(3), undefined], [id(2), undefined], [id(1), 'session-one']])
+    // a chat with no session carries no key at all, so every other entry is the one phase 1 served
+    expect(res.chats.filter((c) => 'session' in c).map((c) => c.id)).toEqual([id(1)])
+    // asked only for live chats that are shown and have a process: not the one that is not live, hidden, or without pids
+    expect(asked.sort()).toEqual([[4001], [4002]])
+    expect(JSON.stringify(res)).not.toMatch(/"pids?"|4001|4002/)
+    // without the lookup, or without the index's pids, nothing is added
+    expect(chatsResponse({ ...read(chats), livePids }, { all: true, claudeDays: 30 }).chats.some((c) => 'session' in c)).toBe(false)
+    expect(chatsResponse(read(chats), { all: true, claudeDays: 30, sessionFor: () => 'x' }).chats.some((c) => 'session' in c)).toBe(false)
+  })
+
   it('returns { chats, counts, truncated, retention } without the hidden chats', async () => {
     const h = home()
     claude(h, 'a', id(1), basicHead, [{ type: 'ai-title', aiTitle: 'Shown' }])
@@ -627,6 +680,67 @@ describe('GET /api/chats (#586)', () => {
     expect(Object.keys(body.chats[0]!).sort()).toEqual(['branch', 'createdAt', 'cwd', 'hidden', 'id', 'lastActiveAt', 'live', 'pr', 'project', 'title', 'titleAuto', 'tool'])
     expect(body.counts).toEqual({ total: 2, hidden: 1, claude: 2, copilot: 0, live: 0 })
     expect(body.retention).toEqual({ claudeDays: 30 })
+  })
+
+  describe('a live chat’s session (Jump to session)', () => {
+    const presence = (db: ReturnType<typeof openDb>, sessionId: string, hostPid: number, serverPid: number) =>
+      upsertActivity(db, { session: sessionId, project: 'widget', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: hostPid, server_pid: serverPid })
+    const setup = () => {
+      const h = home()
+      const db = openDb(join(scratchDir('chat-db-'), 'inbox.db'))
+      const v = createViewer(db, { agentHome: h, setupInfoPath: join(h, 'none.json'), chatIndex: open(h, { isAlive: (pid) => pid === 4001 || pid === 5001 }) })
+      const chats = async () => (await (await v.request('/api/chats')).json() as ReturnType<typeof chatsResponse>).chats
+      return { h, db, chats }
+    }
+    // a process that has exited: its pid is not running now
+    const gone = () => spawnSync(process.execPath, ['-e', '']).pid!
+
+    it('is the presence row whose host is the process that holds the chat, for either tool', async () => {
+      const { h, db, chats } = setup()
+      claude(h, 'a', id(1), basicHead)
+      claude(h, 'a', id(2), basicHead)
+      session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
+      copilot(h, id(3), yaml(id(3)), { events: true, locks: [5001] })
+      presence(db, 'session-claude', 4001, process.pid)
+      presence(db, 'session-copilot', 5001, process.pid)
+      presence(db, 'session-other', 4444, process.pid)
+      const list = await chats()
+      expect(Object.fromEntries(list.map((c) => [c.id, c.session]))).toEqual({ [id(1)]: 'session-claude', [id(2)]: undefined, [id(3)]: 'session-copilot' })
+      // the chat that is not live keeps exactly phase 1's keys, and no process id is served
+      expect(Object.keys(list.find((c) => c.id === id(2))!).sort()).toEqual(['branch', 'createdAt', 'cwd', 'hidden', 'id', 'lastActiveAt', 'live', 'pr', 'project', 'title', 'titleAuto', 'tool'])
+      expect(list.flatMap((c) => Object.keys(c)).filter((key) => /pid/i.test(key))).toEqual([])
+    })
+
+    it('is none for a live chat with no presence row, an ended one, or one whose server no longer runs', async () => {
+      const { h, db, chats } = setup()
+      claude(h, 'a', id(1), basicHead)
+      session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
+      const live = async () => (await chats()).find((c) => c.id === id(1))!
+      expect(await live()).toMatchObject({ live: true })
+      expect('session' in await live()).toBe(false)
+      // a row a reused pid left behind: its server is gone
+      presence(db, 'session-dead', 4001, gone())
+      expect('session' in await live()).toBe(false)
+      presence(db, 'session-ended', 4001, process.pid)
+      endActivity(db, 'session-ended')
+      expect('session' in await live()).toBe(false)
+      // a row that stopped heartbeating is no longer a session card
+      presence(db, 'session-stale', 4001, process.pid)
+      db.prepare(`UPDATE activity SET updated_at = ? WHERE session = 'session-stale'`).run(new Date(Date.now() - HOUR).toISOString())
+      expect('session' in await live()).toBe(false)
+    })
+
+    it('is the newest of two rows for one host, so a restarted server answers', async () => {
+      const { h, db, chats } = setup()
+      claude(h, 'a', id(1), basicHead)
+      session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
+      presence(db, 'session-first', 4001, process.pid)
+      presence(db, 'session-second', 4001, process.pid)
+      db.prepare(`UPDATE activity SET started_at = ? WHERE session = 'session-first'`).run(new Date(Date.now() - HOUR).toISOString())
+      expect((await chats())[0]!.session).toBe('session-second')
+      db.prepare(`UPDATE activity SET started_at = ? WHERE session = 'session-second'`).run(new Date(Date.now() - 2 * HOUR).toISOString())
+      expect((await chats())[0]!.session).toBe('session-first')
+    })
   })
 
   it('?all=1 includes hidden chats with their reasons, and any other value is a 400', async () => {

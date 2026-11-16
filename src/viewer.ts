@@ -15,7 +15,7 @@ import {
   listSessionMessages, sendSessionMessage, withdrawSessionMessage, validMessageId, validMessageText, MESSAGE_MAX_TEXT,
   listLaunches, launchForChat, getLaunch, launchView, launchDriverAlive, isLaunchAsk, requestLaunchStop, closeLostLaunch, getLaunchAsk, handOffForTerminal, withdrawLaunchHandOff,
   forgetLaunch,
-  answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt, requestLaunchPark,
+  answerLaunchAsk, listLaunchFolders, requestLaunchInterrupt, requestLaunchPark, listHostSessions,
 } from './store.js'
 import type { ExpectedAnswer, ResponseKind, SnapshotDomain, SnapshotReadState } from './store.js'
 import { groupItems } from './group.js'
@@ -830,6 +830,26 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   const agentHome = opts.agentHome ?? homedir()
   // lazy: nothing is read until the first GET /api/chats (#586)
   const chats = opts.chatIndex ?? createChatIndex({ home: agentHome })
+  // Jump to session (#586): a live chat's session card. An MCP server records the process that started it as its
+  // presence row's host, and that process is the one whose session file or lock makes the chat live. Of that host's
+  // open rows the newest whose server still runs answers, so a row a reused pid left behind names nothing. With two
+  // processes on one chat, the first that has a session answers.
+  const serverRuns = (pid: number | null): boolean => {
+    if (pid === null || !Number.isInteger(pid) || pid <= 1) return false
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const chatSession = (pids: readonly number[]): string | null => {
+    for (const pid of pids) {
+      const row = listHostSessions(db, pid).findLast((candidate) => serverRuns(candidate.server_pid))
+      if (row) return row.session
+    }
+    return null
+  }
   const ownership = new Map<string, { key: string; at: number; value: { version: string | null } | null }>()
   let hostsCache: { key: string; at: number; value: AgentHosts } | undefined
   const agentHosts = (baked: BakedInfo | null): AgentHosts => {
@@ -1119,7 +1139,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const all = c.req.query('all')
     if (all !== undefined && all !== '1') return c.json({ ok: false, error: 'expected ?all=1' }, 400)
     c.header('Cache-Control', 'no-store')
-    return c.json(chatsResponse(chats.read(), { all: all === '1', claudeDays: chats.claudeDays() }))
+    return c.json(chatsResponse(chats.read(), { all: all === '1', claudeDays: chats.claudeDays(), sessionFor: chatSession }))
   })
 
   // #586 phase 2: one Copilot chat and the launch that holds it, read fresh. Main reads it before it continues a

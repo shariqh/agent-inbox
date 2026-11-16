@@ -49,7 +49,7 @@ The index is **POSIX-only for now**: `cleanPath` accepts absolute `/…` paths o
 
 ## Entry
 
-`{ id, tool, title, titleAuto, project, cwd, branch, createdAt, lastActiveAt, live, pr, hidden }`.
+`{ id, tool, title, titleAuto, project, cwd, branch, createdAt, lastActiveAt, live, pr, hidden }`. In the list, a live chat whose process has a session card also carries `session` ([Jump to session](#jump-to-session)).
 
 - `title` is described under Title rules. `titleAuto` is `true` only for Copilot's automatic name, so a UI can tell it from a name a person chose.
 - `cwd` is the folder the chat started in (Claude: the first `cwd` seen, Copilot: `cwd`), which `--resume` needs. It is null when the files do not say.
@@ -151,7 +151,7 @@ A tab after History (`G C`, `#chats`) lists the chats as a table. `public/chats.
 
 **Deep link.** `#chats` opens the tab on boot and on `hashchange`. The viewer never writes it, as tab clicks never write a hash, so a reload on `#chats` reopens Chats as `#item/<id>` reopens its item.
 
-**Show session** is offered only for a chat driven here (phase 2, "Continue here…" below): a launch's `chat_id` links its chat. A chat live in a terminal still gets none: nothing the viewer holds links it to a session card (`activity.session` is the MCP server's own id, a chat entry carries no pid, and a launch's ACP session is not served).
+**Show session** is offered only for a chat driven here (phase 2, "Continue here…" below): a launch's `chat_id` links its chat. A chat live in a terminal gets Jump to session, not Show session ([Jump to session](#jump-to-session)).
 
 ## Resume in Terminal (PR 3)
 
@@ -224,6 +224,34 @@ In the window main grants launches, with the driven-sessions switch on (`agentIn
 
 **Layout.** In the wide table the Actions cell does not wrap, so Resume, Copy resume and Continue here… (or Show session) stay on one line and a row one line tall. Below 620px of list width, a row that has Continue here… or Show session lays its controls out as a wrapping flex line spaced with `--sp-2` (`:has()`, so a phase 1 row keeps its layout). Sizes and gaps come from the tokens, and each new control has the focus ring.
 
+## Jump to session
+
+A chat that is live in a terminal has a session card on the Dashboard when its tool reports to Agent Inbox. **Jump to session** on the chat's row opens that card's panel.
+
+**The link.** An MCP server records the process that started it as its presence row's `host_pid` (`activity-and-live.md`). That process is the one whose session file (Claude Code) or lock (Copilot) makes the chat live. `read()` returns those processes beside the entries as `livePids`, keyed `<tool>:<id>`. A chat open in two processes has both, and a Copilot pid counts only for its newest lock, as it does for `live`. For each live chat the route shows, `chatSession` (`src/viewer.ts`) takes the host's open presence rows (`listHostSessions`: not ended, and refreshed within 15 minutes) and answers the newest one whose server process still runs. A row that a reused pid left behind has no running server, so it names no session; a row is not told apart from its host's successor only if that server's pid was reused as well while the row was still listed. With two processes on one chat, the first that has a session answers.
+
+A chat with a session carries `session`, the presence row's id. Every other entry has no such key, so it is exactly the entry described under Entry. No entry and no response carries a process id.
+
+**The control.** `jumpControl` (`public/chats.js`) gives a live chat that has a `session` a button after Copy resume: `.chats-jump`, labelled "Jump to session", with the title "Open this chat's session on the Dashboard". It is drawn in every window, the browser's included, and does not depend on the driven-sessions switch, because it starts nothing.
+
+- A chat that is not live gets none, and neither does a live chat with no session.
+- A chat that a session here holds keeps Show session.
+- On a live Copilot row it takes the place of Continue here…, which could only be off there. A live Copilot chat with no session keeps the off Continue here… and its reason.
+
+**The jump.** `app.js` passes the view `jump`, which calls `jumpToSession(session)`, the function behind the palette's "Jump to session…" (#307). It scopes the Dashboard to the session's project, clears the agent filter and opens the session's panel. It answers whether the session was in the page's last `/api/activity` read. When it was not, the page reads once (`reloadAndPaint`) and tries again, so a session that started since the last poll is found.
+
+If the session is still not listed, the view stays on Chats and puts "This chat's session is no longer listed." in the row's note (`.chats-resume-note`, which a row now also has while it holds a note). It then reads the list again, and that read drops the control along with the session.
+
+**Untrusted text.** The session id is a lookup key only. It is never drawn, and it is not an attribute of the row.
+
+**What was run for real.** On macOS, in a dev copy of the desktop app on a copy of a live hub, six Claude Code chats were live in terminals. Each had Jump to session on one line with Resume and Copy resume, and each press opened the panel of the session whose host process held that chat (checked against the session files and the presence rows), with the Dashboard scoped to its project. A session idle for hours opened its panel while its card stayed in the Dormant fold. For Copilot, a recorded terminal run of Copilot CLI 1.0.112-0 shows the lock's pid and the presence row's `host_pid` are the same process. No live Copilot chat was jumped from in the app.
+
+**Tests.**
+
+- `test/chat-index.test.ts`: the processes beside the entries, the route's session for either tool, and none for an ended row, a stale row or a row whose server is gone.
+- `test/chats-model.test.ts`: `jumpControl`, and `session` read only as a string on a live chat.
+- `test/dom/chats-jump.test.ts`: the control, the panel it opens, a session newer than the last poll, a session that has gone, and its place beside Continue here… and Show session.
+
 ## Not in this PR
 
-The Dashboard's link to the Chats tab, and a link for a chat live in a terminal.
+The Dashboard's link to the Chats tab.

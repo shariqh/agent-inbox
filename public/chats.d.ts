@@ -15,6 +15,8 @@ export interface Chat {
   live: boolean
   pr: { number: number; repo: string; url: string } | null
   hidden: string[]
+  /** Jump to session (#586): the session card of the process that holds a live chat; absent when there is none */
+  session?: string
 }
 
 export interface ChatCounts { total: number; hidden: number; claude: number; copilot: number; live: number }
@@ -51,6 +53,9 @@ export const SESSIONS_UNREAD_TEXT: string
 /** The launch fields the Chats tab reads, as /api/launches serves them. */
 export interface ChatLaunchRow { id: string; chat_id?: string | null; status?: string; end_reason?: string | null; resumable?: boolean; created_at?: string }
 export function continueControl(chat: Chat): { enabled: boolean; title: string } | null
+export const JUMP_LABEL: 'Jump to session'
+export const JUMP_GONE_TEXT: string
+export function jumpControl(chat: Chat): { session: string; title: string } | null
 export function chatLaunch<T extends ChatLaunchRow>(launches: readonly T[] | null | undefined, chatId: string): T | null
 export function drivenView(launch: ChatLaunchRow | null): {
   show: string | null; here: boolean; title: string | null; hereTitle: string | null; offTitle: string | null

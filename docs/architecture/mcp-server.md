@@ -37,6 +37,16 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - A Copilot client's `pending()` with no message to hand over, and its
   `status({done:true})`, return `message_watch` (#477) unless one already runs for this
   session; no other host gets it. Details in `hooks-and-watcher.md`.
+- `request` (#612) tracks the work the human asked this session to do. Its `action` is `file`,
+  `open`, `update` or `close`; it takes no session, project or stream argument, and every write
+  is scoped to this server's own session, so another session's request reads `not_found`. It
+  runs through `agentScope()`, so a reserved project is refused, and a call that lacks what its
+  action needs, an issue it cannot read, or `review: true` with `state: "dropped"` is a tool
+  error. A `close` computes the item scope (`repo`, `issue_ref`, `head_repo`, `repo_root`) from
+  the current scope, as `flag` does, and the store writes the request and its item in one
+  transaction. An untargeted `pending()` also returns `requests`, `requests_more` (past 20) and
+  `requests_acknowledged` (once); a targeted one returns none. The tool description is pinned
+  verbatim by `test/mcp.integration.test.ts`; the rules are in `requests.md`.
 
 ## Invariants in detail
 

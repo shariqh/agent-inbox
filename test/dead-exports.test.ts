@@ -53,6 +53,12 @@ const ALLOWED = new Map<string, string>([
   ['colors.js:RESERVED_HUE', 'the reserved state-band constant test/colors.test.ts asserts every palette hue against (spec §2) — an invariant, not a call site'],
   ['colors.js:overrideHue', 'spec §2 hue-pinning seam: the store-backed writer a future gear-panel picker calls. Delete it on purpose, never by drift'],
   ['store.ts:listClosedProjects', 'the RAW projects-table reader (issue #32). CLAUDE.md makes store.ts the only door to the DB, so "closing twice leaves ONE row" has no other way to be asserted; production must use closedProjects(), the EFFECTIVE set, and its doc comment says so. Wire it into the viewer if and when the "closed 3d ago" chip is actually built'],
+  // #612 PR 2 builds the request store and its tool; the hooks (PR 3) and the viewer (PR 4) are their consumers
+  ['store.ts:openPromptRequest', 'the prompt hook opens an unfiled request with it (PR 3, spec §3.4 step 5)'],
+  ['store.ts:listUnfiledRequests', 'the stop hook names the unfiled requests it bounces for (PR 3, spec §3.5)'],
+  ['store.ts:adoptChatRequests', 'session-start and prompt-submit move a resumed chat’s requests to its new session (PR 3, spec §3.8)'],
+  ['store.ts:listRequests', 'GET /api/requests serves it (PR 4, spec §3.7)'],
+  ['store.ts:dropOrphanRequest', 'POST /api/requests/:id/close calls it (PR 4, spec §3.7)'],
 ])
 
 // Modules nothing imports because something outside JS starts them. Each one is

@@ -19,6 +19,7 @@ import {
   setSourcePreview, touchActivity, updateBoardRow, upsertActivity, upsertBoard, upsertIssueSnapshot,
   upsertSourceLink, sendSessionMessage, markMessageDelivered, ackMessage, withdrawSessionMessage,
   createLaunch, fileLaunchAsk, recordLaunchProgress, parkLaunch, endLaunch, requestLaunchStop,
+  acknowledgeHandoff, closeRequest, fileRequest, markAcksDelivered, openAgentRequest, openPromptRequest,
 } from '../src/store.js'
 import { SNAPSHOT_SOURCES, createViewer } from '../src/viewer.js'
 import { snapshot } from './issue-fixtures.js'
@@ -78,6 +79,12 @@ const REVIEWED_COLUMNS: Record<string, string[]> = {
   ],
 }
 
+// Domains no snapshot reads yet, and why. The mapping test below allows these and no other.
+// Writes to their table move their version and rebuild no body, which the write cases pin.
+const AWAITING_ROUTE: Record<string, string> = {
+  requests: '#612: GET /api/requests, the snapshot built from this domain, arrives with the viewer in PR 4',
+}
+
 const REPO = 'shariqh/agent-inbox'
 const T0 = Date.parse('2026-10-20T12:00:00.000Z')
 const key = (number: number) => `${REPO}#${number}`
@@ -99,6 +106,8 @@ interface Fixture {
   approve: string
   message: string
   delivered: string
+  unfiled: string
+  review: string
 }
 
 const MESSAGE = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -249,10 +258,25 @@ function seed(db: Hub): Fixture {
   parkLaunch(db, LAUNCH(2), { acpSession: 'acp-2', activeMs: 2000, toolCalls: 3 })
   endLaunch(db, LAUNCH(3), { reason: 'budget:tool_calls' })
 
+  // #612: an unfiled prompt request, an open one, a review with its hand-off, and a review
+  // acknowledged and handed to its session
+  tick()
+  const unfiled = openPromptRequest(db, { session: 'mcp-1', chat: 'claude:snapshot-chat', turn: 'turn-1', midturn: true })!
+  const declared = (title: string) => (openAgentRequest(db, { session: 'mcp-1', project: 'alpha', stream: '', agent: 'claude-code', title }) as { request: { id: string } }).request.id
+  declared('Open request')
+  const review = declared('Review request')
+  tick()
+  closeRequest(db, { session: 'mcp-1', id: review, outcome: 'Ready.', review: true, next_step: 'Look at it.' })
+  const acked = declared('Acknowledged request')
+  closeRequest(db, { session: 'mcp-1', id: acked, outcome: 'Ready.', review: true, next_step: 'Look at it too.' })
+  tick()
+  acknowledgeHandoff(db, db.prepare(`SELECT item FROM requests WHERE id = ?`).pluck().get(acked) as string)
+  markAcksDelivered(db, 'mcp-1')
+
   const release = getBoard(db, 'alpha', 'Release')!
   return {
     asked, answered, release: release.id, approve: release.rows.find((row) => row.label === 'Approve')!.id,
-    message: MESSAGE(1), delivered: MESSAGE(2),
+    message: MESSAGE(1), delivered: MESSAGE(2), unfiled: unfiled.id, review,
   }
 }
 
@@ -338,7 +362,8 @@ describe('snapshot domains (issue #297)', () => {
       }
       // a domain no snapshot reads would only cost its triggers
       const used = new Set(SNAPSHOTS.flatMap((name) => [...SNAPSHOT_SOURCES[name]]))
-      expect([...used].sort()).toEqual(Object.keys(SNAPSHOT_DOMAINS).sort())
+      expect([...used].sort()).toEqual(Object.keys(SNAPSHOT_DOMAINS).filter((domain) => !(domain in AWAITING_ROUTE)).sort())
+      for (const domain of Object.keys(AWAITING_ROUTE)) expect(Object.keys(SNAPSHOT_DOMAINS), domain).toContain(domain)
     })
 
     it('classifies every table: read through a domain, or read by no snapshot, never both', () => {
@@ -643,6 +668,19 @@ describe('snapshot domains (issue #297)', () => {
       ['a launch ask filed', () => fileLaunchAsk(on(), LAUNCH(1), { project: '@sessions', stream: 'alpha · main', agent: 'copilot', kind: 'question', title: 'Approve the plan and continue?', action_owner: 'approval', options: [{ label: 'Approve the plan' }, { label: 'Not yet' }] }, [
         { optionId: 'approve', label: 'Approve the plan' }, { optionId: 'decline', label: 'Not yet' },
       ]).itemId !== '', [...ITEMS, 'links', 'issues']],
+      // #612: a request's writes move the requests domain, which no snapshot reads yet (PR 4
+      // adds /api/requests), so they rebuild nothing; the items a close writes rebuild the items
+      ['a prompt request opened', () => openPromptRequest(on(), { session: 'mcp-1', chat: 'claude:snapshot-chat' }) !== null, []],
+      ['an unfiled request filed', (f: Fixture) => fileRequest(on(), { session: 'mcp-1', id: f.unfiled, as: 'new', title: 'Filed' }).ok, []],
+      ['a request closed with its hand-off', (f: Fixture) => closeRequest(on(), {
+        session: 'mcp-1', id: f.unfiled, outcome: 'Ready.', title: 'Filed', review: true, next_step: 'Look at it.',
+      }).ok, [...ITEMS, 'links', 'issues']],
+      ['a review acknowledged', (f: Fixture) => acknowledgeHandoff(on(), on().prepare(`SELECT item FROM requests WHERE id = ?`).pluck().get(f.review) as string).ok,
+        [...ITEMS, 'links', 'issues']],
+      ['an acknowledgement handed to its session', (f: Fixture) => {
+        acknowledgeHandoff(on(), on().prepare(`SELECT item FROM requests WHERE id = ?`).pluck().get(f.review) as string)
+        return markAcksDelivered(on(), 'mcp-1').length === 1
+      }, [...ITEMS, 'links', 'issues']],
     ] as Array<[string, (f: Fixture) => unknown, Snapshot[], ((f: Fixture) => unknown)?]>)('%s', async (_, write, expected, prepare) => {
       if (prepare) expect(prepare(fixture)).not.toBe(false)
       expect(await rebuiltBy(() => write(fixture))).toEqual(SNAPSHOTS.filter((name) => expected.includes(name)))

@@ -31,6 +31,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `src/infer.ts` lazily infer project, branch, client, GitHub repo, and issue
   identity. One long-lived server process represents a CLI process; parent and
   subagents may share its session id and context-delivery ledger.
+  The `request` tool records what the human asked this session; its store functions
+  write only through `src/store.ts` (`requests.md`, #612).
 - **Human path:** `src/viewer-server.ts` creates the Hono API in `src/viewer.ts`,
   starts the viewer-only PR poller, and serves `public/`. The frontend is native
   browser ESM with no bundler. Electron stages `dist/`, `public/`, and `electron/`

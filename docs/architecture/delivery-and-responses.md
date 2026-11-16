@@ -83,7 +83,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   an hand-off another window acknowledged gets that refusal and just reloads. A
   hand-off can be acknowledged, dismissed from its row (the ✕ and the `x` key, which
   use `dismissItem`; its card draws no Dismiss), or resolved by the agent; only
-  Acknowledge records the outcome "Acknowledged". `pinItem` also takes an open
+  Acknowledge records the outcome "Acknowledged", except for the hand-off of a review
+  request (#612, `requests.md`): there the item's outcome is the request's outcome, and
+  `acknowledgeHandoff`, `resolveItem` and `dismissItem` also settle the linked request to
+  `done` in the same transaction (with `acked_at` only for Acknowledge). `pinItem` also takes an open
   hand-off; `snoozeItem` already took any open item. A hand-off has no reply, so
   `pending()` hands over only its annotations, as for any milestone, and the agent
   need not poll for it. Items written before the column, and by an older server, have

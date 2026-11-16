@@ -22,6 +22,7 @@ import {
   markReplySeen, openDb, pinBoardRow, pinItem, recordActivityCall, recordIssueFailure, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertActivity,
   upsertBoard, upsertIssueSnapshot, upsertSourceLink, sendSessionMessage, listSessionMessages, readSnapshotState,
   createLaunch, endLaunch, getLaunch, parkLaunch, recordLaunchProgress, resumeLaunch, forgetLaunch,
+  closeRequest, listRequests, listSessionRequests, openAgentRequest, openPromptRequest,
 } from '../src/store.js'
 import type { IssueDependencies } from '../src/store.js'
 import { issueQueue } from '../src/issue-poller.js'
@@ -454,7 +455,10 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
 
     // the same row from this build carries its host, and the hook follows it
     upsertActivity(hub, { session: 'new-mcp', project: 'homelab', stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: process.ppid, server_pid: process.pid })
-    expect(listHostSessions(hub, process.ppid)).toEqual([{ session: 'new-mcp', project: 'homelab', agent: 'claude-code', server_pid: process.pid }])
+    // #612: it also carries when the server registered and whether it tracks requests (not yet written, so null)
+    expect(listHostSessions(hub, process.ppid)).toEqual([{
+      session: 'new-mcp', project: 'homelab', agent: 'claude-code', server_pid: process.pid, started_at: expect.any(String), tracks_requests: null,
+    }])
     expect(JSON.parse((await stop()).stdout)).toMatchObject({ decision: 'block', reason: expect.stringContaining('project homelab') })
   })
 })
@@ -2216,5 +2220,102 @@ describe('a v2.9.0 hub, driver and spec sharing launches that continue a chat (#
     expect(parsed).toMatchObject({ ok: true, spec: { kind: 'chat', chatId: CHAT } })
     expect(V290.kind(JSON.parse(text) as { kind: unknown })).toBe('launch spec: kind must be new or resume')
     expect(V290.kind(parsed.ok ? parsed.spec : { kind: null })).toBe('launch spec: kind must be new or resume')
+  })
+})
+
+// Issue #612 (PR 2) — requests. No statement an older server runs names the requests
+// table or `activity.tracks_requests`, so its presence, call, item and answer writes
+// can neither change a request nor clear the flag, and the requests domain does not
+// move. An older server's resolve or dismiss of a review's hand-off item (v1.4.0's
+// statements, verbatim) settles no request, and this build reads that request as done.
+describe('a v2.11.0 process sharing a hub with requests (#612)', () => {
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-requests-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  function connect(older: boolean): Database.Database {
+    const db = older ? new Database(path) : openDb(path)
+    if (older) {
+      db.pragma('busy_timeout = 5000')
+      db.pragma('journal_mode = WAL')
+    }
+    open.push(db)
+    return db
+  }
+
+  const presence = (session: string, doing: string, claim: number) => ({
+    session, project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing, detail: '', children: null,
+    idle: claim ? 0 : 1, claim, server_version: '2.11.0', server_source: 'runtime', host_pid: 1, server_pid: 2, now: new Date().toISOString(),
+  })
+  const dump = (db: Database.Database) => JSON.stringify(db.prepare(`SELECT * FROM requests ORDER BY id`).all())
+
+  function seedHub(db: Database.Database) {
+    upsertActivity(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: 1, server_pid: process.pid })
+    db.prepare(`UPDATE activity SET tracks_requests = 1 WHERE session = 'new-mcp'`).run()
+    const unfiled = openPromptRequest(db, { session: 'new-mcp', chat: 'claude:synthetic-chat', turn: 'turn-1' })!
+    const opened = openAgentRequest(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'claude-code', title: 'Write the notes' })
+    const reviewed = openAgentRequest(db, { session: 'new-mcp', project: 'agent-inbox', stream: 'main', agent: 'claude-code', title: 'Try the flow' }) as { request: { id: string } }
+    closeRequest(db, { session: 'new-mcp', id: reviewed.request.id, outcome: 'It is ready.', review: true, next_step: 'Try it once.' })
+    const item = db.prepare(`SELECT item FROM requests WHERE id = ?`).pluck().get(reviewed.request.id) as string
+    return { unfiled: unfiled.id, opened: (opened as { request: { id: string } }).request.id, review: reviewed.request.id, item }
+  }
+
+  it('none of its presence, call, item or answer statements changes a request, clears the flag or moves the requests domain', () => {
+    const db = connect(false)
+    const old = connect(true)
+    const seeded = seedHub(db)
+    const asked = insertItem(db, { project: 'agent-inbox', stream: '', agent: 'new', kind: 'question', title: 'Ship it?' })
+    const before = { requests: dump(db), version: readSnapshotState(db).domains.requests, flag: listHostSessions(db, 1)[0]!.tracks_requests }
+    expect(before.flag).toBe(1)
+    old.prepare(V170.upsertActivity).run(presence('new-mcp', 'Reviewing', 1))
+    old.prepare(V170.recordActivityCall).run({ session: 'new-mcp', now: new Date().toISOString(), cold: at(0) })
+    old.prepare(V170.touchActivity).run(new Date().toISOString(), 'new-mcp')
+    old.prepare(V170.insertItem).run({
+      id: 'old-done', project: 'agent-inbox', stream: 'main', agent: 'old', session: 'new-mcp', kind: 'done', title: 'Try the flow', detail: '',
+      next_step: 'Try it once.', action_owner: null, impact: '', next_after: '', context: '', options: null, repo: REPO, issue_ref: null, head_repo: null,
+      repo_root: null, created_at: at(1), updated_at: at(1),
+    })
+    old.prepare(V140.replyItem).run({ id: asked, reply: 'Ship it', replyContext: null, kind: 'answer', now: new Date().toISOString() })
+    // its day-old housekeeping removes presence rows, never requests
+    old.prepare(`DELETE FROM activity WHERE (ended_at IS NOT NULL AND ended_at < ?) OR updated_at < ?`).run(at(0), at(0))
+    expect({ requests: dump(db), version: readSnapshotState(db).domains.requests, flag: listHostSessions(db, 1)[0]!.tracks_requests }).toEqual(before)
+    expect(listSessionRequests(db, 'new-mcp').requests.map((request) => request.id).sort()).toEqual([seeded.unfiled, seeded.opened].sort())
+  })
+
+  it('its resolve of the hand-off item settles no request, and this build reads that review as done', () => {
+    const db = connect(false)
+    const old = connect(true)
+    const seeded = seedHub(db)
+    const before = dump(db)
+    const now = new Date().toISOString()
+    old.prepare(V140.resolveItem).run({ now, text: 'Looked fine.', id: seeded.item, guarded: 0, expected: null })
+    expect(dump(db)).toBe(before)
+    expect(db.prepare(`SELECT state FROM requests WHERE id = ?`).pluck().get(seeded.review)).toBe('review')
+    const view = listRequests(db)
+    expect(view.open.map((request) => request.id)).not.toContain(seeded.review)
+    expect(view.closed).toEqual([expect.objectContaining({ id: seeded.review, state: 'done', closed_at: now })])
+  })
+
+  it('its dismissal of the hand-off item settles no request either', () => {
+    const db = connect(false)
+    const old = connect(true)
+    const seeded = seedHub(db)
+    const before = dump(db)
+    old.prepare(V140.dismissItem).run(new Date().toISOString(), seeded.item)
+    expect(dump(db)).toBe(before)
+    expect(listRequests(db).closed).toEqual([expect.objectContaining({ id: seeded.review, state: 'done' })])
   })
 })

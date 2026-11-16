@@ -109,6 +109,38 @@ describe('mcp round-trip', () => {
     expect(d.status).toBe('open')
   })
 
+  // #612: the server decides. A done flag with a real next step is a hand-off and
+  // says so in its result; one that says "No action" stays a milestone.
+  it('flag kind=done with a real next step stores a hand-off and returns handoff: true', async () => {
+    const dbPath = join(scratchDir('mcp-handoff-'), 'inbox.db')
+    const transport = new StdioClientTransport({
+      command: 'npx',
+      args: ['tsx', 'src/mcp-server.ts'],
+      env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    const call = async (arguments_: Record<string, unknown>) => JSON.parse(
+      ((await client.callTool({ name: 'flag', arguments: arguments_ })).content as Array<{ text: string }>)[0]!.text,
+    )
+
+    const handoff = await call({ kind: 'done', title: 'draft is ready', detail: 'The draft is written.', next_step: 'Review the draft.' })
+    expect(handoff).toEqual({ id: expect.any(String), handoff: true })
+    const milestone = await call({ kind: 'done', title: 'shipped v2', ...INFO_SHAPE })
+    expect(milestone).toEqual({ id: expect.any(String) })
+    const question = await call({ kind: 'question', title: 'which storage?', ...QUESTION_SHAPE })
+    expect(question.handoff).toBeUndefined()
+    // a repeat of the open hand-off is the same item
+    expect(await call({ kind: 'done', title: 'draft is ready', detail: 'The draft is written.', next_step: 'Review the draft.' }))
+      .toEqual({ id: handoff.id, handoff: true })
+
+    await client.close()
+    const db = openDb(dbPath)
+    expect(getItem(db, handoff.id)).toMatchObject({ kind: 'done', handoff: 1, action_owner: 'task', status: 'open' })
+    expect(getItem(db, milestone.id)).toMatchObject({ kind: 'done', handoff: null, action_owner: null })
+    expect(listItems(db)).toHaveLength(3)
+  })
+
   // issue #157 — the HEAD repository a branch is pushed to is inferred from git in
   // the MCP process (its tracking/push remote, else origin) and stamped beside
   // the BASE repo. Those git subprocesses run mid-protocol, so this round trip is

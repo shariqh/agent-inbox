@@ -17,6 +17,8 @@ export interface AttentionItem {
   detail?: string
   next_step?: string
   action_owner?: 'decision' | 'task' | 'approval' | null
+  /** issue #612 — 1 on a `done` item the server stored as a hand-off. */
+  handoff?: number | null
   impact?: string
   next_after?: string
   reply_seen_at?: string | null
@@ -85,6 +87,10 @@ export const NOTE_AGE_MS: number
 
 export function classifyLiveness(item: AttentionItem, nowMs: number, liveSessionIds: LiveSessionIds): Liveness
 export function isAskingQuestion(item: AttentionItem, nowMs?: number): boolean
+/** issue #612 — an open `done` item stored as a hand-off: an ask until acknowledged. */
+export function isOpenHandoff(item: AttentionItem): boolean
+/** An open unanswered question or an open hand-off, not deferred: still asking. */
+export function isAskingItem(item: AttentionItem, nowMs?: number): boolean
 export function isBlockedRowAttention(row: AttentionRow, nowMs?: number): boolean
 /** issue #36 — the human answered it in words, or went and did it. Either ends their part. */
 export function humanActedOnRow(row: AttentionRow): boolean

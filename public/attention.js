@@ -55,6 +55,21 @@ function isUnansweredQuestion(item) {
   return item.status === undefined || item.status === null || item.status === 'open'
 }
 
+// Issue #612: an open hand-off — a `done` item whose next_step asked the human
+// to act (the server marks it, `handoff`). It is an ask in Needs you until they
+// Acknowledge it, with the same later and stale rules as a question. No answer
+// exists to wait for, so only an open status ends it.
+export function isOpenHandoff(item) {
+  if (!item || item.kind !== 'done' || !item.handoff) return false
+  return item.status === undefined || item.status === null || item.status === 'open'
+}
+
+// One reading of "still asking" for both nouns, so the three accessors below and
+// the triage deck's re-validation can never disagree about a hand-off.
+export function isAskingItem(item, nowMs = Date.now()) {
+  return isAskingQuestion(item, nowMs) || (isOpenHandoff(item) && !laterReason(item, nowMs))
+}
+
 // A question is still asking only while it is OPEN and unanswered. `resolve`
 // closes an item without ever writing a reply, so keying on `reply` alone
 // counts a resolved question forever and the badge can never reach zero.
@@ -67,8 +82,12 @@ export function isAskingQuestion(item, nowMs = Date.now()) {
 
 // waiting = an agent is blocked on you *right now*; parked = answer whenever;
 // stale = nobody is listening and it has been >72h (demoted to the fold, §6)
+//
+// A hand-off is never waiting (#612): no agent is blocked on it, so a live
+// session does not make it urgent, escalate its project or lift it in the order.
 export function classifyLiveness(item, nowMs, liveSessionIds) {
-  if (item.session && asSet(liveSessionIds).has(item.session)) return 'waiting'
+  // a live session keeps its hand-off parked, never stale: the ageing is for an ask nobody is around for
+  if (item.session && asSet(liveSessionIds).has(item.session)) return isOpenHandoff(item) ? 'parked' : 'waiting'
   return nowMs - createdMs(item) > STALE_MS ? 'stale' : 'parked'
 }
 
@@ -145,7 +164,7 @@ export function attentionEntries(items, boards, nowMs, liveSessionIds, closedPro
   const out = []
   for (const it of items ?? []) {
     if (closed.has(it.project)) continue
-    if (!isAskingQuestion(it, nowMs)) continue
+    if (!isAskingItem(it, nowMs)) continue
     const liveness = classifyLiveness(it, nowMs, live)
     if (liveness === 'stale') continue
     out.push({ kind: 'item', item: it, liveness })
@@ -164,7 +183,7 @@ export function staleEntries(items, nowMs, liveSessionIds) {
   const live = asSet(liveSessionIds)
   const out = []
   for (const it of items ?? []) {
-    if (!isAskingQuestion(it, nowMs)) continue
+    if (!isAskingItem(it, nowMs)) continue
     if (classifyLiveness(it, nowMs, live) === 'stale') out.push({ kind: 'item', item: it, liveness: 'stale' })
   }
   return out
@@ -180,7 +199,7 @@ export function laterEntries(items, boards, nowMs, closedProjects = []) {
   const closed = asSet(closedProjects)
   const out = []
   for (const item of items ?? []) {
-    if (closed.has(item.project) || !isUnansweredQuestion(item)) continue
+    if (closed.has(item.project) || !(isUnansweredQuestion(item) || isOpenHandoff(item))) continue
     const later = laterReason(item, nowMs)
     if (later) out.push({ kind: 'item', item, liveness: 'later', later })
   }

@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  listItems, listItemsPage, listOpenQuestions, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
+  listItems, listItemsPage, listOpenAsks, acknowledgeHandoff, resolveItem, dismissItem, annotateItem, replyItem, snoozeItem,
   stopItemWatch, stopBoardRowWatch, pinItem, pinBoardRow, listArchivedSummary, listArchivedPlans,
   listBoards, listBoardsWithBlockedRows, archiveBoard, unarchiveBoard, annotateBoardRow, snoozeBoardRow,
   markRowHandled, clearRowHandled, listActivity, listActivitySpans, listSourceLinks, defaultDbPath,
@@ -652,7 +652,7 @@ const RECENT_OUTCOMES = 4
 export const SNAPSHOT_SOURCES = {
   // listItemsPage: every item column, and closedProjects() for its outcome lens
   items: ['items', 'projects', 'boards_closure'],
-  // listOpenQuestions: items alone. The dock's waiting/parked split reads
+  // listOpenAsks (open questions and open hand-offs): items alone. The dock's waiting/parked split reads
   // /api/activity, which is never retained, not this body.
   'attention-items': ['items'],
   'history-items': ['items'],
@@ -970,7 +970,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // shape built from the open questions alone. It is a separate cached
   // representation with its own validator, so neither can revalidate the other;
   // any other query string keeps the full response.
-  const attentionItems = conditionalSnapshot(db, 'attention-items', () => groupItems(listOpenQuestions(db)))
+  const attentionItems = conditionalSnapshot(db, 'attention-items', () => groupItems(listOpenAsks(db)))
   app.get('/api/items', (c, next) => (c.req.query('scope') === 'attention' ? attentionItems : allItems)(c, next))
 
   // The build stamp (#40) rides along here rather than on its own route: the
@@ -1242,6 +1242,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     resolveItem(db, c.req.param('id'))
     return c.json({ ok: true })
   })
+
+  // Issue #612: Acknowledge resolves an open hand-off and refuses anything else.
+  // A refusal (an unknown id, a question, a milestone, a closed hand-off) is a
+  // store-level 200 { ok: false, reason }, like the launch-ask and later routes.
+  app.post('/api/items/:id/acknowledge', (c) => c.json(acknowledgeHandoff(db, c.req.param('id'))))
 
   app.post('/api/items/:id/dismiss', (c) => {
     if (isLaunchAsk(db, c.req.param('id'))) return c.json({ ok: false, reason: 'launch_ask' })

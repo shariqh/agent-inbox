@@ -101,7 +101,8 @@ export function buildDashboard({
     key: entryKey(entry), project: entryEntity(entry).project ?? entry.board?.project,
     at: Date.parse(currentAskAt(entry) ?? ''), open: open.has(entryKey(entry)), title: entryTitle(entry),
   })
-  const questions = visibleItems.filter((item) => item.kind === 'question').map((item) => ({ kind: 'item', item }))
+  // a hand-off (#612) is an ask in Needs you, so it is marked as one, whether or not it is still open
+  const questions = visibleItems.filter((item) => item.kind === 'question' || (item.kind === 'done' && item.handoff)).map((item) => ({ kind: 'item', item }))
 
   return {
     signals: {

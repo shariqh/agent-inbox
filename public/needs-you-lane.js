@@ -10,6 +10,7 @@
 // textContent, and an unchanged value is never rewritten, so a selection in a
 // card survives a poll. Painted from app.js's renderDashboardAmbient, so from
 // both render entries; it fetches nothing and runs no timer.
+import { isOpenHandoff } from './attention.js'
 import { actionPresentation } from './card.js'
 import { pinLaneOrder } from './lanes.js'
 import { currentAskAt, relMs } from './rowview.js'
@@ -124,7 +125,7 @@ export function installNeedsYouLane(deps) {
     const meta = make('div', 'ny-meta')
     const dot = make('i', 'ny-dot')
     dot.setAttribute('aria-hidden', 'true')
-    meta.append(dot, make('span', 'ny-project'), make('span', 'ny-agent'), make('span', 'ny-branch'), make('span', 'ny-age'), make('span', 'ny-session'), make('b', 'ny-draft', 'Draft'))
+    meta.append(dot, make('span', 'ny-project'), make('span', 'ny-agent'), make('span', 'ny-branch'), make('span', 'ny-age'), make('span', 'ny-session'), make('b', 'ny-kind', 'Hand-off'), make('b', 'ny-draft', 'Draft'))
     el.append(meta, make('div', 'ny-title'), make('div', 'ny-next'), make('div', 'ny-plan'))
     return el
   }
@@ -159,6 +160,9 @@ export function installNeedsYouLane(deps) {
       setHidden(part, !text)
     }
     setHidden(el.querySelector('.ny-draft'), !draft)
+    // issue #612: a done item the server stored as a hand-off; every other ask is a question or a plan step
+    const handoff = entry.kind === 'item' && isOpenHandoff(entity)
+    setHidden(el.querySelector('.ny-kind'), !handoff)
     const titleEl = el.querySelector('.ny-title')
     setText(titleEl, title)
     // as the Inbox row's: the title the agent wrote, under a headline that is its step
@@ -172,7 +176,7 @@ export function installNeedsYouLane(deps) {
     const planEl = el.querySelector('.ny-plan')
     setText(planEl, plan)
     setHidden(planEl, !plan)
-    const label = [title, [project, agent, branch].filter(Boolean).join(' · '), age && `asked ${age === 'now' ? 'just now' : `${age} ago`}`, tag, draft && 'unsent draft']
+    const label = [handoff && 'Hand-off', title, [project, agent, branch].filter(Boolean).join(' · '), age && `asked ${age === 'now' ? 'just now' : `${age} ago`}`, tag, draft && 'unsent draft']
       .filter(Boolean)
       // a headline that is a step already ends in a period
       .reduce((text, part) => (text ? `${text}${/[.?!…]$/.test(text) ? ' ' : '. '}${part}` : part), '')

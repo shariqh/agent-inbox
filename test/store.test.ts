@@ -2,11 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import {
   openDb,
   insertItem,
+  acknowledgeHandoff,
+  listOpenAsks,
+  pinItem,
+  snoozeItem,
+  getItem,
   resolveItem,
   dismissItem,
   annotateItem,
@@ -186,6 +191,191 @@ describe('store', () => {
     const q1 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
     const q2 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
     expect(q2).not.toBe(q1)                 // questions never dedupe
+  })
+
+  // #612 PR 1: the server decides when a done flag is a hand-off.
+  describe('hand-offs', () => {
+    const base = { project: 'p', stream: '', agent: 'x', kind: 'done' as const }
+    const stored = (id: string) => listItems(db).find((i) => i.id === id)!
+
+    it('marks a done flag with a real next step as a hand-off owned by the person', () => {
+      const id = insertItem(db, { ...base, title: 'PR is up', next_step: 'Review the pull request.' })
+      expect(stored(id).handoff).toBe(1)
+      expect(stored(id).action_owner).toBe('task')
+    })
+
+    it('overrides a caller action_owner for a hand-off', () => {
+      const id = insertItem(db, { ...base, title: 'PR is up', next_step: 'Review it.', action_owner: 'decision' })
+      expect(stored(id).action_owner).toBe('task')
+    })
+
+    it.each([
+      ['empty', ''],
+      ['spaces', '   '],
+      ['No action', 'No action'],
+      ['no action needed', 'no action needed'],
+      ['No further action', 'No further action.'],
+      ['None', 'None'],
+      ['N/A', 'N/A'],
+      ['n/a with spaces', '  n/a  '],
+      ['Nothing', 'Nothing to do'],
+      ['No actions needed', 'No actions needed'],
+      ['No further actions', 'No further actions.'],
+      ['No-action', 'No-action'],
+      ['FYI', 'FYI'],
+      ['fyi lower case', 'fyi, shipped today'],
+      ['an em dash', '—'],
+      ['a hyphen', '-'],
+      ['(none)', '(none)'],
+      ['a quoted No action', '"No action"'],
+      ['a backticked No action', '`No action`'],
+      ['a bulleted No action', '- No action'],
+      ['a no-break space', 'No\u00a0action'],
+      ['a full-width No action', 'Ｎｏ ａｃｔｉｏｎ'],
+      ['extra inner spaces', '  no   further \n action  '],
+      // starts with "None": a milestone on purpose; the rule reads only the start
+      ['None of the old data moved', 'None of the old data moved: check the import log'],
+    ])('keeps %s a milestone', (_name, next_step) => {
+      const id = insertItem(db, { ...base, title: `m ${_name}`, next_step })
+      expect(stored(id).handoff).toBeNull()
+      expect(stored(id).action_owner).toBeNull()
+    })
+
+    it.each([
+      'Review the PR',
+      'Now try the build',
+      'Notify the team',
+      'Nothingness is not a marker',
+      'Notice the new button',
+      'Normalize the config',
+      'Fix-it ticket is open',
+      '"Review" the PR',
+    ])('makes %s a hand-off', (next_step) => {
+      const id = insertItem(db, { ...base, title: `t ${next_step}`, next_step })
+      expect(stored(id).handoff).toBe(1)
+    })
+
+    it('stores no options on a hand-off, and keeps a question’s', () => {
+      const options = [{ label: 'Merge', recommended: true }, { label: 'Hold' }]
+      const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.', options })
+      const q = insertItem(db, { ...base, kind: 'question', title: 'q', next_step: 'Choose.', options })
+      const m = insertItem(db, { ...base, title: 'm', next_step: 'No action', options })
+      expect(stored(h).options).toBeNull()
+      expect(stored(q).options).toEqual(options)
+      expect(stored(m).options).toEqual(options)
+    })
+
+    it('treats a word that only starts like a marker as a real step', () => {
+      const id = insertItem(db, { ...base, title: 'x', next_step: 'Nothingness is not a marker' })
+      expect(stored(id).handoff).toBe(1)
+      const id2 = insertItem(db, { ...base, title: 'y', next_step: 'Notice the new button' })
+      expect(stored(id2).handoff).toBe(1)
+    })
+
+    it('never marks a question or a note, and keeps their action_owner', () => {
+      const q = insertItem(db, { ...base, kind: 'question', title: 'q', next_step: 'Choose one.', action_owner: 'decision' })
+      const n = insertItem(db, { ...base, kind: 'note', title: 'n', next_step: 'Read it.', action_owner: 'task' })
+      expect(stored(q).handoff).toBeNull()
+      expect(stored(q).action_owner).toBe('decision')
+      expect(stored(n).handoff).toBeNull()
+    })
+
+    it('keeps the action_owner a milestone was given, with no marker', () => {
+      const id = insertItem(db, { ...base, title: 'shipped', next_step: 'No action', action_owner: 'task' })
+      expect(stored(id).handoff).toBeNull()
+      expect(stored(id).action_owner).toBe('task')
+    })
+
+    it('dedupes a hand-off only against an open hand-off, and a milestone only against a milestone', () => {
+      const h1 = insertItem(db, { ...base, title: 'same', next_step: 'Review it.' })
+      const h2 = insertItem(db, { ...base, title: 'same', next_step: 'Review it again.' })
+      expect(h2).toBe(h1)
+      const m1 = insertItem(db, { ...base, title: 'same', next_step: 'No action' })
+      expect(m1).not.toBe(h1)
+      const m2 = insertItem(db, { ...base, title: 'same', next_step: 'None' })
+      expect(m2).toBe(m1)
+      resolveItem(db, h1)
+      const h3 = insertItem(db, { ...base, title: 'same', next_step: 'Review it.' })
+      expect(h3).not.toBe(h1)
+      expect(listItems(db, { status: 'open' })).toHaveLength(2)
+    })
+
+    it('lists open hand-offs with open questions, never a milestone, note or closed item', () => {
+      const q = insertItem(db, { ...base, kind: 'question', title: 'q' })
+      const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+      insertItem(db, { ...base, title: 'm', next_step: 'No action' })
+      insertItem(db, { ...base, kind: 'note', title: 'n', next_step: 'Read it.' })
+      const closed = insertItem(db, { ...base, title: 'closed', next_step: 'Review it.' })
+      resolveItem(db, closed)
+      expect(listOpenAsks(db).map((i) => i.id).sort()).toEqual([q, h].sort())
+    })
+
+    it('pins and snoozes an open hand-off, never a milestone or a closed one', () => {
+      const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+      const m = insertItem(db, { ...base, title: 'm', next_step: 'No action' })
+      expect(pinItem(db, h, true)).toBe(true)
+      expect(getItem(db, h)!.pinned_at).not.toBeNull()
+      expect(pinItem(db, m, true)).toBe(false)
+      expect(snoozeItem(db, h, new Date(Date.now() + 60_000).toISOString())).toBe(true)
+      expect(getItem(db, h)!.pinned_at).toBeNull()
+      acknowledgeHandoff(db, h)
+      expect(pinItem(db, h, true)).toBe(false)
+    })
+
+    describe('acknowledgeHandoff', () => {
+      it('resolves an open hand-off with the outcome Acknowledged', () => {
+        const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+        expect(acknowledgeHandoff(db, h)).toEqual({ ok: true })
+        expect(getItem(db, h)).toMatchObject({ status: 'resolved', outcome: 'Acknowledged' })
+        expect(getItem(db, h)!.resolved_at).not.toBeNull()
+      })
+
+      it('clears a pin when it resolves', () => {
+        const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+        pinItem(db, h, true)
+        acknowledgeHandoff(db, h)
+        expect(getItem(db, h)!.pinned_at).toBeNull()
+      })
+
+      it('refuses a question, a note, a milestone, a closed hand-off and an unknown id, and changes nothing', () => {
+        const q = insertItem(db, { ...base, kind: 'question', title: 'q', next_step: 'Choose.' })
+        const n = insertItem(db, { ...base, kind: 'note', title: 'n', next_step: 'Read it.' })
+        const m = insertItem(db, { ...base, title: 'm', next_step: 'No action', action_owner: 'task' })
+        const closed = insertItem(db, { ...base, title: 'c', next_step: 'Review it.' })
+        dismissItem(db, closed)
+        for (const id of [q, n, m, closed]) expect(acknowledgeHandoff(db, id), id).toEqual({ ok: false, reason: 'not_handoff' })
+        expect(acknowledgeHandoff(db, 'nope')).toEqual({ ok: false, reason: 'not_found' })
+        expect(listItems(db).filter((i) => i.outcome !== '')).toEqual([])
+        expect(getItem(db, closed)!.status).toBe('dismissed')
+      })
+
+      it('does not acknowledge twice', () => {
+        const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+        expect(acknowledgeHandoff(db, h)).toEqual({ ok: true })
+        expect(acknowledgeHandoff(db, h)).toEqual({ ok: false, reason: 'not_handoff' })
+      })
+    })
+
+    it('leaves a hub that predates the column untouched: its done row with a real next step stays a milestone', () => {
+      const path = join(scratchDir('inbox-pre-handoff-'), 'v131.db')
+      const old = new Database(path)
+      old.exec(readFileSync(new URL('./fixtures/v1.3.1-schema.sql', import.meta.url), 'utf8'))
+      expect((old.prepare(`PRAGMA table_info(items)`).all() as Array<{ name: string }>).map((c) => c.name)).not.toContain('handoff')
+      old.prepare(`INSERT INTO items (id, project, stream, agent, kind, title, next_step, action_owner, status, created_at, updated_at)
+        VALUES ('old-done', 'p', '', 'x', 'done', 'Draft ready', 'Review the draft.', NULL, 'open', ?, ?)`)
+        .run('2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')
+      old.close()
+      const migrated = openDb(path)
+      try {
+        expect((migrated.prepare(`PRAGMA table_info(items)`).all() as Array<{ name: string }>).map((c) => c.name)).toContain('handoff')
+        const item = getItem(migrated, 'old-done')!
+        expect(item).toMatchObject({ handoff: null, action_owner: null, status: 'open', kind: 'done' })
+        expect(listOpenAsks(migrated)).toEqual([])
+        expect(acknowledgeHandoff(migrated, 'old-done')).toEqual({ ok: false, reason: 'not_handoff' })
+      } finally {
+        migrated.close()
+      }
+    })
   })
 })
 

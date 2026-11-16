@@ -5,6 +5,9 @@ import {
   humanActedOnRow,
   awaitingAgentRows,
   isAskingQuestion,
+  isAskingItem,
+  isOpenHandoff,
+  laterEntries,
   attentionEntries,
   staleEntries,
   attentionCount,
@@ -455,5 +458,96 @@ describe('isAskingQuestion is exported so no second predicate has to be written'
     const legacy = { ...item('e') } as AttentionItem
     delete (legacy as { status?: string }).status
     expect(isAskingQuestion(legacy)).toBe(true)
+  })
+})
+
+// #612: a `done` flag with a real next step is stored as a hand-off. It asks the
+// person for something, but no agent is blocked on it.
+describe('hand-offs (#612)', () => {
+  const handoff = (id: string, over: Partial<AttentionItem> = {}): AttentionItem =>
+    item(id, { kind: 'done', handoff: 1, action_owner: 'task', next_step: 'Review it.', ...over })
+
+  it('isOpenHandoff is true only for an open done item with the marker', () => {
+    expect(isOpenHandoff(handoff('a'))).toBe(true)
+    expect(isOpenHandoff(handoff('b', { status: 'resolved' }))).toBe(false)
+    expect(isOpenHandoff(handoff('c', { status: 'dismissed' }))).toBe(false)
+    expect(isOpenHandoff(handoff('d', { handoff: null }))).toBe(false)
+    expect(isOpenHandoff(handoff('e', { kind: 'note' }))).toBe(false)
+    expect(isOpenHandoff(item('f'))).toBe(false)
+  })
+
+  it('isAskingQuestion stays question-only; isAskingItem takes both', () => {
+    expect(isAskingQuestion(handoff('a'))).toBe(false)
+    expect(isAskingItem(handoff('a'), NOW)).toBe(true)
+    expect(isAskingItem(item('q'), NOW)).toBe(true)
+    expect(isAskingItem(handoff('b', { pinned_at: '2026-07-24T11:30:00Z' }), NOW)).toBe(false)
+  })
+
+  it('is in attention beside a question, as a parked entry', () => {
+    const out = attentionEntries([item('q'), handoff('h')], [], NOW, [])
+    expect(out.map((e) => e.kind === 'item' && e.item.id).sort()).toEqual(['h', 'q'])
+    expect(attentionCount([handoff('h')], [], NOW, [])).toBe(1)
+  })
+
+  it('is never waiting, even when its session is live, and so never escalates', () => {
+    const h = handoff('h', { session: 's1', created_at: '2026-07-24T08:00:00Z' })
+    expect(classifyLiveness(h, NOW, new Set(['s1']))).toBe('parked')
+    const [entry] = attentionEntries([h], [], NOW, new Set(['s1']))
+    expect(entry).toMatchObject({ kind: 'item', liveness: 'parked' })
+    expect(countsByProject([h], [], NOW, new Set(['s1'])).get('api')).toEqual({ total: 1, escalated: 0 })
+    // the same ask as a question would be waiting and escalated
+    const q = item('q', { session: 's1', created_at: '2026-07-24T08:00:00Z' })
+    expect(countsByProject([q], [], NOW, new Set(['s1'])).get('api')).toEqual({ total: 1, escalated: 1 })
+  })
+
+  it('sorts below an ask an agent is waiting on, even when its own session is live', () => {
+    const waiting = item('q', { session: 's1', created_at: '2026-07-24T11:00:00Z' })
+    const h = handoff('h', { session: 's2', created_at: '2026-07-24T06:00:00Z' })
+    const out = sortNeedsYou(attentionEntries([h, waiting], [], NOW, new Set(['s1', 's2'])), NOW)
+    expect(out.map((e) => e.kind === 'item' && e.item.id)).toEqual(['q', 'h'])
+  })
+
+  it('moves to the stale fold after 72 hours with no live session, as a question does', () => {
+    const old = new Date(NOW - STALE_MS - 1000).toISOString()
+    const h = handoff('h', { created_at: old })
+    expect(attentionEntries([h], [], NOW, [])).toEqual([])
+    expect(staleEntries([h], NOW, []).map((e) => e.item.id)).toEqual(['h'])
+    expect(classifyLiveness(h, NOW, new Set(['x']))).toBe('stale')
+  })
+
+  it('stays parked, never stale, past 72 hours while its session is live; stale once the session is gone', () => {
+    const old = new Date(NOW - STALE_MS - 60 * 60_000).toISOString()
+    const h = handoff('h', { session: 's1', created_at: old })
+    expect(classifyLiveness(h, NOW, new Set(['s1']))).toBe('parked')
+    expect(attentionEntries([h], [], NOW, new Set(['s1'])).map((e) => e.kind === 'item' && e.liveness)).toEqual(['parked'])
+    expect(staleEntries([h], NOW, new Set(['s1']))).toEqual([])
+    // the session is gone: it ages into the stale fold, as a question does
+    expect(classifyLiveness(h, NOW, new Set())).toBe('stale')
+    expect(attentionEntries([h], [], NOW, new Set())).toEqual([])
+    expect(staleEntries([h], NOW, new Set()).map((e) => e.item.id)).toEqual(['h'])
+  })
+
+  it('moves to Later when snoozed or pinned, with the same reasons as a question', () => {
+    const snoozed = handoff('s', { snoozed_until: '2026-07-24T18:00:00Z' })
+    const pinned = handoff('p', { pinned_at: '2026-07-24T11:30:00Z' })
+    expect(attentionEntries([snoozed, pinned], [], NOW, [])).toEqual([])
+    expect(laterEntries([snoozed, pinned], [], NOW).map((e) => [e.kind === 'item' && e.item.id, e.later]))
+      .toEqual([['s', 'snoozed'], ['p', 'pinned']])
+    // an expired snooze is back in attention
+    expect(attentionEntries([handoff('s', { snoozed_until: '2026-07-24T11:00:00Z' })], [], NOW, [])).toHaveLength(1)
+  })
+
+  it('leaves attention once acknowledged, and a milestone never enters it', () => {
+    expect(attentionEntries([handoff('h', { status: 'resolved' })], [], NOW, [])).toEqual([])
+    expect(laterEntries([handoff('h', { status: 'resolved', pinned_at: '2026-07-24T11:30:00Z' })], [], NOW)).toEqual([])
+    // action_owner 'task' and a next step, but no marker: still a milestone
+    const milestone = item('m', { kind: 'done', action_owner: 'task', next_step: 'Review it.' })
+    expect(attentionEntries([milestone], [], NOW, [])).toEqual([])
+    expect(staleEntries([milestone], NOW, [])).toEqual([])
+    expect(laterEntries([{ ...milestone, pinned_at: '2026-07-24T11:30:00Z' }], [], NOW)).toEqual([])
+  })
+
+  it('respects a closed project', () => {
+    expect(attentionEntries([handoff('h')], [], NOW, [], ['api'])).toEqual([])
   })
 })

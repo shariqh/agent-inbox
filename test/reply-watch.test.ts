@@ -449,6 +449,23 @@ describe('native attention notifications', () => {
     }
   })
 
+  // #612: an open hand-off is an ask for the dock and notifications, with no change to them.
+  it('announces a hand-off once, never a milestone, and nothing after it is acknowledged', async () => {
+    const poll = watch()
+    expect(await poll()).toEqual([])
+    const base = { project: PROJECT, stream: '', agent: 'copilot', kind: 'done' as const }
+    insertItem(db, { ...base, title: 'Shipped the thing', next_step: 'No action' })
+    expect(await poll()).toEqual([])
+    const id = insertItem(db, { ...base, title: 'Draft is ready', next_step: 'Review the draft.' })
+    const fresh = await poll()
+    expect(fresh).toHaveLength(1)
+    expect(fresh[0]!.id).toBe(`q:${id}`)
+    expect(await poll()).toEqual([])
+    expect(await post(`api/items/${id}/acknowledge`, {})).toEqual({ ok: true })
+    expect(await poll()).toEqual([])
+    expect((await (await request(`${BASE}api/items?scope=attention`)).json()).needsYou).toEqual([])
+  })
+
   it('keys a question by its id alone', async () => {
     const poll = watch()
     expect(await poll()).toEqual([])

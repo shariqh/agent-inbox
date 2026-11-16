@@ -6,7 +6,7 @@ import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import {
-  closeProject, dismissItem, insertItem, listItems, listItemsPage, listOpenQuestions, openDb, replyItem,
+  closeProject, dismissItem, insertItem, listItems, listItemsPage, listOpenAsks, openDb, replyItem,
   resolveItem, upsertActivity,
 } from '../src/store.js'
 import type { Item } from '../src/store.js'
@@ -246,7 +246,7 @@ describe('viewer closed-history representations (issue #184)', () => {
     expect(history.body.done).toHaveLength(61)
     // the attention projection is untouched: no closed items and no summary
     const attention = await read(app, '/api/items?scope=attention')
-    expect(attention.body).toEqual(JSON.parse(JSON.stringify(groupItems(listOpenQuestions(db)))))
+    expect(attention.body).toEqual(JSON.parse(JSON.stringify(groupItems(listOpenAsks(db)))))
     expect(attention.body).not.toHaveProperty('history')
   })
 

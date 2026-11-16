@@ -59,6 +59,43 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - Item/row `updated_at` is for content changes only. Delivery stamp writes must
   never bump it or the New/changed filter becomes a polling firehose.
 
+- **Hand-offs (#612).** A `flag` with `kind: 'done'` is a milestone, shown only in
+  History, unless its `next_step` asks the human to act. The server decides, in
+  `insertItem` (`isHandoffInput`), when it writes. The step is NFKC-normalised, its
+  whitespace collapsed and leading characters that are not letters or digits
+  stripped (quotes, backticks, bullets, dashes, brackets); an empty result is a
+  milestone, and so is one matching `/^(no( further)?[ -]actions?|none|n\/a|nothing|fyi)\b/i`.
+  Anything else is stored as a hand-off: `items.handoff = 1`, `action_owner = 'task'`
+  (whatever the caller sent) and `options` NULL (a hand-off has nothing to choose
+  between, and its answer controls could never succeed). Agents are told to write
+  exactly "No action" for an announcement. The rule reads only the start, so "None of
+  the old data moved: check the log" is a milestone too, which is accepted; `\b`
+  keeps "Notify the team" a hand-off. No existing row is rewritten. The marker is its
+  own column, added by `ensureColumn`, because `action_owner` is accepted for every
+  kind and cannot say "hand-off". It is not a new `kind`: an older viewer's
+  `groupItems` drops an open item of an unknown kind from every group. The result of
+  `flag` is `{ id, handoff: true }`. `insertItem` dedupes a hand-off only against an
+  open hand-off with the same project and title, and a milestone only against an open
+  milestone. `POST /api/items/:id/acknowledge` calls `acknowledgeHandoff`: in one
+  `.immediate()` transaction it resolves an open hand-off with the outcome
+  "Acknowledged" and refuses anything else with
+  `200 { ok: false, reason: 'not_handoff' | 'not_found' }`; a window that still shows
+  an hand-off another window acknowledged gets that refusal and just reloads. A
+  hand-off can be acknowledged, dismissed from its row (the ✕ and the `x` key, which
+  use `dismissItem`; its card draws no Dismiss), or resolved by the agent; only
+  Acknowledge records the outcome "Acknowledged". `pinItem` also takes an open
+  hand-off; `snoozeItem` already took any open item. A hand-off has no reply, so
+  `pending()` hands over only its annotations, as for any milestone, and the agent
+  need not poll for it. Items written before the column, and by an older server, have
+  `handoff` NULL and stay milestones. An older viewer on a newer hub shows a hand-off
+  as a milestone in History, which is what it did before. An OLDER server sharing the
+  database dedupes a milestone against an open hand-off of the same project and
+  title: its lookup does not read `handoff`, so it returns the hand-off's id and
+  writes nothing (`test/mixed-version.test.ts`); this build cannot change that. The
+  card (`public/card.js`, `public/app.js`) shows the next step as its headline, then
+  the title (the finished work, as muted text) and the TL;DR, with Acknowledge,
+  Snooze and Pin for later, and no answer box. The Dashboard ribbon marks hand-offs
+  as asks (`public/dashboard.js`).
 - Session messages (#411) are the human's instructions to ONE MCP session, in
   their own table, `session_messages`. `pending()` returns only the caller's
   own session's open messages (no tool takes a session argument), re-delivered

@@ -52,7 +52,7 @@ const UNREAD: Record<string, string> = {
 const REVIEWED_COLUMNS: Record<string, string[]> = {
   items: [
     'action_agent', 'action_owner', 'agent', 'annotated_at', 'annotation', 'annotation_seen_at',
-    'annotation_seen_by', 'context', 'created_at', 'detail', 'head_repo', 'id', 'impact', 'issue_ref', 'kind',
+    'annotation_seen_by', 'context', 'created_at', 'detail', 'handoff', 'head_repo', 'id', 'impact', 'issue_ref', 'kind',
     'next_after', 'next_step', 'options', 'outcome', 'outcome_at', 'pinned_at', 'project', 'replied_at',
     'reply', 'reply_context', 'reply_kind', 'reply_seen_at', 'reply_source', 'repo', 'repo_root',
     'resolved_at', 'response_revision', 'session', 'snoozed_until', 'status', 'stream', 'title', 'updated_at',

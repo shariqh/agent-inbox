@@ -20,12 +20,18 @@ function byProject(items: Item[]): ProjectGroup[] {
   return [...map.entries()].map(([project, its]) => ({ project, items: its })).sort((a, b) => a.project.localeCompare(b.project))
 }
 
+function isHandoff(item: Item): boolean {
+  return item.kind === 'done' && item.handoff === 1
+}
+
 export function groupItems(items: Item[]): Grouped {
   const open = items.filter((i) => i.status === 'open')
   return {
-    needsYou: byProject(open.filter((i) => i.kind === 'question')),
+    // open questions, plus open hand-offs (#612): a done item whose next step asks the human to act
+    needsYou: byProject(open.filter((i) => i.kind === 'question' || isHandoff(i))),
     notes: byProject(open.filter((i) => i.kind === 'note')),
     // closed items, plus open kind=done milestones — announcements, not actionable
-    done: items.filter((i) => i.status !== 'open' || i.kind === 'done'),
+    // (an open hand-off is an ask, so it is in needsYou instead)
+    done: items.filter((i) => i.status !== 'open' || (i.kind === 'done' && !isHandoff(i))),
   }
 }

@@ -41,7 +41,8 @@ const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`
 export function ambientChips(items, boards, nowMs, lastSeenIso, seenIds) {
   const open = items.filter((i) => i.status === 'open')
   const awaiting = open.filter((i) => i.kind === 'question' && i.reply && !i.reply_seen_at).length
-  const milestones = open.filter((i) => i.kind === 'done').length
+  // a hand-off (#612) is an ask in Needs you, not a milestone
+  const milestones = open.filter((i) => i.kind === 'done' && !i.handoff).length
   const unread = unreadNoteCount(open.filter((i) => i.kind === 'note'), lastSeenIso, nowMs, seenIds)
   const complete = boards.filter((b) => b.progress.fraction === 1 && b.progress.countable > 0).length
   const chips = []

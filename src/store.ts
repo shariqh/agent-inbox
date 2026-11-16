@@ -47,6 +47,10 @@ export interface Item {
   detail: string
   next_step: string
   action_owner: ActionOwner | null
+  // issue #612 — 1 on a `done` item whose next_step asked the human to act (a
+  // hand-off), set by insertItem alone; NULL on every other item, and on every
+  // row written before the column.
+  handoff: number | null
   impact: string
   next_after: string
   context: string
@@ -746,6 +750,10 @@ function runMigrations(db: Database.Database): void {
   // statements never name the column, so they can neither set nor clear it.
   ensureColumn(db, 'items', 'repo_root', 'TEXT')
   ensureColumn(db, 'boards', 'repo_root', 'TEXT')
+  // issue #612 — 1 marks a hand-off (a `done` item with a real next step). NULL
+  // on every legacy row and on every row an older server writes: its INSERT
+  // never names the column, so it stays a milestone there. No backfill.
+  ensureColumn(db, 'items', 'handoff', 'INTEGER')
   // issue #306 — the call trace (written by recordActivityCall alone) and the
   // MCP session that last wrote a plan. NULL on every legacy row; no statement
   // an older process runs names them, so its writes neither clear nor fake them.
@@ -1094,33 +1102,54 @@ function migrateAnnotationDelivery(db: Database.Database): void {
   })()
 }
 
+// issue #612 — a `done` flag whose next_step asks the human to do something is
+// a hand-off. A next step that STARTS WITH "No action" (also "No further
+// action(s)", "No-action"), or is "None", "N/A", "Nothing" or "FYI", is an
+// announcement and stays a milestone, as does an empty one. The server decides,
+// once, when it writes. The text is NFKC-normalised, its whitespace collapsed
+// and any leading punctuation (quotes, backticks, bullets, dashes, brackets)
+// stripped first, so a decorated "No action" still reads as one. The rule reads
+// only the start: "None of the old data moved: check the log" is a milestone
+// too, which is acceptable. `\b` keeps "Notify the team" and "Nothingness" real.
+const NO_ACTION_STEP = /^(no( further)?[ -]actions?|none|n\/a|nothing|fyi)\b/i
+
+export function isHandoffInput(kind: Kind, nextStep: string | undefined): boolean {
+  if (kind !== 'done') return false
+  const step = (nextStep ?? '').normalize('NFKC').replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim()
+  return step !== '' && !NO_ACTION_STEP.test(step)
+}
+
 export function insertItem(db: Database.Database, item: NewItem): string {
+  const handoff = isHandoffInput(item.kind, item.next_step)
   // milestones are announcements — re-announcing the same open milestone
   // (agent retries, re-runs) must not stack duplicates. The lookup and the INSERT
   // share one IMMEDIATE transaction, so another process cannot announce the same
-  // milestone between them; a duplicate gets the id that already exists.
+  // milestone between them; a duplicate gets the id that already exists. A
+  // hand-off dedupes only against an open hand-off, and a milestone only against
+  // a milestone (#612): the two are different asks.
   if (item.kind === 'done') {
     return db.transaction((): string => {
       const existing = db
-        .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`)
+        .prepare(`SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?
+                    AND ${handoff ? 'handoff = 1' : 'handoff IS NULL'}`)
         .get(item.project, item.title) as { id: string } | undefined
-      return existing ? existing.id : insertItemRow(db, item)
+      return existing ? existing.id : insertItemRow(db, item, handoff)
     }).immediate()
   }
-  return insertItemRow(db, item)
+  return insertItemRow(db, item, false)
 }
 
-function insertItemRow(db: Database.Database, item: NewItem): string {
+function insertItemRow(db: Database.Database, item: NewItem, handoff: boolean): string {
   const id = randomUUID()
   const now = new Date().toISOString()
   db.prepare(
     `INSERT INTO items (
        id, project, stream, agent, action_agent, session, kind, title, detail, next_step,
-       action_owner, impact, next_after, context, options, repo, issue_ref, head_repo, repo_root,
+       action_owner, handoff, impact, next_after, context, options, repo, issue_ref, head_repo, repo_root,
        status, created_at, updated_at)
      VALUES (
        @id, @project, @stream, @agent, @agent, @session, @kind, @title, @detail, @next_step,
-       @action_owner, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo, @repo_root,
+       @action_owner, @handoff, @impact, @next_after, @context, @options, @repo, @issue_ref, @head_repo, @repo_root,
        'open', @created_at, @updated_at)`,
   ).run({
     id,
@@ -1132,11 +1161,13 @@ function insertItemRow(db: Database.Database, item: NewItem): string {
     title: item.title,
     detail: item.detail ?? '',
     next_step: item.next_step ?? '',
-    action_owner: item.action_owner ?? null,
+    action_owner: handoff ? 'task' : item.action_owner ?? null,
+    handoff: handoff ? 1 : null,
     impact: item.impact ?? '',
     next_after: item.next_after ?? '',
     context: item.context ?? '',
-    options: item.options?.length ? JSON.stringify(item.options) : null,
+    // a hand-off has nothing to choose between: its answer controls could never succeed (#612)
+    options: !handoff && item.options?.length ? JSON.stringify(item.options) : null,
     repo: item.repo ?? null,
     issue_ref: item.issue_ref ?? null,
     head_repo: item.head_repo ?? null,
@@ -1510,6 +1541,23 @@ export function dismissItem(db: Database.Database, id: string): void {
     .run(new Date().toISOString(), id)
 }
 
+// Issue #612: the human's Acknowledge. One IMMEDIATE transaction: only an open
+// hand-off is resolved, with the outcome "Acknowledged"; anything else is
+// refused and left as it was.
+export type AcknowledgeResult = { ok: true } | { ok: false; reason: 'not_found' | 'not_handoff' }
+
+export function acknowledgeHandoff(db: Database.Database, id: string): AcknowledgeResult {
+  return db.transaction((): AcknowledgeResult => {
+    const row = db.prepare(`SELECT kind, status, handoff FROM items WHERE id = ?`).get(id) as
+      | { kind: Kind; status: Status; handoff: number | null }
+      | undefined
+    if (!row) return { ok: false, reason: 'not_found' }
+    if (row.kind !== 'done' || row.handoff !== 1 || row.status !== 'open') return { ok: false, reason: 'not_handoff' }
+    resolveItem(db, id, 'Acknowledged')
+    return { ok: true }
+  }).immediate()
+}
+
 export function annotateItem(db: Database.Database, id: string, text: string): boolean {
   const info = db.prepare(`UPDATE items SET annotation = ?, updated_at = ? WHERE id = ? AND status = 'open'`)
     .run(text, new Date().toISOString(), id)
@@ -1578,7 +1626,8 @@ export function stopItemWatch(
   return stopAndDefer(db, stop, () => (until === null ? pinItem(db, id, true) : snoozeItem(db, id, until)))
 }
 
-// Issue #247 — "Pin for later": the human sets an unanswered question aside
+// Issue #247 — "Pin for later": the human sets an unanswered question (or, from
+// #612, an open hand-off) aside
 // with no return time, or (pinned false) brings it back. One conditioned
 // statement each way. A re-pin keeps the first time, and a pin replaces a
 // snooze. Not content, like the #217 watch stop: updated_at and the response
@@ -1587,7 +1636,8 @@ export function stopItemWatch(
 export function pinItem(db: Database.Database, id: string, pinned: boolean): boolean {
   const info = pinned
     ? db.prepare(`UPDATE items SET pinned_at = COALESCE(pinned_at, @now), snoozed_until = NULL
-                   WHERE id = @id AND kind = 'question' AND status = 'open'
+                   WHERE id = @id AND status = 'open'
+                     AND (kind = 'question' OR (kind = 'done' AND handoff = 1))
                      AND COALESCE(reply, '') = '' AND reply_kind IS NULL`)
       .run({ id, now: new Date().toISOString() })
     : db.prepare(`UPDATE items SET pinned_at = NULL WHERE id = @id AND pinned_at IS NOT NULL`).run({ id })
@@ -1601,14 +1651,14 @@ export function listItems(db: Database.Database, opts: { status?: Status } = {})
   return (rows as Array<Omit<Item, 'options'> & { options: string | null }>).map(parseItem)
 }
 
-// Issue #156: only the open questions, for the Electron dock watcher's 3-second
+// Issue #156: only the open questions (and, from #612, the open hand-offs), for the Electron dock watcher's 3-second
 // poll, so its read never materializes or serializes closed history and notes.
 // listItems(db) is served by a backwards walk of idx_items_created, which orders
 // same-millisecond ties by descending rowid; this filtered read sorts in a temp
 // b-tree instead, so it names that tiebreaker and keeps the watcher's results
 // identical to the full read's (test/reply-watch.test.ts).
-export function listOpenQuestions(db: Database.Database): Item[] {
-  const rows = db.prepare(`SELECT * FROM items WHERE status = 'open' AND kind = 'question'
+export function listOpenAsks(db: Database.Database): Item[] {
+  const rows = db.prepare(`SELECT * FROM items WHERE status = 'open' AND (kind = 'question' OR (kind = 'done' AND handoff = 1))
     ORDER BY created_at DESC, rowid DESC`).all()
   return (rows as StoredItem[]).map(parseItem)
 }
@@ -4651,7 +4701,7 @@ export function fileLaunchAsk(
   if (!LAUNCH_ID.test(launchId)) throw new Error('launch id must be a lowercase UUID')
   if (!isReservedProject(item.project)) throw new Error('a launch ask lives in a reserved project')
   return db.transaction(() => {
-    const itemId = insertItemRow(db, item)
+    const itemId = insertItemRow(db, item, false)
     const revision = db.prepare(`SELECT response_revision FROM items WHERE id = ?`).pluck().get(itemId) as number
     db.prepare(`INSERT INTO launch_asks (item_id, launch_id, revision, options, created_at) VALUES (?, ?, ?, ?, ?)`)
       .run(itemId, launchId, revision, JSON.stringify(options), new Date().toISOString())

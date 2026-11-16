@@ -466,6 +466,26 @@ describe('Just landed and the ribbon markers (#305)', () => {
     ])
   })
 
+  // #612: a hand-off is an ask in Needs you, so it is marked like one; a milestone never is
+  it('marks a hand-off, open while it waits and in Later, and never a milestone', () => {
+    const handoff = (id: string, extra: Record<string, unknown> = {}) => ({
+      id, project: 'alpha', kind: 'done', handoff: 1, status: 'open', title: id, next_step: 'Review it.',
+      created_at: '2026-08-24T10:00:00.000Z', ...extra,
+    })
+    const model = buildDashboard({
+      ...base,
+      items: [
+        handoff('waiting'),
+        handoff('pinned', { pinned_at: '2026-08-24T10:30:00.000Z' }),
+        handoff('acknowledged', { status: 'resolved', outcome: 'Acknowledged', outcome_at: '2026-08-24T11:00:00.000Z' }),
+        { id: 'milestone', project: 'alpha', kind: 'done', status: 'open', title: 'milestone', next_step: 'No action', created_at: '2026-08-24T09:00:00.000Z' },
+      ],
+    })
+    const asks = Object.fromEntries(model.marks.asks.map((mark) => [mark.key, mark.open]))
+    expect(asks).toEqual({ 'item:waiting': true, 'item:pinned': true, 'item:acknowledged': false })
+    expect(model.signals.waiting).toBe(1)
+  })
+
   it('marks every question and every open ask, open only through the attention set or Later', () => {
     const model = buildDashboard({
       ...base,

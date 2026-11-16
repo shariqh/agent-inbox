@@ -1,6 +1,8 @@
 export interface NoteLike {
   id: string
   kind?: string
+  /** issue #612 — 1 on a done item stored as a hand-off (an ask, not a milestone). */
+  handoff?: number | null
   status?: string
   created_at: string
   reply?: string | null

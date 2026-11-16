@@ -1192,6 +1192,73 @@ describe('a v1.6.0 process sharing a hub with repository folders (#324)', () => 
   })
 })
 
+// Issue #612 — hand-offs. An older server's insert never names `handoff`, so a
+// done item it writes stays a milestone. Its milestone dedupe (copied verbatim
+// from src/store.ts at v2.11.0) does not read the column either: it matches an
+// open hand-off of the same project and title, returns that id and writes
+// nothing. This build cannot change that; the design records it.
+describe('a v2.11.0 process sharing a hub with hand-offs (#612)', () => {
+  const ROOT = '/Users/s/Development/agent-inbox'
+  const V2110 = {
+    dedupe: `SELECT id FROM items WHERE kind = 'done' AND status = 'open' AND project = ? AND title = ?`,
+    insertItem: V160.insertItem,
+  }
+  let dir: string
+  let path: string
+  const open: Database.Database[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.parse(at(60)))
+    dir = scratchDir('mixed-version-handoffs-')
+    path = join(dir, 'inbox.db')
+  })
+
+  afterEach(() => {
+    for (const connection of open.splice(0)) if (connection.open) connection.close()
+    rmSync(dir, { recursive: true, force: true })
+    vi.useRealTimers()
+  })
+
+  function olderProcess(): Database.Database {
+    const db = new Database(path)
+    open.push(db)
+    db.pragma('busy_timeout = 5000')
+    db.pragma('journal_mode = WAL')
+    return db
+  }
+
+  function hub(): Database.Database {
+    const db = openDb(path)
+    open.push(db)
+    return db
+  }
+
+  it('its done item with a real next step stays a milestone: no marker, not in Needs you', () => {
+    const db = hub()
+    const old = olderProcess()
+    old.prepare(V2110.insertItem).run({
+      id: 'old-done', project: 'agent-inbox', stream: 'main', agent: 'old', session: null, kind: 'done',
+      title: 'Draft is ready', detail: 'It is written.', next_step: 'Review the draft.', action_owner: null, impact: '', next_after: '',
+      context: '', options: null, repo: REPO, issue_ref: null, head_repo: null, created_at: at(1), updated_at: at(1),
+    })
+    expect(getItem(db, 'old-done')).toMatchObject({ handoff: null, action_owner: null, status: 'open' })
+    expect(listItems(db).filter((item) => item.handoff === 1)).toEqual([])
+    const fresh = insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'new', kind: 'done', title: 'New draft', next_step: 'Review it.', repo_root: ROOT })
+    expect(getItem(db, fresh)!.handoff).toBe(1)
+  })
+
+  it('its milestone dedupe finds an open hand-off of the same project and title and writes nothing', () => {
+    const db = hub()
+    const old = olderProcess()
+    const handoff = insertItem(db, { project: 'agent-inbox', stream: 'main', agent: 'new', kind: 'done', title: 'Draft is ready', next_step: 'Review the draft.' })
+    expect(getItem(db, handoff)!.handoff).toBe(1)
+    const found = old.prepare(V2110.dedupe).get('agent-inbox', 'Draft is ready') as { id: string } | undefined
+    expect(found?.id).toBe(handoff)
+    expect(listItems(db)).toHaveLength(1)
+  })
+})
+
 // Issue #322: this build's reply says what it did and the answer it left. That
 // answer comes from the columns every version writes, never from anything only
 // this build records, so the reply or chat answer an older process writes after

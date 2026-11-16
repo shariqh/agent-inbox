@@ -699,6 +699,8 @@ body.settings-open #rail, body.settings-open #tabs, body.settings-open .floating
 .card-impact, .card-after { font-size: 13px; }
 .card-section-label { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; opacity: .55; margin-bottom: 3px; }
 .card-next-body { font-size: 14px; font-weight: 600; white-space: pre-wrap; }
+/* a hand-off's title: the finished work, between its next step and the TL;DR (#612) */
+.card-finished { margin: var(--sp-1) 0; color: var(--app-muted); font-size: var(--fs-meta); overflow-wrap: anywhere; }
 .card-tldr-body { font-size: 13px; opacity: .85; white-space: pre-wrap; }
 .card-context { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--app-text) 5%, transparent); }
 .card-context-label { cursor: pointer; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; opacity: .55; }

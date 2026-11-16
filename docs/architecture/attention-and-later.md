@@ -68,9 +68,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `isAskingItem` in `public/attention.js`; `isAskingQuestion` stays question-only.
   `laterEntries` and `staleEntries` apply the same rules to it: a snooze or a pin
   moves it to Later, and with no live session and 72 hours of age it moves to the
-  stale fold. `classifyLiveness` never answers `waiting` for one, only `parked`
-  or `stale`, so `countsByProject` never escalates it and `sortNeedsYou` keeps it
-  below the asks an agent waits on. A milestone with `action_owner: 'task'` and no
+  stale fold. `classifyLiveness` never answers `waiting` for one: a live session keeps it
+  `parked` (never stale); once its session is gone it ages to `stale`. So `countsByProject` never escalates it, and
+  `sortNeedsYou` keeps it below the asks an agent waits on. A milestone with `action_owner: 'task'` and no
   marker stays out. `groupItems` moves an open hand-off from `done` to `needsYou`,
   and `listOpenAsks` (open questions and open hand-offs) feeds `?scope=attention`,
   so the dock badge and notifications need no change. `ambientChips` counts

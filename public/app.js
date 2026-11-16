@@ -9814,12 +9814,16 @@ function itemCardEl(it, {
   el.innerHTML = `
     ${header ? cardHeadingHtml(presentation, textContext(it)) : ''}
     ${cardOriginHtml(it, it, { showProject: header })}
+    ${s.handoff && it.title && it.title !== presentation.headline ? '<div class="card-finished"></div>' : ''}
     ${actionBlocksHtml(presentation, textContext(it))}
     ${itemAnnotationHtml(s.annotationReceipt)}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}
     ${outcomeHtml(s.outcome, it.outcome_at, textContext(it))}
     ${cardDetailsHtml(it, it, `item:${it.id}`, presentation, { includeAsked })}`
+  // issue #612: a hand-off's title names the finished work; agent text, so textContent only
+  const finished = el.querySelector(':scope > .card-finished')
+  if (finished) finished.textContent = it.title
   bindContextDisclosures(el)
   if (s.showAnswer) el.appendChild(answerEl(it))
   else if (s.answered) {

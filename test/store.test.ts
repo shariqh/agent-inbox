@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import {
   openDb,
@@ -219,10 +219,50 @@ describe('store', () => {
       ['N/A', 'N/A'],
       ['n/a with spaces', '  n/a  '],
       ['Nothing', 'Nothing to do'],
+      ['No actions needed', 'No actions needed'],
+      ['No further actions', 'No further actions.'],
+      ['No-action', 'No-action'],
+      ['FYI', 'FYI'],
+      ['fyi lower case', 'fyi, shipped today'],
+      ['an em dash', '—'],
+      ['a hyphen', '-'],
+      ['(none)', '(none)'],
+      ['a quoted No action', '"No action"'],
+      ['a backticked No action', '`No action`'],
+      ['a bulleted No action', '- No action'],
+      ['a no-break space', 'No\u00a0action'],
+      ['a full-width No action', 'Ｎｏ ａｃｔｉｏｎ'],
+      ['extra inner spaces', '  no   further \n action  '],
+      // starts with "None": a milestone on purpose; the rule reads only the start
+      ['None of the old data moved', 'None of the old data moved: check the import log'],
     ])('keeps %s a milestone', (_name, next_step) => {
       const id = insertItem(db, { ...base, title: `m ${_name}`, next_step })
       expect(stored(id).handoff).toBeNull()
       expect(stored(id).action_owner).toBeNull()
+    })
+
+    it.each([
+      'Review the PR',
+      'Now try the build',
+      'Notify the team',
+      'Nothingness is not a marker',
+      'Notice the new button',
+      'Normalize the config',
+      'Fix-it ticket is open',
+      '"Review" the PR',
+    ])('makes %s a hand-off', (next_step) => {
+      const id = insertItem(db, { ...base, title: `t ${next_step}`, next_step })
+      expect(stored(id).handoff).toBe(1)
+    })
+
+    it('stores no options on a hand-off, and keeps a question’s', () => {
+      const options = [{ label: 'Merge', recommended: true }, { label: 'Hold' }]
+      const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.', options })
+      const q = insertItem(db, { ...base, kind: 'question', title: 'q', next_step: 'Choose.', options })
+      const m = insertItem(db, { ...base, title: 'm', next_step: 'No action', options })
+      expect(stored(h).options).toBeNull()
+      expect(stored(q).options).toEqual(options)
+      expect(stored(m).options).toEqual(options)
     })
 
     it('treats a word that only starts like a marker as a real step', () => {
@@ -316,14 +356,25 @@ describe('store', () => {
       })
     })
 
-    it('leaves rows written before the column untouched', () => {
-      const id = insertItem(db, { ...base, title: 'old', next_step: 'No action' })
-      db.prepare(`UPDATE items SET next_step = 'Review it.' WHERE id = ?`).run(id)
-      const reopened = openDb(db.name)
-      const item = listItems(reopened).find((i) => i.id === id)!
-      expect(item.handoff).toBeNull()
-      expect(item.action_owner).toBeNull()
-      reopened.close()
+    it('leaves a hub that predates the column untouched: its done row with a real next step stays a milestone', () => {
+      const path = join(scratchDir('inbox-pre-handoff-'), 'v131.db')
+      const old = new Database(path)
+      old.exec(readFileSync(new URL('./fixtures/v1.3.1-schema.sql', import.meta.url), 'utf8'))
+      expect((old.prepare(`PRAGMA table_info(items)`).all() as Array<{ name: string }>).map((c) => c.name)).not.toContain('handoff')
+      old.prepare(`INSERT INTO items (id, project, stream, agent, kind, title, next_step, action_owner, status, created_at, updated_at)
+        VALUES ('old-done', 'p', '', 'x', 'done', 'Draft ready', 'Review the draft.', NULL, 'open', ?, ?)`)
+        .run('2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')
+      old.close()
+      const migrated = openDb(path)
+      try {
+        expect((migrated.prepare(`PRAGMA table_info(items)`).all() as Array<{ name: string }>).map((c) => c.name)).toContain('handoff')
+        const item = getItem(migrated, 'old-done')!
+        expect(item).toMatchObject({ handoff: null, action_owner: null, status: 'open', kind: 'done' })
+        expect(listOpenAsks(migrated)).toEqual([])
+        expect(acknowledgeHandoff(migrated, 'old-done')).toEqual({ ok: false, reason: 'not_handoff' })
+      } finally {
+        migrated.close()
+      }
     })
   })
 })

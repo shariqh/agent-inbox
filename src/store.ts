@@ -1103,13 +1103,19 @@ function migrateAnnotationDelivery(db: Database.Database): void {
 }
 
 // issue #612 — a `done` flag whose next_step asks the human to do something is
-// a hand-off; "No action", "none", "n/a" and "nothing" (and an empty step) keep
-// it a milestone. The server decides, once, when it writes.
-const NO_ACTION_STEP = /^(no( further)? action|none|n\/a|nothing)\b/i
+// a hand-off. A next step that STARTS WITH "No action" (also "No further
+// action(s)", "No-action"), or is "None", "N/A", "Nothing" or "FYI", is an
+// announcement and stays a milestone, as does an empty one. The server decides,
+// once, when it writes. The text is NFKC-normalised, its whitespace collapsed
+// and any leading punctuation (quotes, backticks, bullets, dashes, brackets)
+// stripped first, so a decorated "No action" still reads as one. The rule reads
+// only the start: "None of the old data moved: check the log" is a milestone
+// too, which is acceptable. `\b` keeps "Notify the team" and "Nothingness" real.
+const NO_ACTION_STEP = /^(no( further)?[ -]actions?|none|n\/a|nothing|fyi)\b/i
 
 export function isHandoffInput(kind: Kind, nextStep: string | undefined): boolean {
   if (kind !== 'done') return false
-  const step = (nextStep ?? '').trim()
+  const step = (nextStep ?? '').normalize('NFKC').replace(/\s+/g, ' ').replace(/^[^\p{L}\p{N}]+/u, '').trim()
   return step !== '' && !NO_ACTION_STEP.test(step)
 }
 
@@ -1160,7 +1166,8 @@ function insertItemRow(db: Database.Database, item: NewItem, handoff: boolean): 
     impact: item.impact ?? '',
     next_after: item.next_after ?? '',
     context: item.context ?? '',
-    options: item.options?.length ? JSON.stringify(item.options) : null,
+    // a hand-off has nothing to choose between: its answer controls could never succeed (#612)
+    options: !handoff && item.options?.length ? JSON.stringify(item.options) : null,
     repo: item.repo ?? null,
     issue_ref: item.issue_ref ?? null,
     head_repo: item.head_repo ?? null,

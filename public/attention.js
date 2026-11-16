@@ -86,7 +86,8 @@ export function isAskingQuestion(item, nowMs = Date.now()) {
 // A hand-off is never waiting (#612): no agent is blocked on it, so a live
 // session does not make it urgent, escalate its project or lift it in the order.
 export function classifyLiveness(item, nowMs, liveSessionIds) {
-  if (item.session && !isOpenHandoff(item) && asSet(liveSessionIds).has(item.session)) return 'waiting'
+  // a live session keeps its hand-off parked, never stale: the ageing is for an ask nobody is around for
+  if (item.session && asSet(liveSessionIds).has(item.session)) return isOpenHandoff(item) ? 'parked' : 'waiting'
   return nowMs - createdMs(item) > STALE_MS ? 'stale' : 'parked'
 }
 

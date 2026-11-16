@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, listItems } from '../../src/store.js'
+import { acknowledgeHandoff, insertItem, listItems } from '../../src/store.js'
 import { advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, row, sendButton, settle, showInbox, useDomTest } from './harness.js'
 
 useDomTest()
@@ -173,5 +173,57 @@ describe('hand-offs in the Inbox', () => {
     await settle()
     expect(listItems(d).find((item) => item.id === h)?.pinned_at).toBeNull()
     expect(badgeCount()).toBe(1)
+  })
+
+  it('draws no ★ quick answer, option pill or answer control on a hand-off, even one flagged with options', async () => {
+    const d = open()
+    advanceClock()
+    const h = insertItem(d, {
+      ...AGENT, kind: 'done', title: 'Draft is ready', detail: 'The draft is written.', next_step: 'Review the draft.',
+      options: [{ label: 'Merge', recommended: true }, { label: 'Hold' }],
+    })
+    await bootApp(d)
+    await showInbox()
+    expect(row(h)!.querySelector('.nrow-star')!.children).toHaveLength(0)
+    click(row(h))
+    await settle()
+    expect(row(h)!.querySelector('.nrow-star')!.children).toHaveLength(0)
+    expect(row(h)!.querySelector('.opt-pill, .options, .reply-input, .reply-row')).toBeNull()
+  })
+
+  it('shows the finished work’s title on the opened card, and no duplicate when it equals the next step', async () => {
+    const d = open()
+    const h = handoff(d, 'Draft is ready')
+    const same = handoff(d, 'Try the second draft.', 'Try the second draft.')
+    await bootApp(d)
+    await showInbox()
+    click(row(h))
+    await settle()
+    const line = row(h)!.querySelector<HTMLElement>('.card-finished')
+    expect(line?.textContent).toBe('Draft is ready')
+    // between the headline and the TL;DR
+    const card = row(h)!.querySelector('.nrow-card-scroll .card')!
+    const order = [...card.querySelectorAll('.card-finished, .card-tldr')]
+    expect(order.map((el) => el.className.split(' ')[0])).toEqual(['card-finished', 'card-tldr'])
+    click(row(same))
+    await settle()
+    expect(row(same)!.querySelector('.card-finished')).toBeNull()
+  })
+
+  it('a window that shows an already-acknowledged hand-off gets a refusal and just reloads', async () => {
+    const d = open()
+    const h = handoff(d, 'Draft is ready')
+    await bootApp(d)
+    await showInbox()
+    click(row(h))
+    await settle()
+    // another window acknowledged it first
+    expect(acknowledgeHandoff(d, h)).toEqual({ ok: true })
+    click(buttonLabelled('Acknowledge', row(h)!))
+    await settle()
+    expect(listItems(d).find((item) => item.id === h)).toMatchObject({ status: 'resolved', outcome: 'Acknowledged' })
+    expect(row(h)).toBeNull()
+    expect(badgeCount()).toBe(0)
+    expect(document.getElementById('status')?.textContent ?? '').toBe('')
   })
 })

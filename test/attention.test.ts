@@ -500,10 +500,10 @@ describe('hand-offs (#612)', () => {
     expect(countsByProject([q], [], NOW, new Set(['s1'])).get('api')).toEqual({ total: 1, escalated: 1 })
   })
 
-  it('sorts below an ask an agent is waiting on', () => {
+  it('sorts below an ask an agent is waiting on, even when its own session is live', () => {
     const waiting = item('q', { session: 's1', created_at: '2026-07-24T11:00:00Z' })
-    const h = handoff('h', { created_at: '2026-07-24T06:00:00Z' })
-    const out = sortNeedsYou(attentionEntries([h, waiting], [], NOW, new Set(['s1'])), NOW)
+    const h = handoff('h', { session: 's2', created_at: '2026-07-24T06:00:00Z' })
+    const out = sortNeedsYou(attentionEntries([h, waiting], [], NOW, new Set(['s1', 's2'])), NOW)
     expect(out.map((e) => e.kind === 'item' && e.item.id)).toEqual(['q', 'h'])
   })
 
@@ -513,6 +513,18 @@ describe('hand-offs (#612)', () => {
     expect(attentionEntries([h], [], NOW, [])).toEqual([])
     expect(staleEntries([h], NOW, []).map((e) => e.item.id)).toEqual(['h'])
     expect(classifyLiveness(h, NOW, new Set(['x']))).toBe('stale')
+  })
+
+  it('stays parked, never stale, past 72 hours while its session is live; stale once the session is gone', () => {
+    const old = new Date(NOW - STALE_MS - 60 * 60_000).toISOString()
+    const h = handoff('h', { session: 's1', created_at: old })
+    expect(classifyLiveness(h, NOW, new Set(['s1']))).toBe('parked')
+    expect(attentionEntries([h], [], NOW, new Set(['s1'])).map((e) => e.kind === 'item' && e.liveness)).toEqual(['parked'])
+    expect(staleEntries([h], NOW, new Set(['s1']))).toEqual([])
+    // the session is gone: it ages into the stale fold, as a question does
+    expect(classifyLiveness(h, NOW, new Set())).toBe('stale')
+    expect(attentionEntries([h], [], NOW, new Set())).toEqual([])
+    expect(staleEntries([h], NOW, new Set()).map((e) => e.item.id)).toEqual(['h'])
   })
 
   it('moves to Later when snoozed or pinned, with the same reasons as a question', () => {

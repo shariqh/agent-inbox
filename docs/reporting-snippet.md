@@ -75,9 +75,11 @@ Call `flag` when:
   deployed). Use sparingly — it is NOT for routine progress. If `next_step` is a real
   action for the human (review this, try that), the item is a **hand-off**: it goes to
   their Needs you until they acknowledge it, so use it whenever you hand work back. The
-  server decides: only a `next_step` of "No action" (also "No further action", "None",
-  "N/A", "Nothing") keeps it a milestone, which goes to History. A hand-off's result is
-  `{ id, handoff: true }`. No agent is blocked on it, so do not wait for it; there is no
+  server decides: a `next_step` that STARTS WITH "No action" (also "No further action",
+  "No-action"), or is "None", "N/A", "Nothing" or "FYI", is an announcement and stays a
+  milestone in History, so write exactly "No action" for one. A hand-off's result is
+  `{ id, handoff: true }`, and it stores no `options`. No agent is blocked on it, so do
+  not wait for it; there is no
   answer to read, and Acknowledge resolves it with the outcome "Acknowledged".
 
 **Keep every item glanceable.** Every flag has distinct fields: `title` is the ask or finding

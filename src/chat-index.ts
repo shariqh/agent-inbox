@@ -46,6 +46,11 @@ export interface ChatIndexRead {
   /** a scan cap or the fresh-read budget left some chats out of this read */
   truncated: boolean
   work: { filesRead: number; bytesRead: number }
+  /**
+   * Jump to session (#586): the processes that make each live chat live, keyed `<tool>:<id>`. It stays on this side of
+   * the route, which joins a chat to its session card by them: no entry and no response carries a process id.
+   */
+  livePids?: ReadonlyMap<string, readonly number[]>
 }
 
 export interface ChatIndex {
@@ -77,8 +82,11 @@ export interface ChatIndexOpts {
   limits?: Partial<ChatIndexLimits>
 }
 
+/** A chat as the list serves it: `session` is there only for a live chat whose process has a session card. */
+export type ChatListEntry = ChatEntry & { session?: string }
+
 export interface ChatsResponse {
-  chats: ChatEntry[]
+  chats: ChatListEntry[]
   counts: { total: number; hidden: number; claude: number; copilot: number; live: number }
   truncated: boolean
   retention: { claudeDays: number }
@@ -154,6 +162,8 @@ interface Raw {
   /** use the slug only when the folder is gone: a PR's repository must not rename a chat in an existing non-git folder */
   slugIfGone?: boolean
   live: boolean
+  /** the processes that make it live; empty when it is not */
+  pids: number[]
 }
 
 interface CopilotDir { name: string; dir: string; meta: CopilotMeta; hasEvents: boolean; eventsMs: number | null; locks: Array<{ pid: number; mtimeMs: number }> }
@@ -244,8 +254,9 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
 
   // ── liveness ──────────────────────────────────────────────────────────────
 
-  function liveClaudeIds(alive: (pid: number) => boolean, boot: number): Set<string> {
-    const live = new Set<string>()
+  /** Each live Claude chat's id, with the processes whose session file names it. */
+  function liveClaudeIds(alive: (pid: number) => boolean, boot: number): Map<string, number[]> {
+    const live = new Map<string, number[]>()
     if (!isRealRoot(sessionsDir)) return live
     const seen = new Set<string>()
     for (const d of listDir(sessionsDir).slice(0, MAX_SESSION_FILES)) {
@@ -263,7 +274,11 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
         sessionFiles.set(path, cached)
       }
       // a pid from before this boot, or a file whose start predates it, is a reused pid
-      if (cached.doc && alive(pid) && (cached.doc.startedAt === null || cached.doc.startedAt >= boot - BOOT_SLACK_MS)) live.add(cached.doc.sessionId)
+      if (cached.doc && alive(pid) && (cached.doc.startedAt === null || cached.doc.startedAt >= boot - BOOT_SLACK_MS)) {
+        const pids = live.get(cached.doc.sessionId)
+        if (pids) pids.push(pid)
+        else live.set(cached.doc.sessionId, [pid])
+      }
     }
     for (const key of sessionFiles.keys()) if (!seen.has(key)) sessionFiles.delete(key)
     return live
@@ -332,7 +347,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
 
   // ── Claude Code ───────────────────────────────────────────────────────────
 
-  function scanClaude(budget: { left: number }, live: Set<string>): { raws: Raw[]; truncated: boolean } {
+  function scanClaude(budget: { left: number }, live: Map<string, number[]>): { raws: Raw[]; truncated: boolean } {
     const raws: Raw[] = []
     let truncated = false
     if (!isRealRoot(claudeRoot)) { transcripts.clear(); return { raws, truncated } }
@@ -406,6 +421,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
         slug: meta.pr?.repo ?? null,
         slugIfGone: true,
         live: live.has(f.id),
+        pids: live.get(f.id) ?? [],
       })
     }
     for (const key of transcripts.keys()) if (!seen.has(key)) transcripts.delete(key)
@@ -414,7 +430,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
 
   // ── Copilot CLI ───────────────────────────────────────────────────────────
 
-  function copilotRaw(d: CopilotDir, live: boolean): Raw {
+  function copilotRaw(d: CopilotDir, pids: number[]): Raw {
     const { meta } = d
     const folder = meta.cwd
     return {
@@ -433,7 +449,8 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
       },
       folder: meta.gitRoot ?? folder,
       slug: meta.repository,
-      live,
+      live: pids.length > 0,
+      pids,
     }
   }
 
@@ -501,7 +518,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
       }
     }
     for (const d of dirs) {
-      raws.push(copilotRaw(d, d.locks.some((l) => newest.get(l.pid)?.name === d.name && lockHeld(l.pid, l.mtimeMs, boot, alive))))
+      raws.push(copilotRaw(d, d.locks.filter((l) => newest.get(l.pid)?.name === d.name && lockHeld(l.pid, l.mtimeMs, boot, alive)).map((l) => l.pid)))
     }
     return { raws, truncated }
   }
@@ -539,14 +556,20 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
       const claude = scanClaude(budget, liveClaudeIds(alive, boot))
       const copilot = scanCopilot(budget, alive, boot)
       const byKey = new Map<string, ChatEntry>()
+      const livePids = new Map<string, readonly number[]>()
       for (const raw of [...claude.raws, ...copilot.raws]) {
         const entry = finish(raw, (folder) => folderInfo(folder, at))
         const key = `${entry.tool}:${entry.id}`
         const prev = byKey.get(key)
-        if (!prev || later(prev.lastActiveAt, entry.lastActiveAt) === entry.lastActiveAt) byKey.set(key, entry)
+        if (!prev || later(prev.lastActiveAt, entry.lastActiveAt) === entry.lastActiveAt) {
+          byKey.set(key, entry)
+          // the processes of the entry that is kept, as `live` is
+          if (raw.pids.length) livePids.set(key, raw.pids)
+          else livePids.delete(key)
+        }
       }
       for (const [folder, o] of origins) if (at - o.at >= ORIGIN_TTL_MS) origins.delete(folder)
-      return { chats: [...byKey.values()], truncated: claude.truncated || copilot.truncated, work }
+      return { chats: [...byKey.values()], truncated: claude.truncated || copilot.truncated, work, livePids }
     },
 
     readCopilot(id) {
@@ -580,12 +603,12 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
         const hasEvents = es?.isFile() === true
         const boot = bootTimeMs()
         const alive = new Map<number, boolean>()
-        const live = locks.some((l) => lockHeld(l.pid, l.mtimeMs, boot, (pid) => {
+        const held = locks.filter((l) => lockHeld(l.pid, l.mtimeMs, boot, (pid) => {
           let v = alive.get(pid)
           if (v === undefined) { v = isAlive(pid); alive.set(pid, v) }
           return v
-        }))
-        const raw = copilotRaw({ name: id, dir, meta, hasEvents, eventsMs: hasEvents ? es!.mtimeMs : null, locks }, live)
+        })).map((l) => l.pid)
+        const raw = copilotRaw({ name: id, dir, meta, hasEvents, eventsMs: hasEvents ? es!.mtimeMs : null, locks }, held)
         // the folder checks are fresh too: nothing goes into, or comes from, the 60-second origin cache
         return finish(raw, (folder) => ({ exists: folderExists(folder) }))
       } finally {
@@ -606,8 +629,15 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
   }
 }
 
-/** The /api/chats body: sorted by last activity, hidden chats out unless `all`, at most `maxChats`. Counts are over the full index. */
-export function chatsResponse(read: ChatIndexRead, opts: { all: boolean; claudeDays: number; maxChats?: number }): ChatsResponse {
+/**
+ * The /api/chats body: sorted by last activity, hidden chats out unless `all`, at most `maxChats`. Counts are over the full index.
+ * Jump to session (#586): `sessionFor` is asked, with the processes that hold it, for the session card of each live chat
+ * the body shows; a chat it names none for carries no `session` key.
+ */
+export function chatsResponse(
+  read: ChatIndexRead,
+  opts: { all: boolean; claudeDays: number; maxChats?: number; sessionFor?: (pids: readonly number[], tool: ChatTool) => string | null },
+): ChatsResponse {
   const max = opts.maxChats ?? MAX_CHATS
   const sorted = [...read.chats].sort((a, b) => {
     const x = ms(a.lastActiveAt)
@@ -616,8 +646,13 @@ export function chatsResponse(read: ChatIndexRead, opts: { all: boolean; claudeD
     return (Number.isNaN(x) ? 0 : y - x) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   })
   const shown = opts.all ? sorted : sorted.filter((c) => c.hidden.length === 0)
+  const withSession = (chat: ChatEntry): ChatListEntry => {
+    const pids = chat.live && opts.sessionFor ? read.livePids?.get(`${chat.tool}:${chat.id}`) : undefined
+    const session = pids?.length ? opts.sessionFor!(pids, chat.tool) : null
+    return session ? { ...chat, session } : chat
+  }
   return {
-    chats: shown.slice(0, max),
+    chats: shown.slice(0, max).map(withSession),
     counts: {
       total: sorted.length,
       hidden: sorted.filter((c) => c.hidden.length > 0).length,

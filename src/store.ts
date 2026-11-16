@@ -3762,13 +3762,15 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
 export interface HostSession {
   session: string
   project: string
+  /** what the session reports as (`claude-code`, `copilot`, or another client's own name) */
+  agent: string
   server_pid: number | null
 }
 
 export function listHostSessions(db: Database.Database, hostPid: number): HostSession[] {
   const cutoff = new Date(Date.now() - PRESENCE_STALE_MINUTES * 60000).toISOString()
   return db
-    .prepare(`SELECT session, project, server_pid FROM activity
+    .prepare(`SELECT session, project, agent, server_pid FROM activity
                WHERE host_pid = ? AND ended_at IS NULL AND updated_at >= ?
                ORDER BY started_at ASC, session ASC`)
     .all(hostPid, cutoff) as HostSession[]

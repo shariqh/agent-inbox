@@ -2310,7 +2310,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .chats-reasons:empty, .chats-pr:empty { display: none; }
 .chats-reasons { display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); vertical-align: middle; }
 .chip.chats-live { background: color-mix(in srgb, var(--app-agent) 10%, transparent); color: var(--app-agent); }
-.chats-copy, .chats-resume, .chats-continue, .chats-show { padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; white-space: nowrap; cursor: pointer; }
+.chats-copy, .chats-resume, .chats-continue, .chats-show, .chats-jump { padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; white-space: nowrap; cursor: pointer; }
 .chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-continue[aria-disabled="true"], .chats-refresh[aria-disabled="true"] { opacity: .45; cursor: default; }
 /* PR 3: Resume sits before Copy resume; its note (the fallback notice or main's reason) goes under both */
 .chats-resume { margin-right: var(--sp-1); }
@@ -2319,9 +2319,10 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .chats-resume-note { display: block; width: 0; min-width: 100%; max-width: 24em; margin-top: var(--sp-1); color: var(--app-muted); font-size: var(--fs-meta); white-space: normal; }
 .chats-resume-note:empty { display: none; }
 /* #586 phase 2: Continue here… (or Show session, for a chat driven here) after Copy resume, on the same
-   line; "· here" after Live while a session this app drives runs the chat */
-.chats-continue, .chats-show { margin-left: var(--sp-1); }
-.chats-continue:focus-visible, .chats-show:focus-visible, .sp-chat-link:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
+   line; "· here" after Live while a session this app drives runs the chat. Jump to session, for a chat
+   live in a terminal, takes the same place */
+.chats-continue, .chats-show, .chats-jump { margin-left: var(--sp-1); }
+.chats-continue:focus-visible, .chats-show:focus-visible, .chats-jump:focus-visible, .sp-chat-link:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
 .chats-here { margin-left: var(--sp-1); color: var(--app-agent); font-size: var(--fs-meta); white-space: nowrap; }
 /* the Continue in Agent Inbox dialog's chat: its title and folder, as text */
 .launch-chat-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--sp-1) var(--sp-3); margin: 0; }
@@ -2507,8 +2508,8 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   label.chats-project select { flex: 1 1 auto; min-width: 0; }
   /* #586 phase 2: with Continue here… or Show session a row has three controls, which wrap on the
      row's second line, spaced with the gap; a row without either keeps phase 1's layout */
-  .chats-table .chats-actions:has(.chats-continue, .chats-show) { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); white-space: normal; }
-  .chats-actions:has(.chats-continue, .chats-show) .chats-resume, .chats-actions .chats-continue, .chats-actions .chats-show { margin: 0; }
+  .chats-table .chats-actions:has(.chats-continue, .chats-show, .chats-jump) { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); white-space: normal; }
+  .chats-actions:has(.chats-continue, .chats-show, .chats-jump) .chats-resume, .chats-actions .chats-continue, .chats-actions .chats-show, .chats-actions .chats-jump { margin: 0; }
 }
 
 @container needs-queue (max-width: 620px) {

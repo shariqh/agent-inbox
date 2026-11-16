@@ -52,6 +52,11 @@ const HERE_TITLE = 'Agent Inbox is driving this chat now'
 // main's refusals after which the list is read again (§3.5): the row's off state may have changed
 const CONTINUE_REFRESH = new Set(['live', 'driven', 'folder', 'missing'])
 
+// Jump to session (#586): a live chat's own session card on the Dashboard, the palette's "Jump to session…"
+export const JUMP_LABEL = 'Jump to session'
+const JUMP_TITLE = 'Open this chat’s session on the Dashboard'
+export const JUMP_GONE_TEXT = 'This chat’s session is no longer listed.'
+
 /** Whether a location hash is the Chats tab's deep link. */
 export function isChatsHash(hash) {
   return hash === CHATS_HASH || hash === 'chats'
@@ -74,7 +79,7 @@ function readPr(pr) {
 
 function readChat(entry) {
   if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || typeof entry.tool !== 'string') return null
-  return {
+  const chat = {
     id: entry.id,
     tool: entry.tool,
     title: str(entry.title),
@@ -88,6 +93,9 @@ function readChat(entry) {
     pr: readPr(entry.pr),
     hidden: Array.isArray(entry.hidden) ? entry.hidden.filter((r) => typeof r === 'string') : [],
   }
+  // Jump to session: only a live chat has one, and a chat without one carries no key
+  if (chat.live && typeof entry.session === 'string' && entry.session) chat.session = entry.session
+  return chat
 }
 
 /** The /api/chats body, with malformed entries dropped; null when it is not a list at all. */
@@ -235,6 +243,16 @@ export function continueControl(chat) {
   if (chat.hidden.includes('empty')) return off('empty')
   if (chat.hidden.includes('non-interactive')) return off('non-interactive')
   return { enabled: true, title: CONTINUE_TITLE }
+}
+
+/**
+ * Jump to session (#586): the control for a live chat whose process has a session card, or null. A chat that is not
+ * live has no session to go to, and neither has a live one the list named none for (its process does not report
+ * to Agent Inbox). The session id is only ever a lookup key: it is never drawn.
+ */
+export function jumpControl(chat) {
+  if (!chat.live || typeof chat.session !== 'string' || !chat.session) return null
+  return { session: chat.session, title: JUMP_TITLE }
 }
 
 /**

@@ -68,10 +68,13 @@ request on its own in the attention set; any change for a host without the capab
 
 ### 3.1 The hand-off fix (PR 1)
 
-**Rule.** The server decides when it writes. A `flag` with `kind: 'done'` whose `next_step`,
-trimmed, is not empty and does not match `/^(no( further)? action|none|n\/a|nothing)\b/i` is
-stored as a **hand-off**: the item gets `handoff = 1` and `action_owner = 'task'`. Anything else
-is a milestone, as today. Nothing rewrites existing items. One real hub held 102 milestones over
+**Rule.** The server decides when it writes (`isHandoffInput`, `src/store.ts`). The `next_step`
+of a `flag` with `kind: 'done'` is first normalised: NFKC, whitespace collapsed, and leading
+characters that are not letters or digits removed. If nothing is left, or what is left matches
+`/^(no( further)?[ -]actions?|none|n\/a|nothing|fyi)\b/i`, the item is a milestone, as today.
+Otherwise it is stored as a **hand-off**: the item gets `handoff = 1` and `action_owner = 'task'`,
+and its `options` are dropped, since a hand-off takes no answer. So "No action", "No actions
+needed", "- No action", "FYI" and "—" are announcements, and "Notify the team" is a hand-off. Nothing rewrites existing items. One real hub held 102 milestones over
 four months: 66 began "No action", 21 predate the field, and 15 named a real next step, 12 of
 them still open and the oldest months old. So the rule makes about one hand-off a week there,
 and a rule applied when reading would have put those 12 old ones in Needs you at once.
@@ -98,8 +101,9 @@ with outcome "Acknowledged", and from PR 2 also settles its request (§3.6).
   same later rules, and a hand-off from a session gone for 72 hours moves to the stale fold as a
   question does.
 - **A hand-off is never `waiting`.** No agent is blocked on it, so `classifyLiveness` answers
-  `parked` for a hand-off whose session is live. It is therefore never escalated by
-  `countsByProject`, and `sortNeedsYou` keeps it below the asks an agent is waiting on.
+  `parked` for a hand-off whose session is live, however old it is. It is therefore never
+  escalated by `countsByProject`, and `sortNeedsYou` keeps it below the asks an agent is waiting
+  on. The Dashboard ribbon marks it as an ask.
 - `ambientChips` (`public/notes.js`) counts milestones without hand-offs.
 - The dock and desktop notifications need no change: `startAttentionWatch` (`electron/main.cjs`)
   reads `?scope=attention` and calls `attentionEntries`, and `attentionNotification`
@@ -423,6 +427,7 @@ no rows or messages.
 | Older viewer, new hub | `requests` is ignored; a hand-off shows as a milestone in History |
 | New viewer, older server | no hand-offs; no requests; `/api/activity` carries no flag |
 | Older server resolves a hand-off item | `listRequests` reads the request as `done` |
+| Older server flags a milestone with an open hand-off's project and title | its dedupe ignores the marker: it returns the hand-off's id and writes nothing |
 | An Inbox message | opens no request; its lifecycle is unchanged |
 | A subagent calls `request` | allowed by the server (one session); forbidden by the tool text |
 

@@ -2,7 +2,7 @@
 // Which sections the unified item card shows (spec §4). Pure so the one
 // component behind the inline accordion and the triage lightbox has a single,
 // tested definition of "what belongs on a card".
-import { humanActedOnRow } from './attention.js'
+import { humanActedOnRow, isOpenHandoff } from './attention.js'
 import { itemAnnotationReceipt } from './action.js'
 
 export function actionPresentation(entity, { done = false } = {}) {
@@ -10,7 +10,9 @@ export function actionPresentation(entity, { done = false } = {}) {
   const originalTitle = (isRow ? entity.label : entity.title) ?? ''
   const unanswered = isRow
     ? entity.status === 'blocked' && !humanActedOnRow(entity)
-    : entity.kind === 'question' && (entity.status ?? 'open') === 'open' && !entity.reply && !entity.reply_kind
+    : (entity.kind === 'question' && (entity.status ?? 'open') === 'open' && !entity.reply && !entity.reply_kind)
+      // issue #612: an open hand-off asks the person for its next step, as a question does
+      || isOpenHandoff(entity)
   const hasRequest = !done && !entity.outcome && unanswered
     && typeof entity.next_step === 'string' && Boolean(entity.next_step.trim())
   const headline = hasRequest ? entity.next_step : originalTitle
@@ -46,6 +48,8 @@ export function cardSections(it, { done = false } = {}) {
   const responded = it.kind === 'question' && Boolean(it.reply || it.reply_kind)
   const answered = open && responded
   return {
+    // issue #612: an open hand-off has Acknowledge in place of an answer
+    handoff: isOpenHandoff(it),
     detail: it.detail ?? '',
     nextStep: it.next_step ?? '',
     actionOwner: it.action_owner ?? null,

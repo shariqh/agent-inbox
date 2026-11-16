@@ -7,7 +7,7 @@ import {
 } from '/rail.js'
 import {
   attentionCount, attentionEntries, awaitingAgentRows, classifyLiveness, countsByProject,
-  isAskingQuestion, isBlockedRowAttention, laterEntries, sortRail, staleEntries,
+  isAskingItem, isBlockedRowAttention, isOpenHandoff, laterEntries, sortRail, staleEntries,
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
@@ -2684,7 +2684,7 @@ function panelAskEl(entry, nowMs) {
   block.innerHTML = `
     <div class="sp-ask-meta">
       <span class="nrow-owner owner-${esc(m.actionCategory)}">${esc(m.ownerLabel)}</span>
-      <span>${entry.kind === 'row' ? 'Plan step' : 'Question'}</span>
+      <span>${entry.kind === 'row' ? 'Plan step' : isOpenHandoff(entry.item) ? 'Hand-off' : 'Question'}</span>
       ${asked ? `<time data-asked="${esc(m.askedAt)}" datetime="${esc(asked.datetime)}" title="${esc(asked.exact)}">${esc(asked.text)}</time>` : ''}
       ${entry.liveness === 'waiting' ? '<span class="sp-ask-waiting" title="The agent that asked is live and waiting on your answer">the agent is waiting</span>' : ''}
     </div>
@@ -2692,9 +2692,17 @@ function panelAskEl(entry, nowMs) {
     ${m.secondary ? `<div class="sp-ask-tldr">${esc(m.secondary)}</div>` : ''}
     ${cardLinksHtml(ask, owner)}`
   bindContextDisclosures(block)
-  block.appendChild(entry.kind === 'row'
-    ? rowAnswerEl(entry.board, entry.row, null, { surface: 'compact' })
-    : answerEl(entry.item, { surface: 'compact' }))
+  if (entry.kind === 'item' && isOpenHandoff(entry.item)) {
+    // issue #612: a hand-off has nothing to answer; Snooze, Pin and Open sit below
+    const ack = document.createElement('div')
+    ack.className = 'reply-row'
+    ack.appendChild(btn('Acknowledge', () => act(entry.item.id, 'acknowledge')))
+    block.appendChild(ack)
+  } else {
+    block.appendChild(entry.kind === 'row'
+      ? rowAnswerEl(entry.board, entry.row, null, { surface: 'compact' })
+      : answerEl(entry.item, { surface: 'compact' }))
+  }
   const actions = document.createElement('div')
   actions.className = 'sp-ask-actions'
   actions.appendChild(askIconButton('snooze', 'Snooze 4h', 'Snooze for 4 hours',
@@ -3806,7 +3814,7 @@ function buildDeck() {
 function findEntryData(e) {
   if (e.type === 'q') {
     const it = allItems(lastData.g).find((i) => i.id === e.id)
-    return it && isAskingQuestion(it) ? { it } : null
+    return it && isAskingItem(it) ? { it } : null
   }
   const b = lastData.boards.find((x) => x.id === e.boardId)
   const r = b?.rows.find((x) => x.id === e.rowId && isBlockedRowAttention(x))
@@ -9818,7 +9826,21 @@ function itemCardEl(it, {
     const reminder = waitStopEl(it, { answered: true, pickedUp: Boolean(it.reply_seen_at) })
     if (reminder) el.appendChild(reminder)
   }
-  if (s.showActions) {
+  if (s.showActions && s.handoff) {
+    // issue #612: nothing to answer. Acknowledge ends it; Snooze and Pin set it aside.
+    const actions = document.createElement('div')
+    actions.className = 'actions'
+    actions.appendChild(btn('Acknowledge', () => act(it.id, 'acknowledge')))
+    const entry = { kind: 'item', item: it }
+    actions.appendChild(dispositionEl(
+      null,
+      (until) => snoozeAsk(entry, until),
+      `item:${it.id}`,
+      pinOffered(it, 'item') ? () => pinAsk(entry) : null,
+      { label: 'Snooze or pin' },
+    ))
+    el.appendChild(actions)
+  } else if (s.showActions) {
     const actions = document.createElement('div')
     actions.className = 'actions'
     if (!isLaunchAskItem(it)) {

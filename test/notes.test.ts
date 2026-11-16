@@ -121,6 +121,11 @@ describe('ambientChips', () => {
   it('drops chips whose count is zero', () => {
     expect(ambientChips([], [], NOW, null)).toEqual([])
   })
+  it('counts milestones without hand-offs (#612: a hand-off is an ask, not a milestone)', () => {
+    const handoff = { id: 'h1', kind: 'done', handoff: 1, status: 'open', project: 'api', title: 'ready', created_at: ago(DAY), reply: null, reply_seen_at: null }
+    expect(ambientChips([...items, handoff], boards, NOW, null).find((c) => c.key === 'milestones')!.label).toBe('1 milestone')
+    expect(ambientChips([handoff], [], NOW, null).map((c) => c.key)).not.toContain('milestones')
+  })
   it('drops the notes chip once they have been seen', () => {
     expect(ambientChips(items, boards, NOW, ago(0)).map((c) => c.key)).not.toContain('notes')
   })

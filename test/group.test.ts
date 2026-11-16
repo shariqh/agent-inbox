@@ -7,7 +7,7 @@ function item(p: Partial<Item>): Item {
     id: p.id ?? 'x', project: p.project ?? 'p', stream: p.stream ?? '', agent: p.agent ?? 'claude-code',
     session: p.session ?? null,
     kind: p.kind ?? 'note', title: p.title ?? 't', detail: p.detail ?? '', next_step: p.next_step ?? '',
-    action_owner: p.action_owner ?? null, impact: p.impact ?? '', next_after: p.next_after ?? '',
+    action_owner: p.action_owner ?? null, handoff: p.handoff ?? null, impact: p.impact ?? '', next_after: p.next_after ?? '',
     context: p.context ?? '', status: p.status ?? 'open',
     annotation: p.annotation ?? null, created_at: p.created_at ?? '2026-07-12T00:00:00.000Z', resolved_at: p.resolved_at ?? null,
     annotated_at: p.annotated_at ?? null,
@@ -51,5 +51,29 @@ describe('groupItems', () => {
     expect(g.notes.flatMap((pg) => pg.items.map((i) => i.id))).toEqual(['3'])
     // input order (newest first) is preserved: open milestone before older closed item
     expect(g.done.map((i) => i.id)).toEqual(['1', '4'])
+  })
+
+  // #612: an open hand-off is an ask, so it joins Needs you and leaves History.
+  it('puts an open hand-off in needsYou beside the open questions, not in done', () => {
+    const g = groupItems([
+      item({ id: 'q', project: 'p', kind: 'question', title: 'q' }),
+      item({ id: 'h', project: 'p', kind: 'done', handoff: 1, action_owner: 'task', next_step: 'Review it.', title: 'h' }),
+      item({ id: 'm', project: 'p', kind: 'done', next_step: 'No action', title: 'm' }),
+    ])
+    expect(g.needsYou).toHaveLength(1)
+    expect(g.needsYou[0]!.items.map((i) => i.id).sort()).toEqual(['h', 'q'])
+    expect(g.done.map((i) => i.id)).toEqual(['m'])
+  })
+
+  it('keeps a milestone with action_owner task and no marker out of needsYou', () => {
+    const g = groupItems([item({ id: 'm', kind: 'done', action_owner: 'task', next_step: 'Do it.' })])
+    expect(g.needsYou).toEqual([])
+    expect(g.done.map((i) => i.id)).toEqual(['m'])
+  })
+
+  it('moves an acknowledged hand-off to done', () => {
+    const g = groupItems([item({ id: 'h', kind: 'done', handoff: 1, status: 'resolved', outcome: 'Acknowledged' })])
+    expect(g.needsYou).toEqual([])
+    expect(g.done.map((i) => i.id)).toEqual(['h'])
   })
 })

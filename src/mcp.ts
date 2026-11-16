@@ -4,7 +4,7 @@ import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isDrivenSession, messageWatchRunning } from './store.js'
+import { insertItem, isHandoffInput, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isDrivenSession, messageWatchRunning } from './store.js'
 import { isReservedProject } from '../public/reserved-projects.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
@@ -273,7 +273,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'flag',
     {
       description:
-        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). ONE ASK, ONE SURFACE: if an existing board row already represents this same dependency, set that row to blocked instead and DO NOT create a question item; use a question item only when no existing board row owns the ask. The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it. kind="note" = a non-blocking assumption/caveat/workaround; kind="done" = a finished milestone, used sparingly. A question must carry: title = the ask, detail = one-sentence TL;DR, next_step = ONE concrete human action, action_owner = decision (they choose) | task (they do it) | approval (they approve and the agent acts), impact = why it matters now, and optional next_after = what immediately follows. decision/approval requires 2-4 options (recommendation first); task must omit options. Put all history, reasoning, files, PRs and links in collapsed context. Copilot question responses include a `watch` launch contract: immediately run its `shell_command` as a detached background task using the returned values; on completion call pending() as its on_completion says. A timeout is not an answer: re-run the same command, which waits longer each time; if the human asked you to stop waiting, do not re-arm. One question, two channels: if the human answers in chat, record it with answer. project/stream/agent are inferred automatically.',
+        'Raise an item for the human. Use kind="question" whenever you are about to STOP and WAIT on the human — a decision, a missing credential, an ambiguity you cannot resolve, or a recommendation / next step you are ending your turn on ("recommend X — go?", "want me to ...?", "say the word"). ONE ASK, ONE SURFACE: if an existing board row already represents this same dependency, set that row to blocked instead and DO NOT create a question item; use a question item only when no existing board row owns the ask. The test is not whether you are mid-conversation; it is whether your next move depends on their answer — such a moment left only in chat is invisible, so flag it. kind="note" = a non-blocking assumption/caveat/workaround; kind="done" = a finished milestone, used sparingly. If next_step is a real action for the human (review this, try that), the item is a HAND-OFF: it goes to their Needs you until they acknowledge it, so use it whenever you hand work back. Use next_step "No action" for a pure announcement; it goes to History. A question must carry: title = the ask, detail = one-sentence TL;DR, next_step = ONE concrete human action, action_owner = decision (they choose) | task (they do it) | approval (they approve and the agent acts), impact = why it matters now, and optional next_after = what immediately follows. decision/approval requires 2-4 options (recommendation first); task must omit options. Put all history, reasoning, files, PRs and links in collapsed context. Copilot question responses include a `watch` launch contract: immediately run its `shell_command` as a detached background task using the returned values; on completion call pending() as its on_completion says. A timeout is not an answer: re-run the same command, which waits longer each time; if the human asked you to stop waiting, do not re-arm. One question, two channels: if the human answers in chat, record it with answer. project/stream/agent are inferred automatically.',
       inputSchema: {
         kind: z.enum(['question', 'note', 'done']),
         title: z.string().min(1).max(120),
@@ -324,11 +324,12 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         options,
       })
       const pushed = kind === 'question' && pushedWake()
+      // issue #612: insertItem decided; say so, so the agent knows its flag asks the human
       const result = pushed
         ? { id, woken: 'pushed' }
         : kind === 'question' && s.agent === 'copilot'
           ? { id, watch: copilotWatchLaunch(id, { project: s.project }) }
-          : { id }
+          : isHandoffInput(kind, next_step) ? { id, handoff: true } : { id }
       return { content: [{ type: 'text', text: JSON.stringify(result) }] }
     },
   )

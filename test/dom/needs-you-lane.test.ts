@@ -779,3 +779,56 @@ describe('the keyboard (§3.1)', () => {
     expect(document.querySelector('#needsYouList .nrow[data-open="1"]')).toBeNull()
   })
 })
+
+// Issue #612: a hand-off is an ask in the lane, labelled "Hand-off". Like every
+// lane card it only opens the ask in the Inbox; Acknowledge lives there.
+describe('a hand-off in the lane (#612)', () => {
+  const handoff = (d: Database.Database, title: string, extra: Record<string, unknown> = {}): string => {
+    advanceClock()
+    return insertItem(d, { ...AGENT, kind: 'done', title, detail: 'The draft is written.', next_step: 'Review the draft.', ...extra })
+  }
+  const label = (id: string) => laneCard(id)!.querySelector<HTMLElement>('.ny-kind')
+
+  it('shows once, labelled Hand-off, beside a question that is not; a milestone is absent', async () => {
+    db = freshDb()
+    const q = question(db, 'Which one?')
+    const h = handoff(db, 'Draft is ready')
+    const m = handoff(db, 'Shipped v2', { next_step: 'No action' })
+    await bootApp(db)
+    expect(laneIds().sort()).toEqual([q, h].sort())
+    expect(laneCard(m)).toBeNull()
+    expect(label(h)!.textContent).toBe('Hand-off')
+    expect(label(h)!.hidden).toBe(false)
+    expect(label(q)!.hidden).toBe(true)
+    expect(badgeCount()).toBe(2)
+    expect(chipCount('needs')).toBe('2')
+    expect(laneCard(h)!.getAttribute('aria-label')).toContain('Hand-off')
+    expect(laneIds()).toEqual(railOrder(db))
+  })
+
+  it('sits below an ask whose live agent is waiting, and is never escalated by being live itself', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const h = handoff(db, 'Draft is ready', { session: 'here' })
+    const waiting = question(db, 'Blocked on you', { session: 'here' })
+    await bootApp(db)
+    expect(laneIds()).toEqual([waiting, h])
+  })
+
+  it('opens the ask in the Inbox on click, answering nothing, and leaves the lane once acknowledged', async () => {
+    db = freshDb()
+    const h = handoff(db, 'Draft is ready')
+    await bootApp(db)
+    click(laneCard(h)!)
+    await settle()
+    expect(shown('needsYou')).toBe(true)
+    expect(row(h)?.dataset.open).toBe('1')
+    expect(getItem(db, h)?.status).toBe('open')
+    click(buttonLabelled('Acknowledge', row(h)!))
+    await settle()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(laneCard(h)).toBeNull()
+    expect(getItem(db, h)).toMatchObject({ status: 'resolved', outcome: 'Acknowledged' })
+  })
+})

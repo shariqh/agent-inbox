@@ -59,6 +59,28 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - Item/row `updated_at` is for content changes only. Delivery stamp writes must
   never bump it or the New/changed filter becomes a polling firehose.
 
+- **Hand-offs (#612).** A `flag` with `kind: 'done'` is a milestone, shown only in
+  History, unless its `next_step` asks the human to act. The server decides, in
+  `insertItem`, when it writes: a trimmed `next_step` that is not empty and does
+  not match `/^(no( further)? action|none|n\/a|nothing)\b/i` is stored as a
+  hand-off, `items.handoff = 1` and `action_owner = 'task'` (whatever the caller
+  sent). Anything else is a milestone, and no existing row is rewritten. The
+  marker is its own column, added by `ensureColumn`, because `action_owner` is
+  accepted for every kind and cannot say "hand-off". It is not a new `kind`:
+  an older viewer's `groupItems` drops an open item of an unknown kind from every
+  group. The result of `flag` is `{ id, handoff: true }`. `insertItem` dedupes a
+  hand-off only against an open hand-off with the same project and title, and a
+  milestone only against an open milestone. `POST /api/items/:id/acknowledge`
+  calls `acknowledgeHandoff`: in one `.immediate()` transaction it resolves an
+  open hand-off with the outcome "Acknowledged" and refuses anything else with
+  `200 { ok: false, reason: 'not_handoff' | 'not_found' }`. `pinItem` also takes
+  an open hand-off; `snoozeItem` already took any open item. A hand-off has no
+  reply, so `pending()` hands over only its annotations, as for any milestone, and
+  the agent need not poll for it. Items written before the column, and by an older
+  server, have `handoff` NULL and stay milestones. An older viewer on a newer hub
+  shows a hand-off as a milestone in History, which is what it did before. The
+  card (`public/card.js`, `public/app.js`) shows the title, TL;DR and next step
+  with Acknowledge, Snooze and Pin for later, and no answer box.
 - Session messages (#411) are the human's instructions to ONE MCP session, in
   their own table, `session_messages`. `pending()` returns only the caller's
   own session's open messages (no tool takes a session argument), re-delivered

@@ -73,7 +73,8 @@ describe('I1 · the triage deck is built from THE attention predicate', () => {
   })
 
   it('findEntryData re-validates through the same shared predicates', () => {
-    expect(find).toMatch(/isAskingQuestion\(/)
+    // isAskingItem is isAskingQuestion plus the open hand-off (#612), so a hand-off stays in the deck
+    expect(find).toMatch(/isAskingItem\(/)
     expect(find).toMatch(/isBlockedRowAttention\(/)
     expect(find).not.toMatch(/!it\.reply/)
     expect(find).not.toMatch(/status === 'blocked'/)

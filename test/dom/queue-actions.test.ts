@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems } from '../../src/store.js'
-import { advanceClock, bootApp, click, freshDb, row, settle, showInbox, useDomTest } from './harness.js'
+import { advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, row, sendButton, settle, showInbox, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -91,5 +91,87 @@ describe('Needs-you inspector keyboard ownership', () => {
         expect(row(id)?.dataset.open).toBe('1')
       }
     }
+  })
+})
+
+// Issue #612: a `done` flag with a real next step is a hand-off. It sits in the
+// Inbox until the person presses Acknowledge, and has nothing to answer.
+describe('hand-offs in the Inbox', () => {
+  const handoff = (d: Database.Database, title: string, next_step = 'Review the draft in the preview.') => {
+    advanceClock()
+    return insertItem(d, { ...AGENT, kind: 'done', title, detail: 'The draft is written.', next_step })
+  }
+
+  it('lists a hand-off, not a milestone, and counts it', async () => {
+    const d = open()
+    const h = handoff(d, 'Draft is ready')
+    const m = handoff(d, 'Shipped v2', 'No action')
+    await bootApp(d)
+    await showInbox()
+    expect(row(h)).not.toBeNull()
+    expect(row(m)).toBeNull()
+    expect(badgeCount()).toBe(1)
+    expect(row(h)!.textContent).toContain('Review the draft in the preview.')
+  })
+
+  it('opens to the title, TL;DR and next step with Acknowledge, Snooze and Pin, and no answer box', async () => {
+    const d = open()
+    const h = handoff(d, 'Draft is ready')
+    await bootApp(d)
+    await showInbox()
+    click(row(h))
+    await settle()
+    const card = row(h)!
+    expect(card.dataset.open).toBe('1')
+    expect(card.textContent).toContain('Draft is ready')
+    expect(card.textContent).toContain('The draft is written.')
+    expect(card.textContent).toContain('Review the draft in the preview.')
+    expect(buttonLabelled('Acknowledge', card)).not.toBeNull()
+    expect(answerInput(h)).toBeNull()
+    expect(sendButton(h)).toBeNull()
+    expect(card.querySelector('textarea, .row-answer, .options, .opt-pill')).toBeNull()
+    expect(buttonLabelled('Resolve', card)).toBeNull()
+    click(card.querySelector('.disposition-menu > summary'))
+    expect(buttonLabelled('Pin for later', card)).not.toBeNull()
+    expect(buttonLabelled('Tomorrow', card)).not.toBeNull()
+    // a hand-off is not an answerable ask: no clarify or decline
+    expect(buttonLabelled('Needs clarification', card)).toBeNull()
+    expect(buttonLabelled('Decline', card)).toBeNull()
+  })
+
+  it('Acknowledge resolves it with the outcome Acknowledged and clears it from the list and the count', async () => {
+    const d = open()
+    const h = handoff(d, 'Draft is ready')
+    const other = handoff(d, 'Second draft', 'Try the second draft.')
+    await bootApp(d)
+    await showInbox()
+    expect(badgeCount()).toBe(2)
+    click(row(h))
+    await settle()
+    click(buttonLabelled('Acknowledge', row(h)!))
+    await settle()
+    expect(listItems(d).find((item) => item.id === h)).toMatchObject({ status: 'resolved', outcome: 'Acknowledged' })
+    expect(listItems(d).find((item) => item.id === other)?.status).toBe('open')
+    expect(row(h)).toBeNull()
+    expect(badgeCount()).toBe(1)
+  })
+
+  it('Pin for later sets it aside, and Back to inbox returns it', async () => {
+    const d = open()
+    const h = handoff(d, 'Draft is ready')
+    await bootApp(d)
+    await showInbox()
+    click(row(h))
+    await settle()
+    click(row(h)!.querySelector('.disposition-menu > summary'))
+    click(buttonLabelled('Pin for later', row(h)!))
+    await settle()
+    expect(listItems(d).find((item) => item.id === h)?.pinned_at).not.toBeNull()
+    expect(badgeCount()).toBe(0)
+    expect(row(h)!.querySelector('.nrow-wake')).not.toBeNull()
+    click(row(h)!.querySelector('.nrow-wake'))
+    await settle()
+    expect(listItems(d).find((item) => item.id === h)?.pinned_at).toBeNull()
+    expect(badgeCount()).toBe(1)
   })
 })

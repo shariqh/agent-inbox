@@ -645,6 +645,38 @@ describe('viewer api', () => {
     expect(rows.find((r) => r.id === b)!.status).toBe('dismissed')
   })
 
+  // #612: Acknowledge resolves an open hand-off, and nothing else.
+  it('POST acknowledge resolves an open hand-off and refuses every other item with a 200 reason', async () => {
+    const base = { project: 'p', stream: '', agent: 'claude-code' } as const
+    const h = insertItem(db, { ...base, kind: 'done', title: 'draft ready', next_step: 'Review the draft.' })
+    const m = insertItem(db, { ...base, kind: 'done', title: 'shipped', next_step: 'No action' })
+    const q = insertItem(db, { ...base, kind: 'question', title: 'which?' })
+    const app = createViewer(db)
+    const post = async (id: string) => {
+      const res = await app.request(`/api/items/${id}/acknowledge`, { method: 'POST' })
+      expect(res.status).toBe(200)
+      return res.json()
+    }
+    // it is in Needs you, and out of History, until acknowledged
+    const before = await (await app.request('/api/items')).json()
+    expect(before.needsYou[0].items.map((i: { id: string }) => i.id).sort()).toEqual([h, q].sort())
+    expect(before.done.map((i: { id: string }) => i.id)).toEqual([m])
+    expect((await (await app.request('/api/items?scope=attention')).json()).needsYou[0].items).toHaveLength(2)
+
+    expect(await post(m)).toEqual({ ok: false, reason: 'not_handoff' })
+    expect(await post(q)).toEqual({ ok: false, reason: 'not_handoff' })
+    expect(await post('missing')).toEqual({ ok: false, reason: 'not_found' })
+    expect(listItems(db).filter((i) => i.status !== 'open')).toEqual([])
+
+    expect(await post(h)).toEqual({ ok: true })
+    expect(await post(h)).toEqual({ ok: false, reason: 'not_handoff' })
+    const row = listItems(db).find((i) => i.id === h)!
+    expect(row).toMatchObject({ status: 'resolved', outcome: 'Acknowledged' })
+    const after = await (await app.request('/api/items')).json()
+    expect(after.needsYou[0].items.map((i: { id: string }) => i.id)).toEqual([q])
+    expect(after.done.map((i: { id: string }) => i.id).sort()).toEqual([h, m].sort())
+  })
+
   it('POST reply writes the answer + context and resets pickup; options surface in GET', async () => {
     const id = insertItem(db, {
       project: 'p', stream: '', agent: 'claude-code', kind: 'question', title: 'which auth?',

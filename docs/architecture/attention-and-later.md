@@ -62,6 +62,22 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   each other. The attention predicate drops a pinned ask, and Electron's
   notification `known` set keeps pinned asks (`knownNotificationIds`), so
   bringing one back is never announced as new.
+- **A hand-off is an ask with no blocked agent (#612).** An open `done` item with
+  `handoff = 1` (see `delivery-and-responses.md`) is in `needsYou` and in
+  `attentionEntries` beside an open question, through `isOpenHandoff` and
+  `isAskingItem` in `public/attention.js`; `isAskingQuestion` stays question-only.
+  `laterEntries` and `staleEntries` apply the same rules to it: a snooze or a pin
+  moves it to Later, and with no live session and 72 hours of age it moves to the
+  stale fold. `classifyLiveness` never answers `waiting` for one, only `parked`
+  or `stale`, so `countsByProject` never escalates it and `sortNeedsYou` keeps it
+  below the asks an agent waits on. A milestone with `action_owner: 'task'` and no
+  marker stays out. `groupItems` moves an open hand-off from `done` to `needsYou`,
+  and `listOpenAsks` (open questions and open hand-offs) feeds `?scope=attention`,
+  so the dock badge and notifications need no change. `ambientChips` counts
+  milestones without hand-offs. Acknowledge resolves it, which ends it everywhere
+  (`POST /api/items/:id/acknowledge`); the Needs you lane card carries a
+  "Hand-off" label. Nothing is rewritten for older items: an old open milestone
+  with a real next step stays in History.
 - The agent tab (cards view V5) never carries a count, and nothing in the strip or Run history
   reaches attention.
 

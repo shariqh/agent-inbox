@@ -7,6 +7,11 @@ import Database from 'better-sqlite3'
 import {
   openDb,
   insertItem,
+  acknowledgeHandoff,
+  listOpenAsks,
+  pinItem,
+  snoozeItem,
+  getItem,
   resolveItem,
   dismissItem,
   annotateItem,
@@ -186,6 +191,140 @@ describe('store', () => {
     const q1 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
     const q2 = insertItem(db, { project: 'p', stream: '', agent: 'x', kind: 'question', title: 'same q' })
     expect(q2).not.toBe(q1)                 // questions never dedupe
+  })
+
+  // #612 PR 1: the server decides when a done flag is a hand-off.
+  describe('hand-offs', () => {
+    const base = { project: 'p', stream: '', agent: 'x', kind: 'done' as const }
+    const stored = (id: string) => listItems(db).find((i) => i.id === id)!
+
+    it('marks a done flag with a real next step as a hand-off owned by the person', () => {
+      const id = insertItem(db, { ...base, title: 'PR is up', next_step: 'Review the pull request.' })
+      expect(stored(id).handoff).toBe(1)
+      expect(stored(id).action_owner).toBe('task')
+    })
+
+    it('overrides a caller action_owner for a hand-off', () => {
+      const id = insertItem(db, { ...base, title: 'PR is up', next_step: 'Review it.', action_owner: 'decision' })
+      expect(stored(id).action_owner).toBe('task')
+    })
+
+    it.each([
+      ['empty', ''],
+      ['spaces', '   '],
+      ['No action', 'No action'],
+      ['no action needed', 'no action needed'],
+      ['No further action', 'No further action.'],
+      ['None', 'None'],
+      ['N/A', 'N/A'],
+      ['n/a with spaces', '  n/a  '],
+      ['Nothing', 'Nothing to do'],
+    ])('keeps %s a milestone', (_name, next_step) => {
+      const id = insertItem(db, { ...base, title: `m ${_name}`, next_step })
+      expect(stored(id).handoff).toBeNull()
+      expect(stored(id).action_owner).toBeNull()
+    })
+
+    it('treats a word that only starts like a marker as a real step', () => {
+      const id = insertItem(db, { ...base, title: 'x', next_step: 'Nothingness is not a marker' })
+      expect(stored(id).handoff).toBe(1)
+      const id2 = insertItem(db, { ...base, title: 'y', next_step: 'Notice the new button' })
+      expect(stored(id2).handoff).toBe(1)
+    })
+
+    it('never marks a question or a note, and keeps their action_owner', () => {
+      const q = insertItem(db, { ...base, kind: 'question', title: 'q', next_step: 'Choose one.', action_owner: 'decision' })
+      const n = insertItem(db, { ...base, kind: 'note', title: 'n', next_step: 'Read it.', action_owner: 'task' })
+      expect(stored(q).handoff).toBeNull()
+      expect(stored(q).action_owner).toBe('decision')
+      expect(stored(n).handoff).toBeNull()
+    })
+
+    it('keeps the action_owner a milestone was given, with no marker', () => {
+      const id = insertItem(db, { ...base, title: 'shipped', next_step: 'No action', action_owner: 'task' })
+      expect(stored(id).handoff).toBeNull()
+      expect(stored(id).action_owner).toBe('task')
+    })
+
+    it('dedupes a hand-off only against an open hand-off, and a milestone only against a milestone', () => {
+      const h1 = insertItem(db, { ...base, title: 'same', next_step: 'Review it.' })
+      const h2 = insertItem(db, { ...base, title: 'same', next_step: 'Review it again.' })
+      expect(h2).toBe(h1)
+      const m1 = insertItem(db, { ...base, title: 'same', next_step: 'No action' })
+      expect(m1).not.toBe(h1)
+      const m2 = insertItem(db, { ...base, title: 'same', next_step: 'None' })
+      expect(m2).toBe(m1)
+      resolveItem(db, h1)
+      const h3 = insertItem(db, { ...base, title: 'same', next_step: 'Review it.' })
+      expect(h3).not.toBe(h1)
+      expect(listItems(db, { status: 'open' })).toHaveLength(2)
+    })
+
+    it('lists open hand-offs with open questions, never a milestone, note or closed item', () => {
+      const q = insertItem(db, { ...base, kind: 'question', title: 'q' })
+      const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+      insertItem(db, { ...base, title: 'm', next_step: 'No action' })
+      insertItem(db, { ...base, kind: 'note', title: 'n', next_step: 'Read it.' })
+      const closed = insertItem(db, { ...base, title: 'closed', next_step: 'Review it.' })
+      resolveItem(db, closed)
+      expect(listOpenAsks(db).map((i) => i.id).sort()).toEqual([q, h].sort())
+    })
+
+    it('pins and snoozes an open hand-off, never a milestone or a closed one', () => {
+      const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+      const m = insertItem(db, { ...base, title: 'm', next_step: 'No action' })
+      expect(pinItem(db, h, true)).toBe(true)
+      expect(getItem(db, h)!.pinned_at).not.toBeNull()
+      expect(pinItem(db, m, true)).toBe(false)
+      expect(snoozeItem(db, h, new Date(Date.now() + 60_000).toISOString())).toBe(true)
+      expect(getItem(db, h)!.pinned_at).toBeNull()
+      acknowledgeHandoff(db, h)
+      expect(pinItem(db, h, true)).toBe(false)
+    })
+
+    describe('acknowledgeHandoff', () => {
+      it('resolves an open hand-off with the outcome Acknowledged', () => {
+        const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+        expect(acknowledgeHandoff(db, h)).toEqual({ ok: true })
+        expect(getItem(db, h)).toMatchObject({ status: 'resolved', outcome: 'Acknowledged' })
+        expect(getItem(db, h)!.resolved_at).not.toBeNull()
+      })
+
+      it('clears a pin when it resolves', () => {
+        const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+        pinItem(db, h, true)
+        acknowledgeHandoff(db, h)
+        expect(getItem(db, h)!.pinned_at).toBeNull()
+      })
+
+      it('refuses a question, a note, a milestone, a closed hand-off and an unknown id, and changes nothing', () => {
+        const q = insertItem(db, { ...base, kind: 'question', title: 'q', next_step: 'Choose.' })
+        const n = insertItem(db, { ...base, kind: 'note', title: 'n', next_step: 'Read it.' })
+        const m = insertItem(db, { ...base, title: 'm', next_step: 'No action', action_owner: 'task' })
+        const closed = insertItem(db, { ...base, title: 'c', next_step: 'Review it.' })
+        dismissItem(db, closed)
+        for (const id of [q, n, m, closed]) expect(acknowledgeHandoff(db, id), id).toEqual({ ok: false, reason: 'not_handoff' })
+        expect(acknowledgeHandoff(db, 'nope')).toEqual({ ok: false, reason: 'not_found' })
+        expect(listItems(db).filter((i) => i.outcome !== '')).toEqual([])
+        expect(getItem(db, closed)!.status).toBe('dismissed')
+      })
+
+      it('does not acknowledge twice', () => {
+        const h = insertItem(db, { ...base, title: 'h', next_step: 'Review it.' })
+        expect(acknowledgeHandoff(db, h)).toEqual({ ok: true })
+        expect(acknowledgeHandoff(db, h)).toEqual({ ok: false, reason: 'not_handoff' })
+      })
+    })
+
+    it('leaves rows written before the column untouched', () => {
+      const id = insertItem(db, { ...base, title: 'old', next_step: 'No action' })
+      db.prepare(`UPDATE items SET next_step = 'Review it.' WHERE id = ?`).run(id)
+      const reopened = openDb(db.name)
+      const item = listItems(reopened).find((i) => i.id === id)!
+      expect(item.handoff).toBeNull()
+      expect(item.action_owner).toBeNull()
+      reopened.close()
+    })
   })
 })
 

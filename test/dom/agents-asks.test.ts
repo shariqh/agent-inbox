@@ -213,6 +213,29 @@ describe('the session panel answers (#454 A.2)', () => {
   })
 })
 
+// Issue #612: a hand-off in a session's panel has Acknowledge and no answer box.
+describe('a hand-off in the session panel (#612)', () => {
+  it('shows Acknowledge, Snooze and Pin with no editor, labelled Hand-off, and acknowledges in place', async () => {
+    db = freshDb()
+    live(db, 'here')
+    advanceClock()
+    const id = insertItem(db, { ...AGENT, session: 'here', kind: 'done', title: 'Draft is ready', detail: 'It is written.', next_step: 'Review the draft.' })
+    await bootApp(db)
+    await answerOn('session:here')
+    expect(block(id)).not.toBeNull()
+    expect(block(id)!.querySelector('.sp-ask-meta')!.textContent).toContain('Hand-off')
+    expect(block(id)!.querySelector('.sp-ask-waiting')).toBeNull()
+    expect(editor(id)).toBeNull()
+    expect(block(id)!.querySelector('textarea, .options, .opt-pill')).toBeNull()
+    expect(askAction(id, 'snooze')).not.toBeNull()
+    expect(askAction(id, 'pin')).not.toBeNull()
+    click(buttonLabelled('Acknowledge', block(id)!))
+    await settle()
+    expect(getItem(db, id)).toMatchObject({ status: 'resolved', outcome: 'Acknowledged' })
+    expect(block(id)).toBeNull()
+  })
+})
+
 describe('the panel’s draft rules (#454 A.2)', () => {
   it('pauses only the panel’s asks for a draft; a poll leaves them alone and a forced paint rebuilds them', async () => {
     db = freshDb()

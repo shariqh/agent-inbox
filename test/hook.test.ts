@@ -55,6 +55,7 @@ function q(over: Partial<Item> = {}): Item {
     detail: '',
     next_step: '',
     action_owner: null,
+    handoff: null,
     impact: '',
     next_after: '',
     context: '',

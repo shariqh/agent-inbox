@@ -1790,6 +1790,8 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ny-meta > .ny-session::before { content: none; }
 /* the Inbox holds an unsent answer for this ask (app.js holdsDraft) */
 .ny-draft { order: 1; flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-weight: 600; }
+/* a done item the server stored as a hand-off (#612): the same pill as Draft */
+.ny-kind { order: 1; flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-soft); font-weight: 600; }
 .ny-title { min-width: 0; overflow-wrap: anywhere; color: var(--app-text); font-size: var(--fs-title); font-weight: 650; line-height: 1.3; }
 .ny-title.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }
 .ny-next { display: -webkit-box; overflow: hidden; color: var(--app-text-soft); font-size: var(--fs-body); line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

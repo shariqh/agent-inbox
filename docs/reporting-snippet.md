@@ -72,7 +72,13 @@ Call `flag` when:
   **caveat**, or left **tech debt** the human should know about but that does NOT block
   you. Do not flag routine progress or things visible in the diff.
 - **`kind: "done"`** — a completed **milestone** worth announcing (shipped, merged,
-  deployed). Use sparingly — it is NOT for routine progress.
+  deployed). Use sparingly — it is NOT for routine progress. If `next_step` is a real
+  action for the human (review this, try that), the item is a **hand-off**: it goes to
+  their Needs you until they acknowledge it, so use it whenever you hand work back. The
+  server decides: only a `next_step` of "No action" (also "No further action", "None",
+  "N/A", "Nothing") keeps it a milestone, which goes to History. A hand-off's result is
+  `{ id, handoff: true }`. No agent is blocked on it, so do not wait for it; there is no
+  answer to read, and Acknowledge resolves it with the outcome "Acknowledged".
 
 **Keep every item glanceable.** Every flag has distinct fields: `title` is the ask or finding
 itself in one line (aim under ~80 chars), `detail` is a one-sentence TL;DR of the current
@@ -104,7 +110,7 @@ to act without asking you anything: what you were working on, why this came up, 
 files/PRs/links. They may read the item hours later with zero memory of the task; it
 renders as a collapsed dropdown, so length is fine. Do not flag more than the human
 needs — a noisy inbox gets ignored. One `done` flag per shipped thing: re-flagging an
-identical open milestone title is deduped, not stacked. If a question you raised
+identical open milestone title (or hand-off title) is deduped, not stacked. If a question you raised
 resolves itself before they answer, call `resolve` with its id.
 
 **The end-of-turn rule — flag decisions, don't bury them.** The test is not "am I still

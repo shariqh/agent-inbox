@@ -210,7 +210,7 @@ Copilot's line is `exec copilot --resume=<id>`. The folder is single-quoted with
 
 ## Continue here… (#586 phase 2, PR 6)
 
-In the window main grants launches, with the driven-sessions switch on (`agentInboxLaunch.available()`, asked again on every entry into the tab, as Resume's availability is, and `launchUi.granted()` at each paint), each **Copilot** row gets **Continue here…** after Resume and Copy resume. It opens a dialog, and main carries the chat on as a session this app drives, in the chat's own folder (`driven-sessions.md`, "Continue a chat … part 3"). Claude Code rows get no such control. In a browser, with the switch off or in a window without the grant, the tab draws and reads exactly what phase 1 did: no Continue here…, Show session or "· here", and no `/api/launch*` read (`test/dom/chats-continue.test.ts` compares the tab's markup and every read with a capture of the phase 1 build in `test/fixtures/chats-phase1/`).
+In the window main grants launches, with the driven-sessions switch on (`agentInboxLaunch.available()`, asked again on every entry into the tab, as Resume's availability is, and `launchUi.granted()` at each paint), each **Copilot** row gets **Continue here…** after Resume and Copy resume. It opens a dialog, and main carries the chat on as a session this app drives, in the chat's own folder (`driven-sessions.md`, "Continue a chat … part 3"). Claude Code rows get no such control. In a browser, with the switch off or in a window without the grant, the tab draws and reads exactly what phase 1 did, apart from Jump to session on a live chat that has a session ([Jump to session](#jump-to-session)): no Continue here…, Show session or "· here", and no `/api/launch*` read (`test/dom/chats-continue.test.ts` compares the tab's markup and every read with a capture of the phase 1 build in `test/fixtures/chats-phase1/`).
 
 **The control.** A button (`.chats-continue`, `aria-haspopup="dialog"`, title "Continue this chat in Agent Inbox, as a session it drives"). Off (`aria-disabled`, the reason in its `title`, nothing opens), checked in this order by `continueControl` in `public/chats.js`: a live chat ("This chat is live in another process, so it is not continued a second time."), no folder or `folder-gone` ("Its folder no longer exists."), `empty` ("Nothing was ever said in this chat."), `non-interactive` ("This was not an interactive chat."), and an id that is not a lowercase UUID ("This chat can’t be continued here."). `temp` is no reason. Main checks every rule again, and more.
 
@@ -222,25 +222,25 @@ In the window main grants launches, with the driven-sessions switch on (`agentIn
 
 **The session panel** of a launch with a `chat_id` adds "Continued from a Copilot chat (<first 8 of the id>)" (`.sp-chat`), a link to `#chats` that opens the Chats tab. The link is made only then; for any other panel, and in every mode without the grant, `.sp-chat` stays empty and hidden.
 
-**Layout.** In the wide table the Actions cell does not wrap, so Resume, Copy resume and Continue here… (or Show session) stay on one line and a row one line tall. Below 620px of list width, a row that has Continue here… or Show session lays its controls out as a wrapping flex line spaced with `--sp-2` (`:has()`, so a phase 1 row keeps its layout). Sizes and gaps come from the tokens, and each new control has the focus ring.
+**Layout.** In the wide table the Actions cell does not wrap, so Resume, Copy resume and Continue here… (or Show session, or Jump to session) stay on one line and a row one line tall. Below 620px of list width, a row that has Continue here…, Show session or Jump to session lays its controls out as a wrapping flex line spaced with `--sp-2` (`:has()`, so a phase 1 row keeps its layout). Sizes and gaps come from the tokens, and each new control has the focus ring.
 
 ## Jump to session
 
 A chat that is live in a terminal has a session card on the Dashboard when its tool reports to Agent Inbox. **Jump to session** on the chat's row opens that card's panel.
 
-**The link.** An MCP server records the process that started it as its presence row's `host_pid` (`activity-and-live.md`). That process is the one whose session file (Claude Code) or lock (Copilot) makes the chat live. `read()` returns those processes beside the entries as `livePids`, keyed `<tool>:<id>`. A chat open in two processes has both, and a Copilot pid counts only for its newest lock, as it does for `live`. For each live chat the route shows, `chatSession` (`src/viewer.ts`) takes the host's open presence rows (`listHostSessions`: not ended, and refreshed within 15 minutes) and answers the newest one whose server process still runs. A row that a reused pid left behind has no running server, so it names no session; a row is not told apart from its host's successor only if that server's pid was reused as well while the row was still listed. With two processes on one chat, the first that has a session answers.
+**The link.** An MCP server records the process that started it as its presence row's `host_pid` (`activity-and-live.md`). That process is the one whose session file (Claude Code) or lock (Copilot) makes the chat live. `read()` returns those processes beside the entries as `livePids`, keyed `<tool>:<id>`. A chat open in two processes has both, and a Copilot pid counts only for its newest lock, as it does for `live`. For each live chat the route shows, `chatSession` (`src/viewer.ts`) takes the host's open presence rows (`listHostSessions`: not ended, and refreshed within 15 minutes) and answers the newest one whose server process still runs. A row that a reused pid left behind has no running server, so it names no session; a row is not told apart from its host's successor only if that server's pid was reused as well while the row was still listed. A row that reports as the other tool (`agent` `copilot` for a Claude Code chat, `claude-code` for a Copilot chat) never answers either, because a lock or session file that a crashed tool left can name a pid the other tool now runs under. A row that reports as neither still answers. With two processes on one chat, the first that has a session answers.
 
 A chat with a session carries `session`, the presence row's id. Every other entry has no such key, so it is exactly the entry described under Entry. No entry and no response carries a process id.
 
 **The control.** `jumpControl` (`public/chats.js`) gives a live chat that has a `session` a button after Copy resume: `.chats-jump`, labelled "Jump to session", with the title "Open this chat's session on the Dashboard". It is drawn in every window, the browser's included, and does not depend on the driven-sessions switch, because it starts nothing.
 
 - A chat that is not live gets none, and neither does a live chat with no session.
-- A chat that a session here holds keeps Show session.
+- A chat that a session here holds keeps Show session. Until this window has read the launches and knows whether one does, a Copilot row draws neither control.
 - On a live Copilot row it takes the place of Continue here…, which could only be off there. A live Copilot chat with no session keeps the off Continue here… and its reason.
 
 **The jump.** `app.js` passes the view `jump`, which calls `jumpToSession(session)`, the function behind the palette's "Jump to session…" (#307). It scopes the Dashboard to the session's project, clears the agent filter and opens the session's panel. It answers whether the session was in the page's last `/api/activity` read. When it was not, the page reads once (`reloadAndPaint`) and tries again, so a session that started since the last poll is found.
 
-If the session is still not listed, the view stays on Chats and puts "This chat's session is no longer listed." in the row's note (`.chats-resume-note`, which a row now also has while it holds a note). It then reads the list again, and that read drops the control along with the session.
+If the session is still not listed, the view stays on Chats and puts "This chat's session is no longer listed." in the row's note (`.chats-resume-note`, `role="status"`). A row with Jump to session has that note from the start, empty, so a screen reader hears the text when it arrives. The view then reads the list again, and that read drops the control along with the session. If the control had focus, focus moves to the row's Copy resume. The note stays until the list is next read for another reason (Refresh, Show all, or the tab entered again), so it never sits beside a session that came back.
 
 **Untrusted text.** The session id is a lookup key only. It is never drawn, and it is not an attribute of the row.
 
@@ -248,9 +248,9 @@ If the session is still not listed, the view stays on Chats and puts "This chat'
 
 **Tests.**
 
-- `test/chat-index.test.ts`: the processes beside the entries, the route's session for either tool, and none for an ended row, a stale row or a row whose server is gone.
+- `test/chat-index.test.ts`: the processes beside the entries, the route's session for either tool, none for an ended row, a stale row, a row whose server is gone or a row that reports as the other tool, an older row chosen over a newer one whose server has exited, and a chat's second process when its first has no session.
 - `test/chats-model.test.ts`: `jumpControl`, and `session` read only as a string on a live chat.
-- `test/dom/chats-jump.test.ts`: the control, the panel it opens, a session newer than the last poll, a session that has gone, and its place beside Continue here… and Show session.
+- `test/dom/chats-jump.test.ts`: the control, the panel it opens, a session newer than the last poll, a session that has gone (the note, where focus goes, and the note's end at the next read), its place beside Continue here… and Show session, and no control on a Copilot row before the launches are read.
 
 ## Not in this PR
 

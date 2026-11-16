@@ -110,7 +110,10 @@ describe('Chats tab: Jump to session (#586)', () => {
     expect(jumpFor(1)?.title).toBe('Open this chat’s session on the Dashboard')
     expect(jumpFor(1)?.type).toBe('button')
     expect(jumpFor(2, 'copilot')?.textContent).toBe('Jump to session')
-    expect(actionsOf(1)).toEqual(['chats-copy', 'chats-jump'])
+    // the row's note is there, empty, before any jump, so a screen reader hears it when it is filled
+    expect(actionsOf(1)).toEqual(['chats-copy', 'chats-jump', 'chats-resume-note'])
+    expect(noteFor(1)?.textContent).toBe('')
+    expect(noteFor(1)?.getAttribute('role')).toBe('status')
     // a live chat with no card, and a chat that is not live, get none: their rows are phase 1's
     expect(actionsOf(3)).toEqual(['chats-copy'])
     expect(actionsOf(4)).toEqual(['chats-copy'])
@@ -158,10 +161,11 @@ describe('Chats tab: Jump to session (#586)', () => {
     const { reads, db: d } = await boot()
     await openChats()
     expect(jumpFor(1)).not.toBeNull()
-    expect(noteFor(1)).toBeNull()
+    expect(noteFor(1)?.textContent).toBe('')
     endActivity(d, CLAUDE_SESSION)
     await pollTick()
     const before = chatReads(reads)
+    jumpFor(1)!.focus()
     click(jumpFor(1))
     await settle()
     expect(tabSelected('chats')).toBe('true')
@@ -171,9 +175,39 @@ describe('Chats tab: Jump to session (#586)', () => {
     expect(jumpFor(1)).toBeNull()
     expect(noteFor(1)?.textContent).toBe(JUMP_GONE_TEXT)
     expect(noteFor(1)?.getAttribute('role')).toBe('status')
+    // focus was on the control that went: it moves to the row's Copy resume, never to nowhere
+    expect(document.activeElement).toBe(rowFor(1)!.querySelector('.chats-copy'))
     // the other row is untouched
     expect(jumpFor(2, 'copilot')).not.toBeNull()
-    expect(noteFor(2, 'copilot')).toBeNull()
+    expect(noteFor(2, 'copilot')?.textContent).toBe('')
+  })
+
+  it('drops that note at the next read of the list, so it never sits beside a session that came back', async () => {
+    const { db: d } = await boot()
+    await openChats()
+    endActivity(d, CLAUDE_SESSION)
+    await pollTick()
+    click(jumpFor(1))
+    await settle()
+    expect(noteFor(1)?.textContent).toBe(JUMP_GONE_TEXT)
+    // the tool restarts: a new presence row for the same process
+    presence(d, 'cccccccc-3333-4333-8333-333333333333', 4001)
+    click(panel().querySelector('.chats-refresh'))
+    await settle()
+    expect(jumpFor(1)).not.toBeNull()
+    expect(noteFor(1)?.textContent).toBe('')
+  })
+
+  it('keeps a failed jump’s note to its own row', async () => {
+    const { db: d } = await boot()
+    await openChats()
+    endActivity(d, COPILOT_SESSION)
+    await pollTick()
+    // the page still lists the Claude session; only the Copilot one has gone
+    click(jumpFor(2, 'copilot'))
+    await settle()
+    expect(noteFor(2, 'copilot')?.textContent).toBe(JUMP_GONE_TEXT)
+    expect(noteFor(1)?.textContent).toBe('')
   })
 
   it('takes the place of an off Continue here… on a live Copilot row, with driven sessions on', async () => {
@@ -207,5 +241,26 @@ describe('Chats tab: Jump to session (#586)', () => {
     expect(jumpFor(2, 'copilot')).toBeNull()
     // the Claude chat beside it still jumps
     expect(jumpFor(1)).not.toBeNull()
+  })
+
+  it('draws none on a Copilot row until this window knows whether a session here holds the chat', async () => {
+    launchBridge()
+    await boot((d) => {
+      both(d)
+      createLaunch(d, {
+        id: LAUNCH, host: 'copilot', project: 'beta', stream: 'main', cwd: '/Users/tester/dev/beta', mode: 'ask',
+        budgetActiveMs: null, budgetToolCalls: null, prompt: 'Go on.', specVersion: 1, driverPid: 4242, chatId: uuid(2),
+      })
+    })
+    // the tab is opened before the first poll has read the launches
+    await openChats()
+    expect(rowFor(2, 'copilot')!.querySelector('.chats-show')).toBeNull()
+    expect(jumpFor(2, 'copilot')).toBeNull()
+    // a Claude Code chat is never driven here, so it does not wait
+    expect(jumpFor(1)).not.toBeNull()
+    await pollTick()
+    await settle()
+    expect(rowFor(2, 'copilot')!.querySelector('.chats-show')).not.toBeNull()
+    expect(jumpFor(2, 'copilot')).toBeNull()
   })
 })

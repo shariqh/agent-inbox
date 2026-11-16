@@ -832,8 +832,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   const chats = opts.chatIndex ?? createChatIndex({ home: agentHome })
   // Jump to session (#586): a live chat's session card. An MCP server records the process that started it as its
   // presence row's host, and that process is the one whose session file or lock makes the chat live. Of that host's
-  // open rows the newest whose server still runs answers, so a row a reused pid left behind names nothing. With two
-  // processes on one chat, the first that has a session answers.
+  // open rows the newest whose server still runs answers, so a row a reused pid left behind names nothing. A row that
+  // reports as the other tool never answers: a lock or session file a crashed tool left can name a pid the other tool
+  // now runs under. With two processes on one chat, the first that has a session answers.
   const serverRuns = (pid: number | null): boolean => {
     if (pid === null || !Number.isInteger(pid) || pid <= 1) return false
     try {
@@ -843,9 +844,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       return false
     }
   }
-  const chatSession = (pids: readonly number[]): string | null => {
+  const OTHER_TOOL: Record<string, string> = { claude: 'copilot', copilot: 'claude-code' }
+  const chatSession = (pids: readonly number[], tool: string): string | null => {
+    const other = OTHER_TOOL[tool]
     for (const pid of pids) {
-      const row = listHostSessions(db, pid).findLast((candidate) => serverRuns(candidate.server_pid))
+      const row = listHostSessions(db, pid).findLast((candidate) => candidate.agent !== other && serverRuns(candidate.server_pid))
       if (row) return row.session
     }
     return null

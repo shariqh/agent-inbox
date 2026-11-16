@@ -650,9 +650,9 @@ describe('GET /api/chats (#586)', () => {
     const livePids = new Map([
       [`claude:${id(1)}`, [4001]], [`claude:${id(2)}`, [4002]], [`claude:${id(3)}`, [4003]], [`claude:${id(4)}`, [4004]],
     ])
-    const asked: number[][] = []
-    const sessionFor = (pids: readonly number[]) => {
-      asked.push([...pids])
+    const asked: Array<Array<number | string>> = []
+    const sessionFor = (pids: readonly number[], tool: string) => {
+      asked.push([...pids, tool])
       return pids[0] === 4001 ? 'session-one' : null
     }
     const res = chatsResponse({ ...read(chats), livePids }, { all: false, claudeDays: 30, sessionFor })
@@ -660,7 +660,7 @@ describe('GET /api/chats (#586)', () => {
     // a chat with no session carries no key at all, so every other entry is the one phase 1 served
     expect(res.chats.filter((c) => 'session' in c).map((c) => c.id)).toEqual([id(1)])
     // asked only for live chats that are shown and have a process: not the one that is not live, hidden, or without pids
-    expect(asked.sort()).toEqual([[4001], [4002]])
+    expect(asked.sort()).toEqual([[4001, 'claude'], [4002, 'claude']])
     expect(JSON.stringify(res)).not.toMatch(/"pids?"|4001|4002/)
     // without the lookup, or without the index's pids, nothing is added
     expect(chatsResponse({ ...read(chats), livePids }, { all: true, claudeDays: 30 }).chats.some((c) => 'session' in c)).toBe(false)
@@ -683,12 +683,12 @@ describe('GET /api/chats (#586)', () => {
   })
 
   describe('a live chat’s session (Jump to session)', () => {
-    const presence = (db: ReturnType<typeof openDb>, sessionId: string, hostPid: number, serverPid: number) =>
-      upsertActivity(db, { session: sessionId, project: 'widget', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: hostPid, server_pid: serverPid })
+    const presence = (db: ReturnType<typeof openDb>, sessionId: string, hostPid: number, serverPid: number, agent = 'claude-code') =>
+      upsertActivity(db, { session: sessionId, project: 'widget', stream: 'main', agent, doing: 'open', idle: true, claim: false, host_pid: hostPid, server_pid: serverPid })
     const setup = () => {
       const h = home()
       const db = openDb(join(scratchDir('chat-db-'), 'inbox.db'))
-      const v = createViewer(db, { agentHome: h, setupInfoPath: join(h, 'none.json'), chatIndex: open(h, { isAlive: (pid) => pid === 4001 || pid === 5001 }) })
+      const v = createViewer(db, { agentHome: h, setupInfoPath: join(h, 'none.json'), chatIndex: open(h, { isAlive: (pid) => [4001, 4002, 5001].includes(pid) }) })
       const chats = async () => (await (await v.request('/api/chats')).json() as ReturnType<typeof chatsResponse>).chats
       return { h, db, chats }
     }
@@ -702,7 +702,7 @@ describe('GET /api/chats (#586)', () => {
       session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
       copilot(h, id(3), yaml(id(3)), { events: true, locks: [5001] })
       presence(db, 'session-claude', 4001, process.pid)
-      presence(db, 'session-copilot', 5001, process.pid)
+      presence(db, 'session-copilot', 5001, process.pid, 'copilot')
       presence(db, 'session-other', 4444, process.pid)
       const list = await chats()
       expect(Object.fromEntries(list.map((c) => [c.id, c.session]))).toEqual({ [id(1)]: 'session-claude', [id(2)]: undefined, [id(3)]: 'session-copilot' })
@@ -740,6 +740,39 @@ describe('GET /api/chats (#586)', () => {
       expect((await chats())[0]!.session).toBe('session-second')
       db.prepare(`UPDATE activity SET started_at = ? WHERE session = 'session-second'`).run(new Date(Date.now() - 2 * HOUR).toISOString())
       expect((await chats())[0]!.session).toBe('session-first')
+    })
+
+    it('passes over a newer row whose server has exited for an older one that still runs', async () => {
+      const { h, db, chats } = setup()
+      claude(h, 'a', id(1), basicHead)
+      session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
+      presence(db, 'session-running', 4001, process.pid)
+      presence(db, 'session-exited', 4001, gone())
+      db.prepare(`UPDATE activity SET started_at = ? WHERE session = 'session-running'`).run(new Date(Date.now() - HOUR).toISOString())
+      expect((await chats())[0]!.session).toBe('session-running')
+    })
+
+    it('goes on to a chat’s second process when its first has no session', async () => {
+      const { h, db, chats } = setup()
+      claude(h, 'a', id(1), basicHead)
+      session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
+      session(h, 4002, { sessionId: id(1), startedAt: Date.now() })
+      presence(db, 'session-of-4002', 4002, process.pid)
+      expect((await chats())[0]!.session).toBe('session-of-4002')
+    })
+
+    // a lock or session file a crashed tool left, whose pid the other tool now runs under
+    it('never names the other tool’s session, and still names one that reports as neither', async () => {
+      const { h, db, chats } = setup()
+      claude(h, 'a', id(1), basicHead)
+      session(h, 4001, { sessionId: id(1), startedAt: Date.now() })
+      copilot(h, id(3), yaml(id(3)), { events: true, locks: [5001] })
+      presence(db, 'copilot-under-4001', 4001, process.pid, 'copilot')
+      presence(db, 'claude-under-5001', 5001, process.pid, 'claude-code')
+      expect((await chats()).map((c) => 'session' in c)).toEqual([false, false])
+      presence(db, 'custom-under-4001', 4001, process.pid, 'my-wrapper')
+      presence(db, 'unknown-under-5001', 5001, process.pid, 'unknown')
+      expect(Object.fromEntries((await chats()).map((c) => [c.id, c.session]))).toEqual({ [id(1)]: 'custom-under-4001', [id(3)]: 'unknown-under-5001' })
     })
   })
 

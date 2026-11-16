@@ -73,6 +73,10 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
   const resumeConfirm = new Map() // key → "Opened in iTerm2", for CONFIRM_MS
   const resumeTimers = new Map()
   const resumeNotes = new Map()   // key → the fallback notice or main's reason, until the next press
+  // Jump to session: key → that the session was not found, until the row is pressed again or the
+  // list is next read for another reason (the read a failed jump asks for keeps it)
+  const jumpNotes = new Map()
+  let keepJumpNotes = false
   // #586 phase 2: Continue here… and Show session, asked again on every entry into the tab like
   // Resume; each row's link to a launch of this app, from the last paint
   let canDrive = false
@@ -190,6 +194,8 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
 
   async function read() {
     const mine = ++seq
+    if (keepJumpNotes) keepJumpNotes = false
+    else jumpNotes.clear()
     loading = true
     changed()
     settlePaint()
@@ -285,6 +291,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     resumeTimers.delete(key)
     resumeConfirm.delete(key)
     resumeNotes.delete(key)
+    jumpNotes.delete(key)
     changed()
     settlePaint()
     let result = null
@@ -373,12 +380,13 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     const chat = chatByKey.get(key)
     const view = chat && jump && !drivenByKey.get(key)?.show ? jumpControl(chat) : null
     if (!view) return
-    if (resumeNotes.delete(key)) {
+    if (jumpNotes.delete(key)) {
       changed()
       settlePaint()
     }
     const gone = () => {
-      resumeNotes.set(key, JUMP_GONE_TEXT)
+      jumpNotes.set(key, JUMP_GONE_TEXT)
+      keepJumpNotes = true
       changed()
       read()
     }
@@ -386,14 +394,21 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
   }
 
   // Jump to session after Copy resume on a live chat whose process has a session card. A chat a
-  // session here holds has Show session for that. Returns whether the row has the control.
-  function paintJump(tr, chat, driven) {
+  // session here holds has Show session for that, and while this window does not yet know whether
+  // one does (`unsure`: a Copilot chat before the launches are read) it draws neither. Returns
+  // whether the row has the control.
+  function paintJump(tr, chat, driven, unsure) {
     const key = tr.dataset.chatKey
     const actions = tr.querySelector('.chats-actions')
-    const view = jump && !driven.show ? jumpControl(chat) : null
+    const view = jump && !driven.show && !unsure ? jumpControl(chat) : null
     let control = actions.querySelector('.chats-jump')
     if (!view) {
-      control?.remove()
+      if (control) {
+        // focus never falls to the page when its control goes: it moves to the row's Copy resume
+        const focused = doc.activeElement === control
+        control.remove()
+        if (focused) actions.querySelector('.chats-copy')?.focus({ preventScroll: true })
+      }
       return false
     }
     if (!control) {
@@ -459,12 +474,13 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
   }
 
   // The note under the controls: the fallback notice or main's reason, Resume's or Continue here…'s,
-  // or that a jump found no session. A row with none of the three keeps phase 1's cell.
-  function paintNote(tr, allowed) {
+  // or that a jump found no session. A row with Jump to session has it from the start, empty, so a
+  // screen reader hears it when it is filled. A row with none of the three keeps phase 1's cell.
+  function paintNote(tr, allowed, jumping) {
     const key = tr.dataset.chatKey
     const actions = tr.querySelector('.chats-actions')
     let note = actions.querySelector('.chats-resume-note')
-    if (!canResume && !allowed && !resumeNotes.has(key)) {
+    if (!canResume && !allowed && !jumping && !jumpNotes.has(key)) {
       note?.remove()
       return
     }
@@ -473,7 +489,7 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
       note.setAttribute('role', 'status')
       actions.append(note)
     }
-    setText(note, resumeNotes.get(key) ?? '')
+    setText(note, resumeNotes.get(key) ?? jumpNotes.get(key) ?? '')
   }
 
   function rowEl(key) {
@@ -549,9 +565,9 @@ export function installChatsView({ doc, host, fetch, now, resume = () => null, d
     setAttr(control, 'aria-disabled', copyView.command && !offTitle ? null : 'true')
     paintResume(tr, chat, offTitle)
     // a live Copilot chat's Continue here… could only be off: Jump to session takes its place
-    const jumping = paintJump(tr, chat, driven)
+    const jumping = paintJump(tr, chat, driven, checking && chat.tool === 'copilot')
     paintContinue(tr, chat, driven, allowed && !jumping)
-    paintNote(tr, allowed)
+    paintNote(tr, allowed, jumping)
   }
 
   // made only when needed, so a window that may not continue chats draws exactly what phase 1 did

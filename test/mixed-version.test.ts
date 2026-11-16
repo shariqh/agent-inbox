@@ -454,7 +454,7 @@ describe('a v1.3.1 process sharing a hub with this build (issue #103)', () => {
 
     // the same row from this build carries its host, and the hook follows it
     upsertActivity(hub, { session: 'new-mcp', project: 'homelab', stream: '', agent: 'claude-code', doing: 'open', idle: true, claim: false, host_pid: process.ppid, server_pid: process.pid })
-    expect(listHostSessions(hub, process.ppid)).toEqual([{ session: 'new-mcp', project: 'homelab', server_pid: process.pid }])
+    expect(listHostSessions(hub, process.ppid)).toEqual([{ session: 'new-mcp', project: 'homelab', agent: 'claude-code', server_pid: process.pid }])
     expect(JSON.parse((await stop()).stdout)).toMatchObject({ decision: 'block', reason: expect.stringContaining('project homelab') })
   })
 })

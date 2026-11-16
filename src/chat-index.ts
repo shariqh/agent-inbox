@@ -636,7 +636,7 @@ export function createChatIndex(opts: ChatIndexOpts): ChatIndex {
  */
 export function chatsResponse(
   read: ChatIndexRead,
-  opts: { all: boolean; claudeDays: number; maxChats?: number; sessionFor?: (pids: readonly number[]) => string | null },
+  opts: { all: boolean; claudeDays: number; maxChats?: number; sessionFor?: (pids: readonly number[], tool: ChatTool) => string | null },
 ): ChatsResponse {
   const max = opts.maxChats ?? MAX_CHATS
   const sorted = [...read.chats].sort((a, b) => {
@@ -648,7 +648,7 @@ export function chatsResponse(
   const shown = opts.all ? sorted : sorted.filter((c) => c.hidden.length === 0)
   const withSession = (chat: ChatEntry): ChatListEntry => {
     const pids = chat.live && opts.sessionFor ? read.livePids?.get(`${chat.tool}:${chat.id}`) : undefined
-    const session = pids?.length ? opts.sessionFor!(pids) : null
+    const session = pids?.length ? opts.sessionFor!(pids, chat.tool) : null
     return session ? { ...chat, session } : chat
   }
   return {

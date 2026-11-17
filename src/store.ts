@@ -236,6 +236,9 @@ export const SNAPSHOT_DOMAINS = {
   session_messages: { table: 'session_messages', restamped: ['delivered_at', 'delivered_by'] },
   // issue #412 step 3 — driven-session launches (/api/launches)
   launches: { table: 'launches' },
+  // issue #612 — requests (GET /api/requests arrives with the viewer, PR 4);
+  // pending() re-applies the acknowledgement's delivery stamp on every poll
+  requests: { table: 'requests', restamped: ['ack_delivered_at'] },
 } as const satisfies Record<string, SnapshotDomainSpec>
 
 export type SnapshotDomain = keyof typeof SNAPSHOT_DOMAINS
@@ -609,6 +612,38 @@ function runMigrations(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_session_messages_closed ON session_messages(status, closed_at);
+    -- issue #612 — the work the human asked one session to do (the requests section below).
+    -- Older processes never name this table.
+    CREATE TABLE IF NOT EXISTS requests (
+      id TEXT PRIMARY KEY,
+      project TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT '',
+      agent TEXT NOT NULL DEFAULT 'unknown',
+      session TEXT NOT NULL,
+      chat TEXT,
+      turn TEXT,
+      midturn INTEGER,
+      origin TEXT NOT NULL,
+      state TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL DEFAULT '',
+      outcome TEXT NOT NULL DEFAULT '',
+      next_step TEXT NOT NULL DEFAULT '',
+      parent TEXT,
+      issue_repo TEXT,
+      issue_number INTEGER,
+      item TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
+      opened_at TEXT NOT NULL,
+      filed_at TEXT,
+      updated_at TEXT NOT NULL,
+      closed_at TEXT,
+      acked_at TEXT,
+      ack_delivered_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_requests_session ON requests(session, state, opened_at);
+    CREATE INDEX IF NOT EXISTS idx_requests_chat ON requests(chat, state);
+    CREATE INDEX IF NOT EXISTS idx_requests_closed ON requests(state, closed_at);
     -- issue #412 step 3 — a session Agent Inbox started and drives (see createLaunch).
     -- Older processes never name these tables.
     CREATE TABLE IF NOT EXISTS launches (
@@ -776,6 +811,9 @@ function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'activity', 'host_turn_at', 'TEXT')
   ensureColumn(db, 'activity', 'host_idle_at', 'TEXT')
   ensureColumn(db, 'activity', 'host_tool_at', 'TEXT')
+  // issue #612 — 1 when this session's MCP server tracks requests. Nothing writes it
+  // yet (PR 4 turns it on, with the viewer); NULL on every row an older server writes.
+  ensureColumn(db, 'activity', 'tracks_requests', 'INTEGER')
   // issue #432 — a launch run in its own git worktree: the checkout it was made
   // from, the worktree (equal to cwd), its branch, the base commit and the
   // checkout's branch then, when it was removed, and the driver's turn-end
@@ -1503,9 +1541,10 @@ export function resolveItem(
   outcome?: string,
   responseGuard?: { expectedRevision?: number },
 ): ResolveResult {
-  const now = new Date().toISOString()
-  const text = outcome?.trim() ?? ''
-  const info = db.prepare(`UPDATE items
+  return db.transaction((): ResolveResult => {
+    const now = new Date().toISOString()
+    const text = outcome?.trim() ?? ''
+    const info = db.prepare(`UPDATE items
                  SET status = 'resolved',
                      resolved_at = COALESCE(resolved_at, @now),
                      updated_at = CASE
@@ -1521,24 +1560,33 @@ export function resolveItem(
                  AND (@guarded = 0
                       OR response_revision = @expected
                       OR (@expected IS NULL AND response_revision = 0))`)
-    .run({
-      now, text, id,
-      guarded: responseGuard === undefined ? 0 : 1,
-      expected: responseGuard?.expectedRevision ?? null,
-    })
-  if (info.changes > 0) return { ok: true }
-  const current = getItem(db, id)
-  if (!current) return { ok: false, reason: 'not_found' }
-  if (current.status === 'dismissed') return { ok: false, reason: 'not_open' }
-  if (responseGuard?.expectedRevision === undefined) {
-    return { ok: false, reason: 'response_revision_required' }
-  }
-  return { ok: false, reason: 'response_changed' }
+      .run({
+        now, text, id,
+        guarded: responseGuard === undefined ? 0 : 1,
+        expected: responseGuard?.expectedRevision ?? null,
+      })
+    if (info.changes > 0) {
+      // #612: a hand-off that closes settles the review request linked to it
+      settleLinkedRequest(db, id, false, now)
+      return { ok: true }
+    }
+    const current = getItem(db, id)
+    if (!current) return { ok: false, reason: 'not_found' }
+    if (current.status === 'dismissed') return { ok: false, reason: 'not_open' }
+    if (responseGuard?.expectedRevision === undefined) {
+      return { ok: false, reason: 'response_revision_required' }
+    }
+    return { ok: false, reason: 'response_changed' }
+  })()
 }
 
 export function dismissItem(db: Database.Database, id: string): void {
-  db.prepare(`UPDATE items SET status = 'dismissed', updated_at = ? WHERE id = ?`)
-    .run(new Date().toISOString(), id)
+  db.transaction((): void => {
+    const now = new Date().toISOString()
+    db.prepare(`UPDATE items SET status = 'dismissed', updated_at = ? WHERE id = ?`).run(now, id)
+    // #612: so does a hand-off that is dismissed
+    settleLinkedRequest(db, id, false, now)
+  })()
 }
 
 // Issue #612: the human's Acknowledge. One IMMEDIATE transaction: only an open
@@ -1553,7 +1601,14 @@ export function acknowledgeHandoff(db: Database.Database, id: string): Acknowled
       | undefined
     if (!row) return { ok: false, reason: 'not_found' }
     if (row.kind !== 'done' || row.handoff !== 1 || row.status !== 'open') return { ok: false, reason: 'not_handoff' }
-    resolveItem(db, id, 'Acknowledged')
+    // #612: a review request's hand-off carries the request's outcome as its own, and the
+    // request is settled as acknowledged (acked_at), which pending() tells its session once
+    const request = db.prepare(`SELECT outcome FROM requests WHERE item = ? AND state = 'review'`).get(id) as { outcome: string } | undefined
+    const resolved = resolveItem(db, id, request?.outcome.trim() ? request.outcome : 'Acknowledged')
+    if (request && resolved.ok) {
+      const now = new Date().toISOString()
+      db.prepare(`UPDATE requests SET acked_at = COALESCE(acked_at, @now) WHERE item = @id AND state = 'done'`).run({ id, now })
+    }
     return { ok: true }
   }).immediate()
 }
@@ -3815,12 +3870,16 @@ export interface HostSession {
   /** what the session reports as (`claude-code`, `copilot`, or another client's own name) */
   agent: string
   server_pid: number | null
+  /** when the session registered: the hooks pick the newest server that tracks requests (#612) */
+  started_at: string
+  /** 1 when the server tracks requests (#612); NULL on an older server's row */
+  tracks_requests: number | null
 }
 
 export function listHostSessions(db: Database.Database, hostPid: number): HostSession[] {
   const cutoff = new Date(Date.now() - PRESENCE_STALE_MINUTES * 60000).toISOString()
   return db
-    .prepare(`SELECT session, project, agent, server_pid FROM activity
+    .prepare(`SELECT session, project, agent, server_pid, started_at, tracks_requests FROM activity
                WHERE host_pid = ? AND ended_at IS NULL AND updated_at >= ?
                ORDER BY started_at ASC, session ASC`)
     .all(hostPid, cutoff) as HostSession[]
@@ -5048,6 +5107,558 @@ export function listOpenMessages(db: Database.Database, sessions: readonly strin
   return db.prepare(`SELECT id, session FROM session_messages
                       WHERE status = 'open' AND session IN (SELECT value FROM json_each(?))
                       ORDER BY created_at ASC, id ASC`).all(JSON.stringify(sessions)) as Array<{ id: string; session: string }>
+}
+
+// ── issue #612: requests, the work the human asked one session to do ─────────
+//
+// One record per thing the person asked a session. In a Claude Code chat with
+// the hooks a prompt opens an `unfiled` request (PR 3); an agent files it, keeps
+// a one-line note and closes it with an outcome, or declares one itself with the
+// `request` tool. A closed request that asks the person to look is `review`, with
+// a hand-off item (§3.1) in Needs you; a finished one writes a resolved outcome
+// item, so Just landed and History need nothing new. No prompt text is ever
+// stored. Every write the tool makes is scoped to the calling server's own
+// session: another session's request reads `not_found`. Nothing here writes
+// `activity.tracks_requests`: the capability is turned on in PR 4. Design:
+// docs/superpowers/specs/2026-11-15-requests-design.md.
+export type RequestState = 'unfiled' | 'open' | 'review' | 'done' | 'dropped' | 'reply' | 'merged'
+export type RequestOrigin = 'prompt' | 'agent'
+
+const REQUEST_MAX_OPEN = 50
+const REQUEST_PAGE = 20
+const REQUEST_TITLE_MAX = 120
+const REQUEST_NOTE_MAX = 240
+const REQUEST_OUTCOME_MAX = 240
+const REQUEST_NEXT_STEP_MAX = 180
+const REQUEST_RETENTION_MS = 30 * 24 * 60 * 60000
+const REQUEST_QUICK_RETENTION_MS = 24 * 60 * 60000
+const REQUEST_ID_TEXT = /^[A-Za-z0-9_-]{1,64}$/
+const REQUEST_CHAT = /^claude:[A-Za-z0-9_-]{1,64}$/
+const REQUEST_ID_PREFIX = /^[0-9a-f-]{8,36}$/
+
+interface RequestRow {
+  id: string
+  project: string
+  stream: string
+  agent: string
+  session: string
+  chat: string | null
+  turn: string | null
+  midturn: number | null
+  origin: RequestOrigin
+  state: RequestState
+  title: string
+  note: string
+  outcome: string
+  next_step: string
+  parent: string | null
+  issue_repo: string | null
+  issue_number: number | null
+  item: string | null
+  revision: number
+  opened_at: string
+  filed_at: string | null
+  updated_at: string
+  closed_at: string | null
+  acked_at: string | null
+  ack_delivered_at: string | null
+}
+
+/** What a tool call answers for a request. */
+export interface RequestBrief {
+  id: string
+  short: string
+  state: RequestState
+  title: string
+  note: string
+}
+
+/** What pending() hands a session of its unfiled and open requests. */
+export interface RequestSummary extends RequestBrief {
+  issue?: string
+  origin: RequestOrigin
+  opened_at: string
+  updated_at: string
+}
+
+export type RequestRefusal =
+  | 'not_found' | 'ambiguous_id' | 'not_unfiled' | 'not_open' | 'parent_not_open' | 'title_required'
+  | 'next_step_required' | 'too_many_open' | 'review_cannot_be_dropped'
+
+/** Why openPromptRequest opened nothing: the hook logs it (`request: cap`) and goes on. */
+export type OpenPromptRefusal = 'bad_chat' | 'bad_turn' | 'session_not_live' | 'reserved_project' | 'cap'
+export type OpenPromptResult = { ok: true; id: string; short: string } | { ok: false; reason: OpenPromptRefusal }
+
+export type RequestChange =
+  | { ok: true; request: RequestBrief }
+  | { ok: false; reason: RequestRefusal; state?: RequestState }
+
+// The short id is the first 8 characters of the id, and the full id where another request of
+// the same session shares them (§3.2), so a short id always resolves to its own request.
+function shortFor(db: Database.Database, session: string, id: string): string {
+  const prefix = id.slice(0, 8)
+  const clash = db.prepare(`SELECT 1 FROM requests WHERE session = ? AND substr(id, 1, 8) = ? AND id <> ? LIMIT 1`).get(session, prefix, id)
+  return clash ? id : prefix
+}
+const brief = (db: Database.Database, row: Pick<RequestRow, 'id' | 'session' | 'state' | 'title' | 'note'>): RequestBrief =>
+  ({ id: row.id, short: shortFor(db, row.session, row.id), state: row.state, title: row.title, note: row.note })
+const issueText = (row: Pick<RequestRow, 'issue_repo' | 'issue_number'>): string | undefined =>
+  row.issue_repo !== null && row.issue_number !== null ? `${row.issue_repo}#${row.issue_number}` : undefined
+
+function requestTitle(title: string): string {
+  const text = title.trim()
+  if (!text || text.length > REQUEST_TITLE_MAX) throw new Error(`title must be 1-${REQUEST_TITLE_MAX} characters`)
+  return text
+}
+
+function requestNote(note: string): string {
+  const text = note.trim()
+  if (text.length > REQUEST_NOTE_MAX) throw new Error(`note must be at most ${REQUEST_NOTE_MAX} characters`)
+  return text
+}
+
+function getRequestRow(db: Database.Database, id: string): RequestRow | undefined {
+  return db.prepare(`SELECT * FROM requests WHERE id = ?`).get(id) as RequestRow | undefined
+}
+
+// Retention (§3.2). Run at the start of every request open, as messages prune on
+// send and launches on create: finished work after 30 days, replies and merges
+// after one, never-finished work 30 days after its last touch, and a review
+// 30 days after it was closed once its item is no longer open.
+export function pruneRequests(db: Database.Database, nowMs = Date.now()): number {
+  return db.prepare(`DELETE FROM requests
+                      WHERE (state IN ('done', 'dropped') AND closed_at < @month)
+                         OR (state IN ('reply', 'merged') AND closed_at < @day)
+                         OR (state IN ('unfiled', 'open') AND updated_at < @month)
+                         OR (state = 'review'
+                             AND NOT EXISTS (SELECT 1 FROM items WHERE items.id = requests.item AND items.status = 'open')
+                             AND COALESCE((SELECT COALESCE(resolved_at, updated_at) FROM items WHERE items.id = requests.item), closed_at) < @month)`)
+    .run({ month: new Date(nowMs - REQUEST_RETENTION_MS).toISOString(), day: new Date(nowMs - REQUEST_QUICK_RETENTION_MS).toISOString() })
+    .changes
+}
+
+// A session is live while its presence row is not ended and was refreshed inside
+// the presence window. `serverMustRun` also asks that its server process, when
+// the row names one, still runs (a crash leaves the row fresh for a while).
+function sessionLive(db: Database.Database, session: string, serverMustRun: boolean, nowMs = Date.now()): boolean {
+  const cutoff = new Date(nowMs - PRESENCE_STALE_MINUTES * 60000).toISOString()
+  const row = db.prepare(`SELECT server_pid FROM activity WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
+    .get(session, cutoff) as { server_pid: number | null } | undefined
+  if (!row) return false
+  if (!serverMustRun || row.server_pid === null || !Number.isInteger(row.server_pid) || row.server_pid <= 0) return true
+  try {
+    process.kill(row.server_pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+function openRequests(db: Database.Database, session: string): number {
+  return db.prepare(`SELECT count(*) FROM requests WHERE session = ? AND state IN ('unfiled', 'open')`).pluck().get(session) as number
+}
+
+/**
+ * The prompt hook's door (PR 3). One .immediate() transaction: it prunes, checks
+ * the cap, copies project, stream and agent from the target's live presence row
+ * and inserts an `unfiled` request of origin `prompt`. It answers `{ ok: true, id,
+ * short }`, where `short` is the full id when its first 8 characters are not unique
+ * among the session's requests, or `{ ok: false, reason }` and writes nothing:
+ * `bad_chat` or `bad_turn` (not a harness id), `session_not_live` (no presence row,
+ * ended or stale), `reserved_project`, or `cap` (50 unfiled and open requests
+ * already). The caller logs the reason (`request: cap`) and goes on.
+ */
+export function openPromptRequest(
+  db: Database.Database,
+  input: { session: string; chat: string; turn?: string | null; midturn?: boolean },
+): OpenPromptResult {
+  if (!REQUEST_CHAT.test(input.chat)) return { ok: false, reason: 'bad_chat' }
+  if (input.turn !== undefined && input.turn !== null && !REQUEST_ID_TEXT.test(input.turn)) return { ok: false, reason: 'bad_turn' }
+  return db.transaction((): OpenPromptResult => {
+    const nowMs = Date.now()
+    pruneRequests(db, nowMs)
+    const cutoff = new Date(nowMs - PRESENCE_STALE_MINUTES * 60000).toISOString()
+    const presence = db.prepare(`SELECT project, stream, agent FROM activity WHERE session = ? AND ended_at IS NULL AND updated_at >= ?`)
+      .get(input.session, cutoff) as { project: string; stream: string; agent: string } | undefined
+    if (!presence) return { ok: false, reason: 'session_not_live' }
+    if (isReservedProject(presence.project)) return { ok: false, reason: 'reserved_project' }
+    if (openRequests(db, input.session) >= REQUEST_MAX_OPEN) return { ok: false, reason: 'cap' }
+    const id = randomUUID()
+    const now = new Date(nowMs).toISOString()
+    db.prepare(`INSERT INTO requests (id, project, stream, agent, session, chat, turn, midturn, origin, state, opened_at, updated_at)
+                VALUES (@id, @project, @stream, @agent, @session, @chat, @turn, @midturn, 'prompt', 'unfiled', @now, @now)`)
+      .run({ id, ...presence, session: input.session, chat: input.chat, turn: input.turn ?? null, midturn: input.midturn ? 1 : null, now })
+    return { ok: true, id, short: shortFor(db, input.session, id) }
+  }).immediate()
+}
+
+/**
+ * The agent's own declaration (the `request` tool's `open`): an `open` request of
+ * origin `agent`, in the scope the tool inferred. Past 50 unfiled and open ones
+ * the session gets `too_many_open`.
+ */
+export function openAgentRequest(
+  db: Database.Database,
+  input: { session: string; project: string; stream: string; agent: string; title: string; note?: string; issue?: IssueLink | null },
+): { ok: true; request: RequestBrief } | { ok: false; reason: 'too_many_open' | 'title_required' } {
+  if (isReservedProject(input.project)) throw new Error(`project "${input.project}" is reserved for Agent Inbox; agents cannot open requests there`)
+  if (input.title.trim() === '') return { ok: false, reason: 'title_required' }
+  const title = requestTitle(input.title)
+  const note = requestNote(input.note ?? '')
+  const link = issueLinkColumns(input.issue ?? null)
+  return db.transaction((): { ok: true; request: RequestBrief } | { ok: false; reason: 'too_many_open' | 'title_required' } => {
+    const nowMs = Date.now()
+    pruneRequests(db, nowMs)
+    if (openRequests(db, input.session) >= REQUEST_MAX_OPEN) return { ok: false, reason: 'too_many_open' }
+    const id = randomUUID()
+    const now = new Date(nowMs).toISOString()
+    db.prepare(`INSERT INTO requests (id, project, stream, agent, session, origin, state, title, note, issue_repo, issue_number, opened_at, filed_at, updated_at)
+                VALUES (@id, @project, @stream, @agent, @session, 'agent', 'open', @title, @note, @issue_repo, @issue_number, @now, @now, @now)`)
+      .run({ id, project: input.project, stream: input.stream, agent: input.agent, session: input.session, title, note, issue_repo: link.repo, issue_number: link.number, now })
+    return { ok: true, request: brief(db, { id, session: input.session, state: 'open', title, note }) }
+  }).immediate()
+}
+
+/**
+ * An id is the full id or a prefix of at least 8 characters that is unique among
+ * the session's own requests, whatever their states. Another session's request
+ * is `not_found`, by full id or prefix.
+ */
+export function resolveRequestId(
+  db: Database.Database,
+  session: string,
+  id: string,
+): { ok: true; id: string } | { ok: false; reason: 'not_found' | 'ambiguous_id' } {
+  if (!REQUEST_ID_PREFIX.test(id)) return { ok: false, reason: 'not_found' }
+  const found = db.prepare(`SELECT id FROM requests WHERE session = @session AND substr(id, 1, @length) = @id ORDER BY id LIMIT 2`)
+    .pluck().all({ session, length: id.length, id }) as string[]
+  if (found.length === 0) return { ok: false, reason: 'not_found' }
+  if (found.length > 1) return { ok: false, reason: 'ambiguous_id' }
+  return { ok: true, id: found[0]! }
+}
+
+/** This session's unfiled and open requests, oldest first, at most one page, and how many are past it. */
+export function listSessionRequests(db: Database.Database, session: string): { requests: RequestSummary[]; more: number } {
+  const rows = db.prepare(`SELECT * FROM requests WHERE session = ? AND state IN ('unfiled', 'open') ORDER BY opened_at ASC, id ASC`)
+    .all(session) as RequestRow[]
+  return {
+    requests: rows.slice(0, REQUEST_PAGE).map((row) => {
+      const issue = issueText(row)
+      return { ...brief(db, row), ...(issue ? { issue } : {}), origin: row.origin, opened_at: row.opened_at, updated_at: row.updated_at }
+    }),
+    more: Math.max(0, rows.length - REQUEST_PAGE),
+  }
+}
+
+type RequestLookup = { ok: true; row: RequestRow } | { ok: false; reason: 'not_found' | 'ambiguous_id' }
+
+function lookupRequest(db: Database.Database, session: string, id: string): RequestLookup {
+  const resolved = resolveRequestId(db, session, id)
+  if (!resolved.ok) return resolved
+  return { ok: true, row: getRequestRow(db, resolved.id)! }
+}
+
+/**
+ * `file`: an `unfiled` request becomes `open` (as new, with a title), `merged`
+ * into an open request of this session (as part_of; its note becomes the
+ * parent's note and the parent's updated_at moves) or `reply` (closed at once).
+ * A request that is not `unfiled` answers `not_unfiled` with its state, so a
+ * repeated call is harmless.
+ */
+export function fileRequest(
+  db: Database.Database,
+  input: { session: string; id: string; as: 'new' | 'part_of' | 'reply'; title?: string; parent?: string; issue?: IssueLink | null; note?: string },
+): RequestChange {
+  return db.transaction((): RequestChange => {
+    const found = lookupRequest(db, input.session, input.id)
+    if (!found.ok) return found
+    const row = found.row
+    if (row.state !== 'unfiled') return { ok: false, reason: 'not_unfiled', state: row.state }
+    const nowMs = Date.now()
+    const now = new Date(nowMs).toISOString()
+    if (input.as === 'new') {
+      if (input.title === undefined || input.title.trim() === '') return { ok: false, reason: 'title_required' }
+      const title = requestTitle(input.title)
+      const note = requestNote(input.note ?? '')
+      const link = issueLinkColumns(input.issue ?? null)
+      db.prepare(`UPDATE requests SET state = 'open', title = @title, note = @note, issue_repo = @issue_repo, issue_number = @issue_number,
+                         filed_at = @now, updated_at = @now, revision = revision + 1 WHERE id = @id`)
+        .run({ id: row.id, title, note, issue_repo: link.repo, issue_number: link.number, now })
+    } else if (input.as === 'part_of') {
+      const named = input.parent === undefined ? undefined : lookupRequest(db, input.session, input.parent)
+      if (named && !named.ok && named.reason === 'ambiguous_id') return named
+      if (!named || !named.ok || named.row.state !== 'open' || named.row.id === row.id) return { ok: false, reason: 'parent_not_open' }
+      const note = input.note === undefined ? undefined : requestNote(input.note)
+      db.prepare(`UPDATE requests SET note = COALESCE(@note, note), updated_at = @now, revision = revision + 1 WHERE id = @parent`)
+        .run({ parent: named.row.id, note: note === undefined || note === '' ? null : note, now })
+      db.prepare(`UPDATE requests SET state = 'merged', parent = @parent, filed_at = @now, closed_at = @now, updated_at = @now, revision = revision + 1 WHERE id = @id`)
+        .run({ id: row.id, parent: named.row.id, now })
+    } else {
+      db.prepare(`UPDATE requests SET state = 'reply', filed_at = @now, closed_at = @now, updated_at = @now, revision = revision + 1 WHERE id = @id`)
+        .run({ id: row.id, now })
+    }
+    return { ok: true, request: brief(db, getRequestRow(db, row.id)!) }
+  }).immediate()
+}
+
+/**
+ * `update`: an `open` request's note, title or issue. A field left out is kept;
+ * a note of "" and an issue of null clear theirs. A call that names none writes
+ * nothing.
+ */
+export function updateRequest(
+  db: Database.Database,
+  input: { session: string; id: string; note?: string; title?: string; issue?: IssueLink | null },
+): RequestChange {
+  const title = input.title === undefined ? undefined : requestTitle(input.title)
+  const note = input.note === undefined ? undefined : requestNote(input.note)
+  return db.transaction((): RequestChange => {
+    const found = lookupRequest(db, input.session, input.id)
+    if (!found.ok) return found
+    const row = found.row
+    if (row.state !== 'open') return { ok: false, reason: 'not_open', state: row.state }
+    if (title === undefined && note === undefined && input.issue === undefined) return { ok: true, request: brief(db, row) }
+    const link = input.issue === undefined ? null : issueLinkColumns(input.issue)
+    db.prepare(`UPDATE requests SET title = COALESCE(@title, title), note = COALESCE(@note, note),
+                       issue_repo = CASE WHEN @setIssue = 1 THEN @issue_repo ELSE issue_repo END,
+                       issue_number = CASE WHEN @setIssue = 1 THEN @issue_number ELSE issue_number END,
+                       updated_at = @now, revision = revision + 1 WHERE id = @id`)
+      .run({
+        id: row.id, title: title ?? null, note: note ?? null, setIssue: input.issue === undefined ? 0 : 1,
+        issue_repo: link?.repo ?? null, issue_number: link?.number ?? null, now: new Date().toISOString(),
+      })
+    return { ok: true, request: brief(db, getRequestRow(db, row.id)!) }
+  }).immediate()
+}
+
+/** The scope fields `flag` stamps on an item, which a request's item carries too. */
+export interface RequestItemScope {
+  /** the scope at close, as `flag` takes it: the item is in the project the session is in now */
+  project?: string
+  stream?: string
+  agent?: string
+  repo?: string | null
+  issue_ref?: number | null
+  head_repo?: string | null
+  repo_root?: string | null
+}
+
+// The item a close writes carries the scope at CLOSE, every field from that one moment, as
+// `flag` stamps its items; the request row keeps the project and stream it opened in. With no
+// scope given the item falls back to the request's own project, stream and agent.
+function itemScope(row: RequestRow, scope: RequestItemScope = {}): Pick<NewItem, 'project' | 'stream' | 'agent' | 'session' | 'repo' | 'issue_ref' | 'head_repo' | 'repo_root'> {
+  return {
+    project: scope.project ?? row.project, stream: scope.stream ?? row.stream, agent: scope.agent ?? row.agent, session: row.session,
+    repo: scope.repo ?? null, issue_ref: scope.issue_ref ?? null, head_repo: scope.head_repo ?? null, repo_root: scope.repo_root ?? null,
+  }
+}
+
+/**
+ * `close`: an `open` request (or an `unfiled` one, given a title, which files it
+ * as new in the same transaction) ends as `done`, `dropped` or, with `review`
+ * and a real next step, `review`. One .immediate() transaction writes the
+ * request and its item, so neither exists without the other: `done` inserts a
+ * resolved outcome item (no dedupe, so Just landed and History show it), `review`
+ * inserts an open hand-off item (§3.1) in Needs you, `dropped` writes none.
+ * `requests.item` names the item.
+ */
+export function closeRequest(
+  db: Database.Database,
+  input: {
+    session: string; id: string; outcome: string; state?: 'done' | 'dropped'; review?: boolean; next_step?: string; title?: string
+    scope?: RequestItemScope
+  },
+): RequestChange {
+  const outcome = input.outcome.trim()
+  if (!outcome || outcome.length > REQUEST_OUTCOME_MAX) throw new Error(`outcome must be 1-${REQUEST_OUTCOME_MAX} characters`)
+  const nextStep = (input.next_step ?? '').trim()
+  if (nextStep.length > REQUEST_NEXT_STEP_MAX) throw new Error(`next_step must be at most ${REQUEST_NEXT_STEP_MAX} characters`)
+  const title = input.title !== undefined && input.title.trim() !== '' ? requestTitle(input.title) : undefined
+  const review = input.review === true
+  return db.transaction((): RequestChange => {
+    const found = lookupRequest(db, input.session, input.id)
+    if (!found.ok) return found
+    const row = found.row
+    if (row.state === 'unfiled') {
+      if (title === undefined) return { ok: false, reason: 'title_required' }
+    } else if (row.state !== 'open') {
+      return { ok: false, reason: 'not_open', state: row.state }
+    }
+    if (review && input.state === 'dropped') return { ok: false, reason: 'review_cannot_be_dropped' }
+    // a next step that says "No action" asks nothing of the person, so it is no hand-off
+    if (review && !isHandoffInput('done', nextStep)) return { ok: false, reason: 'next_step_required' }
+    const now = new Date().toISOString()
+    const finalTitle = title ?? row.title
+    const state: RequestState = review ? 'review' : input.state === 'dropped' ? 'dropped' : 'done'
+    let item: string | null = null
+    if (review) {
+      item = insertItemRow(db, { ...itemScope(row, input.scope), kind: 'done', title: finalTitle, detail: outcome, next_step: nextStep }, true)
+    } else if (state === 'done') {
+      item = insertItemRow(db, { ...itemScope(row, input.scope), kind: 'done', title: finalTitle, next_step: 'No action' }, false)
+      db.prepare(`UPDATE items SET status = 'resolved', resolved_at = @now, outcome = @outcome, outcome_at = @now WHERE id = @id`)
+        .run({ id: item, outcome, now })
+    }
+    db.prepare(`UPDATE requests SET state = @state, title = @title, outcome = @outcome, next_step = @next_step, item = @item,
+                       filed_at = COALESCE(filed_at, @now), closed_at = @now, updated_at = @now, revision = revision + 1
+                 WHERE id = @id`)
+      .run({ id: row.id, state, title: finalTitle, outcome, next_step: review ? nextStep : '', item, now })
+    return { ok: true, request: brief(db, getRequestRow(db, row.id)!) }
+  }).immediate()
+}
+
+// A hand-off item that is closed settles the review request linked to it:
+// `done` (closed from then: its 30 days and its 24 hours in the panel run from
+// the settlement), with `acked_at` only when the person pressed Acknowledge. Called inside
+// the closing statement's own transaction, so the item and the request move
+// together. A request already settled, or in any other state, is left alone.
+function settleLinkedRequest(db: Database.Database, itemId: string, acknowledged: boolean, now: string): void {
+  db.prepare(`UPDATE requests SET state = 'done', acked_at = CASE WHEN @acked = 1 THEN COALESCE(acked_at, @now) ELSE acked_at END,
+                     closed_at = @now, updated_at = @now, revision = revision + 1
+               WHERE item = @item AND state = 'review'`)
+    .run({ item: itemId, acked: acknowledged ? 1 : 0, now })
+}
+
+/**
+ * The reviews this session's person acknowledged since the last delivery, each
+ * handed over once: `ack_delivered_at` is stamped (COALESCE, so the first stamp
+ * stays) in the same statement that reads them. A resolve or a dismiss is not an
+ * acknowledgement and is never delivered. A subagent's poll can take one first;
+ * that is acceptable because it is informational.
+ */
+export function markAcksDelivered(db: Database.Database, session: string): Array<{ id: string; short: string; title: string; acked_at: string }> {
+  const rows = db.prepare(`UPDATE requests SET ack_delivered_at = COALESCE(ack_delivered_at, @now)
+                            WHERE session = @session AND acked_at IS NOT NULL AND ack_delivered_at IS NULL
+                        RETURNING id, title, acked_at`)
+    .all({ session, now: new Date().toISOString() }) as Array<{ id: string; title: string; acked_at: string }>
+  return rows
+    .sort((a, b) => (a.acked_at < b.acked_at ? -1 : a.acked_at > b.acked_at ? 1 : a.id < b.id ? -1 : 1))
+    .map((row) => ({ id: row.id, short: shortFor(db, session, row.id), title: row.title, acked_at: row.acked_at }))
+}
+
+/**
+ * What a Claude Code hook may know about the unfiled requests of its linked
+ * servers: ids, the turn they opened in and their `midturn` flag, oldest first.
+ * Never a title or a note, and never the chat.
+ */
+export function listUnfiledRequests(
+  db: Database.Database,
+  sessions: readonly string[],
+): Array<{ id: string; short: string; session: string; turn: string | null; midturn: boolean; opened_at: string }> {
+  if (sessions.length === 0) return []
+  const rows = db.prepare(`SELECT id, session, turn, midturn, opened_at FROM requests
+                            WHERE state = 'unfiled' AND session IN (SELECT value FROM json_each(?))
+                            ORDER BY opened_at ASC, id ASC`)
+    .all(JSON.stringify(sessions)) as Array<{ id: string; session: string; turn: string | null; midturn: number | null; opened_at: string }>
+  return rows.map((row) => ({ id: row.id, short: shortFor(db, row.session, row.id), session: row.session, turn: row.turn, midturn: row.midturn === 1, opened_at: row.opened_at }))
+}
+
+/**
+ * The one way a request changes session (§3.8). One .immediate() transaction
+ * moves the `unfiled` and `open` requests of `chat` whose session is not `to`
+ * and is not live (ended, older than the presence window, absent, or with a dead
+ * server process) onto `to`, which must be live itself. A live session's
+ * requests are never taken. Only the address and the revision change.
+ */
+export function adoptChatRequests(db: Database.Database, input: { chat: string; to: string }): { moved: string[] } {
+  if (!REQUEST_CHAT.test(input.chat)) return { moved: [] }
+  return db.transaction((): { moved: string[] } => {
+    if (!sessionLive(db, input.to, true)) return { moved: [] }
+    const rows = db.prepare(`SELECT id, session FROM requests WHERE chat = ? AND state IN ('unfiled', 'open') AND session <> ?`)
+      .all(input.chat, input.to) as Array<{ id: string; session: string }>
+    const live = new Map<string, boolean>()
+    const moved: string[] = []
+    for (const row of rows) {
+      if (!live.has(row.session)) live.set(row.session, sessionLive(db, row.session, true))
+      if (live.get(row.session)) continue
+      db.prepare(`UPDATE requests SET session = ?, revision = revision + 1 WHERE id = ?`).run(input.to, row.id)
+      moved.push(row.id)
+    }
+    return { moved: moved.sort() }
+  }).immediate()
+}
+
+/** A request as the viewer reads it (GET /api/requests, PR 4): never its chat, turn or delivery stamp. */
+export interface RequestView {
+  id: string
+  short: string
+  project: string
+  stream: string
+  agent: string
+  session: string
+  origin: RequestOrigin
+  state: RequestState
+  title: string
+  note: string
+  outcome: string
+  next_step: string
+  parent: string | null
+  issue?: string
+  item: string | null
+  revision: number
+  opened_at: string
+  filed_at: string | null
+  updated_at: string
+  closed_at: string | null
+  acked_at: string | null
+}
+
+const RECENT_CLOSED_REQUESTS = 100
+
+/**
+ * The viewer's read: the `unfiled`, `open` and `review` requests oldest first,
+ * and the `done` and `dropped` ones closed in the last 24 hours, newest first, at
+ * most 100. `reply` and `merged` are never served. A `review` whose item is no
+ * longer open (an older server resolved or dismissed it, and so settled nothing)
+ * reads as `done`, closed when the item was.
+ */
+export function listRequests(db: Database.Database): { open: RequestView[]; closed: RequestView[] } {
+  const nowMs = Date.now()
+  const rows = db.prepare(`SELECT r.*, i.status AS item_status, COALESCE(i.resolved_at, i.updated_at) AS item_closed_at
+                             FROM requests r LEFT JOIN items i ON i.id = r.item
+                            WHERE r.state IN ('unfiled', 'open', 'review')
+                               OR (r.state IN ('done', 'dropped') AND r.closed_at >= @cutoff)`)
+    .all({ cutoff: new Date(nowMs - REQUEST_QUICK_RETENTION_MS).toISOString() }) as Array<RequestRow & { item_status: string | null; item_closed_at: string | null }>
+  const open: RequestView[] = []
+  const closed: RequestView[] = []
+  for (const { item_status, item_closed_at, chat: _chat, turn: _turn, midturn: _midturn, ack_delivered_at: _delivered, issue_repo, issue_number, ...row } of rows) {
+    const settled = row.state === 'review' && item_status !== 'open'
+    const view: RequestView = {
+      ...row, short: shortFor(db, row.session, row.id), ...(settled ? { state: 'done' as const, closed_at: item_closed_at ?? row.closed_at } : {}),
+      ...(issueText({ issue_repo, issue_number }) ? { issue: issueText({ issue_repo, issue_number }) } : {}),
+    }
+    if (view.state === 'done' || view.state === 'dropped') {
+      if (view.closed_at !== null && view.closed_at >= new Date(nowMs - REQUEST_QUICK_RETENTION_MS).toISOString()) closed.push(view)
+    } else {
+      open.push(view)
+    }
+  }
+  const byOpened = (a: RequestView, b: RequestView): number => (a.opened_at < b.opened_at ? -1 : a.opened_at > b.opened_at ? 1 : a.id < b.id ? -1 : 1)
+  const byClosed = (a: RequestView, b: RequestView): number => (a.closed_at! < b.closed_at! ? 1 : a.closed_at! > b.closed_at! ? -1 : a.id < b.id ? 1 : -1)
+  return { open: open.sort(byOpened), closed: closed.sort(byClosed).slice(0, RECENT_CLOSED_REQUESTS) }
+}
+
+/**
+ * The viewer's Close for a request whose chat is gone (§3.7): dropped, with the
+ * outcome "Closed from Agent Inbox", pinned to the revision the person saw.
+ * Refused while its session is live, and for anything but an unfiled or open
+ * request. Writes no item.
+ */
+export function dropOrphanRequest(
+  db: Database.Database,
+  input: { id: string; revision: number },
+): { ok: true } | { ok: false; reason: 'not_found' | 'not_open' | 'session_live' | 'revision_changed' } {
+  return db.transaction((): { ok: true } | { ok: false; reason: 'not_found' | 'not_open' | 'session_live' | 'revision_changed' } => {
+    const row = getRequestRow(db, input.id)
+    if (!row) return { ok: false, reason: 'not_found' }
+    if (row.state !== 'unfiled' && row.state !== 'open') return { ok: false, reason: 'not_open' }
+    if (sessionLive(db, row.session, true)) return { ok: false, reason: 'session_live' }
+    if (row.revision !== input.revision) return { ok: false, reason: 'revision_changed' }
+    const now = new Date().toISOString()
+    db.prepare(`UPDATE requests SET state = 'dropped', outcome = 'Closed from Agent Inbox', filed_at = COALESCE(filed_at, @now),
+                       closed_at = @now, updated_at = @now, revision = revision + 1 WHERE id = @id`)
+      .run({ id: row.id, now })
+    return { ok: true }
+  }).immediate()
 }
 
 // ── activity spans: truthful claim intervals, read-only for the dashboard ────

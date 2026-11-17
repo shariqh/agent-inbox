@@ -10,12 +10,11 @@ stdio **MCP server** lets agents `flag` open questions and non-blocking notes an
 (`~/.agent-inbox/inbox.db`); a local **Hono viewer** renders the cross-project inbox and
 boards. No LLM/model calls anywhere — this is dumb infra (store + viewer + thin MCP
 server). See [`README.md`](README.md) for the full picture and
-[`docs/superpowers/specs/`](docs/superpowers/specs/) for the design docs (inbox v1 +
-tracking boards).
+[`docs/superpowers/specs/`](docs/superpowers/specs/) for the design docs.
 
 MCP tools: `flag`, `pending`, `answer`, `resolve`, `register`, `whoami` (items/scope),
 `board_upsert`, `board_row`, `board_advance`, `board_get`, `board_archive` (boards), `ack_message`
-(session messages, #411) and `status` (live presence) — all defined in `src/mcp.ts`.
+(session messages, #411), `request` (asked work, #612) and `status` (live presence) — all in `src/mcp.ts`.
 
 ## Commands
 
@@ -42,11 +41,11 @@ npx vitest run test/dom/                      # the jsdom viewer tests only
 **Node 24 only (for this checkout).** `better-sqlite3` compiles one native binding per
 install; this repo's is built for Node 24 and `.node-version` pins it — run `fnm use 24`
 before anything (or prefix one-off commands with `fnm exec --using=24 …`). (Since the v12
-upgrade the library itself supports newer Node — the packaged Electron app rebuilds it for
-Electron's ABI in `build/stage` — but the checkout standardizes on 24.) This bites twice:
+upgrade the library supports newer Node, and the packaged Electron app rebuilds it for its own
+ABI; the checkout standardizes on 24.) This bites twice:
 (1) the integration test **spawns** `npx tsx src/mcp-server.ts` as a child, which inherits
-your shell's PATH, so Node 24 must be active when you run `npm test`; (2) when registering
-the server with a CLI, pin the **absolute Node 24 binary path**, never bare `node`.
+your shell's PATH, so Node 24 must be active when you run `npm test`; (2) pin the **absolute Node 24
+path** when registering the server with a CLI, never bare `node`.
 
 ## Architecture in one screen
 
@@ -150,6 +149,7 @@ read or edit a matching file. Read it yourself before changing these areas:
 | mesh | `mesh.md` |
 | chat index, `/api/chats`, Chats tab | `chats.md` |
 | `agent-inbox-driver`, ACP | `driven-sessions.md` |
+| requests, the `request` tool | `requests.md` |
 | tests and the DOM harness | `testing.md` |
 | TS, build, dead exports, hygiene | `conventions.md` |
 

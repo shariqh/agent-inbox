@@ -4,7 +4,7 @@ import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, isHandoffInput, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, getItem, isDrivenSession, messageWatchRunning } from './store.js'
+import { insertItem, isHandoffInput, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, closeRequest, fileRequest, listSessionRequests, markAcksDelivered, openAgentRequest, updateRequest, getItem, isDrivenSession, messageWatchRunning } from './store.js'
 import { isReservedProject } from '../public/reserved-projects.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
@@ -373,6 +373,65 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     },
   )
 
+  // issue #612 — the work the human asked THIS session to do. The session is never an
+  // argument: every call is scoped to this server's own session, and another session's
+  // request reads not_found. The store decides each transition and writes the hand-off
+  // or outcome item in the same transaction.
+  server.registerTool(
+    'request',
+    {
+      description:
+        `Track what the human asked THIS session to do, so nothing they hand you is lost. One request is one piece of work they asked for. With the Claude Code hooks, every prompt they submit opens an UNFILED request, and the hook names its id. File each one as soon as you know what it is: action "file" with as:"new" and a short title for new work, as:"part_of" with parent (an open request's id) when it adds to work in hand, or as:"reply" when it asks for no new work (an answer, a yes, a question about what you just did); a reply is never shown. Use action "open" with a title for work they asked for where no hook opened a request, such as an Inbox message you take on. Keep their view current with action "update" and a one-line note at real progress, not at every step. When the work ends, action "close" with a one-line outcome: state "done" (the default) or "dropped" (say why). Work finished in the same turn it was asked needs only this one call: close the unfiled request with a title and an outcome. Set review:true with next_step when they should look at or try the result: it goes to their Needs you until they acknowledge it, and that IS the hand-off, so do not also flag a milestone for it. A done outcome shows in their Just landed and History. An id is the full id or its first 8 characters. status says what phase you are in now; request says what was asked and where it stands. A subagent never files, updates or closes a request: it reports to its parent, which does. pending() returns this session's unfiled and open requests in requests, and the reviews they acknowledged since your last poll in requests_acknowledged, once. Returns {ok:true, request:{id, short, state, title, note}} or {ok:false, reason}: not_found, ambiguous_id, not_unfiled (filed already; its state is returned), not_open, parent_not_open, title_required, next_step_required, too_many_open.`,
+      inputSchema: {
+        action: z.enum(['file', 'open', 'update', 'close']),
+        id: z.string().min(1).optional().describe('The request: its full id or its first 8 characters. Needed by file, update and close.'),
+        as: z.enum(['new', 'part_of', 'reply']).optional().describe('file only: new work, more on an open request (needs parent), or no new work.'),
+        title: z.string().optional().describe('One short line naming the work, at most 120 characters after trimming. Needed by open and by file as new, and by close on an unfiled request.'),
+        parent: z.string().min(1).optional().describe('file as part_of only: the id of an open request of this session.'),
+        issue: z.string().max(300).optional().describe(`The GitHub issue this is about (open, file as new, update). Accepted forms: ${ISSUE_FORMS}.`),
+        note: z.string().optional().describe('A one-line note on where the work stands, at most 240 characters after trimming; "" clears it on update. Not an input of close.'),
+        outcome: z.string().optional().describe('close only, required: one line saying what happened (for dropped, why), at most 240 characters after trimming.'),
+        state: z.enum(['done', 'dropped']).optional().describe('close only: done (the default) or dropped.'),
+        review: z.boolean().optional().describe('close only: true when the human should look at or try the result; needs next_step.'),
+        next_step: z.string().optional().describe('close with review:true only: the ONE concrete action the human should take, at most 180 characters after trimming. Start with a verb.'),
+      },
+    },
+    async ({ action, id, as, title, parent, issue, note, outcome, state, review, next_step }) => {
+      heartbeat()
+      const s = agentScope()
+      const need = (what: string, value: string | undefined): string => {
+        if (value === undefined || value === '') throw new Error(`request ${action} needs ${what}`)
+        return value
+      }
+      // close takes no note or issue: an unreadable issue there must not throw
+      const link = action === 'close' || issue === undefined ? undefined : normalizeIssue(issue, s.repo)
+      let result: object
+      if (action === 'open') {
+        // a missing title is the refusal file as new gives, not a tool error
+        result = openAgentRequest(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, title: title ?? '', note, issue: link })
+      } else if (action === 'file') {
+        if (as === undefined) throw new Error('request file needs as: new, part_of or reply')
+        result = fileRequest(db, { session: sessionId, id: need('an id', id), as, title, parent, note, issue: link })
+      } else if (action === 'update') {
+        result = updateRequest(db, { session: sessionId, id: need('an id', id), title, note, issue: link })
+      } else {
+        const text = need('an outcome', outcome)
+        if (review && state === 'dropped') throw new Error('request close: a dropped request cannot be sent for review; use state "done" with review:true, or drop it without review')
+        // the scope fields flag stamps on an item, for the item a done or review close writes
+        // the item carries the scope at close, every field from this one moment, as flag stamps its items
+        const stream = s.stream
+        result = closeRequest(db, {
+          session: sessionId, id: need('an id', id), outcome: text, state, review, next_step, title,
+          scope: state === 'dropped' ? undefined : {
+            project: s.project, stream, agent: s.agent,
+            repo: s.repo, issue_ref: scope.issueFor(stream), head_repo: s.repo ? scope.headFor(stream) : null, repo_root: scope.rootFor(),
+          },
+        })
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] }
+    },
+  )
+
   server.registerTool(
     'pending',
     {
@@ -441,11 +500,19 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
         messages = listPendingMessages(db, sessionId).filter((m) => handed.has(m.id))
           .map((m) => ({ id: m.id, text: m.text, sent_at: m.created_at, delivered_at: m.delivered_at, project: m.project }))
       }
+      // issue #612 — this server's session's unfiled and open requests (on every poll, until
+      // filed or closed) and the reviews the human acknowledged (handed over once). The
+      // session is never an argument, and a targeted read carries neither key.
+      const requestKeys = item_id === undefined ? (() => {
+        const page = listSessionRequests(db, sessionId)
+        return { requests: page.requests, ...(page.more > 0 ? { requests_more: page.more } : {}), requests_acknowledged: markAcksDelivered(db, sessionId) }
+      })() : {}
       return {
         content: [{ type: 'text', text: JSON.stringify({
           items: items.map((it) => deliverContext(agentItem(it), itemKey(it.id), ledger, { full })),
           rows: rows.map((r) => deliverContext(r, rowKey(r.row_id), ledger, { full })),
           messages,
+          ...requestKeys,
           ...(pushedWake() ? { woken: 'pushed' } : {}),
           ...(item_id === undefined && messages.length === 0 ? messageWatch(s.agent) : {}),
         }) }],
@@ -484,7 +551,7 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     'status',
     {
       description:
-        'Ephemeral "what am I doing right now" for the human\'s Agents view — NOT for tasks (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human sees them listed on your card. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your card reverts to idle presence; for Copilot it may return message_watch, which you launch as pending() describes. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
+        'Ephemeral "what am I doing right now" for the human\'s Agents view — NOT for what was asked (use request) or for plans (use boards) or attention (use flag). Call at meaningful PHASE changes only, not every step: starting a long effort, entering a new phase, fanning out subagents, wrapping up. children is a full-replace list of the subagents you are running ({name, doing, state?}) — resend the current set whenever it changes; the human sees them listed on your card. Times are stamped server-side; never call this just because time passed. Call with done:true when the effort ends — your card reverts to idle presence; for Copilot it may return message_watch, which you launch as pending() describes. Your session stays listed for as long as it is running, but the CLAIM decays: after ~30 minutes with no MCP calls from you at all, "doing" reverts to open on its own, so a claim can never outlive the work. You do not need to keep it alive — just say what you are doing at your next real phase change, and it re-asserts instantly.',
       inputSchema: {
         doing: z.string().min(1).optional().describe('A short, recognizable task name in plain language, such as "Fixing missed Inbox replies". Report actual work, not a PR hash or a review transcript.'),
         detail: z.string().optional().describe('One sentence about the current step or what remains. This is a self-reported update, not automatic tracking of every agent.'),

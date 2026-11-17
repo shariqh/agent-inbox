@@ -87,20 +87,20 @@ describe('issue snapshot store (issue #103)', () => {
       const before = new Map(tables(old).map((name) => [name, columns(old, name)]))
       old.close()
 
-      // #217, #103 PR1b/PR2/slice 2, #253, #247, #324, #306, #411 and #612 append nullable columns of their own; every v1.3.1 column stays in place.
+      // #217, #103 PR1b/PR2/slice 2, #253, #247, #324, #306, #411, #612 and #612 (requests) append nullable columns of their own; every v1.3.1 column stays in place.
       const appended: Record<string, string[]> = {
         source_links_by_head: ['closing_refs'],
         items: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'pinned_at', 'repo_root', 'handoff'],
         boards: ['issue_pin_repo', 'issue_pin_number', 'repo_root', 'session'],
         board_rows: ['watch_stopped_at', 'watch_stopped_until', 'action_agent', 'action_agent_version', 'issue_repo', 'issue_number', 'pinned_at', 'waits_on'],
-        activity: ['host_pid', 'server_pid', 'call_minute', 'call_counts', 'receives_messages', 'push_wake', 'host_turn_at', 'host_idle_at', 'host_tool_at'],
+        activity: ['host_pid', 'server_pid', 'call_minute', 'call_counts', 'receives_messages', 'push_wake', 'host_turn_at', 'host_idle_at', 'host_tool_at', 'tracks_requests'],
       }
       const migrated = openDb(path)
       try {
         // #297 adds the snapshot domain versions, kept by triggers
-        // and #411 its session messages, and #412 step 3 its launches
+        // and #411 its session messages, #412 step 3 its launches and #612 its requests
         expect(tables(migrated)).toEqual([
-          ...before.keys(), 'hook_watch_claims', 'issue_refresh_claims', 'issue_snapshots', 'launch_asks', 'launches', 'session_messages',
+          ...before.keys(), 'hook_watch_claims', 'issue_refresh_claims', 'issue_snapshots', 'launch_asks', 'launches', 'requests', 'session_messages',
           'snapshot_domains',
         ].sort())
         for (const [name, shape] of before) {

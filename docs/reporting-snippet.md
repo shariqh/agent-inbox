@@ -259,6 +259,15 @@ automatically. It only bites on a genuinely silent stretch — a long build, a d
 where the children do the work — and the fix is a phase-change `status({ doing })` when you
 come back up for air, which you should be sending anyway. Re-asserting is instant.
 
+## Requests (what the human asked you)
+
+A request is one piece of work the human asked you to do. When they hand you some, you may
+declare it with `request({ action: "open", title })`; whatever you open you must close, with
+`request({ action: "close", id, outcome })` and a one-line outcome. Keep a one-line `note` with
+`update` at real progress. Set `review: true` with a `next_step` on `close` when they should look
+at the result: that is the hand-off, so do not also flag a milestone for it. `pending()` returns
+your open requests in `requests`. A subagent never opens, updates or closes a request.
+
 ## Messages from the human
 
 The human can message your session directly from Agent Inbox. `pending()` returns them in

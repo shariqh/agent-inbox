@@ -288,7 +288,7 @@ describe('turnOn(): only when this node\'s identity and Serve\'s shape are both 
     expect((await checkout.c.turnOn()).ok).toBe(true)
     expect(fileJson(checkout.file)).toMatchObject({ port: 4320, viewerPort: 4392 })
     expect(hub({ isPackaged: true, env: { AGENT_INBOX_REMOTE_PORT: '4999' } }).c.port).toBe(4320)
-    for (const bad of ['', '80', '1023', '65536', '4320.5', ' 4320', '4320 ', '0x10e0', '+4320', '4e3', 'abc', '04320x']) {
+    for (const bad of ['', '80', '1023', '65536', '4320.5', ' 4320', '4320 ', '0x10e0', '+4320', '4e3', 'abc', '04320x', '04320', '01024']) {
       expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: bad } }).c.port, JSON.stringify(bad)).toBe(4393)
     }
     expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: '1024' } }).c.port).toBe(1024)
@@ -310,10 +310,12 @@ describe('turnOn(): only when this node\'s identity and Serve\'s shape are both 
     ['another login (another account signed in)', { logins: [OTHER_LOGIN] }],
     ['a second login beside this one', { logins: [LOGIN, OTHER_LOGIN] }],
     ['no host stored', { host: undefined }],
-  ] as Array<[string, Record<string, unknown>]>)('removes every device when the stored identity is %s, and says so', async (_name, stored) => {
+  ] as Array<[string, Record<string, unknown>]>)('removes every device when the stored identity is %s, once the owner agreed, and says so', async (_name, stored) => {
     const { c, dir, file } = hub()
     writeSetting(dir, setting(4320, [device(newSecret(), A), device(newSecret(), B)], { enabled: false, ...stored }))
-    const result = await c.turnOn()
+    // review round 1, item 8: never without being asked
+    expect(await c.turnOn()).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 2 })
+    const result = await c.turnOn({ removeDevices: true })
     expect(result).toMatchObject({ ok: true, devicesRemoved: 2 })
     expect(fileJson(file)).toMatchObject({ host: HOST, logins: [LOGIN], devices: [], enabled: true })
   })
@@ -467,7 +469,7 @@ describe('turnOff() and removeDevice()', () => {
   it('there is no operation that sets logins, host or port, or adds a device', () => {
     const { c } = hub()
     expect(Object.keys(c).sort()).toEqual([
-      'acknowledge', 'clearUnreadable', 'entryStatus', 'file', 'port', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'review', 'selfTest',
+      'acknowledge', 'clearUnreadable', 'entryStatus', 'file', 'port', 'recheckHint', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'review', 'selfTest',
       'serveState', 'settled', 'start', 'state', 'stop', 'tailnetSelf', 'tick', 'turnOff', 'turnOn', 'view', 'viewerPort',
     ])
   })
@@ -872,7 +874,8 @@ describe('the watch: Serve\'s shape and this node\'s identity while the entry is
     }
   })
 
-  it('never reads Serve while the entry is off, except once for the removal hint when the file names a host', async () => {
+  // review round 1, item 6: and again every minute while the hint is shown, so it goes once Serve is cleared
+  it('never reads Serve while the entry is off, except for the removal hint when the file names a host: once, then every minute while shown', async () => {
     const h = hub({ serve: { TCP: { '443': { HTTPS: true } }, Web: { [`${HOST}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:4320' } } } } } })
     writeSetting(h.dir, setting(4320, [], { enabled: false }))
     h.c.start()
@@ -880,7 +883,7 @@ describe('the watch: Serve\'s shape and this node\'s identity while the entry is
       await h.c.tick()
       h.clock.now += 60_000
     }
-    expect(h.tailscale.calls.map((call) => call.args.join(' '))).toEqual(['serve status --json'])
+    expect(h.tailscale.calls.map((call) => call.args.join(' '))).toEqual(Array(5).fill('serve status --json'))
     expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
     const none = hub({ serve: {} })
     none.c.start()
@@ -1711,5 +1714,187 @@ describe('review round 1: the cases surviving mutants showed were untested', () 
     expect(text.length).toBeLessThanOrEqual(64 * 1024)
     expect(await c.turnOn()).toEqual({ ok: false, reason: 'too_large_to_write', step: 'file' })
     expect(readFileSync(file, 'utf8')).toBe(text)
+  })
+})
+
+// ── review round 1 (#617, PR 2d) ───────────────────────────────────────────
+
+describe('the viewer\'s bind failure, as a fixed word (review round 1, item 3)', () => {
+  const status = (h: ReturnType<typeof hub>) => h.v.status as ReturnType<typeof statusBody>
+
+  it('turnOn stops waiting at once, state() names it, and Test says the port is in use', async () => {
+    const h = hub()
+    Object.assign(status(h), { listening: false, error: 'could not listen on 127.0.0.1:4320 (EADDRINUSE)' })
+    const started = h.clock.now
+    expect(await h.c.turnOn()).toMatchObject({ ok: true, listening: false })
+    expect(h.clock.now - started).toBeLessThan(1_000)
+    expect((await h.c.state()).listenError).toBe('port_in_use')
+    expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'port_in_use', rose: null })
+    expect(JSON.stringify(await h.c.state())).not.toMatch(/EADDRINUSE|could not listen/)
+  })
+
+  it('another bind failure is cannot_listen; a listener, or an error that is not a bind failure, is none', async () => {
+    const h = hub()
+    expect((await h.c.turnOn()).ok).toBe(true)
+    Object.assign(status(h), { listening: false, error: 'could not listen on 127.0.0.1:4320 (EACCES)' })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBe('cannot_listen')
+    expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'cannot_listen', rose: null })
+    Object.assign(status(h), { listening: false, error: 'could not listen on 127.0.0.1:4999 (EADDRINUSE)' })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBeNull()
+    Object.assign(status(h), { listening: false, error: 'remote.json is not valid JSON' })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBeNull()
+    Object.assign(status(h), { listening: true, error: null })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBeNull()
+  })
+})
+
+describe('the removal hint follows Serve while sharing is off (review round 1, item 6)', () => {
+  const serveReads = (h: ReturnType<typeof hub>) => h.tailscale.calls.filter((call) => call.args.join(' ') === 'serve status --json').length
+
+  it('is read again every minute while shown, and goes once Serve no longer names the address or port', async () => {
+    let serve: unknown = goodServe(4320)
+    const h = hub({ serve: () => serve })
+    expect((await h.c.turnOn()).ok).toBe(true)
+    h.c.start()
+    await h.c.tick()
+    await h.c.turnOff()
+    h.clock.now += 6_000
+    await h.c.tick()
+    expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
+    serve = {}
+    h.clock.now += 30_000
+    await h.c.tick()
+    expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
+    h.clock.now += 31_000
+    await h.c.tick()
+    expect((await h.c.state()).removalHint).toBeNull()
+    // once gone, Serve is not read again while off
+    const reads = serveReads(h)
+    for (let i = 0; i < 3; i += 1) {
+      h.clock.now += 60_000
+      await h.c.tick()
+    }
+    expect(serveReads(h)).toBe(reads)
+    h.c.stop()
+  })
+
+  it('recheckHint reads Serve at once while the hint is shown, at most every 5 seconds, and not once it is gone', async () => {
+    let serve: unknown = goodServe(4320)
+    const h = hub({ serve: () => serve })
+    expect((await h.c.turnOn()).ok).toBe(true)
+    await h.c.turnOff()
+    await h.c.refresh()
+    expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
+    let reads = serveReads(h)
+    h.clock.now += 2_000
+    await h.c.recheckHint()
+    expect(serveReads(h)).toBe(reads)
+    serve = {}
+    h.clock.now += 4_000
+    await h.c.recheckHint()
+    expect(serveReads(h)).toBe(reads + 1)
+    expect((await h.c.state()).removalHint).toBeNull()
+    reads = serveReads(h)
+    h.clock.now += 60_000
+    await h.c.recheckHint()
+    expect(serveReads(h)).toBe(reads)
+  })
+})
+
+describe('review(): what changed, as facts with no values (review round 1, item 7)', () => {
+  const D = 'dddddddddddddddd'
+  async function watched(devices: unknown[]) {
+    const h = hub()
+    writeSetting(h.dir, setting(4320, devices))
+    h.c.start()
+    await h.c.tick()
+    expect((await h.c.review()).flag).toBe(false)
+    expect((await h.c.review()).changes).toBeNull()
+    return h
+  }
+  const NONE: Record<string, unknown> = {
+    unknown: false, missing: false, unreadable: false, switched: null, address: false, account: false, port: false,
+    added: [], removed: [], keyChanged: [], unreadableAdded: 0, unreadableRemoved: 0,
+  }
+  async function edit(h: Awaited<ReturnType<typeof watched>>, value: unknown, mode?: number) {
+    writeSetting(h.dir, value, mode)
+    h.clock.now += 5_000
+    await h.c.tick()
+    const review = await h.c.review()
+    expect(review.flag).toBe(true)
+    return review
+  }
+  async function accept(h: Awaited<ReturnType<typeof watched>>) {
+    expect(await h.c.acknowledge((await h.c.review()).digest)).toEqual({ ok: true })
+  }
+
+  it('names each kind of change, and carries no login, hash, host or port', async () => {
+    const laptop = device(newSecret(), A, 'laptop')
+    const h = await watched([laptop])
+    const cases: Array<[unknown, Record<string, unknown>]> = [
+      [setting(4320, [laptop], { logins: [LOGIN, OTHER_LOGIN] }), { account: true }],
+      [setting(4320, [{ ...laptop, secretSha256: 'e'.repeat(64) }], { logins: [LOGIN, OTHER_LOGIN] }), { keyChanged: ['laptop'] }],
+      [setting(4320, [{ ...laptop, secretSha256: 'e'.repeat(64) }, device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN] }), { added: ['desk'] }],
+      [setting(4320, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN] }), { removed: ['laptop'] }],
+      [setting(4320, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false }), { switched: 'off' }],
+      [setting(4320, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { address: true }],
+      [setting(4321, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { port: true }],
+      [setting(4321, [device(newSecret(), B, 'desk'), { id: 'bad' }, null], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { unreadableAdded: 2 }],
+      [setting(4321, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { unreadableRemoved: 2 }],
+      [setting(4321, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], host: OTHER_HOST }), { switched: 'on' }],
+    ]
+    for (const [value, facts] of cases) {
+      const review = await edit(h, value)
+      // a fresh secret per write would read as a key change: the desk entry keeps its first hash
+      const changes = { ...review.changes, keyChanged: (review.changes?.keyChanged ?? []).filter((label: string) => label !== 'desk') }
+      expect(changes, JSON.stringify(facts)).toEqual({ ...NONE, ...facts })
+      expect(JSON.stringify(review.changes)).not.toMatch(new RegExp([LOGIN, OTHER_LOGIN, HOST, OTHER_HOST, '4321', 'e{64}', '[0-9a-f]{64}'].join('|')))
+      await accept(h)
+    }
+  })
+
+  it('a file removed, and a file it cannot read, say so', async () => {
+    const h = await watched([device(newSecret(), D, 'laptop')])
+    unlinkSync(h.file)
+    expect((await edit(h, setting(4320, [device(newSecret(), D, 'laptop')]), 0o644)).changes).toMatchObject({ unreadable: true })
+    const g = await watched([device(newSecret(), D, 'laptop')])
+    unlinkSync(g.file)
+    g.clock.now += 5_000
+    await g.c.tick()
+    expect((await g.c.review()).changes).toMatchObject({ missing: true })
+  })
+})
+
+describe('turnOn() never removes paired Macs without being asked (review round 1, item 8)', () => {
+  it('refuses when the stored account or address is not this node\'s and the file holds any device entry', async () => {
+    for (const extra of [{ logins: [OTHER_LOGIN] }, { host: OTHER_HOST }, { host: undefined }, { logins: 'x' }]) {
+      const h = hub()
+      writeSetting(h.dir, setting(4320, [device(newSecret(), A)], { enabled: false, ...extra }))
+      const text = readFileSync(h.file, 'utf8')
+      expect(await h.c.turnOn(), JSON.stringify(extra)).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 1 })
+      expect(readFileSync(h.file, 'utf8')).toBe(text)
+      expect(await h.c.turnOn({ removeDevices: true })).toMatchObject({ ok: true, devicesRemoved: 1 })
+      expect(fileJson(h.file)).toMatchObject({ enabled: true, devices: [], logins: [LOGIN], host: HOST })
+    }
+  })
+
+  it('counts an entry the reader drops too', async () => {
+    const h = hub()
+    writeSetting(h.dir, setting(4320, [{ id: 'bad' }], { enabled: false, logins: [OTHER_LOGIN] }))
+    expect(await h.c.turnOn()).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 1 })
+  })
+
+  it('goes ahead with no device entry, or for the same account and address', async () => {
+    const empty = hub()
+    writeSetting(empty.dir, setting(4320, [], { enabled: false, logins: [OTHER_LOGIN] }))
+    expect(await empty.c.turnOn()).toMatchObject({ ok: true, devicesRemoved: 0 })
+    const same = hub()
+    writeSetting(same.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
+    expect(await same.c.turnOn()).toMatchObject({ ok: true, devicesRemoved: 0 })
+    expect((fileJson(same.file).devices as unknown[]).length).toBe(1)
   })
 })

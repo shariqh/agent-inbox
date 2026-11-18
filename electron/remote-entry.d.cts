@@ -68,6 +68,8 @@ export type TurnOnResult =
   /** `listening` (#617, PR 2d): the viewer said it listens on this port within 6 seconds of the write */
   | { ok: true; view: RemoteView; voidedCode: boolean; devicesRemoved: number; droppedEntries: number; listening: boolean }
   | { ok: false; reason: WriteReason | SelfReason | ServeReason; step: 'file' | 'self' | 'serve' }
+  /** review round 1, item 8: the stored account or address is not this node's and `devices` entries would go; turnOn({ removeDevices: true }) agrees */
+  | { ok: false; reason: 'would_remove_devices'; step: 'file'; devices: number }
 
 export interface EntryStatus {
   on: boolean
@@ -87,7 +89,7 @@ export type CodeResult =
 
 export type SelfTestResult =
   | { ok: true }
-  | { ok: false; reason: 'off' | 'not_listening' | 'no_status' | 'unreachable' | 'no_backend' | 'not_refused' | 'no_device_count'; rose: string | null }
+  | { ok: false; reason: 'off' | 'not_listening' | 'port_in_use' | 'cannot_listen' | 'no_status' | 'unreachable' | 'no_backend' | 'not_refused' | 'no_device_count'; rose: string | null }
 
 export interface RemoteWatchState {
   view: RemoteView
@@ -101,6 +103,8 @@ export interface RemoteWatchState {
   removalHint: string | null
   /** whether the viewer's last status said it listens on this port (#617, PR 2d); null before any read */
   listening: boolean | null
+  /** the viewer's bind failure for this port in the last status read (review round 1, item 3) */
+  listenError: ListenError | null
   /** the owner's intent, kept across restarts (always false with no state store) */
   wanted: boolean
   /** whether the last write to the state store landed; null with no state store */
@@ -114,6 +118,26 @@ export interface RemoteWatchState {
 /** Every reason onStopped and state().stopped can give: a reading of this node or of Serve, a changed identity, or the owner's Off kept (PR 2e). */
 export type StopReason = SelfReason | ServeReason | 'identity_changed' | 'not_wanted'
 
+export type ListenError = 'port_in_use' | 'cannot_listen'
+
+/** What changed since the owner last accepted the settings: facts with no values, only labels and counts (review round 1, item 7). */
+export interface RemoteChanges {
+  /** nothing to compare with: the change was found at the first look after a start */
+  unknown: boolean
+  missing: boolean
+  /** the file cannot be read now */
+  unreadable: boolean
+  switched: 'on' | 'off' | null
+  address: boolean
+  account: boolean
+  port: boolean
+  added: string[]
+  removed: string[]
+  keyChanged: string[]
+  unreadableAdded: number
+  unreadableRemoved: number
+}
+
 /** Why a resume is not done yet: fixed words, or `serve_not_ok:<ServeReason>`. `write_failed`: every check passed, the write did not land. */
 export type ResumeWaiting =
   | 'tailscale_not_running' | 'tailscale_unreadable' | `serve_not_ok:${ServeReason}` | 'flagged' | 'changed_outside' | 'needs_owner' | 'write_failed'
@@ -125,7 +149,7 @@ export interface RemoteEntryController {
   tailnetSelf(): Promise<TailnetSelf>
   serveState(host: string, port: number): Promise<ServeAnswer>
   view(): Promise<RemoteView>
-  turnOn(): Promise<TurnOnResult>
+  turnOn(options?: { removeDevices?: boolean }): Promise<TurnOnResult>
   turnOff(): Promise<WriteResult>
   removeDevice(id: unknown): Promise<RemoveResult>
   /** drops the device entries the reader drops, only on a file the reader reads (#617, PR 2d) */
@@ -143,7 +167,9 @@ export interface RemoteEntryController {
   /** accepts the flagged state only when the file still has this digest */
   acknowledge(digest: unknown): Promise<{ ok: true } | { ok: false; reason: 'bad_digest' | 'changed' | 'failed' }>
   /** one read: the view and the digest of that same file, for the panel's Review (pass `digest` to acknowledge) */
-  review(): Promise<{ view: RemoteView; digest: string | null; flag: boolean }>
+  review(): Promise<{ view: RemoteView; digest: string | null; flag: boolean; changes: RemoteChanges | null }>
+  /** while off with the removal hint shown: Serve read now, at most every 5 seconds (review round 1, item 6) */
+  recheckHint(): Promise<void>
   /** resolves once the state store has every write queued so far (each waited for at most 5 seconds); call it before quitting */
   settled(): Promise<void>
 }

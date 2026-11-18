@@ -19,8 +19,8 @@ const RUN_TIMEOUT_MS = 5_000
 const REMOVAL_HINT = 'tailscale serve --https=443 off'
 
 // The third is the App Store or standalone app's own binary: a Mac with no command-line install has
-// only that one, and run directly it answers `version`, `status --json` and `status --json
-// --peers=false` correctly (seen on a real machine, Tailscale 1.102.4).
+// only that one. It answers `version`, `status --json` and `status --json --peers=false` correctly
+// (seen on a real machine, Tailscale 1.102.4), but only as a command line: see CLI_ENV.
 const TAILSCALE_PATHS = Object.freeze([
   '/usr/local/bin/tailscale',
   '/opt/homebrew/bin/tailscale',
@@ -37,6 +37,14 @@ const TAILSCALE_ARGS = Object.freeze({
 })
 const OUTPUT_CAPS = Object.freeze({ self: OUTPUT_MAX, serve: OUTPUT_MAX, peers: PEERS_OUTPUT_MAX })
 const RUN_OPTIONS = Object.freeze({ timeout: RUN_TIMEOUT_MS, encoding: 'utf8', shell: false, windowsHide: true })
+// Tailscale's app binary is the app and the command line in one file. It picks between them from
+// its environment (SHLVL, TERM, TERM_PROGRAM, PS1), and an app opened from Finder has none of
+// those: the binary then prints "The Tailscale GUI failed to start" and exits 0, which read as
+// Tailscale that cannot be read (seen on a real Mac with only that binary, 2026-11-18; from a shell
+// the same run answers). This variable is Tailscale's documented way to ask for the command line
+// (tailscale.com/kb/1080/cli). It is added to this app's own environment for the one run, and it
+// changes nothing for a real command-line install.
+const CLI_ENV = Object.freeze({ TAILSCALE_BE_CLI: '1' })
 
 // The viewer's reader rules for a host and a login (src/viewer-remote.ts), shared with the controller.
 const HOST_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/
@@ -66,7 +74,7 @@ function tailscaleCli(exists = existsSync) {
   return null
 }
 
-/** One read: `self`, `serve` or `peers`, argv only, no shell, 5 seconds, its own output cap. Resolves `{ ok, text }` or `{ ok: false, reason }`. */
+/** One read: `self`, `serve` or `peers`, argv only, no shell, 5 seconds, its own output cap, asked for as a command line (CLI_ENV). Resolves `{ ok, text }` or `{ ok: false, reason }`. */
 function runTailscale(which, deps) {
   const args = Object.hasOwn(TAILSCALE_ARGS, which) ? TAILSCALE_ARGS[which] : null
   if (!args) return Promise.resolve({ ok: false, reason: 'failed' })
@@ -87,7 +95,7 @@ function runTailscale(which, deps) {
     guard?.unref?.()
     try {
       const execFile = deps.execFile ?? childProcess.execFile
-      execFile(cli, [...args], { ...RUN_OPTIONS, maxBuffer: cap }, (error, stdout) => {
+      execFile(cli, [...args], { ...RUN_OPTIONS, maxBuffer: cap, env: { ...process.env, ...CLI_ENV } }, (error, stdout) => {
         if (error) return finish({ ok: false, reason: 'failed' })
         const text = typeof stdout === 'string' ? stdout : Buffer.isBuffer(stdout) ? stdout.toString('utf8') : null
         if (text === null || Buffer.byteLength(text) > cap) return finish({ ok: false, reason: 'failed' })

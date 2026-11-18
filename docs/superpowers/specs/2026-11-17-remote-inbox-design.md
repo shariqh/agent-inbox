@@ -865,7 +865,9 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    On a tailnet with 531 peers `tailscale status --json` was 822,251 bytes; with `--peers=false` it
    was 5,566 bytes and still held `BackendState`, `Self` and this node's `User` entry, with `Peer`
    empty. The app's own binary (`/Applications/Tailscale.app/Contents/MacOS/Tailscale`) answers
-   `status --json` correctly when run directly, on a Mac with no command-line install.
+   `status --json` correctly when run directly from a shell, on a Mac with no command-line
+   install. Run by an app opened from Finder it does not (found 2026-11-18, after 2.12.0): it
+   needs `TAILSCALE_BE_CLI=1`, which every run now sets.
    Not observed: Funnel, a raw TCP forward, a second path or a services section in that output,
    a peer's `StableID` and `Tags`, and the exact removal command
    (`tailscale serve --https=443 off`, from Tailscale's documentation; `tailscale serve --help` on

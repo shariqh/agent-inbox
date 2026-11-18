@@ -332,9 +332,9 @@ above, because unknown is never ok: the handler entry may hold only `Proxy`, and
 `127.0.0.1` form, since nothing showed that Tailscale writes `localhost` for a bare port; the TCP
 entry for 443 must be exactly `{ "HTTPS": true }`; a TCP entry on any port, or another host's or
 port's handler, that names the port is refused; a non-empty `Foreground` or `Services`, and any
-top-level key but `TCP`, `Web`, `AllowFunnel`, `Foreground` and `Services`, is refused. Only `{}`
-has been seen from a real `tailscale serve status --json`; every configured shape in the tests is
-from documentation. The watch also turns the entry off when `tailscale status --json` no longer
+top-level key but `TCP`, `Web`, `AllowFunnel`, `Foreground` and `Services`, is refused. The good
+shape and `{}` are from a real run (§9 item 4); every other configured shape in the tests is from
+documentation. The watch also turns the entry off when `tailscale status --json` no longer
 gives the stored host and an allowed login. `turnOn` reads Tailscale before it takes the file's
 lock, never under it.)
 
@@ -372,7 +372,7 @@ user may have edited it.)
 the answer is a 403 and `/api/remote-entry` shows the `device` count rose: that proves Serve, the
 `Host` and the login all reached the gate. A rise in `host` or `login` names the problem.
 **(As built:** it passes only when the `device` count rose by exactly one, and the watch and
-`turnOn` do not depend on it, because §9 item 3 is still open.)
+`turnOn` do not depend on it. §9 item 3 is now settled: a hub's own request carries its login.)
 
 The panel shows, top to bottom: the switch; the risk sentence; the one command to run in Terminal,
 `tailscale serve --bg 4320`, with Copy (the app never runs it); the address; the allowed login (as
@@ -652,14 +652,20 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    session Remote Control itself started, whose live file reports the entrypoint `sdk-cli`.
 2. **Settled: `tmux` is on the MCP server's `PATH` on the hub** (seven of seven servers). Keep the
    fixed-path fallback for other setups.
-3. **Does a request from the hub to its own Serve address carry its user's login?** If not, Test
-   on the hub sees the `login` count rise instead of `device`, and says to test from the other Mac.
+3. **Settled on 2026-11-17 (Tailscale 1.102.4, macOS): a request from the hub to its own Serve
+   address carries its user's login**, with the same headers as one from another of the user's
+   devices, so Test on the hub sees the `device` count rise. Run through the gate: 403, `device`.
 4. **Partly settled: the Tailscale fields.** Observed on 1.102.4: `Self.DNSName` (with a trailing
    dot), `User[String(Self.UserID)].LoginName`, and a top-level `CertDomains` that lists the name
-   when HTTPS certificates are on; the CLI was at `/usr/local/bin/tailscale`. Not observed:
-   `tailscale serve status --json` with a configuration (expected: `TCP`, `Web` keyed by
-   `host:443` with `Handlers` by path and a `Proxy`, and `AllowFunnel`), the shape of a raw TCP
-   forward in it, a peer's `StableID` and `Tags`, and the exact removal command
+   when HTTPS certificates are on; the CLI was at `/usr/local/bin/tailscale`. Also observed on
+   2026-11-17 after `tailscale serve --bg 4320`: `tailscale serve status --json` is exactly
+   `{ "TCP": { "443": { "HTTPS": true } }, "Web": { "<host>:443": { "Handlers": { "/": { "Proxy":
+   "http://127.0.0.1:4320" } } } } }`, with no `AllowFunnel`, `Foreground` or `Services` key, and
+   `{}` with nothing configured; Serve forwards `Host` as the bare tailnet name and the request
+   target unchanged, sets one `Tailscale-User-Login` after removing the client's, and sends none
+   from a tagged node (docs/architecture/remote-inbox.md, "Checked against real Tailscale Serve").
+   Not observed: Funnel, a raw TCP forward, a second path or a services section in that output,
+   a peer's `StableID` and `Tags`, and the exact removal command
    (`tailscale serve --https=443 off`, from Tailscale's documentation; `tailscale serve --help` on
    1.102 lists `--bg`, `--https`, `--http`, `--tcp`, `--tls-terminated-tcp`, `--set-path`,
    `--service`, `--accept-app-caps`, `--proxy-protocol`, `--tun`, `--yes`, `status` and `reset`).

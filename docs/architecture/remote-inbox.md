@@ -279,9 +279,9 @@ Nothing here changes Tailscale's configuration. A source test pins both argument
   `Foreground` and `Services` absent or empty; and no top-level key but `TCP`, `Web`,
   `AllowFunnel`, `Foreground` and `Services`. Anything else is `{ ok: false, reason, present }`,
   where `present` says some configuration names `<host>:443` or the port. A failed read is
-  `unreadable`. Only `{}` has been seen from a real `tailscale serve status --json`; every other
-  shape in the tests is from Tailscale's documentation, so a real shape that differs reads as not
-  ok and the entry stays off.
+  `unreadable`. The good shape and `{}` are from a real run (below); every other shape in the
+  tests is from Tailscale's documentation, so a real shape that differs reads as not ok and the
+  entry stays off.
 
 **The store.** Writes go through `createLockedFile` on `remote.json`, the lock the viewer's pairing
 write uses: read again under the lock, temp file and rename, mode `0600`, every unknown field kept
@@ -347,5 +347,31 @@ returned or logged.
 **`selfTest()`** fetches `https://<host>/api/version` from main with no device secret, a 5-second
 timeout and redirects refused, and reads `entryStatus()` before and after. It passes on a 403 with
 the `device` count up by exactly one; otherwise it names the counter that rose. Whether a request
-from the hub to its own Serve address carries its user's login is not known yet (design §9 item
-3), so nothing else depends on it.
+from the hub to its own Serve address carries its user's login: it does (below). Nothing else
+depends on the self test.
+
+## Checked against real Tailscale Serve
+
+On 2026-11-17, on macOS with Tailscale 1.102.4, after the owner ran `tailscale serve --bg 4320`:
+
+- `tailscale serve status --json` printed exactly the one good shape: `TCP` with `"443":
+  { "HTTPS": true }`, and `Web` with `"<host>:443"` holding one handler at `/` whose only field is
+  `Proxy: "http://127.0.0.1:4320"`. No `AllowFunnel`, `Foreground` or `Services` key. With nothing
+  configured it printed `{}`.
+- What Serve forwards to the loopback port: `Host` is the tailnet name with no `:443`, and the
+  request target arrives exactly as the client sent it (`/static/../api/setup` and `/%61pi/setup`
+  unchanged). From a device of the same user: exactly one `Tailscale-User-Login`, plus
+  `Tailscale-User-Name`, `Tailscale-User-Profile-Pic`, `Tailscale-Headers-Info` and
+  `X-Forwarded-For`, `-Host` and `-Proto: https`. A request the hub makes to its own Serve address
+  carries the same headers with the hub user's login.
+- Serve removed a client's own `Tailscale-User-Login`, `Tailscale-Funnel-Request`,
+  `Tailscale-User-Name` and `X-Forwarded-For` and set its own: one login header, no Funnel header.
+- From a tagged server: no `Tailscale-User-Login`, `-Name` or `-Headers-Info` at all, only
+  `X-Forwarded-*`; the gate refused it at `login`, even with a valid device secret.
+- The gate behind real Serve: a paired device got 200 with the marker; no secret was a 403 counted
+  `device` (also from the hub itself, which is the self test's pass); the dot-segment and
+  percent-encoded targets were 403 `path`; `/api/setup` and `/api/launches` were 403 `route`; a
+  POST with the page's `Origin` passed, and one with no or a foreign `Origin` was 403 `origin`.
+
+Not yet confirmed by a real run: the `off` form of the removal hint, and the Funnel, TCP-forward,
+extra-path and services shapes. Those stay as documented.

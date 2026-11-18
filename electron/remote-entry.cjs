@@ -545,10 +545,9 @@ function createRemoteEntry(options = {}) {
     return status ? { ok: true, status } : { ok: false, reason: 'bad_shape' }
   }
 
-  // OPEN QUESTION (design §9 item 3): whether a request from the hub to its own Serve address
-  // carries the hub user's login is not yet known on a real machine. If it does not, this test
-  // sees `login` rise instead of `device`, and the panel should say to test from the other Mac.
-  // So nothing else (not turnOn, not the watch) depends on it.
+  // Settled on 2026-11-17 (Tailscale 1.102.4, macOS; design §9 item 3): a request the hub makes to
+  // its own Serve address arrives with the hub user's login, so this request with no secret is a 403
+  // counted under `device`. Still, nothing else (not turnOn, not the watch) depends on it.
   async function selfTest() {
     const current = await view()
     if (!current.enabled || !current.host) return { ok: false, reason: 'off', rose: null }

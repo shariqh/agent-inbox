@@ -6,10 +6,12 @@
 // other path on that host, no TCP forward to the port, no Funnel, and nothing it does not
 // recognise. Anything else turns the entry off.
 //
-// FIXTURES FROM DOCUMENTATION ONLY. Only `{}` (nothing configured) was seen from a real
-// `tailscale serve status --json` (Tailscale 1.102). Every configured shape below is written from
-// Tailscale's documentation of ServeConfig, not from a real run. The parser is strict on purpose:
-// a real shape that differs reads as not ok, and the entry stays off.
+// WHERE THE FIXTURES COME FROM. From a real run (Tailscale 1.102.4, macOS, 2026-11-17; host
+// replaced): `{}` (nothing configured) and goodServe(), the exact output after
+// `tailscale serve --bg 4320`. Every other configured shape below (Funnel, TCP forwards, a second
+// path, handler fields, Foreground, Services, unknown keys) is written from Tailscale's
+// documentation of ServeConfig, NOT from a real run. The parser is strict on purpose: a real shape
+// that differs reads as not ok, and the entry stays off.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
@@ -36,6 +38,29 @@ afterAll(() => {
 describe('parseServeStatus: the one good shape', () => {
   it('is ok for exactly one handler for host:443 at / proxying to http://127.0.0.1:<port> over HTTPS', () => {
     expect(parseServeStatus(JSON.stringify(good()), HOST, PORT)).toEqual({ ok: true })
+  })
+
+  it('is ok for the real output of `tailscale serve --bg 4320`, verbatim (Tailscale 1.102.4, host replaced), and not ok for the real `{}`', () => {
+    const real = `{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "${HOST}:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:4320"
+        }
+      }
+    }
+  }
+}
+`
+    expect(parseServeStatus(real, HOST, PORT)).toEqual({ ok: true })
+    expect(JSON.parse(real)).toEqual(good())
+    expect(parseServeStatus('{}\n', HOST, PORT)).toEqual({ ok: false, reason: 'no_handler', present: false })
   })
 
   it('stays ok with empty Foreground, Services and AllowFunnel maps, and Funnel set to false', () => {

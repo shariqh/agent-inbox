@@ -13,10 +13,12 @@
 //   machine running Tailscale 1.102 (Self.DNSName with a trailing dot, Self.UserID a number while
 //   the User map's keys are strings, a tagged node's UserID still resolving to a placeholder user,
 //   BackendState). The values are synthetic.
-// - `tailscale serve status --json`: only `{}` (nothing configured) was seen on a real machine.
-//   Every configured shape (GOOD_SERVE and every variant in test/serve-state.test.ts) is written
-//   from Tailscale's documentation of `ServeConfig` (TCP, Web, Handlers, Proxy, AllowFunnel,
-//   TCPForward, TerminateTLS, Foreground, Services, AcceptAppCaps), NOT from a real run.
+// - `tailscale serve status --json`: two shapes are FROM A REAL RUN (Tailscale 1.102.4, macOS,
+//   2026-11-17; host replaced): `{}` with nothing configured, and goodServe() below, the exact
+//   output after `tailscale serve --bg 4320` (no AllowFunnel, Foreground or Services key). Every
+//   other configured shape (each variant in test/serve-state.test.ts) is written from Tailscale's
+//   documentation of `ServeConfig` (AllowFunnel, TCPForward, TerminateTLS, a second path,
+//   Foreground, Services, AcceptAppCaps), NOT from a real run.
 import { HOST, LOGIN } from './remote-fixtures.js'
 
 export { HOST, LOGIN }
@@ -39,7 +41,7 @@ export function taggedStatus(): Record<string, unknown> {
   return selfStatus({ User: { '9001': { ID: 9001, LoginName: 'tagged-devices', DisplayName: 'Tagged Devices' } } }, { UserID: 9001, Tags: ['tag:server'] })
 }
 
-/** The one good Serve shape for HOST and `port` (from documentation, not a real run). */
+/** The one good Serve shape for HOST and `port`: from a real run of `tailscale serve --bg 4320` (host replaced). */
 export function goodServe(port = 4320, host = HOST): Record<string, unknown> {
   return {
     TCP: { '443': { HTTPS: true } },

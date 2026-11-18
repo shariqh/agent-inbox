@@ -469,7 +469,9 @@ describe('startRemoteEntry: the listener', () => {
     expect(entry.status()).toEqual({
       on: false, listening: false, port: null, host: null,
       error: expect.stringContaining('other users'),
-      refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0 },
+      codePending: false,
+      paired: [],
+      refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0, pair: 0 },
     })
   })
 })

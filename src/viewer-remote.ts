@@ -6,8 +6,8 @@
 // Design: docs/superpowers/specs/2026-11-17-remote-inbox-design.md §3.2; architecture notes in
 // docs/architecture/remote-inbox.md. Off unless `remote.json` beside the hub database (remoteDir: the folder
 // of AGENT_INBOX_DB, else ~/.agent-inbox; AGENT_INBOX_MESH_DIR does not move it) turns it on,
-// and with no paired device every request is refused. Pairing, the Settings panel and every
-// Tailscale command are PR 2b.
+// and with no paired device every request but pairing is refused. Pairing (PR 2b) lives in
+// src/remote-pair.ts; the Settings panel and every Tailscale command are the desktop app's.
 //
 // Agents on the hub may run commands without asking, and a message to a session is as good as
 // running commands on the hub, so this gate is the line between the owner and everyone else.
@@ -21,7 +21,8 @@ import { dirname, join, resolve } from 'node:path'
 import { createAdaptorServer } from '@hono/node-server'
 import type { HttpBindings } from '@hono/node-server'
 import { Hono } from 'hono'
-import type { MiddlewareHandler } from 'hono'
+import type { Handler, MiddlewareHandler } from 'hono'
+import { PAIR_PATH, createPairing } from './remote-pair.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
 const REMOTE_FILE = 'remote.json'
@@ -116,7 +117,7 @@ function parseDevice(value: unknown): RemoteDevice | null {
   return { id, label, digest: Buffer.from(secretSha256, 'hex') }
 }
 
-function parseSetting(value: unknown): RemoteRead {
+function parseSetting(value: unknown): RemoteDocumentRead {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, reason: 'not-object' }
   const doc = value as Record<string, unknown>
   if (!Number.isSafeInteger(doc['schema']) || (doc['schema'] as number) < 1) return { ok: false, reason: 'no-schema' }
@@ -151,8 +152,12 @@ function parseSetting(value: unknown): RemoteRead {
       logins: (logins as string[]).map((login) => login.toLowerCase()),
       devices,
     },
+    doc,
   }
 }
+
+/** A checked setting and the parsed document it came from, read from the same bytes (pairing writes the document back). */
+type RemoteDocumentRead = { ok: true; setting: RemoteSetting; doc: Record<string, unknown> } | { ok: false; reason: RemoteRefusal }
 
 /**
  * Reads `remote.json`: opened without following a symlink, checked on the open descriptor (a
@@ -160,6 +165,11 @@ function parseSetting(value: unknown): RemoteRead {
  * descriptor, then a JSON object with `schema: 1` and valid fields. Anything else is off.
  */
 export function readRemoteSetting(file: string): RemoteRead {
+  const read = readRemoteDocument(file)
+  return read.ok ? { ok: true, setting: read.setting } : read
+}
+
+function readRemoteDocument(file: string): RemoteDocumentRead {
   const uid = process.getuid?.()
   if (uid === undefined) return { ok: false, reason: 'unsupported' }
   let fd: number
@@ -286,7 +296,7 @@ export function remoteRouteAllowed(method: string, path: string): boolean {
 
 // ── the gate ────────────────────────────────────────────────────────────────
 
-export type RemoteReason = 'host' | 'funnel' | 'login' | 'path' | 'origin' | 'device' | 'route'
+export type RemoteReason = 'host' | 'funnel' | 'login' | 'path' | 'origin' | 'device' | 'route' | 'pair'
 type RemoteCounts = Record<RemoteReason, number>
 
 /** Every value of one header as received, from the raw header lines (Node joins or drops repeats). */
@@ -297,6 +307,20 @@ function headerValues(incoming: IncomingMessage | undefined, name: string): stri
     if (raw[i]!.toLowerCase() === name) values.push(raw[i + 1]!)
   }
   return values
+}
+
+/** Step 1: `Host`, sent once, lowercased, is the setting's host or host:443. */
+function hostMatches(setting: RemoteSetting, incoming: IncomingMessage | undefined): boolean {
+  const hosts = headerValues(incoming, 'host')
+  const host = hosts.length === 1 ? hosts[0]!.toLowerCase() : undefined
+  return host === setting.host || host === `${setting.host}:443`
+}
+
+/** Step 3: the login Serve sets, once, one of the allowed logins ignoring case; a comma means a joined repeat. */
+function loginMatches(setting: RemoteSetting, incoming: IncomingMessage | undefined): boolean {
+  const logins = headerValues(incoming, 'tailscale-user-login')
+  const login = logins.length === 1 && !logins[0]!.includes(',') ? logins[0]!.toLowerCase() : undefined
+  return login !== undefined && setting.logins.includes(login)
 }
 
 const PRINTABLE_ASCII = /^[\x21-\x7e]+$/
@@ -346,17 +370,13 @@ export function remoteGate(opts: {
     const setting = opts.setting(incoming)
 
     // 1. Host, lowercased, is the setting's host or host:443, sent once
-    const hosts = headerValues(incoming, 'host')
-    const host = hosts.length === 1 ? hosts[0]!.toLowerCase() : undefined
-    if (!setting || (host !== setting.host && host !== `${setting.host}:443`)) return refuse('host')
+    if (!setting || !hostMatches(setting, incoming)) return refuse('host')
 
     // 2. Serve sets this only on Funnel (public) traffic and strips it from clients: a second lock
     if (headerValues(incoming, 'tailscale-funnel-request').length > 0) return refuse('funnel')
 
     // 3. the login Serve sets, once, one of the allowed logins ignoring case; a comma means a joined repeat
-    const logins = headerValues(incoming, 'tailscale-user-login')
-    const login = logins.length === 1 && !logins[0]!.includes(',') ? logins[0]!.toLowerCase() : undefined
-    if (login === undefined || !setting.logins.includes(login)) return refuse('login')
+    if (!loginMatches(setting, incoming)) return refuse('login')
 
     // 4. the path form, on the raw request target
     if (!pathFormOk(incoming?.url, c.req.path)) return refuse('path')
@@ -374,19 +394,25 @@ export function remoteGate(opts: {
     if (site !== 'same-origin' && site !== 'none') return refuse('origin')
     if (!SAFE_METHODS.has(c.req.method) && origins.length !== 1) return refuse('origin')
 
-    // 7. Pairing (`POST /api/remote/pair`, the one route that passes with the login alone) is PR 2b.
-    //    Until then it is not on REMOTE_ROUTES, so it is refused below like any unlisted route.
+    // 7. Pairing, the one route that passes with the login alone: exactly POST and exactly the target
+    //    `/api/remote/pair` as received (no query, no trailing slash). It skips steps 8 and 9, so a
+    //    device header sent with it is ignored. Anything else falls through to step 8.
+    const pairing = c.req.method === 'POST' && incoming?.url === PAIR_PATH
 
-    // 8. a paired device's secret, sent once
-    const secrets = headerValues(incoming, 'x-agent-inbox-device')
-    if (secrets.length !== 1 || !DEVICE_SECRET.test(secrets[0]!) || !deviceMatches(secrets[0]!, setting.devices)) {
-      return refuse('device')
+    if (!pairing) {
+      // 8. a paired device's secret, sent once
+      const secrets = headerValues(incoming, 'x-agent-inbox-device')
+      if (secrets.length !== 1 || !DEVICE_SECRET.test(secrets[0]!) || !deviceMatches(secrets[0]!, setting.devices)) {
+        return refuse('device')
+      }
+
+      // 9. the method (HEAD as GET, as Hono routes it) and the routed path on the allowlist
+      if (!remoteRouteAllowed(c.req.method === 'HEAD' ? 'GET' : c.req.method, c.req.path)) return refuse('route')
     }
 
-    // 9. the method (HEAD as GET, as Hono routes it) and the routed path on the allowlist
-    if (!remoteRouteAllowed(c.req.method === 'HEAD' ? 'GET' : c.req.method, c.req.path)) return refuse('route')
-
     await next()
+    // a pairing refusal stays the bare 403, with no marker, like every refusal at the gate
+    if (pairing && c.res.status !== 200) return
     c.header('Cache-Control', 'no-store')
     c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
     c.header('X-Frame-Options', 'DENY')
@@ -403,13 +429,15 @@ export function remoteGate(opts: {
  * one fixed line naming only the error's class (a store error can quote ids taken from the path)
  * and answers a bare 500.
  */
-export function guardRemoteApp(app: Hono, gate: MiddlewareHandler<{ Bindings: HttpBindings }>): Hono<{ Bindings: HttpBindings }> {
+export function guardRemoteApp(app: Hono, gate: MiddlewareHandler<{ Bindings: HttpBindings }>, pair: Handler): Hono<{ Bindings: HttpBindings }> {
   const guarded = new Hono<{ Bindings: HttpBindings }>()
   // The gate must precede route(), as in src/viewer-network.ts: middleware added after the routes
   // would let Hono match those routes first.
   guarded.use('*', gate)
+  // Pairing is served by this guarded app, never by the wrapped one: after the gate, before route().
+  // It answers itself, so the wrapped app's middleware never runs for it.
+  guarded.post(PAIR_PATH, pair)
   // Hono copies the app's routes at this call: a route added to `app` afterwards is never served.
-  // PR 2b's pairing route must be registered on this guarded app, after the gate and before this call.
   guarded.route('/', app as unknown as Hono<{ Bindings: HttpBindings }>)
   // createViewer sets no onError, so this one handles its errors (Hono's default logs the error itself)
   guarded.onError((error, c) => {
@@ -425,12 +453,18 @@ export interface RemoteEntryStatus {
   port: number | null
   host: string | null
   error: string | null
+  /** a pairing code is waiting to be used */
+  codePending: boolean
+  /** the ids of devices paired since this viewer started, the last 16 */
+  paired: string[]
   refused: RemoteCounts
 }
 
 export interface RemoteEntry {
-  /** for GET /api/remote-entry on the loopback app: counts since start, never a login, header value, device id or hash */
+  /** for GET /api/remote-entry on the loopback app: counts since start and paired ids, never a login, header value, secret, hash, label or code */
   status(): RemoteEntryStatus
+  /** A new pairing code, voiding any older one, or null while the entry is not on and listening. */
+  makeCode(): { code: string; expiresAt: string } | null
   address(): ReturnType<Server['address']>
   close(): Promise<void>
 }
@@ -441,9 +475,10 @@ export interface RemoteEntry {
  * too) when that stops being so. Checked on every request and every 5 seconds. A bind failure is
  * logged once and shown in the status; nothing else stops.
  */
-export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: number; intervalMs?: number }): RemoteEntry {
-  const cache = remoteSettingCache(join(opts.dir, REMOTE_FILE))
-  const refused: RemoteCounts = { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0 }
+export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: number; intervalMs?: number; now?: () => number }): RemoteEntry {
+  const file = join(opts.dir, REMOTE_FILE)
+  const cache = remoteSettingCache(file)
+  const refused: RemoteCounts = { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0, pair: 0 }
   let server: Server | null = null
   let serverPort: number | null = null
   let listening = false
@@ -456,6 +491,20 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
   const active = (read: RemoteRead): RemoteSetting | null =>
     read.ok && read.setting.enabled && read.setting.viewerPort === opts.viewerPort ? read.setting : null
 
+  const pairing = createPairing<RemoteSetting>({
+    file,
+    maxBytes: REMOTE_FILE_MAX,
+    now: opts.now ?? Date.now,
+    read: readRemoteDocument,
+    // under the lock: the file as it is now is still on for this viewer, on this request's port, and
+    // still names the Host and the login the request passed the gate with
+    stillOn: (setting, incoming) => active({ ok: true, setting }) !== null
+      && incoming?.socket.localPort === setting.port
+      && hostMatches(setting, incoming)
+      && loginMatches(setting, incoming),
+    refused: () => { refused.pair += 1 },
+  })
+
   const guarded = guardRemoteApp(opts.app, remoteGate({
     refused,
     setting: (incoming) => {
@@ -465,7 +514,7 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
       // only on the listener the current setting names: a request still on an old port is refused
       return setting && incoming?.socket.localPort === setting.port ? setting : null
     },
-  }))
+  }), pairing.handler)
 
   function closeServer(): void {
     const current = server
@@ -517,6 +566,8 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
     if (server && serverPort !== wanted) closeServer()
     if (wanted === null) {
       bindError = null
+      // a code made for an entry that is now off never pairs, even if the entry comes back
+      pairing.voidCode()
       return
     }
     if (!server) openServer(wanted)
@@ -539,8 +590,17 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
         port: setting?.port ?? null,
         host: setting?.host ?? null,
         error,
+        codePending: pairing.codePending(),
+        paired: pairing.paired(),
         refused: { ...refused },
       }
+    },
+    makeCode() {
+      // only for a listener that is there: on for this viewer, and bound
+      const read = cache.current()
+      if (cache.version !== reconciled) setImmediate(reconcile)
+      const setting = active(read)
+      return setting !== null && listening && serverPort === setting.port ? pairing.makeCode() : null
     },
     address() {
       return listening && server ? server.address() : null

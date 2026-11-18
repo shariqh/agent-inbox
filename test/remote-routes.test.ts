@@ -18,7 +18,9 @@ import type { Server } from 'node:http'
 import { openDb } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
-import { REMOTE_ROUTES, guardRemoteApp, startRemoteEntry } from '../src/viewer-remote.js'
+import { REMOTE_ROUTES, guardRemoteApp, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
+import { remoteCodeRoute } from '../src/remote-pair.js'
+import type { Handler } from 'hono'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import { scratchDir } from './scratch.js'
 import { waitUntil } from './wait.js'
@@ -45,6 +47,12 @@ const REFUSED = new Map<string, string>([
   ['POST /api/launches/:id/hand-off/withdraw', 'acts on the hub\'s processes'],
   ['POST /api/launches/:id/forget', 'acts on the hub\'s files: deletes log folders'],
   ['POST /api/launch-asks/:id/answer', 'acts on the hub\'s processes: approves a command a driven session runs'],
+])
+
+// Routes src/viewer-server.ts adds to the LOOPBACK app only (not createViewer's), each refused remotely.
+const LOOPBACK_ONLY = new Map<string, string>([
+  ['GET /api/remote-entry', 'the remote entry\'s own status: setup, which only makes sense at the hub'],
+  ['POST /api/remote-entry/code', 'makes a pairing code, which hands out a credential: only main, with the owner token, at the hub'],
 ])
 
 describe('REMOTE_ROUTES', () => {
@@ -101,6 +109,23 @@ describe('REMOTE_ROUTES', () => {
       expect(route.path).not.toMatch(/copilot/)
     }
   })
+
+  it('refuses the loopback-only routes src/viewer-server.ts adds, and classifies each one it adds', () => {
+    for (const name of LOOPBACK_ONLY.keys()) {
+      const [method, path] = name.split(' ') as [string, string]
+      expect(remoteRouteAllowed(method, path), name).toBe(false)
+    }
+    const server = readFileSync(join(REPO, 'src/viewer-server.ts'), 'utf8')
+    const added = [...server.matchAll(/\bapp\.(get|post|put|delete|patch)\('(\/api\/[^']+)'/g)].map((m) => `${m[1]!.toUpperCase()} ${m[2]}`)
+    expect(added.sort()).toEqual([...LOOPBACK_ONLY.keys()].sort())
+  })
+
+  it('never lets createViewer register the pairing route: only the guarded app serves it', () => {
+    const app = createViewer(db, { ownerToken: 'owner-token-for-the-test', agentHome: dir, runtimeRoot: join(dir, 'runtime') })
+    expect(app.routes.filter((route) => route.path.startsWith('/api/remote'))).toEqual([])
+    // and it is not on the allowlist: it reaches its handler only through the gate's step 7
+    expect(remoteRouteAllowed('POST', '/api/remote/pair')).toBe(false)
+  })
 })
 
 // The gate allows by concrete path, but the classification above is by registered pattern. So for
@@ -117,9 +142,17 @@ function runChain(app: Hono<never>, method: string, path: string): RouteRecord[]
 
 const samplePath = (pattern: string) => pattern.replace(/:[A-Za-z]+/g, 'sample0')
 
+const pairHandler: Handler = (c) => c.text('pair')
+
 function chainProblems(app: Hono, gate: MiddlewareHandler): string[] {
-  const guarded = guardRemoteApp(app, gate) as unknown as Hono<never>
+  const guarded = guardRemoteApp(app, gate, pairHandler) as unknown as Hono<never>
   const problems: string[] = []
+  // pairing: the gate, then the guarded app's own handler, which answers; never a handler of the wrapped app
+  const pair = runChain(guarded, 'POST', '/api/remote/pair')
+  const pairGot = pair.map((r) => `${r.method} ${r.path}`)
+  if (JSON.stringify(pairGot) !== JSON.stringify(['ALL /*', 'POST /api/remote/pair', 'ALL /*'])) problems.push(`POST /api/remote/pair: ${pairGot.join(', ')}`)
+  else if (pair[0]!.handler !== gate || pair[1]!.handler !== pairHandler) problems.push('POST /api/remote/pair: not the gate, then the guarded app\'s pairing handler')
+  if (runChain(app as unknown as Hono<never>, 'POST', '/api/remote/pair').some((r) => r.path !== '/*')) problems.push('the wrapped app serves POST /api/remote/pair')
   for (const route of REMOTE_ROUTES) {
     const chain = runChain(guarded, route.method, samplePath(route.path))
     const expected = [
@@ -168,6 +201,15 @@ describe('what Hono runs for each allowed path', () => {
     const app = remoteApp()
     app.on(['GET', 'POST'], '/api/boards/*', (c) => c.text('broad'))
     expect(chainProblems(app, gate).some((problem) => problem.startsWith('POST /api/boards/:id/archive'))).toBe(true)
+  })
+
+  it('catches a pairing route on the wrapped app, which would run behind the guarded one', () => {
+    const app = remoteApp()
+    app.post('/api/remote/pair', (c) => c.text('wrapped'))
+    expect(chainProblems(app, gate)).toEqual(expect.arrayContaining([
+      'POST /api/remote/pair: ALL /*, POST /api/remote/pair, ALL /*, POST /api/remote/pair',
+      'the wrapped app serves POST /api/remote/pair',
+    ]))
   })
 })
 
@@ -227,6 +269,14 @@ describe('the remote app', () => {
       expect(response.status).toBe(403)
     })
 
+    it('refuses POST /api/remote-entry/code with a paired device and the owner header', async () => {
+      const before = entry.status().refused.route
+      const response = await rawRequest(port, { method: 'POST', target: '/api/remote-entry/code', headers: deviceHeaders(secret, [['Origin', ORIGIN], ['X-Agent-Inbox-Owner', 'owner-token-for-the-test']]), body: '{}' })
+      expect(response.status).toBe(403)
+      expect(entry.status().refused.route).toBe(before + 1)
+      expect(entry.status().codePending).toBe(false)
+    })
+
     it.each(REMOTE_ROUTES.filter((r) => r.method === 'GET').map((r) => r.path))('serves GET %s past the gate', async (path) => {
       const target = path === '/api/mesh/agents/runs' ? `${path}?name=unslop` : path === '/api/boards/archived/plans' ? `${path}?ids=x` : path
       const response = await rawRequest(port, { target, headers: deviceHeaders(secret) })
@@ -238,8 +288,9 @@ describe('the remote app', () => {
 })
 
 // §6: "startLocalViewer's gate and headers are byte-identical to the build before PR 2a. The loopback
-// app's responses change only where §3.6's last row says": this PR adds GET /api/remote-entry, nothing else.
-describe('the loopback entry is unchanged but for GET /api/remote-entry', () => {
+// app's responses change only where §3.6's last row says": PR 2a adds GET /api/remote-entry and PR 2b
+// POST /api/remote-entry/code, nothing else.
+describe('the loopback entry is unchanged but for GET /api/remote-entry and POST /api/remote-entry/code', () => {
   let dir: string
   let db: Database.Database
   let before: Server
@@ -262,6 +313,7 @@ describe('the loopback entry is unchanged but for GET /api/remote-entry', () => 
     remoteApp.get('/*', serveStatic({ root: './public' }))
     entry = startRemoteEntry({ app: remoteApp, dir, viewerPort: 4319 })
     app.get('/api/remote-entry', (c) => c.json(entry.status()))
+    app.post('/api/remote-entry/code', remoteCodeRoute(entry, opts.ownerToken))
     app.get('/*', serveStatic({ root: './public' }))
     before = startLocalViewer(old, 0)
     after = startLocalViewer(app, 0)
@@ -276,13 +328,33 @@ describe('the loopback entry is unchanged but for GET /api/remote-entry', () => 
     db.close()
   })
 
-  it('composes the loopback app in src/viewer-server.ts with the status route before the static files', () => {
+  it('composes the loopback app in src/viewer-server.ts with the status and code routes before the static files', () => {
     const server = readFileSync(join(REPO, 'src/viewer-server.ts'), 'utf8')
     const status = server.indexOf("app.get('/api/remote-entry', (c) => c.json(remote.status()))")
+    // the code route exists only with an owner token, and uses the one the loopback app was built with
+    const code = server.indexOf("if (ownerToken) app.post('/api/remote-entry/code', remoteCodeRoute(remote, ownerToken))")
     const statics = server.indexOf("app.get('/*', serveStatic({ root: './public' }))")
     expect(status).toBeGreaterThan(0)
-    expect(statics).toBeGreaterThan(status)
+    expect(code).toBeGreaterThan(status)
+    expect(statics).toBeGreaterThan(code)
+    expect(server).toContain('const ownerToken = process.env.AGENT_INBOX_OWNER_TOKEN\nconst app = createViewer(db, { ownerToken, mesh })')
+    expect(server.match(/AGENT_INBOX_OWNER_TOKEN/g)).toHaveLength(1)
     expect(server).toContain('startLocalViewer(app, port)')
+  })
+
+  it('adds POST /api/remote-entry/code, behind the owner token, on the loopback entry', async () => {
+    const send = (port: number, extra: Array<[string, string]>) => rawRequest(port, {
+      method: 'POST', target: '/api/remote-entry/code', body: '', contentType: null,
+      headers: [['Host', `127.0.0.1:${port}`], ['Origin', `http://127.0.0.1:${port}`], ...extra],
+    })
+    await waitUntil(() => entry.status().listening, 'the remote entry')
+    expect((await send(beforePort, [['X-Agent-Inbox-Owner', 'owner-token-for-the-test']])).status).toBe(404)
+    expect((await send(afterPort, [])).status).toBe(403)
+    const made = await send(afterPort, [['X-Agent-Inbox-Owner', 'owner-token-for-the-test']])
+    expect(made.status).toBe(200)
+    expect(made.headers['x-agent-inbox-local-boundary']).toBe('loopback-v1')
+    expect(made.headers['cache-control']).toBe('no-store')
+    expect(JSON.parse(made.body).code).toMatch(/^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/)
   })
 
   const IGNORED = new Set(['date', 'x-inbox-boot'])
@@ -343,7 +415,8 @@ describe('the loopback entry is unchanged but for GET /api/remote-entry', () => 
     expect(now.headers['x-agent-inbox-local-boundary']).toBe('loopback-v1')
     expect(JSON.parse(now.body)).toEqual({
       on: true, listening: expect.any(Boolean), port: expect.any(Number), host: 'hub.example.ts.net', error: null,
-      refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0 },
+      codePending: expect.any(Boolean), paired: [],
+      refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0, pair: 0 },
     })
   })
 })

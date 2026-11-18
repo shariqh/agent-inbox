@@ -18,7 +18,7 @@ import {
 } from './remote-fixtures.js'
 import type { RawResponse } from './remote-fixtures.js'
 
-type Reason = 'host' | 'funnel' | 'login' | 'path' | 'origin' | 'device' | 'route'
+type Reason = 'host' | 'funnel' | 'login' | 'path' | 'origin' | 'device' | 'route' | 'pair'
 
 let dir: string
 let db: Database.Database
@@ -310,9 +310,16 @@ describe('step 6: Fetch Metadata on every method', () => {
   })
 })
 
-describe('step 7: pairing is not built (PR 2b)', () => {
-  it('POST /api/remote/pair is refused like any unlisted route', async () => {
+describe('step 7: pairing (PR 2b; test/remote-pair.test.ts covers it in full)', () => {
+  it('POST /api/remote/pair passes with the login alone to the pairing handler, which refuses with no code pending', async () => {
     const pair = (headers: Array<[string, string]>) => rawRequest(port, { method: 'POST', target: '/api/remote/pair', headers, body: '{"code":"7K3QX-9M2PD","label":"laptop"}' })
+    await expectRefused('pair', () => pair([['Host', HOST], ['Tailscale-User-Login', LOGIN], ['Origin', ORIGIN]]))
+    // a device header is ignored on it
+    await expectRefused('pair', () => pair(deviceHeaders(first, [['Origin', ORIGIN]])))
+  })
+
+  it('a query string gets no login-only pass', async () => {
+    const pair = (headers: Array<[string, string]>) => rawRequest(port, { method: 'POST', target: '/api/remote/pair?x=1', headers, body: '{"code":"7K3QX-9M2PD","label":"laptop"}' })
     await expectRefused('device', () => pair([['Host', HOST], ['Tailscale-User-Login', LOGIN], ['Origin', ORIGIN]]))
     await expectRefused('route', () => pair(deviceHeaders(first, [['Origin', ORIGIN]])))
   })
@@ -455,10 +462,12 @@ describe('nothing sensitive reaches a log', () => {
 })
 
 describe('the status', () => {
-  it('holds counts only: no login, header value, device id or hash', () => {
+  it('holds counts only: no login, header value, hash, label or device not paired here', () => {
     const status = entry.status()
-    expect(Object.keys(status).sort()).toEqual(['error', 'host', 'listening', 'on', 'port', 'refused'])
-    expect(Object.keys(status.refused).sort()).toEqual(['device', 'funnel', 'host', 'login', 'origin', 'path', 'route'])
+    expect(Object.keys(status).sort()).toEqual(['codePending', 'error', 'host', 'listening', 'on', 'paired', 'port', 'refused'])
+    expect(Object.keys(status.refused).sort()).toEqual(['device', 'funnel', 'host', 'login', 'origin', 'pair', 'path', 'route'])
+    // only devices this viewer paired are listed (PR 2b); the file's own are not
+    expect(status.paired).toEqual([])
     const text = JSON.stringify(status)
     for (const secret of [LOGIN, first, secretSha256(first), '1111111111111111', 'laptop']) expect(text).not.toContain(secret)
   })

@@ -63,15 +63,19 @@ export interface RawResponse {
 
 /**
  * One HTTP/1.1 request written byte for byte. `headers` is a list, so a name may
- * repeat; no Host is added unless given.
+ * repeat; no Host is added unless given. A body is sent as `application/json` unless
+ * `contentType` names another type, or is null for none.
  */
 export function rawRequest(
   port: number,
-  { method = 'GET', target, headers = [], body }: { method?: string; target: string; headers?: Array<[string, string]>; body?: string },
+  { method = 'GET', target, headers = [], body, contentType = 'application/json' }: {
+    method?: string; target: string; headers?: Array<[string, string]>; body?: string; contentType?: string | null
+  },
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const lines = [`${method} ${target} HTTP/1.1`, ...headers.map(([name, value]) => `${name}: ${value}`), 'Connection: close']
-    if (body !== undefined) lines.push('Content-Type: application/json', `Content-Length: ${Buffer.byteLength(body)}`)
+    if (body !== undefined && contentType !== null) lines.push(`Content-Type: ${contentType}`)
+    if (body !== undefined) lines.push(`Content-Length: ${Buffer.byteLength(body)}`)
     const socket = connect(port, '127.0.0.1')
     const chunks: Buffer[] = []
     socket.on('data', (chunk) => chunks.push(chunk))

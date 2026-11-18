@@ -184,7 +184,9 @@ and parses a JSON object with `schema: 1`. Anything else means off. Then: `host`
 such as `127.0.0.1` is refused); `logins` holds 1 to 16 strings of 1 to 254
 characters with no control characters; `devices` holds at most 16 entries, each with a
 16-hex-character `id`, a `label` of 1 to 40 characters and a 64-hex-character `secretSha256` (a bad
-entry is dropped, never turning the rest off); `port` is 1024 to 65535 and not `viewerPort`, by
+entry is dropped, never turning the rest off) **(as built in PR 2b:** the label follows the one rule a
+pairing request's label does, no control character, no Unicode format character such as a
+bidirectional control, a zero-width character or the byte-order mark, and no lone surrogate); `port` is 1024 to 65535 and not `viewerPort`, by
 default 4320 for the packaged app and 4393 for a checkout build, mirroring `viewerPort()` (my call).
 
 **Who opens it.** `src/viewer-remote.ts` is viewer-process-only and separate from
@@ -257,7 +259,14 @@ SHA-256 digests by `timingSafeEqual`, else 403; the route exists only when the v
 with `AGENT_INBOX_OWNER_TOKEN`; the loopback entry's rules still apply, so main also sends
 `Origin: http://127.0.0.1:<port>`; and it answers `409 { "error": "remote_entry_off" }` while the
 remote entry is not on for this viewer or its listener is not bound, so no code is made for a
-listener that is not there. The code is also voided when the entry turns off.)
+listener that is not there. The token does not limit who can make a code: any local process on the
+hub can read it from `GET /api/owner` and call the route, the same local trust the loopback viewer
+already gives. What the token does is keep the route from existing on a viewer the app did not
+start. So each code has an identity: the answer is `{ code, codeId, expiresAt }`, `codeId` 16
+random hex characters not derived from the code, answered only to the caller. A code is tied to
+the file it was made under: any change to `remote.json` after it was made voids it (the entry off
+and on again, a device added or removed, a hand edit), so main asks for a code after its last
+write.)
 
 - The viewer process makes the code: 50 random bits as 10 Crockford base32 characters in two
   groups of five (`7K3QX-9M2PD`), short enough to type from one Mac to the other. It is kept only
@@ -271,10 +280,11 @@ listener that is not there. The code is also voided when the entry turns off.)
   answers `{ ok: true, device: id, secret: <base64url> }` once, with the marker header.
   **(As built:** the code is voided **before** the write, in the same synchronous step as the
   compare, so two requests racing with the right code cannot both pair, and a failed write leaves
-  it void. The limit applies to every request that reaches the handler, before its body is read,
-  one counter for the route. The body must be `Content-Type: application/json` exactly, at most
-  1 KiB, exactly the two string keys, and a label by the reader's rule with no lone surrogate; a
-  bad body uses no try. A code string that does not normalise to 10 letters of the alphabet (a
+  it void. The limit applies to every request that reaches the handler, counted when it arrives,
+  before its body is read, one counter for the route: it caps requests, not comparisons, and the
+  five tries per code are what bound guessing. The body must be `Content-Type: application/json`
+  exactly, at most 1 KiB, exactly the two string keys, and a label by the shared device label rule
+  (no control character, no Unicode format character, no lone surrogate); a bad body uses no try. A code string that does not normalise to 10 letters of the alphabet (a
   `U`, a short code) uses one try. Under the lock the file is read again and not written when it
   fails the reader, is off for this viewer, no longer names the request's port, `Host` or login,
   already lists 16 devices, or would pass 64 KiB. Every refusal, the failed write included, is the
@@ -287,8 +297,9 @@ listener that is not there. The code is also voided when the entry turns off.)
 before the static route. It returns `{ on, listening, port, host, error, codePending, paired:
 [ids paired since start], refused: { host, funnel, login, path, origin, device, route, pair } }`,
 counts since the viewer started. It never shows a login, a secret or a header value, and it is not
-on the remote allowlist. **(As built:** `paired` keeps the last 16 ids; no label, hash or code is
-shown either.)
+on the remote allowlist. **(As built:** `paired` is a list of `{ device, codeId }`, each device
+paired since start with the identity of the code that paired it, the last 16; the pending code's
+`codeId` is never shown, and no label, hash or code either.)
 
 **Trust basis, stated plainly.**
 
@@ -330,7 +341,10 @@ a `--bg` configuration outlives the switch.
 controls the hub, so the risk is that the exposure is silent. Main keeps the SHA-256 of the
 `enabled`, `host`, `port`, `logins` and `devices` values it last wrote, and stats the file every 5
 seconds. A device the viewer reports in `paired` after a code main asked for is expected, and
-still gets a native notification ("<label> was paired with this Inbox"). Any other difference
+still gets a native notification ("<label> was paired with this Inbox"). **(As built in PR 2b:**
+an expected pairing is one whose `codeId` main itself was given by the code route; any local process
+can make a code, so a pairing that merely follows main's request is not enough. A `paired` entry
+with any other `codeId` is a change outside the app.) Any other difference
 gets a native notification ("Agent Inbox's sharing settings were changed outside the app") and a
 flag on the Settings panel until the owner presses **Review** and confirms or reverts.
 
@@ -523,7 +537,7 @@ sessions do not survive a restart. Keeping the hub awake is a system setting the
 | A route added to `createViewer` later | 403 until classified (a test fails until then) |
 | Pairing: no code pending, a code reused, expired, or after 5 wrong tries; more than 10 tries a minute | 403 |
 | Pairing: a malformed body; a pairing request with a query, a trailing slash or another method; the file not private, off, a newer schema or full (16 devices) when the write is due | 403, the same bare one; the code stays void once matched |
-| Pairing code asked for without the owner token, or remotely | 403; and 409 while the entry is off |
+| Pairing code asked for without the owner token, or remotely | 403; and 409 while the entry is off. Any local process can read the token, so the token limits where the route exists, not who on the hub makes a code; `codeId` tells the app's code from another's |
 | Serve has another path on the host, a raw TCP forward, or Funnel | main turns the entry off and notifies |
 | `remote.json` changed outside the app | native notification and a Settings flag |
 | A connect address outside this tailnet, or not one of the owner's untagged nodes, or a changed node | refused |

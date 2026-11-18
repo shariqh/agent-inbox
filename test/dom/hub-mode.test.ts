@@ -95,21 +95,21 @@ async function walk() {
   await pollTick()
 }
 
-// The scratch database and home folders and the item ids differ from run to run, and Settings'
-// build line names the checkout's commit, or is not drawn at all in a copy with no .git: dropped.
-const steady = (html: string) => html
-  .replace(/<p class="setup-hint">Running from the checkout[^<]*<\/p>/g, '')
-  .replace(/\/(?:private|var|tmp|Users)\/[^\s"<]*/g, '<path>')
-  .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<uuid>')
-
+// A page with no bridge is the local page. (A stored copy of the whole page was compared here at
+// first; it also held the machine's time zone and Setup state, so it failed anywhere else.)
 describe('the page with no agentInboxDesk (a browser, an older app)', () => {
-  it('is exactly the page it was before #617 PR 3c', async () => {
+  it('is the local page: none of hub mode or the connect screens, and Setup is still read and drawn', async () => {
     const { requests, interceptFetch } = recorder()
     await bootApp(seed(), { interceptFetch })
-    expect(steady(document.body.innerHTML)).toMatchSnapshot('boot')
+    expect(brandLine()).toBe('Local workspace')
+    expect(document.getElementById('hubStrip')).toBeNull()
+    expect(visible(reconnecting())).toBe(false)
+    expect(document.querySelector('[inert]')).toBeNull()
     click(document.getElementById('gear'))
     await settle()
-    expect(steady(document.body.innerHTML)).toMatchSnapshot('settings')
+    for (const id of ['connect-settings', 'remote-settings', 'hub-settings-note']) expect(document.getElementById(id), id).toBeNull()
+    // Setup is drawn, from the route hub mode never asks for
+    expect(settingsBody()!.textContent).toMatch(/Everything lands in|Advanced ·/)
     expect([...new Set(requests)].sort()).toMatchSnapshot('requests')
   })
 })

@@ -283,7 +283,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   with the line selected).
 - Where a session runs (#617, PR 1; `activity-and-live.md` has the fields and their patterns): a card's
   second line (`.sc-where`) starts with "machine · desk" (`.sc-place`, from `placeLine` in the pure
-  `public/place.js`), and the session panel's meta line says it too. The panel adds a section
+  `public/place.js`; it shrinks with an ellipsis and its title is the full text), a Quiet row shows it
+  after its caption in the muted meta style, and the session panel's meta line says it too. The panel adds a section
   (`.sp-place`) with "Open in claude.ai", an ordinary `target="_blank"` link made by `textLinkHtml`
   from `claudeSessionUrl`, and "Copy attach command", which copies `tmux attach -t '=<desk>'` through
   `writeClipboard`. Each control exists only for a value that passes its pattern again on the page; a

@@ -126,11 +126,13 @@ omission with `COALESCE`. `desk` and `remote_session` can change or go away, so 
 names them. **(My call:** the owner asked for the re-read on the liveness tick, but the tick must
 stay one call (#45).) A second `unref()` timer runs `refreshPlace`: once before the first
 registration, again 30 seconds later (Remote Control may register just after the server starts),
-then every five minutes. When either value differs from the last one written, it calls
-`setActivityPlace(db, session, { desk, remote_session })`. That is one `UPDATE` that writes the
-exact values, nulls included, with no `COALESCE`, and touches neither `updated_at` nor
-`last_call_at`. A tmux session renamed or closed therefore never leaves a stale name that Open
-desk would attach to.
+then every five minutes. It calls
+`setActivityPlace(db, session, { desk, remote_session })` on every reading and keeps no memory of
+what it wrote. That is one `UPDATE` that writes the given values, nulls included, with no
+`COALESCE`, changes the row only when a value differs, and touches neither `updated_at` nor
+`last_call_at`, so a row the day-old sweep recreated gets its place back. A reading is a value,
+null (cleanly absent) or undefined (the read failed): a failed field is left as stored. A tmux session renamed or closed therefore leaves a stale name for at most five minutes (the
+reading interval), not for good; Open desk must allow for that window.
 
 **Serving.** `listActivity` selects the four columns, and `/api/activity` serves each one only when
 it is set. `/api/version` gains `machine`, the viewer process's own short host name by the same
@@ -613,3 +615,4 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    would change it.
 10. **A laptop build for the proof.** The laptop has no app today, so the laptop half of §7
     step 3 runs on the signed release, after the hub-only half has passed.
+11. **`/api/version`'s `machine` and a session's `machine` can differ** when `AGENT_INBOX_MACHINE` is set only for terminals; PR 4's machine checks must allow for it.

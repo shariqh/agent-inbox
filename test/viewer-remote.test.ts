@@ -291,6 +291,25 @@ describe('step 6: unsafe methods', () => {
   })
 })
 
+describe('step 6: Fetch Metadata on every method', () => {
+  // A later PR has the laptop app add the device header by URL filter, so a no-cors GET from another
+  // page in that session would carry it: Sec-Fetch-Site is checked on safe methods too.
+  it.each([
+    ['GET', 'cross-site'], ['GET', 'same-site'], ['GET', ''], ['GET', 'SAME-SITE'],
+    ['HEAD', 'cross-site'], ['HEAD', 'same-site'], ['OPTIONS', 'cross-site'],
+  ])('%s with Sec-Fetch-Site %j is refused', async (method, site) => {
+    await expectRefused('origin', () => get('/api/items', deviceHeaders(first, [['Sec-Fetch-Site', site]]), method), method)
+  })
+
+  it.each(['GET', 'HEAD'])('%s with a repeated Sec-Fetch-Site is refused', async (method) => {
+    await expectRefused('origin', () => get('/index.html', deviceHeaders(first, [['Sec-Fetch-Site', 'same-origin'], ['Sec-Fetch-Site', 'same-origin']]), method), method)
+  })
+
+  it.each([['GET', 'same-origin'], ['GET', 'none'], ['HEAD', 'same-origin'], ['GET', 'Same-Origin']])('%s with Sec-Fetch-Site %s passes', async (method, site) => {
+    await expectPassed(() => get('/api/items', deviceHeaders(first, [['Sec-Fetch-Site', site]]), method))
+  })
+})
+
 describe('step 7: pairing is not built (PR 2b)', () => {
   it('POST /api/remote/pair is refused like any unlisted route', async () => {
     const pair = (headers: Array<[string, string]>) => rawRequest(port, { method: 'POST', target: '/api/remote/pair', headers, body: '{"code":"7K3QX-9M2PD","label":"laptop"}' })
@@ -378,6 +397,16 @@ describe('step 9: the route', () => {
     ['/api/items/x/resolve/extra'],
   ])('refuses POST %s', async (target) => {
     await expectRefused('route', () => rawRequest(port, { method: 'POST', target, headers: deviceHeaders(first, [['Origin', ORIGIN], ['Sec-Fetch-Site', 'same-origin']]), body: '{}' }))
+  })
+
+  // The static rule is case-sensitive on purpose: /API/setup is not an /api/ path, so the gate lets
+  // it through as a static GET. That is safe because Hono's routing is case-sensitive: no API
+  // handler matches it, and the static handler finds no such file and answers 404.
+  it.each(['/API/setup', '/Api/owner', '/API/items'])('lets %s through as a static path, which answers 404, never an API handler', async (target) => {
+    const response = await expectPassed(() => get(target, deviceHeaders(first)), 404)
+    expect(response.headers['content-type'] ?? '').not.toContain('application/json')
+    expect(response.body).not.toMatch(/"(token|needsYou|agents|build)"/)
+    expect(response.headers['x-agent-inbox-remote-boundary']).toBe('tailnet-v1')
   })
 
   it('remoteRouteAllowed matches a :param to one non-empty segment, and static files only outside /api', () => {

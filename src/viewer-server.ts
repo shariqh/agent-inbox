@@ -3,7 +3,7 @@ import { openDb } from './store.js'
 import { createViewer } from './viewer.js'
 import { startGithubPoller } from './issue-poller.js'
 import { startLocalViewer } from './viewer-network.js'
-import { startRemoteEntry } from './viewer-remote.js'
+import { remoteDir, startRemoteEntry } from './viewer-remote.js'
 import { meshDir } from './mesh-config.js'
 import { meshAgents } from './mesh-agents.js'
 
@@ -20,12 +20,13 @@ const app = createViewer(db, { ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN, 
 startGithubPoller(db)
 
 // #617: the remote entry, off unless remote.json beside the hub database turns it on
-// (src/viewer-remote.ts, docs/architecture/remote-inbox.md). Its app is a second
-// createViewer built with no owner token, so /api/owner does not exist on it;
-// createViewer starts no timers, so building it twice is safe.
+// (src/viewer-remote.ts, docs/architecture/remote-inbox.md). remoteDir() is the database's
+// folder, never AGENT_INBOX_MESH_DIR. Its app is a second createViewer built with no owner
+// token, so /api/owner does not exist on it; createViewer starts no timers, so building it
+// twice is safe. The entry copies the app's routes when it starts: add nothing to it after.
 const remoteApp = createViewer(db, { mesh })
 remoteApp.get('/*', serveStatic({ root: './public' }))
-const remote = startRemoteEntry({ app: remoteApp, dir: meshDir(), viewerPort: port })
+const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port })
 // loopback only, and never on the remote allowlist: counts since start, no login or secret
 app.get('/api/remote-entry', (c) => c.json(remote.status()))
 

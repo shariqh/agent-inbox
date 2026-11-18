@@ -9,7 +9,9 @@ import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
-import { readRemoteSetting, remoteSettingCache, startRemoteEntry } from '../src/viewer-remote.js'
+import { spawnSync } from 'node:child_process'
+import { readRemoteSetting, remoteDir, remoteSettingCache, startRemoteEntry } from '../src/viewer-remote.js'
+import { startLocalViewer } from '../src/viewer-network.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 import { waitUntil } from './wait.js'
@@ -28,6 +30,22 @@ function readValue(value: unknown, mode = 0o600) {
   const dir = scratchDir('remote-setting-')
   return readRemoteSetting(writeSetting(dir, value, mode))
 }
+
+describe('remoteDir: beside the hub database', () => {
+  it('is the folder of AGENT_INBOX_DB, never AGENT_INBOX_MESH_DIR', () => {
+    expect(remoteDir({ AGENT_INBOX_DB: '/x/hub3/inbox.db', AGENT_INBOX_MESH_DIR: '/x/hub2' }, '/home/u')).toBe('/x/hub3')
+    expect(remoteDir({ AGENT_INBOX_DB: '/x/hub3/inbox.db' }, '/home/u')).toBe('/x/hub3')
+  })
+
+  it('is ~/.agent-inbox without AGENT_INBOX_DB, even with AGENT_INBOX_MESH_DIR set', () => {
+    expect(remoteDir({}, '/home/u')).toBe('/home/u/.agent-inbox')
+    expect(remoteDir({ AGENT_INBOX_MESH_DIR: '/x/hub2' }, '/home/u')).toBe('/home/u/.agent-inbox')
+  })
+
+  it('resolves a relative AGENT_INBOX_DB against the working folder', () => {
+    expect(remoteDir({ AGENT_INBOX_DB: 'scratch/inbox.db' }, '/home/u')).toBe(join(process.cwd(), 'scratch'))
+  })
+})
 
 describe('readRemoteSetting: the file', () => {
   it('reads a valid file', () => {
@@ -51,6 +69,17 @@ describe('readRemoteSetting: the file', () => {
     writeFileSync(real, JSON.stringify(setting(4320, [])), { mode: 0o600 })
     symlinkSync(real, join(dir, 'remote.json'))
     expect(readRemoteSetting(join(dir, 'remote.json'))).toEqual({ ok: false, reason: 'not-regular' })
+  })
+
+  it('is off for a file another user owns', () => {
+    const real = process.getuid!()
+    vi.spyOn(process, 'getuid').mockReturnValue(real + 1)
+    expect(readValue(setting(4320, []))).toEqual({ ok: false, reason: 'not-owner' })
+  })
+
+  it('is off where the owner cannot be checked (no getuid)', () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(undefined as unknown as number)
+    expect(readValue(setting(4320, []))).toEqual({ ok: false, reason: 'unsupported' })
   })
 
   it('is off for a folder', () => {
@@ -111,9 +140,10 @@ describe('readRemoteSetting: the fields', () => {
   })
 
   it('lowercases host and refuses a malformed one', () => {
+    for (const host of ['a1.b2.c3', 'hub.example.ts.net', 'x.y1z']) expect(readValue(setting(4320, [], { host })).ok, host).toBe(true)
     const read = readValue(setting(4320, [], { host: 'HUB.Example.TS.net' }))
     expect(read.ok && read.setting.host).toBe(HOST)
-    for (const host of ['hub', 'hub.example.ts.net.', 'hub..ts.net', 'hub.example.ts.net:443', 'https://hub.example.ts.net', 'hub_x.ts.net', '', 7, undefined]) {
+    for (const host of ['127.0.0.1', '10.0.0.1', 'hub.example.123', '1.2.3.4.5', 'hub', 'hub.example.ts.net.', 'hub..ts.net', 'hub.example.ts.net:443', 'https://hub.example.ts.net', 'hub_x.ts.net', '', 7, undefined]) {
       expect(readValue(setting(4320, [], { host })), String(host)).toEqual({ ok: false, reason: 'bad-host' })
     }
   })
@@ -441,5 +471,83 @@ describe('startRemoteEntry: the listener', () => {
       error: expect.stringContaining('other users'),
       refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0 },
     })
+  })
+})
+
+describe('the poll timer', () => {
+  // A child process is the robust proof: it checks what the timer does to a real process, not
+  // how the module happens to make it. Started with the setting off, the process must exit by itself.
+  it('never keeps the viewer process alive', () => {
+    const dir = scratchDir('remote-entry-')
+    writeSetting(dir, setting(4320, [], { enabled: false }))
+    const repo = join(import.meta.dirname, '..')
+    const script = [
+      "import { Hono } from 'hono'",
+      `import { startRemoteEntry } from ${JSON.stringify(join(repo, 'src/viewer-remote.ts'))}`,
+      `startRemoteEntry({ app: new Hono(), dir: ${JSON.stringify(dir)}, viewerPort: 4319, intervalMs: 50 })`,
+      "console.log('started')",
+    ].join('\n')
+    const run = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { cwd: repo, encoding: 'utf8', timeout: 10_000 })
+    expect(run.error, 'the process was still alive after 10 s').toBeUndefined()
+    expect(run.stdout.trim()).toBe('started')
+    expect(run.status).toBe(0)
+  })
+})
+
+describe('an error behind the gate', () => {
+  const MARKER = 'MARKER-7f3a9c'
+
+  function throwingApp(): Hono {
+    const app = new Hono()
+    app.get('/api/items', () => { throw new TypeError(`no item ${MARKER} at /api/items/${MARKER}`) })
+    return app
+  }
+
+  function captureLogs(): string[] {
+    const lines: string[] = []
+    for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+      vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+        lines.push(args.map((arg) => (arg instanceof Error ? `${arg.name}: ${arg.message}\n${arg.stack}` : String(arg))).join(' '))
+      })
+    }
+    return lines
+  }
+
+  it('logs one fixed line with the class name only, and answers a bare 500 with the remote headers', async () => {
+    const dir = scratchDir('remote-entry-')
+    const port = await freePort()
+    const secret = newSecret()
+    writeSetting(dir, setting(port, [device(secret)]))
+    const lines = captureLogs()
+    const entry = startRemoteEntry({ app: throwingApp(), dir, viewerPort: VIEWER_PORT })
+    entries.push(entry)
+    await waitUntil(() => entry.status().listening, 'the entry to listen')
+    const response = await rawRequest(port, { target: '/api/items', headers: deviceHeaders(secret) })
+    expect(response.status).toBe(500)
+    expect(response.body).toBe('Internal Server Error')
+    expect(response.headers['x-agent-inbox-remote-boundary']).toBe('tailnet-v1')
+    expect(response.headers['x-agent-inbox-local-boundary']).toBeUndefined()
+    expect(response.headers['content-security-policy']).toContain("script-src 'self'")
+    expect(lines).toContain('agent-inbox remote entry: a request failed (TypeError)')
+    expect(lines.join('\n')).not.toContain(MARKER)
+    expect(JSON.stringify(response)).not.toContain(MARKER)
+  })
+
+  it('leaves the loopback entry\'s own error behaviour as it was (Hono\'s default)', async () => {
+    const lines = captureLogs()
+    const server = startLocalViewer(throwingApp(), 0)
+    await waitUntil(() => server.listening, 'the loopback viewer')
+    try {
+      const localPort = (server.address() as { port: number }).port
+      const response = await rawRequest(localPort, { target: '/api/items', headers: [['Host', `127.0.0.1:${localPort}`]] })
+      expect(response.status).toBe(500)
+      expect(response.body).toBe('Internal Server Error')
+      expect(response.headers['x-agent-inbox-local-boundary']).toBe('loopback-v1')
+      // Hono's default handler logs the error itself, message included
+      expect(lines.join('\n')).toContain(MARKER)
+      expect(lines.join('\n')).not.toContain('agent-inbox remote entry')
+    } finally {
+      server.close()
+    }
   })
 })

@@ -4,7 +4,8 @@
 // boundary in src/viewer-network.ts, which it does not change.
 //
 // Design: docs/superpowers/specs/2026-11-17-remote-inbox-design.md §3.2; architecture notes in
-// docs/architecture/remote-inbox.md. Off unless `remote.json` beside the hub database turns it on,
+// docs/architecture/remote-inbox.md. Off unless `remote.json` beside the hub database (remoteDir: the folder
+// of AGENT_INBOX_DB, else ~/.agent-inbox; AGENT_INBOX_MESH_DIR does not move it) turns it on,
 // and with no paired device every request is refused. Pairing, the Settings panel and every
 // Tailscale command are PR 2b.
 //
@@ -15,7 +16,8 @@
 import crypto from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import type { IncomingMessage, Server } from 'node:http'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { createAdaptorServer } from '@hono/node-server'
 import type { HttpBindings } from '@hono/node-server'
 import { Hono } from 'hono'
@@ -42,6 +44,16 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const POLL_MS = 5_000
 
 // ── the setting ─────────────────────────────────────────────────────────────
+
+/**
+ * Where `remote.json` lives: the folder of an AGENT_INBOX_DB hub, else `~/.agent-inbox`, so a
+ * viewer only ever opens the entry for the database it serves. Unlike meshDir it never reads
+ * AGENT_INBOX_MESH_DIR. PR 2b's main must name the same file, by this rule or by being told the path.
+ */
+export function remoteDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  const db = env['AGENT_INBOX_DB']
+  return db ? dirname(resolve(db)) : join(home, '.agent-inbox')
+}
 
 export interface RemoteDevice {
   id: string
@@ -112,7 +124,8 @@ function parseSetting(value: unknown): RemoteRead {
   if ((doc['schema'] as number) > REMOTE_SCHEMA) return { ok: false, reason: 'newer-schema' }
 
   const host = typeof doc['host'] === 'string' ? doc['host'].toLowerCase() : ''
-  if (host.length > 253 || !HOST_PATTERN.test(host)) return { ok: false, reason: 'bad-host' }
+  // the last label must hold a letter, so an address such as 127.0.0.1 is never a host
+  if (host.length > 253 || !HOST_PATTERN.test(host) || !/[a-z]/.test(host.slice(host.lastIndexOf('.') + 1))) return { ok: false, reason: 'bad-host' }
 
   const logins = doc['logins']
   if (!Array.isArray(logins) || logins.length < 1 || logins.length > 16 || !logins.every((login) => plainText(login, 254))) {
@@ -231,10 +244,12 @@ export function remoteSettingCache(
 
 /**
  * The routes a paired device may reach, besides static files (any GET outside `/api/`). The rule,
- * the same for every route: a route is refused when it can change the hub's processes or files,
- * hands out a credential, or returns something only useful on the hub (install paths,
- * registration commands, a launch's prompt). Everything else the page uses is the owner's own data
- * shown to the owner's paired device. test/remote-routes.test.ts classifies every route createViewer
+ * the same for every route: a route is ALLOWED only when the page needs it to show or answer the
+ * Inbox. It is REFUSED when it acts on the hub's processes or files, hands out a credential, or
+ * belongs to setup or launching, which only make sense at the hub. GET /api/chats (each chat's
+ * folder, Copilot's automatic titles), GET /api/mesh/agents (endpoint and fix hints) and
+ * GET /api/mesh/agents/runs (a forget command) carry the owner's own hub-side details to the
+ * owner's paired device, by decision. test/remote-routes.test.ts classifies every route createViewer
  * registers, so a new route is refused here and fails that test until someone classifies it.
  */
 export const REMOTE_ROUTES: ReadonlyArray<{ method: 'GET' | 'POST'; path: string }> = [
@@ -350,14 +365,14 @@ export function remoteGate(opts: {
     const origins = headerValues(incoming, 'origin')
     if (origins.length > 1 || (origins.length === 1 && origins[0] !== `https://${setting.host}`)) return refuse('origin')
 
-    // 6. an unsafe method needs that Origin, and Fetch Metadata, when present, same-origin or none
-    //    (never same-site: on a tailnet that is another node's Serve page)
-    if (!SAFE_METHODS.has(c.req.method)) {
-      if (origins.length !== 1) return refuse('origin')
-      const sites = headerValues(incoming, 'sec-fetch-site')
-      const site = sites.length === 1 ? sites[0]!.toLowerCase() : sites.length === 0 ? 'none' : 'repeated'
-      if (site !== 'same-origin' && site !== 'none') return refuse('origin')
-    }
+    // 6. on ANY method, Sec-Fetch-Site, when present, is sent once and is same-origin or none (never
+    //    same-site: on a tailnet that is another node's Serve page). Safe methods too: once the laptop
+    //    app adds the device header by URL filter, a no-cors GET from another page would carry it.
+    //    An unsafe method also needs the Origin.
+    const sites = headerValues(incoming, 'sec-fetch-site')
+    const site = sites.length === 1 ? sites[0]!.toLowerCase() : sites.length === 0 ? 'none' : 'repeated'
+    if (site !== 'same-origin' && site !== 'none') return refuse('origin')
+    if (!SAFE_METHODS.has(c.req.method) && origins.length !== 1) return refuse('origin')
 
     // 7. Pairing (`POST /api/remote/pair`, the one route that passes with the login alone) is PR 2b.
     //    Until then it is not on REMOTE_ROUTES, so it is refused below like any unlisted route.
@@ -382,6 +397,27 @@ export function remoteGate(opts: {
 }
 
 // ── the listener ────────────────────────────────────────────────────────────
+
+/**
+ * The app the listener serves: `gate` first, then `app`'s routes, and an error handler that logs
+ * one fixed line naming only the error's class (a store error can quote ids taken from the path)
+ * and answers a bare 500.
+ */
+export function guardRemoteApp(app: Hono, gate: MiddlewareHandler<{ Bindings: HttpBindings }>): Hono<{ Bindings: HttpBindings }> {
+  const guarded = new Hono<{ Bindings: HttpBindings }>()
+  // The gate must precede route(), as in src/viewer-network.ts: middleware added after the routes
+  // would let Hono match those routes first.
+  guarded.use('*', gate)
+  // Hono copies the app's routes at this call: a route added to `app` afterwards is never served.
+  // PR 2b's pairing route must be registered on this guarded app, after the gate and before this call.
+  guarded.route('/', app as unknown as Hono<{ Bindings: HttpBindings }>)
+  // createViewer sets no onError, so this one handles its errors (Hono's default logs the error itself)
+  guarded.onError((error, c) => {
+    console.error(`agent-inbox remote entry: a request failed (${error.constructor?.name ?? 'Error'})`)
+    return c.text('Internal Server Error', 500)
+  })
+  return guarded
+}
 
 export interface RemoteEntryStatus {
   on: boolean
@@ -420,10 +456,7 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
   const active = (read: RemoteRead): RemoteSetting | null =>
     read.ok && read.setting.enabled && read.setting.viewerPort === opts.viewerPort ? read.setting : null
 
-  const guarded = new Hono<{ Bindings: HttpBindings }>()
-  // The gate must precede app.route(), as in src/viewer-network.ts: middleware added after the
-  // routes would let Hono match those routes first.
-  guarded.use('*', remoteGate({
+  const guarded = guardRemoteApp(opts.app, remoteGate({
     refused,
     setting: (incoming) => {
       const read = cache.current()
@@ -433,7 +466,6 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
       return setting && incoming?.socket.localPort === setting.port ? setting : null
     },
   }))
-  guarded.route('/', opts.app as unknown as Hono<{ Bindings: HttpBindings }>)
 
   function closeServer(): void {
     const current = server

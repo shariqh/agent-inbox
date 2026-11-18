@@ -2,19 +2,23 @@
 // §3.2 "What it serves"). Every route createViewer registers is classified here, allowed or refused,
 // so a route added later fails this file until someone decides which it is.
 //
-// The rule: a route is refused when it can change the hub's processes or files, hands out a
-// credential, or returns something only useful on the hub. Everything else the page uses is the
-// owner's own data shown to the owner's paired device, and is allowed.
+// The rule: a route is ALLOWED only when the page needs it to show or answer the Inbox. It is REFUSED
+// when it acts on the hub's processes or files, hands out a credential, or belongs to setup or
+// launching, which only make sense at the hub. GET /api/chats, GET /api/mesh/agents and
+// GET /api/mesh/agents/runs carry the owner's own hub-side details (a folder path, command hints) to
+// the owner's paired device, by decision.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { Hono } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import type Database from 'better-sqlite3'
 import type { Server } from 'node:http'
 import { openDb } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
-import { REMOTE_ROUTES, startRemoteEntry } from '../src/viewer-remote.js'
+import { REMOTE_ROUTES, guardRemoteApp, startRemoteEntry } from '../src/viewer-remote.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import { scratchDir } from './scratch.js'
 import { waitUntil } from './wait.js'
@@ -24,23 +28,23 @@ const REPO = join(import.meta.dirname, '..')
 
 // Each refused route with the part of the rule that refuses it.
 const REFUSED = new Map<string, string>([
-  ['GET /api/setup', 'install paths, registration commands and runtimes: only useful on the hub'],
+  ['GET /api/setup', 'belongs to setup: install paths, registration commands and runtimes'],
   ['GET /api/owner', 'hands out the owner token, a credential (and is never registered on the remote app)'],
-  ['GET /api/launches', 'driven launches: their folders and processes live on the hub'],
-  ['GET /api/launches/:id', 'one driven launch: its folder and process live on the hub'],
-  ['GET /api/launches/:id/prompt', 'a launch\'s prompt: only useful on the hub'],
-  ['GET /api/launches/:id/events', 'a driven launch\'s event log on the hub'],
-  ['GET /api/launch-folders', 'the hub\'s folders: only useful on the hub'],
-  ['GET /api/launch-asks/:id', 'a driven launch\'s approval ask: answering it runs commands on the hub'],
-  ['GET /api/chats/copilot/:id', 'one chat read from the hub\'s folders, for Continue here on the hub'],
-  ['POST /api/launches/:id/stop', 'changes the hub\'s processes'],
-  ['POST /api/launches/:id/close', 'changes a launch the hub runs'],
-  ['POST /api/launches/:id/interrupt', 'changes the hub\'s processes'],
-  ['POST /api/launches/:id/park', 'changes the hub\'s processes'],
-  ['POST /api/launches/:id/hand-off', 'changes the hub\'s processes'],
-  ['POST /api/launches/:id/hand-off/withdraw', 'changes the hub\'s processes'],
-  ['POST /api/launches/:id/forget', 'deletes log folders on the hub'],
-  ['POST /api/launch-asks/:id/answer', 'approves a command a driven session runs on the hub'],
+  ['GET /api/launches', 'belongs to launching: driven sessions the hub runs'],
+  ['GET /api/launches/:id', 'belongs to launching: one driven session the hub runs'],
+  ['GET /api/launches/:id/prompt', 'belongs to launching: a launch\'s prompt'],
+  ['GET /api/launches/:id/events', 'belongs to launching: a driven session\'s event log'],
+  ['GET /api/launch-folders', 'belongs to launching: the hub\'s folders to start in'],
+  ['GET /api/launch-asks/:id', 'belongs to launching: a driven session\'s approval ask'],
+  ['GET /api/chats/copilot/:id', 'belongs to launching: Continue here starts a driven session on the hub'],
+  ['POST /api/launches/:id/stop', 'acts on the hub\'s processes'],
+  ['POST /api/launches/:id/close', 'acts on a launch the hub runs'],
+  ['POST /api/launches/:id/interrupt', 'acts on the hub\'s processes'],
+  ['POST /api/launches/:id/park', 'acts on the hub\'s processes'],
+  ['POST /api/launches/:id/hand-off', 'acts on the hub\'s processes'],
+  ['POST /api/launches/:id/hand-off/withdraw', 'acts on the hub\'s processes'],
+  ['POST /api/launches/:id/forget', 'acts on the hub\'s files: deletes log folders'],
+  ['POST /api/launch-asks/:id/answer', 'acts on the hub\'s processes: approves a command a driven session runs'],
 ])
 
 describe('REMOTE_ROUTES', () => {
@@ -99,7 +103,87 @@ describe('REMOTE_ROUTES', () => {
   })
 })
 
+// The gate allows by concrete path, but the classification above is by registered pattern. So for
+// every allowed pattern, check what Hono would actually run for a concrete path, on the app as the
+// entry wraps it: the gate, createViewer's own wildcard middleware, the one handler registered with
+// that pattern and method, and (for GET) the static handler after it. A broader route registered
+// anywhere (`/api/items/:id/:action`, `/api/boards/*`) shows up here and fails.
+type RouteRecord = { method: string; path: string; handler: unknown }
+
+function runChain(app: Hono<never>, method: string, path: string): RouteRecord[] {
+  const [matched] = app.router.match(method, path) as unknown as [Array<[[unknown, RouteRecord], unknown]>]
+  return matched.map(([[, route]]) => route)
+}
+
+const samplePath = (pattern: string) => pattern.replace(/:[A-Za-z]+/g, 'sample0')
+
+function chainProblems(app: Hono, gate: MiddlewareHandler): string[] {
+  const guarded = guardRemoteApp(app, gate) as unknown as Hono<never>
+  const problems: string[] = []
+  for (const route of REMOTE_ROUTES) {
+    const chain = runChain(guarded, route.method, samplePath(route.path))
+    const expected = [
+      'ALL /*', // the gate
+      'ALL /*', // createViewer's x-inbox-boot middleware
+      `${route.method} ${route.path}`,
+      ...(route.method === 'GET' ? ['GET /*'] : []), // the static files, reached only if the handler passes on
+    ]
+    const got = chain.map((r) => `${r.method} ${r.path}`)
+    if (JSON.stringify(got) !== JSON.stringify(expected)) problems.push(`${route.method} ${route.path}: ${got.join(', ')}`)
+    else if (chain[0]!.handler !== gate) problems.push(`${route.method} ${route.path}: the gate does not run first`)
+  }
+  return problems
+}
+
+describe('what Hono runs for each allowed path', () => {
+  let db: Database.Database
+  let dir: string
+  const gate: MiddlewareHandler = async (_c, next) => { await next() }
+
+  beforeAll(() => {
+    dir = scratchDir('remote-routes-')
+    db = openDb(join(dir, 'inbox.db'))
+  })
+  afterAll(() => db.close())
+
+  // built as src/viewer-server.ts builds it
+  const remoteApp = () => {
+    const app = createViewer(db, { agentHome: dir, runtimeRoot: join(dir, 'runtime') })
+    app.get('/*', serveStatic({ root: './public' }))
+    return app
+  }
+
+  it('is exactly the gate, the wildcard middleware and the route\'s own handler', () => {
+    expect(chainProblems(remoteApp(), gate)).toEqual([])
+  })
+
+  it('catches a broader route registered before the specific ones', () => {
+    const scratch = new Hono()
+    scratch.post('/api/items/:id/:action', (c) => c.text('broad'))
+    scratch.route('/', remoteApp())
+    expect(chainProblems(scratch, gate)).toContain('POST /api/items/:id/resolve: ALL /*, POST /api/items/:id/:action, ALL /*, POST /api/items/:id/resolve')
+  })
+
+  it('catches a wildcard registered after them, with app.on', () => {
+    const app = remoteApp()
+    app.on(['GET', 'POST'], '/api/boards/*', (c) => c.text('broad'))
+    expect(chainProblems(app, gate).some((problem) => problem.startsWith('POST /api/boards/:id/archive'))).toBe(true)
+  })
+})
+
 describe('the remote app', () => {
+  it('is built in src/viewer-server.ts with no owner token, one static route, then the entry, and nothing after', () => {
+    const server = readFileSync(join(REPO, 'src/viewer-server.ts'), 'utf8')
+    expect(server).toContain([
+      'const remoteApp = createViewer(db, { mesh })',
+      "remoteApp.get('/*', serveStatic({ root: './public' }))",
+      'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port })',
+    ].join('\n'))
+    // Hono copies the routes when the entry wraps the app: anything added to it later is never served
+    expect(server.match(/\bremoteApp\b/g)).toHaveLength(3)
+    expect(server).not.toMatch(/meshDir\(\)[^\n]*startRemoteEntry|startRemoteEntry[^\n]*meshDir/)
+  })
+
   it('has no /api/owner: src/viewer-server.ts builds it with no owner token', () => {
     const dir = scratchDir('remote-routes-')
     const db = openDb(join(dir, 'inbox.db'))
@@ -114,7 +198,6 @@ describe('the remote app', () => {
     const remote = /const remoteApp = createViewer\(db, (\{[^}]*\})\)/.exec(server)
     expect(remote, 'viewer-server.ts builds the remote app with createViewer(db, {...})').not.toBeNull()
     expect(remote![1]).not.toMatch(/owner/i)
-    expect(server).toMatch(/startRemoteEntry\(\{ app: remoteApp, dir: meshDir\(\), viewerPort: port \}\)/)
   })
 
   describe('over the real listener', () => {

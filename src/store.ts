@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import type { ServerSource } from './server-source.js'
 import { isReservedProject } from '../public/reserved-projects.js'
+import { PLACE_NAME, PLACE_PANE, PLACE_REMOTE_SESSION } from '../public/place.js'
 
 export type Kind = 'question' | 'note' | 'done'
 export type Status = 'open' | 'resolved' | 'dismissed'
@@ -818,6 +819,7 @@ function runMigrations(db: Database.Database): void {
   // Code Remote Control id. `machine` and `pane` ride the presence upsert, kept on omission
   // like the build; `desk` and `remote_session` change or go away, so only setActivityPlace
   // writes them. NULL on every row an older server writes: its statements never name them.
+  // Nothing here checks a value: the writer does before it writes, and listActivity before it serves.
   ensureColumn(db, 'activity', 'machine', 'TEXT')
   ensureColumn(db, 'activity', 'desk', 'TEXT')
   ensureColumn(db, 'activity', 'pane', 'TEXT')
@@ -3553,8 +3555,9 @@ export interface Activity {
   host_tool_at?: string
   /**
    * Issue #617 — where the session runs: the machine, its tmux session (desk) and pane, and
-   * the Claude Code Remote Control id. Each is served only while set, and only a value its
-   * writer checked against its pattern (src/session-place.ts) is ever stored.
+   * the Claude Code Remote Control id. Each is served only while set AND matching its pattern
+   * (src/session-place.ts). The store checks nothing on write: the product's writer checks
+   * before it writes, and `listActivity` checks again before it serves.
    */
   machine?: string
   desk?: string
@@ -3706,13 +3709,26 @@ export function endActivity(db: Database.Database, session: string): void {
 
 // Issue #617 — the two place values that can change or go away while a session runs: its tmux
 // session name and its Remote Control id. One UPDATE that writes EXACTLY what it is given, nulls
-// included (no COALESCE), so a tmux session that was renamed or closed never leaves a stale name.
-// It names no other column: never `updated_at` (liveness), `last_call_at`, a claim or a span, so a
-// place re-read can neither keep a session listed nor revive a cold claim (#45). Returns whether
-// a live row took it: a reading made before the session registered is written by a later call.
-export function setActivityPlace(db: Database.Database, session: string, place: { desk: string | null; remote_session: string | null }): boolean {
-  return db.prepare(`UPDATE activity SET desk = ?, remote_session = ? WHERE session = ? AND ended_at IS NULL`)
-    .run(place.desk, place.remote_session, session).changes > 0
+// included (no COALESCE), so a renamed or closed tmux session is cleared at the next reading. A
+// field that is undefined is left as stored: it is a read that failed, which says nothing. The
+// UPDATE matches only a live row where a given value differs (`IS NOT` treats NULL as a value), so
+// a reading equal to the stored place writes nothing, and a row that was swept and recreated with
+// nulls gets its place back from the same reading. It names no other column: never `updated_at`
+// (liveness), `last_call_at`, a claim or a span, so a place re-read can neither keep a session
+// listed nor revive a cold claim (#45). Returns whether it changed the row.
+export function setActivityPlace(db: Database.Database, session: string, place: { desk?: string | null; remote_session?: string | null }): boolean {
+  const setDesk = place.desk !== undefined ? 1 : 0
+  const setRemote = place.remote_session !== undefined ? 1 : 0
+  if (!setDesk && !setRemote) return false
+  return db.prepare(
+    `UPDATE activity SET
+       desk = CASE WHEN @set_desk = 1 THEN @desk ELSE desk END,
+       remote_session = CASE WHEN @set_remote = 1 THEN @remote_session ELSE remote_session END
+     WHERE session = @session AND ended_at IS NULL
+       AND ((@set_desk = 1 AND desk IS NOT @desk) OR (@set_remote = 1 AND remote_session IS NOT @remote_session))`,
+  ).run({
+    session, set_desk: setDesk, set_remote: setRemote, desk: place.desk ?? null, remote_session: place.remote_session ?? null,
+  }).changes > 0
 }
 
 // heartbeat: keep a live session's row from going stale without changing it.
@@ -3877,10 +3893,11 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       ...(host_turn_at ? { host_turn_at } : {}),
       ...(host_idle_at ? { host_idle_at } : {}),
       ...(host_tool_at ? { host_tool_at } : {}),
-      ...(machine ? { machine } : {}),
-      ...(desk ? { desk } : {}),
-      ...(pane ? { pane } : {}),
-      ...(remote_session ? { remote_session } : {}),
+      // a stored value that fails its pattern is left out, as if it were null: the store checks nothing on write
+      ...(machine && PLACE_NAME.test(machine) ? { machine } : {}),
+      ...(desk && PLACE_NAME.test(desk) ? { desk } : {}),
+      ...(pane && PLACE_PANE.test(pane) ? { pane } : {}),
+      ...(remote_session && PLACE_REMOTE_SESSION.test(remote_session) ? { remote_session } : {}),
       ...(push_wake === 1 ? { push_wake: true as const } : {}),
       ...(wakes === 1 ? { wakes: true as const } : {}),
       ...(driven === 1 ? { driven: true as const } : {}),

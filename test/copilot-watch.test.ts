@@ -20,6 +20,7 @@ import type { EventEmitter } from 'node:events'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { buildMcpServer } from '../src/mcp.js'
+import { quietPlace } from './quiet-place.js'
 import { scratchDir } from './scratch.js'
 
 const AGENT = { project: 'agent-inbox', stream: 'main', agent: 'copilot' } as const
@@ -485,7 +486,7 @@ describe('Copilot watch contracts size their wait (#217)', () => {
     const db = fresh()
     const events: EventEmitter = process
     const listeners = new Map((['exit', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const).map((signal) => [signal, events.listeners(signal)]))
-    const server = buildMcpServer(db, process.cwd())
+    const server = buildMcpServer(db, process.cwd(), { place: quietPlace })
     const client = new Client({ name: 'copilot', version: 'test' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const call = async (name: string, args: Record<string, unknown>) => {
@@ -654,7 +655,7 @@ describe('Copilot message watch (#477)', () => {
     const db = fresh()
     const events: EventEmitter = process
     const listeners = new Map((['exit', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const).map((signal) => [signal, events.listeners(signal)]))
-    const server = buildMcpServer(db, process.cwd())
+    const server = buildMcpServer(db, process.cwd(), { place: quietPlace })
     const client = new Client({ name: 'copilot', version: 'test' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const call = async (tool: string, args: Record<string, unknown> = {}) =>
@@ -698,7 +699,7 @@ describe('Copilot message watch (#477)', () => {
     const events: EventEmitter = process
     const listeners = new Map((['exit', 'SIGHUP', 'SIGINT', 'SIGTERM'] as const).map((signal) => [signal, events.listeners(signal)]))
     const connect = async (name: string) => {
-      const server = buildMcpServer(db, process.cwd())
+      const server = buildMcpServer(db, process.cwd(), { place: quietPlace })
       const client = new Client({ name, version: 'test' })
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
       await server.connect(serverTransport)

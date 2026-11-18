@@ -794,6 +794,11 @@ function setupRuntimeRoot(): string {
 
 export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono {
   const app = new Hono()
+  // #617: which machine this hub is, read once when the viewer starts by the rule each session's
+  // server uses at its own start (AGENT_INBOX_MACHINE, else the host name up to its first dot), so
+  // the two agree until the environment changes; an older viewer sends none
+  const { machine } = readPlace(process.env)
+  const where = machine ? { machine } : {}
   const bakedPath = opts.setupInfoPath ?? resolve(process.cwd(), 'setup-info.json')
   const stamp = opts.stamp ?? buildStamp
   const runtimeHostKey = opts.runtimeHostKey ?? `${process.platform}-${process.arch}`
@@ -1015,9 +1020,6 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const hosts = { claude: hostVersion(registered.claude), copilot: hostVersion(registered.copilot) }
     const meshKey = opts.mesh?.version()
     const mesh = meshKey ? { mesh: meshKey } : {}
-    // #617: which machine this hub is, by the rule a session's machine follows; an older viewer sends none
-    const { machine } = readPlace(process.env)
-    const where = machine ? { machine } : {}
     if (baked?.schema !== 2) {
       return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts, ...where, ...mesh } satisfies AgentVersion)
     }

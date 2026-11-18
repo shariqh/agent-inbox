@@ -6,6 +6,9 @@ export interface PlaceRow {
   remote_session?: string | null
   [key: string]: unknown
 }
+export const PLACE_NAME: RegExp
+export const PLACE_PANE: RegExp
+export const PLACE_REMOTE_SESSION: RegExp
 export function placeLine(row: PlaceRow | null | undefined): string
 export function claudeSessionUrl(row: PlaceRow | null | undefined): string
 export function attachCommand(row: PlaceRow | null | undefined): string

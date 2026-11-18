@@ -1665,6 +1665,33 @@ describe('live activity — where a session runs (#617)', () => {
     expect(stamps()).toEqual(before)
   })
 
+  it('setActivityPlace changes the row only when a value differs, and says whether it did', () => {
+    register(PLACE)
+    expect(setActivityPlace(db, 's1', { desk: null, remote_session: null })).toBe(false) // nothing to change
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: null })).toBe(true)
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: null })).toBe(false)
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })).toBe(true)
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })).toBe(false)
+    expect(setActivityPlace(db, 's1', { desk: null, remote_session: 'session_abc' })).toBe(true)
+    expect(Object.keys(row())).not.toContain('desk')
+    // it is one statement that skips an unchanged row, so an unchanged reading writes nothing
+    const source = readFileSync(new URL('../src/store.ts', import.meta.url), 'utf8')
+    expect(source.slice(source.indexOf('export function setActivityPlace'), source.indexOf('// heartbeat: keep a live'))).toMatch(/IS NOT/)
+  })
+
+  it('setActivityPlace leaves a field alone when it is undefined (a failed read), and still writes the other', () => {
+    register(PLACE)
+    setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })
+    expect(setActivityPlace(db, 's1', { desk: undefined, remote_session: null })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api' })
+    expect(Object.keys(row())).not.toContain('remote_session')
+    expect(setActivityPlace(db, 's1', { desk: undefined, remote_session: undefined })).toBe(false)
+    expect(setActivityPlace(db, 's1', { remote_session: 'session_def' })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api', remote_session: 'session_def' })
+    expect(setActivityPlace(db, 's1', { desk: 'api2' })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api2', remote_session: 'session_def' })
+  })
+
   it('setActivityPlace touches no claim, no span and no other session, and says when there was no row', () => {
     register(PLACE)
     register(PLACE, 'other')

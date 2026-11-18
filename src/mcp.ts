@@ -4,7 +4,6 @@ import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
 import { insertItem, isHandoffInput, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, setActivityPlace, MESSAGE_MAX_OUTCOME, closeRequest, fileRequest, listSessionRequests, markAcksDelivered, openAgentRequest, updateRequest, getItem, isDrivenSession, messageWatchRunning } from './store.js'
 import { isReservedProject } from '../public/reserved-projects.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
@@ -19,7 +18,8 @@ import type { WatchedAsk } from './watch.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { detectServerSource } from './server-source.js'
 import { inferAgent, inferProcessArgs } from './infer.js'
-import { readDesk, readPlace, readRemoteSession, startPlaceRefresh } from './session-place.js'
+import { realPlaceSource, startPlaceRefresh } from './session-place.js'
+import type { PlaceSource } from './session-place.js'
 import { CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS, CHANNEL_METHOD, namesChannel, startChannelPush } from './channel.js'
 
 // The 5-minute liveness tick, hoisted OUT of its setInterval callback on purpose
@@ -55,7 +55,12 @@ function normalizeIssue(value: string, sessionRepo: string | null): IssueLink | 
   throw new Error(`issue "${value}" ${why}. Accepted forms: ${ISSUE_FORMS}`)
 }
 
-export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
+export interface McpServerOptions {
+  /** Where the session's place is read from (#617); the real tmux and home by default. A test passes readers that touch nothing. */
+  place?: PlaceSource
+}
+
+export function buildMcpServer(db: Database.Database, cwd: string, options: McpServerOptions = {}): McpServer {
   // Issue #411 (channels, research preview): declare Claude Code's
   // `claude/channel` capability, with instructions saying what an event means.
   // Only Claude Code clients are told (see the initialize handler below).
@@ -127,7 +132,8 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // away, so the upsert never names them: placeRefresh below re-reads them on a timer of its own
   // and writes them with setActivityPlace, which touches no stamp. (Not the liveness tick, which
   // must stay one call.)
-  const where = readPlace(process.env)
+  const source = options.place ?? realPlaceSource()
+  const where = source.place
   const place = () => where
   // Issue #411 (channels) — for a Claude Code client only: push a notice for
   // each new message to this session, and say in presence whether Claude Code
@@ -162,10 +168,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // Reads once now, again 30 seconds later (Remote Control may register just after the server
   // starts), then every five minutes, and writes only a changed value. The Remote Control id is
   // read for a Claude Code host only, and the agent is known only after the handshake.
+  // A reading is a value, null (cleanly absent) or undefined (the read failed: the stored value stays).
   const placeRefresh = startPlaceRefresh(
     async () => ({
-      desk: where.pane ? await readDesk(where.pane) : null,
-      remote_session: isClaude(clientName()) ? readRemoteSession(homedir(), process.ppid) : null,
+      desk: where.pane ? await source.desk(where.pane) : null,
+      remote_session: isClaude(clientName()) ? source.remoteSession(process.ppid) : null,
     }),
     (live) => setActivityPlace(db, sessionId, live),
   )

@@ -3,15 +3,22 @@
 // src/session-place.ts is the one place a machine, a tmux session name, a tmux
 // pane and a Remote Control id are read and checked. The PATTERNS ARE THE SAFETY:
 // a later change hands a stored `desk` to a shell, so a value that fails its
-// pattern is never stored, and is never trimmed or cut to fit. Every fixture here
-// is synthetic: no real host, folder or session id.
+// pattern is never stored by the product's writer, and is never trimmed or cut to
+// fit. Every fixture here is synthetic: no real host, folder or session id.
+//
+// A reading has three answers: a value, null ("absent": the thing is cleanly not
+// there) and undefined ("failed": the read itself did not work, so nothing is known
+// and the stored value must stay). See readDesk and readRemoteSession.
+//
+// Not tested: the owner check in readRemoteSession (`st_uid` must be this user's).
+// A file owned by another user cannot be made without another user, or root.
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readDesk, readPlace, readRemoteSession, startPlaceRefresh } from '../src/session-place.js'
-import type { PlaceLive } from '../src/session-place.js'
-import { openDb, setActivityPlace, upsertActivity } from '../src/store.js'
+import type { PlaceReading } from '../src/session-place.js'
+import { listActivity, openDb, setActivityPlace, upsertActivity } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -59,9 +66,13 @@ describe('readPlace: machine and pane, read once at start', () => {
   })
 })
 
+
 describe('readDesk: the tmux session name of a pane', () => {
   const env = { TMUX: '/private/tmp/tmux-501/default,123,0', TMUX_PANE: '%3' }
-  const runner = (out: string) => vi.fn(async (_file: string, _args: string[], _opts: { timeout: number; maxBuffer: number }) => out)
+  type Run = (file: string, args: string[], opts: { timeout: number; maxBuffer: number }) => Promise<string>
+  const runner = (out: string) => vi.fn<Run>(async () => out)
+  const rejecting = (error: unknown) => vi.fn<Run>(async () => { throw error })
+  const exited = (stderr: string, code = 1) => Object.assign(new Error(`Command failed: tmux\n${stderr}`), { code, stderr })
 
   it('asks tmux with an argument list, a one second timeout and a 1 KiB buffer', async () => {
     const run = runner('work\n')
@@ -75,7 +86,7 @@ describe('readDesk: the tmux session name of a pane', () => {
     expect(await readDesk('%3', { env, run: runner('api') })).toBe('api')
   })
 
-  it('refuses a hostile name instead of fixing it', async () => {
+  it('answers absent (null), not failed, for a hostile name: the real name is one we will not store, so the stored one is stale', async () => {
     const hostile = [
       'my desk', "it's", '"q"', '$(id)', '`id`', 'a;b', 'a&b', 'a|b', 'a>b', '*', '-t', '--help', '-x', '.hidden', '..', '.',
       `${NAME_64}c`, 'a'.repeat(65), '', '\n', 'a\nb', 'a\n\n', ' a', 'a ', '\ta', 'a\r', 'é', 'a\u0000b', 'a\\b', 'a/b', '=a', '%1',
@@ -83,7 +94,7 @@ describe('readDesk: the tmux session name of a pane', () => {
     for (const name of hostile) expect(await readDesk('%3', { env, run: runner(`${name}\n`) }), JSON.stringify(name)).toBeNull()
   })
 
-  it('runs only when TMUX is set and the pane is valid', async () => {
+  it('answers absent (null) with no TMUX or a bad pane, and never runs tmux', async () => {
     const run = runner('work\n')
     expect(await readDesk('%3', { env: { TMUX_PANE: '%3' }, run })).toBeNull()
     expect(await readDesk('%3', { env: { TMUX: '', TMUX_PANE: '%3' }, run })).toBeNull()
@@ -92,8 +103,23 @@ describe('readDesk: the tmux session name of a pane', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
-  it('answers null when the runner fails', async () => {
-    expect(await readDesk('%3', { env, run: async () => { throw new Error('spawn tmux ENOENT') } })).toBeNull()
+  it('answers absent (null) when tmux ran and says there is no such pane, session or server, or is not installed', async () => {
+    for (const stderr of ["can't find pane: %3", "can't find session: api", "can't find window: 2", 'no server running on /private/tmp/tmux-501/default',
+      'error connecting to /private/tmp/tmux-501/default (No such file or directory)', 'no current client']) {
+      expect(await readDesk('%3', { env, run: rejecting(exited(`${stderr}\n`)) }), stderr).toBeNull()
+    }
+    expect(await readDesk('%3', { env, run: rejecting(Object.assign(new Error('spawn tmux ENOENT'), { code: 'ENOENT' })) })).toBeNull()
+  })
+
+  it('answers failed (undefined) for anything else, so the refresh keeps what it stored: an unexplained exit, a timeout, a signal, too much output', async () => {
+    const failures = [
+      exited(''), exited('server exited unexpectedly'), exited('', 2),
+      Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM', code: null }),
+      Object.assign(new RangeError('stdout maxBuffer length exceeded'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }),
+      Object.assign(new Error('spawn tmux EAGAIN'), { code: 'EAGAIN' }),
+      new Error('boom'), 'a string', null,
+    ]
+    for (const error of failures) expect(await readDesk('%3', { env, run: rejecting(error) }), String(error)).toBeUndefined()
   })
 
   describe('with a stand-in tmux program on PATH, never a real tmux server', () => {
@@ -128,23 +154,25 @@ describe('readDesk: the tmux session name of a pane', () => {
       expect(await readDesk('%3', { env })).toBeNull()
     })
 
-    it('answers null when tmux exits with an error', async () => {
-      fake('echo work; exit 1')
+    it('answers null when tmux says there is no such pane, and undefined for an unexplained error', async () => {
+      fake(`echo "can't find pane: %3" >&2; exit 1`)
       expect(await readDesk('%3', { env })).toBeNull()
+      fake('echo work; exit 1')
+      expect(await readDesk('%3', { env })).toBeUndefined()
     })
 
-    it('answers null after the one second timeout, when tmux hangs', async () => {
+    it('answers undefined after the one second timeout, when tmux hangs', async () => {
       fake('exec /bin/sleep 5')
       const started = Date.now()
-      expect(await readDesk('%3', { env })).toBeNull()
+      expect(await readDesk('%3', { env })).toBeUndefined()
       // it waited for the timeout (and no longer), not for the program or an early failure
       expect(Date.now() - started).toBeGreaterThanOrEqual(900)
       expect(Date.now() - started).toBeLessThan(4000)
     })
 
-    it('answers null when tmux prints more than 1 KiB', async () => {
+    it('answers undefined when tmux prints more than 1 KiB', async () => {
       fake('i=0; while [ $i -lt 2000 ]; do printf a; i=$((i+1)); done; echo')
-      expect(await readDesk('%3', { env })).toBeNull()
+      expect(await readDesk('%3', { env })).toBeUndefined()
     })
   })
 })
@@ -170,13 +198,13 @@ describe('readRemoteSession: the Remote Control id in the host’s live file', (
     expect(readRemoteSession(home, PID)).toBe(ID)
   })
 
-  it('answers null with no file, no folder and no home', () => {
+  it('answers absent (null) with no file, no folder and no home', () => {
     expect(readRemoteSession(home, PID)).toBeNull()
     expect(readRemoteSession(join(home, 'nowhere'), PID)).toBeNull()
     expect(readRemoteSession('', PID)).toBeNull()
   })
 
-  it('answers null when the file has no id, or one that is not a string', () => {
+  it('answers absent (null) when the file has no id, or one that is not a string', () => {
     for (const doc of [{ pid: PID }, { pid: PID, bridgeSessionId: null }, { pid: PID, bridgeSessionId: 42 }, { pid: PID, bridgeSessionId: [ID] }, { pid: PID, bridgeSessionId: { id: ID } }]) {
       live(doc)
       expect(readRemoteSession(home, PID), JSON.stringify(doc)).toBeNull()
@@ -196,7 +224,7 @@ describe('readRemoteSession: the Remote Control id in the host’s live file', (
     }
   })
 
-  it('answers null when the file’s own pid is not the host’s', () => {
+  it('answers absent (null) when the file’s own pid is not the host’s', () => {
     live({ pid: PID + 1, bridgeSessionId: ID })
     expect(readRemoteSession(home, PID)).toBeNull()
     for (const pid of ['4242', null, undefined, 4242.5]) {
@@ -209,14 +237,27 @@ describe('readRemoteSession: the Remote Control id in the host’s live file', (
     expect(readRemoteSession(home, PID)).toBeNull()
   })
 
-  it('never follows a symbolic link, to a good file or anywhere else', () => {
+  it('never follows a symbolic link as the file itself, to a good file or anywhere else', () => {
     const real = join(home, 'elsewhere.json')
     writeFileSync(real, JSON.stringify({ pid: PID, bridgeSessionId: ID }))
     symlinkSync(real, join(sessions, `${PID}.json`))
     expect(readRemoteSession(home, PID)).toBeNull()
   })
 
-  it('answers null for a file that is not a regular file', () => {
+  it('follows a symbolic link in a folder above the file: O_NOFOLLOW covers the last component only, and the pid check still holds', () => {
+    const real = join(home, 'real-sessions')
+    mkdirSync(real)
+    writeFileSync(join(real, `${PID}.json`), JSON.stringify({ pid: PID, bridgeSessionId: ID }))
+    writeFileSync(join(real, '9.json'), JSON.stringify({ pid: PID, bridgeSessionId: ID }))
+    const linked = scratchDir('place-linked-home-')
+    mkdirSync(join(linked, '.claude'))
+    symlinkSync(real, join(linked, '.claude', 'sessions'))
+    expect(readRemoteSession(linked, PID)).toBe(ID)
+    // a file whose own pid is not the name's is refused wherever the folder points
+    expect(readRemoteSession(linked, 9)).toBeNull()
+  })
+
+  it('answers absent (null) for a file that is not a regular file', () => {
     mkdirSync(join(sessions, `${PID}.json`))
     expect(readRemoteSession(home, PID)).toBeNull()
     // a named pipe is neither opened for long nor read
@@ -224,7 +265,7 @@ describe('readRemoteSession: the Remote Control id in the host’s live file', (
     expect(readRemoteSession(home, 77)).toBeNull()
   })
 
-  it('reads at most 16 KiB: a good document of that size passes, one byte more does not', () => {
+  it('reads at most 16 KiB: a good document of that size passes, one byte more is absent', () => {
     const doc = JSON.stringify({ pid: PID, bridgeSessionId: ID })
     live(doc + ' '.repeat(16 * 1024 - doc.length))
     expect(readRemoteSession(home, PID)).toBe(ID)
@@ -234,29 +275,44 @@ describe('readRemoteSession: the Remote Control id in the host’s live file', (
     expect(readRemoteSession(home, PID)).toBeNull()
   })
 
-  it('answers null for text that is not one JSON object', () => {
-    for (const text of ['', 'not json', '[]', 'null', '42', '"session_a"', `[{"pid":${PID},"bridgeSessionId":"${ID}"}]`, `{"pid":${PID},"bridgeSessionId":"${ID}"`]) {
+  it('answers failed (undefined) for a file caught mid-rewrite: empty, or partial JSON', () => {
+    for (const text of ['', ' ', '{', `{"pid":${PID},"bridgeSessionId":"${ID}"`, `{"pid":${PID},"bridgeSessionId":"sess`, 'not json']) {
+      live(text)
+      expect(readRemoteSession(home, PID), JSON.stringify(text)).toBeUndefined()
+    }
+  })
+
+  it('answers failed (undefined) for a file it cannot read, and absent for JSON that is complete but not an object', () => {
+    const file = live({ pid: PID, bridgeSessionId: ID })
+    chmodSync(file, 0o000)
+    try {
+      // running as root would read it anyway: then the read simply works
+      expect([undefined, ID]).toContain(readRemoteSession(home, PID))
+    } finally {
+      chmodSync(file, 0o600)
+    }
+    for (const text of ['[]', 'null', '42', '"session_a"', `[{"pid":${PID},"bridgeSessionId":"${ID}"}]`]) {
       live(text)
       expect(readRemoteSession(home, PID), text).toBeNull()
     }
   })
 
-  it('answers null for a pid that cannot name a process, without reading anything', () => {
+  it('answers absent (null) for a pid that cannot name a process, without reading anything', () => {
     live({ pid: 0, bridgeSessionId: ID }, 0)
     for (const pid of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) expect(readRemoteSession(home, pid), String(pid)).toBeNull()
   })
 })
 
-describe('startPlaceRefresh: its own timer, and a write only on a change', () => {
-  const none: PlaceLive = { desk: null, remote_session: null }
-  const live = (desk: string | null, remote_session: string | null = null): PlaceLive => ({ desk, remote_session })
+describe('startPlaceRefresh: its own timer, and every reading written (SQL decides whether it changed)', () => {
+  const none: PlaceReading = { desk: null, remote_session: null }
+  const reading = (desk: string | null | undefined, ...rest: [remote_session?: string | null | undefined]): PlaceReading => ({ desk, remote_session: rest.length ? rest[0] : null })
   const tick = async (ms: number) => { await vi.advanceTimersByTimeAsync(ms) }
 
-  function setup(first: PlaceLive = none, rowThere = true) {
+  function setup(first: PlaceReading = none) {
     vi.useFakeTimers()
-    const state = { value: first, rowThere }
+    const state = { value: first }
     const read = vi.fn(async () => state.value)
-    const write = vi.fn((_: PlaceLive) => state.rowThere)
+    const write = vi.fn((_: PlaceReading) => true)
     return { state, read, write, refresh: startPlaceRefresh(read, write) }
   }
 
@@ -276,58 +332,45 @@ describe('startPlaceRefresh: its own timer, and a write only on a change', () =>
     expect(read).toHaveBeenCalledTimes(4)
   })
 
-  it('writes the first reading, then only when a value differs from the last one written', async () => {
-    const { state, write } = setup(live('api', 'session_a'))
+  it('hands every reading to the writer, changed or not, nulls included: it keeps no memory of what it wrote', async () => {
+    const { state, write } = setup(reading('api', 'session_a'))
     await tick(0)
     expect(write).toHaveBeenCalledTimes(1)
     expect(write).toHaveBeenLastCalledWith({ desk: 'api', remote_session: 'session_a' })
     await tick(30_000)
     await tick(5 * 60_000)
-    expect(write).toHaveBeenCalledTimes(1)
-    state.value = live('api2', 'session_a')
-    await tick(5 * 60_000)
-    expect(write).toHaveBeenCalledTimes(2)
-    expect(write).toHaveBeenLastCalledWith({ desk: 'api2', remote_session: 'session_a' })
-    // a name gone away is a write of nulls, not a kept name
+    expect(write).toHaveBeenCalledTimes(3)
+    expect(write).toHaveBeenLastCalledWith({ desk: 'api', remote_session: 'session_a' })
     state.value = none
     await tick(5 * 60_000)
-    expect(write).toHaveBeenCalledTimes(3)
     expect(write).toHaveBeenLastCalledWith(none)
-    state.value = live(null, 'session_b')
-    await tick(5 * 60_000)
-    expect(write).toHaveBeenLastCalledWith(live(null, 'session_b'))
   })
 
-  it('writes nothing for a session that has neither value and never had one', async () => {
-    const { write } = setup(none)
+  it('passes a failed field (undefined) on as it is, so the writer keeps the stored value, and the other field still goes', async () => {
+    const { state, write } = setup(reading(undefined, 'session_a'))
     await tick(0)
+    expect(write).toHaveBeenLastCalledWith({ desk: undefined, remote_session: 'session_a' })
+    state.value = reading('api', undefined)
     await tick(30_000)
-    expect(write).not.toHaveBeenCalled()
+    expect(write).toHaveBeenLastCalledWith({ desk: 'api', remote_session: undefined })
   })
 
-  it('keeps a reading the row was not there for, and writes it when the row exists (flush)', async () => {
-    const { state, write, refresh } = setup(live('api'), false)
+  it('flush writes the latest reading again (the row may not have existed the first time), and has nothing before the first reading', async () => {
+    const { write, refresh } = setup(reading('api'))
+    refresh.flush()
+    expect(write).not.toHaveBeenCalled()
     await tick(0)
     expect(write).toHaveBeenCalledTimes(1)
-    state.rowThere = true
     refresh.flush()
     expect(write).toHaveBeenCalledTimes(2)
-    expect(write).toHaveBeenLastCalledWith(live('api'))
-    refresh.flush()
-    expect(write).toHaveBeenCalledTimes(2)
-  })
-
-  it('has nothing to flush before the first reading', () => {
-    const { write, refresh } = setup(live('api'))
-    refresh.flush()
-    expect(write).not.toHaveBeenCalled()
+    expect(write).toHaveBeenLastCalledWith(reading('api'))
   })
 
   it('survives a read that rejects and a write that throws, and tries again', async () => {
     vi.useFakeTimers()
     let calls = 0
-    const read = vi.fn(async () => { if (++calls === 1) throw new Error('boom'); return live('api') })
-    const write = vi.fn((_: PlaceLive): boolean => { if (write.mock.calls.length === 1) throw new Error('locked'); return true })
+    const read = vi.fn(async () => { if (++calls === 1) throw new Error('boom'); return reading('api') })
+    const write = vi.fn((_: PlaceReading): boolean => { if (write.mock.calls.length === 1) throw new Error('locked'); return true })
     startPlaceRefresh(read, write)
     await tick(0)
     expect(write).not.toHaveBeenCalled()
@@ -345,7 +388,7 @@ describe('startPlaceRefresh: its own timer, and a write only on a change', () =>
       most = Math.max(most, ++running)
       await new Promise((resolve) => setTimeout(resolve, 40_000))
       running--
-      return live('api')
+      return reading('api')
     })
     startPlaceRefresh(read, () => true)
     await tick(0)
@@ -378,16 +421,59 @@ describe('startPlaceRefresh: its own timer, and a write only on a change', () =>
     expect(made.length).toBeGreaterThanOrEqual(2)
     expect(made.map((timer) => timer.hasRef())).toEqual(made.map(() => false))
   })
+
+  describe('against the store: a row that is swept and recreated gets its place back', () => {
+    const SCOPE = { session: 's1', project: 'p', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false } as const
+    const row = (db: ReturnType<typeof openDb>) => listActivity(db).find((r) => r.session === 's1')
+
+    it('writes a place, loses the row to the day-old sweep, and writes it again when the row is recreated with nulls', async () => {
+      vi.useFakeTimers()
+      const db = openDb(join(scratchDir('place-sweep-'), 'inbox.db'))
+      upsertActivity(db, SCOPE)
+      startPlaceRefresh(async () => reading('api', 'session_abc'), (live) => setActivityPlace(db, 's1', live))
+      await tick(0)
+      expect(row(db)).toMatchObject({ desk: 'api', remote_session: 'session_abc' })
+      // the sweep deletes the row; the next status or register call recreates it, with neither value
+      db.prepare('DELETE FROM activity WHERE session = ?').run('s1')
+      upsertActivity(db, SCOPE)
+      expect(Object.keys(row(db)!)).not.toContain('desk')
+      // the reading is the same as before: it must still be written
+      await tick(30_000)
+      expect(row(db)).toMatchObject({ desk: 'api', remote_session: 'session_abc' })
+      db.close()
+    })
+
+    it('writes a reading taken before the row existed once the row does (flush), and a failed field keeps what is stored', async () => {
+      vi.useFakeTimers()
+      const db = openDb(join(scratchDir('place-flush-'), 'inbox.db'))
+      const state = { value: reading('api', 'session_abc') }
+      const place = startPlaceRefresh(async () => state.value, (live) => setActivityPlace(db, 's1', live))
+      await tick(0) // read and written into no row at all
+      upsertActivity(db, SCOPE)
+      expect(Object.keys(row(db)!)).not.toContain('desk')
+      place.flush()
+      expect(row(db)).toMatchObject({ desk: 'api', remote_session: 'session_abc' })
+      // a read that failed for one field leaves it; the clean absence of the other clears it
+      state.value = reading(undefined, null)
+      await tick(30_000)
+      expect(row(db)).toMatchObject({ desk: 'api' })
+      expect(Object.keys(row(db)!)).not.toContain('remote_session')
+      db.close()
+    })
+  })
 })
 
+
 describe('served by the viewer: /api/activity and /api/version', () => {
+  const SCOPE = { project: 'p', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false } as const
   const setup = () => {
     const dir = scratchDir('place-viewer-')
     const db = openDb(join(dir, 'inbox.db'))
     const app = createViewer(db, { agentHome: scratchDir('place-agent-home-'), setupInfoPath: join(dir, 'none.json') })
     return { db, app }
   }
-  const SCOPE = { project: 'p', stream: 'main', agent: 'claude-code', doing: 'open', idle: true, claim: false } as const
+  const activity = async (app: ReturnType<typeof createViewer>) => (await (await app.request('/api/activity')).json()) as Array<Record<string, unknown>>
+  const find = (rows: Array<Record<string, unknown>>, session: string) => rows.find((r) => r['session'] === session)!
   let machine: string | undefined
   beforeEach(() => { machine = process.env['AGENT_INBOX_MACHINE'] })
   afterEach(() => {
@@ -400,22 +486,54 @@ describe('served by the viewer: /api/activity and /api/version', () => {
     upsertActivity(db, { ...SCOPE, session: 'old' })
     upsertActivity(db, { ...SCOPE, session: 'new', machine: 'hub', pane: '%3' })
     setActivityPlace(db, 'new', { desk: 'api', remote_session: 'session_abc' })
-    const rows = (await (await app.request('/api/activity')).json()) as Array<Record<string, unknown>>
-    const old = rows.find((r) => r['session'] === 'old')!
-    for (const key of ['machine', 'desk', 'pane', 'remote_session']) expect(Object.keys(old), key).not.toContain(key)
-    expect(rows.find((r) => r['session'] === 'new')).toMatchObject({ machine: 'hub', pane: '%3', desk: 'api', remote_session: 'session_abc' })
+    const rows = await activity(app)
+    for (const key of ['machine', 'desk', 'pane', 'remote_session']) expect(Object.keys(find(rows, 'old')), key).not.toContain(key)
+    expect(find(rows, 'new')).toMatchObject({ machine: 'hub', pane: '%3', desk: 'api', remote_session: 'session_abc' })
+    db.close()
+  })
+
+  it('/api/activity leaves out a stored value that fails its pattern, as if it were null, and still serves the others', async () => {
+    const { db, app } = setup()
+    const hostile = [
+      ['machine', 'a b'], ['machine', '-x'], ['machine', '$(id)'], ['machine', 'a'.repeat(65)],
+      ['desk', "it's"], ['desk', '.hidden'], ['desk', '--help'], ['desk', 'a\nb'], ['desk', '<img src=x onerror=alert(1)>'],
+      ['pane', '3'], ['pane', '%1234567'], ['pane', '%1;id'],
+      ['remote_session', 'javascript:alert(1)'], ['remote_session', 'https://evil.example/session_a'], ['remote_session', 'session_'], ['remote_session', `session_${'x'.repeat(65)}`],
+    ] as const
+    for (const [column, value] of hostile) {
+      upsertActivity(db, { ...SCOPE, session: 'h', machine: 'hub', pane: '%3' })
+      setActivityPlace(db, 'h', { desk: 'api', remote_session: 'session_abc' })
+      db.prepare(`UPDATE activity SET ${column} = ? WHERE session = 'h'`).run(value)
+      const served = find(await activity(app), 'h')
+      expect(Object.keys(served), `${column} = ${JSON.stringify(value)}`).not.toContain(column)
+      const others = { machine: 'hub', pane: '%3', desk: 'api', remote_session: 'session_abc' } as Record<string, string>
+      delete others[column]
+      expect(served).toMatchObject(others)
+      db.prepare(`DELETE FROM activity`).run()
+    }
     db.close()
   })
 
   it('/api/version carries machine: the override, else the short host name, and none when it is not a valid name', async () => {
-    const { db, app } = setup()
-    const get = async () => (await (await app.request('/api/version')).json()) as Record<string, unknown>
+    const get = async () => {
+      const { db, app } = setup()
+      const body = (await (await app.request('/api/version')).json()) as Record<string, unknown>
+      db.close()
+      return body
+    }
     process.env['AGENT_INBOX_MACHINE'] = 'hubbox'
     expect((await get())['machine']).toBe('hubbox')
     process.env['AGENT_INBOX_MACHINE'] = 'not a name'
     expect(Object.keys(await get())).not.toContain('machine')
     delete process.env['AGENT_INBOX_MACHINE']
     expect((await get())['machine']).toBe(readPlace({}).machine)
+  })
+
+  it('/api/version reads the machine once, when the viewer starts, as each session’s server does: a later change does not move it', async () => {
+    process.env['AGENT_INBOX_MACHINE'] = 'first'
+    const { db, app } = setup()
+    process.env['AGENT_INBOX_MACHINE'] = 'second'
+    expect(((await (await app.request('/api/version')).json()) as Record<string, unknown>)['machine']).toBe('first')
     db.close()
   })
 })

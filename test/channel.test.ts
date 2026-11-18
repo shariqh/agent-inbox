@@ -6,6 +6,7 @@ import type { EventEmitter } from 'node:events'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { buildMcpServer } from '../src/mcp.js'
+import { quietPlace } from './quiet-place.js'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { ackMessage, listActivity, openDb, sendSessionMessage, upsertActivity, withdrawSessionMessage } from '../src/store.js'
@@ -151,7 +152,7 @@ describe('the server runs the push loop only for Claude Code, and stops it on cl
     // connects one client to its own server, and returns the intervals that added
     const open = async (name: string) => {
       const before = vi.getTimerCount()
-      const server = buildMcpServer(db, process.cwd())
+      const server = buildMcpServer(db, process.cwd(), { place: quietPlace })
       const client = new Client({ name, version: 'test' })
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
       await server.connect(serverTransport)

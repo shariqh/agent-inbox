@@ -164,3 +164,9 @@ These landed after v1 and still hold invariants; the release history itself is i
   a page whose re-proof was still running). Without it, a dropped file or URL left file links
   copying their path until a reload (see `links.md`). None of it
   enters `public/attention.js`, badges or Needs-you.
+
+**Sharing with your other Macs (#617 PR 2d).** One self-contained block in `main.cjs` makes the hub's
+remote-entry controller, on macOS and only for the viewer this app started and owns, starts it after
+the window loads, and stops it on `before-quit` (waiting at most 5 seconds for its state store). Its
+ten channels use the same gate as Settings → Links, and Open Agent Inbox at login is never touched by
+a checkout build. Details: `remote-inbox.md`, "The hub's Settings panel".

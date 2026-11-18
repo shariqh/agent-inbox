@@ -11,7 +11,12 @@ paths:
   - "test/remote-entry-settings.test.ts"
   - "test/remote-entry-restart.test.ts"
   - "test/remote-connect.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts"
+  - "test/remote-entry-ipc.test.ts"
+  - "test/remote-words.test.ts"
+  - "public/remote-settings.js"
+  - "public/remote-words.js"
+  - "test/dom/settings-remote.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -25,7 +30,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 2e, PR 3a)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -36,10 +41,15 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   has an owner token, `POST /api/remote-entry/code`.
 - `electron/remote-entry.cjs` (PR 2c): the hub controller for the desktop app's main: the
   settings store, the code and status requests to the app's own viewer, the self test and the
-  watch. Its read-only Tailscale half is `electron/remote-tailscale.cjs`. Logic and tests only:
-  nothing requires it yet (below).
+  watch. Its read-only Tailscale half is `electron/remote-tailscale.cjs`. PR 2d wires it into the
+  app (below).
 - `electron/remote-entry-state.cjs` (PR 2e): what the controller keeps across restarts, in userData
   `remote-entry-state.json`. Only `remote-entry.cjs` requires it.
+- `electron/remote-entry-ipc.cjs` (PR 2d): the hub controller's channels, what the panel draws,
+  the notifications, Open at login and the quit; `electron/main.cjs` makes one controller per run;
+  `agentInboxRemoteEntry` in `electron/setup-preload.cjs`; Settings → Other devices in
+  `public/remote-settings.js`, with its words in `public/remote-words.js` ("The hub's Settings
+  panel", below).
 - `electron/remote-connect.cjs` (PR 3a): the other side, for main on the connecting Mac: the
   address check, the hub among this Mac's Tailscale peers, pairing, the encrypted secret, the
   probe, the device header and the connection state. Its pure rules are in
@@ -48,18 +58,14 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
 ## What is not built yet
 
-- The wiring of the hub controller: IPC, the `agentInboxRemoteEntry` preload bridge, the native
-  notifications, the Settings panel (switch, **Add a device**, the device list with Remove,
-  **Test**, the removal command) and Open at login (the next PR). Until then nothing in the app
-  writes `remote.json` or asks for a code. Any local process on the hub can still make one: the
-  owner token is not a secret from local processes (below).
 - The rest of connect mode (the next PR): the hub's page in its own view with its own partition
   and preload, the header handler, navigation, download and permission handlers, the menu items,
   the offline page, `powerMonitor` and the Settings form. Open desk and notifications against a hub
   are PR 4.
 
-So the entry is still off for everyone until the owner writes `remote.json`. With no device in it,
-every request but pairing is refused.
+So the entry is off until the owner switches it on in Settings → Other devices on the hub. With no
+device in it, every request but pairing is refused. Any local process on the hub can still make a
+pairing code: the owner token is not a secret from local processes (below).
 
 ## The setting
 
@@ -367,8 +373,8 @@ with the fields the reader knows (`unknownFieldsDropped: true`), because that wr
   `problem: 'other_viewer'`. `unreadableDevices` counts the entries the reader drops, since they
   still count toward its limit of 16.
 - `turnOn()`: reads `tailnetSelf()` and then `serveState(host, port)` first, outside the lock, and
-  writes only when both are ok: `enabled: true`, `host`, `port` (4320 packaged, 4393 for a checkout
-  build), `viewerPort` (`viewerPort()` in `electron/reuse.cjs`) and `logins: [<this node's
+  writes only when both are ok: `enabled: true`, `host`, `port` (`entryPort()`: 4320 packaged, 4393
+  for a checkout build), `viewerPort` (`viewerPort()` in `electron/reuse.cjs`) and `logins: [<this node's
   login>]`. When the stored host or logins are not exactly this node's (ignoring case, as the gate
   does), it removes every device, since their secrets were issued under another identity, and
   says how many. It never takes the entry over while the file is on for the other build's viewer,
@@ -377,7 +383,10 @@ with the fields the reader knows (`unknownFieldsDropped: true`), because that wr
   (labels are not unique); an unknown id writes nothing.
 - `turnOn()` and `removeDevice()` drop the device entries the reader would drop when they write,
   and say how many. This is the one place the controller does not keep what it does not
-  understand: such an entry blocks pairing at 16 with no visible cause.
+  understand: such an entry blocks pairing at 16 with no visible cause. `clearUnreadable()` (PR 2d,
+  the panel's **Clear**) drops only those entries and says how many (`removed`). It writes only a
+  file the reader reads: on a file it refuses (17 entries, say), dropping entries could make the
+  rest readable and so switch the entry on, so it refuses with the reader's reason.
 - There is no operation that sets `logins`, `host` or `port` freely, and none that adds a device:
   devices come only from the viewer's pairing route. Every write voids a pending code, and the
   result says `voidedCode: true` when a code asked for in the last 10 minutes was pending.
@@ -539,6 +548,86 @@ timeout and redirects refused, and reads `entryStatus()` before and after. It pa
 the `device` count up by exactly one; otherwise it names the counter that rose. A request from the
 hub to its own Serve address carries its user's login (below), so that is the right pass. Nothing
 else depends on the self test.
+
+## The hub's Settings panel (PR 2d)
+
+Settings → **Other devices** is where the owner decides to expose the whole hub. A paired Mac can
+read everything and message sessions that may act without asking, so the panel says so beside the
+switch. It is short, in plain words, and shows one thing to do at a time: the owner is usually not
+at the hub.
+
+**Main.** `electron/main.cjs` makes one controller per run, only on macOS and only when this app
+started and owns its viewer (`viewerOwned`): `createRemoteEntry({ isPackaged, ownerToken:
+OWNER_TOKEN, stateStore: createRemoteEntryState({ app }), onStopped, onResumed, onPaired,
+onOutsideChange })`, started right after the viewer window loads. On `before-quit` it calls
+`stop()`, then waits for `settled()` for at most 5 seconds, then quits. The block is one
+self-contained part of `main.cjs`; the logic is in `electron/remote-entry-ipc.cjs`.
+
+**The port.** `entryPort()` in `remote-entry.cjs`: 4320 for the packaged app. A checkout build uses
+4393, or `AGENT_INBOX_REMOTE_PORT` when it is a plain integer from 1024 to 65535. That variable is
+for a checkout build only, so the panel can be tried against a Serve configuration that already
+forwards to another port; the packaged app ignores it. It only names the port main writes: it never
+turns the entry on.
+
+**The channels.** Ten `ipcMain.handle` channels, `agent-inbox:remote-entry` (get) and
+`agent-inbox:remote-entry-{turn-on, turn-off, remove-device, clear-unreadable, repair, acknowledge,
+test, add-device, open-at-login}`, gated as Settings → Links is, in this order: the argument count
+and each argument's type (a 16-hex device id, a 64-hex digest, a boolean); then
+`installBinding.settled()`; then the viewer window's own top frame (`linkSender`); then macOS; then
+the owned-viewer grant (`linkFilesPermitted`). A bad argument or sender gets `{ available: false }`;
+another platform `{ available: false, reason: 'unsupported' }`; a viewer the app did not start
+`{ available: false, reason: 'unowned' }`, and the panel says "Quit and reopen Agent Inbox to change
+this." Main sends `agent-inbox:remote-entry-changed`, a bare ping, after each callback, each
+operation, and each 5-second check whose answer differs from the last; the page then asks again.
+
+**What the page gets.** `get()` builds one answer from one `review()` and one `state()`:
+`{ available, enabled, host, port, devices: [{ id, label, pairedAt }], unreadableDevices, problem,
+flag, digest, wanted, stopped: { reason, willResume } | null, resume: { waiting, nextAt } | null,
+needsOwner, stateSaved, serve: { ok, reason } | null, removalHint, command, loginItem: { available,
+openAtLogin } }`. `command` is `tailscale serve --bg <port>` for this build's port. `host` is shown
+because it is the address the other Mac types. Never a login, a secret hash, the owner token, a
+code's id or a raw Tailscale answer. A stop older than the owner's last switch on or off here is
+left out: it is history. Each operation answers only `ok`, a reason word (and `step` for a refused
+switch-on, `rose` for Test), and its own counts. **Add a Mac** answers `{ ok, code, expiresAt }`: the
+code crosses to the page because the owner reads it off the screen; nothing logs or keeps it.
+
+**The bridge.** `agentInboxRemoteEntry` in `setup-preload.cjs` has exactly `get`, `turnOn`,
+`turnOff`, `removeDevice(id)`, `clearUnreadable`, `repairPermissions`, `acknowledge(digest)`,
+`test`, `addDevice`, `setOpenAtLogin(boolean)` and `onChange(callback)`. It checks each argument
+before asking main, and rebuilds every answer field by field; an answer with a field of the wrong
+shape is refused whole (`{ available: false, reason: 'failed' }`, or `{ ok: false, reason:
+'failed' }`). `onChange` keeps one listener and calls it with nothing.
+
+**Notifications.** Native notifications, as plain text, at most one of each kind (paused, stopped,
+resumed, paired, changed outside) in 10 minutes; later ones only update the panel. A pause says
+sharing comes back by itself when Tailscale is ready. A stop says one sentence per family: Tailscale
+Serve is not set up as expected; this Mac's Tailscale name or account changed; Tailscale is not
+running or can't be read; or sharing is switched off and the settings file said on. A pairing says
+"<label> can now use this Inbox." The words come from `public/remote-words.js`, which main imports
+and the panel uses, so the two never say different things; a test checks every reason word in
+`remote-entry.d.cts` has words there.
+
+**The panel.** Top to bottom, only the parts that apply: the "changed outside Agent Inbox" box with
+what the settings are now and **Looks right**, which acknowledges the digest `get()` gave for exactly
+what is on screen (if the file changed since, the panel redraws and says "It changed again; check the
+list."); the switch, **Let my other Macs use this Inbox**, with one status line (Off; On, at the
+address, with **Copy address**; Paused: why, next try; Needs you: why); the risk sentence; one
+instruction for what to do, chosen from the reason, with the Serve command and **Copy** when running
+it is the fix, and **Make it private** for a file other accounts can read; **Paired Macs**, each with
+**Remove** and an inline confirm, and a count of entries that can't be read with **Clear**; **Add a
+Mac**, which shows the code, the address and a countdown until the code is used, runs out or is
+cancelled by a later change; **Test** while on; the Serve removal command while off; **Open Agent
+Inbox at login** (the packaged app only); and a line when the state store could not be saved. The
+switch is on while sharing is on or paused. With no `agentInboxRemoteEntry` (a browser, or this page
+on another Mac) nothing is drawn.
+
+**Open at login** is `app.getLoginItemSettings()` and `app.setLoginItemSettings({ openAtLogin })`,
+the packaged app on macOS only. A checkout build answers unavailable and never reads or sets it: a
+development binary must never become a login item.
+
+Not checked without running the app: the notification and login-item calls themselves, the page in
+Electron's window, and a pairing end to end. The tests run the controller against a stub, main's
+block against fakes, and the page in jsdom.
 
 ## Connecting from another Mac (PR 3a)
 

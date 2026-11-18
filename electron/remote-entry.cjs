@@ -139,6 +139,28 @@ function validDevice(entry) {
     && typeof entry.secretSha256 === 'string' && SHA256_HEX.test(entry.secretSha256)
 }
 
+/**
+ * Which entries of a device list the reader keeps: each valid by validDevice, and the first entry
+ * with its id (#617, PR 2d review round 2). A later entry with an id already used is unreadable
+ * whatever it holds, so a second key under a paired Mac's id never opens the gate. The viewer's
+ * reader in src/viewer-remote.ts applies the same rule.
+ */
+function readableEntries(listed) {
+  const seen = new Set()
+  return listed.map((entry) => {
+    const id = isObject(entry) ? entry.id : undefined
+    const first = typeof id === 'string' && !seen.has(id)
+    if (typeof id === 'string') seen.add(id)
+    return first && validDevice(entry)
+  })
+}
+
+/** The entries the reader keeps, in order. */
+const readableOf = (listed) => {
+  const keep = readableEntries(listed)
+  return listed.filter((_, i) => keep[i])
+}
+
 /** The reader's field rules on a parsed document: the checked setting, or the fixed reason it is off. */
 function parseSetting(doc) {
   const host = typeof doc.host === 'string' ? doc.host.toLowerCase() : ''
@@ -152,7 +174,7 @@ function parseSetting(doc) {
   const listed = doc.devices === undefined ? [] : doc.devices
   if (!Array.isArray(listed) || listed.length > 16) return { ok: false, reason: 'bad_devices' }
   // a malformed device is dropped, never turning the rest off, but still counted
-  const devices = listed.filter(validDevice).map(({ id, label, pairedAt }) => ({
+  const devices = readableOf(listed).map(({ id, label, pairedAt }) => ({
     id, label, pairedAt: typeof pairedAt === 'string' && PAIRED_AT.test(pairedAt) ? pairedAt : null,
   }))
   return {
@@ -253,9 +275,9 @@ function watchedState(read) {
     viewerPort: pick('viewerPort'),
     logins: pick('logins'),
     devices: Array.isArray(doc.devices)
-      ? doc.devices.map((entry) => (isObject(entry)
-        ? { id: entry.id ?? null, secretSha256: entry.secretSha256 ?? null, readable: validDevice(entry) }
-        : { entry, readable: false }))
+      ? ((keep) => doc.devices.map((entry, i) => (isObject(entry)
+        ? { id: entry.id ?? null, secretSha256: entry.secretSha256 ?? null, readable: keep[i] }
+        : { entry, readable: false })))(readableEntries(doc.devices))
       : pick('devices'),
   }
 }
@@ -265,7 +287,7 @@ const digestOf = (state) => crypto.createHash('sha256').update(canonical(state))
 /** Each readable device's label by id, from a document (never its hash). */
 function labelsOf(doc) {
   const labels = new Map()
-  if (isObject(doc) && Array.isArray(doc.devices)) for (const entry of doc.devices) if (validDevice(entry)) labels.set(entry.id, entry.label)
+  if (isObject(doc) && Array.isArray(doc.devices)) for (const entry of readableOf(doc.devices)) labels.set(entry.id, entry.label)
   return labels
 }
 
@@ -356,7 +378,7 @@ function knownFields(doc) {
   if (isPort(doc.viewerPort)) known.viewerPort = doc.viewerPort
   if (Array.isArray(doc.logins) && doc.logins.every((login) => typeof login === 'string')) known.logins = [...doc.logins]
   known.devices = Array.isArray(doc.devices)
-    ? doc.devices.filter(validDevice).map(({ id, label, secretSha256, pairedAt }) => (
+    ? readableOf(doc.devices).map(({ id, label, secretSha256, pairedAt }) => (
       typeof pairedAt === 'string' ? { id, label, secretSha256, pairedAt } : { id, label, secretSha256 }))
     : []
   return known
@@ -860,7 +882,7 @@ function createRemoteEntry(options = {}) {
         return { refuse: 'would_remove_devices' }
       }
       // entries the reader would drop are dropped here, the one place main does not keep what it does not understand
-      const readable = listed.filter(validDevice)
+      const readable = readableOf(listed)
       const devices = sameHost && sameLogins ? readable : []
       dropped = listed.length - readable.length
       removed = readable.length - devices.length
@@ -916,9 +938,9 @@ function createRemoteEntry(options = {}) {
       if (current.state === 'missing') return {}
       if (current.state === 'refused') return { refuse: current.reason }
       const listed = current.doc.devices
-      if (!Array.isArray(listed) || !listed.some((entry) => validDevice(entry) && entry.id === id)) return {}
+      if (!Array.isArray(listed) || !readableOf(listed).some((entry) => entry.id === id)) return {}
       // the write also drops every entry the reader would drop
-      const kept = listed.filter((entry) => validDevice(entry) && entry.id !== id)
+      const kept = readableOf(listed).filter((entry) => entry.id !== id)
       dropped = listed.length - 1 - kept.length
       return { doc: { ...current.doc, devices: kept } }
     })
@@ -938,7 +960,7 @@ function createRemoteEntry(options = {}) {
       if (!current.setting) return { refuse: current.problem }
       const listed = current.doc.devices
       if (!Array.isArray(listed)) return {}
-      const kept = listed.filter(validDevice)
+      const kept = readableOf(listed)
       if (kept.length === listed.length) return {}
       removed = listed.length - kept.length
       return { doc: { ...current.doc, devices: kept } }

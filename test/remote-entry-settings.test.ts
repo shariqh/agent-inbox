@@ -173,6 +173,9 @@ describe('the controller reads remote.json by the viewer\'s rules', () => {
     ['a label with a lone surrogate', setting(4320, [device(newSecret(), A), device(newSecret(), B, 'half\ud800')])],
     ['a label of 41 characters', setting(4320, [device(newSecret(), A), device(newSecret(), B, 'x'.repeat(41))])],
     ['devices not a list', setting(4320, [], { devices: {} })],
+    // review round 2, item 3: the first entry with an id is the device
+    ['an id used twice', setting(4320, [device(newSecret(), A), device(newSecret(), B), device(newSecret(), A, 'other')])],
+    ['an id used twice, the first entry unreadable', setting(4320, [{ id: A, label: '', secretSha256: 'f'.repeat(64) }, device(newSecret(), A)])],
     ['mode 0644', setting(4320, []), 0o644],
     ['mode 0640', setting(4320, []), 0o640],
     ['too large', { ...setting(4320, []), pad: 'x'.repeat(65 * 1024) }],
@@ -1878,6 +1881,51 @@ describe('review(): what changed, as facts with no values (review round 1, item 
     g.clock.now += 5_000
     await g.c.tick()
     expect((await g.c.review()).changes).toMatchObject({ missing: true })
+  })
+})
+
+describe('an id used twice (review round 2, item 3)', () => {
+  it('the controller lists the first entry only, and counts every later one as unreadable', async () => {
+    const { c, dir } = hub()
+    writeSetting(dir, setting(4320, [device(newSecret(), A, 'laptop'), device(newSecret(), A, 'laptop'), device(newSecret(), B, 'desk')]))
+    const view = await c.view()
+    expect(view.devices.map((d) => d.label)).toEqual(['laptop', 'desk'])
+    expect(view.unreadableDevices).toBe(1)
+  })
+
+  it('a write keeps the first entry with an id and drops the later ones, as the reader does', async () => {
+    const { c, dir, file } = hub()
+    const first = device(newSecret(), A, 'laptop')
+    writeSetting(dir, setting(4320, [first, device(newSecret(), A, 'copy'), device(newSecret(), B, 'desk')]))
+    expect(await c.clearUnreadable()).toMatchObject({ ok: true, removed: 1 })
+    expect((fileJson(file).devices as Array<{ id: string; secretSha256: string }>).map((d) => [d.id, d.secretSha256])).toEqual([[A, first.secretSha256], [B, expect.any(String)]])
+    writeSetting(dir, setting(4320, [first, device(newSecret(), A, 'copy'), device(newSecret(), B, 'desk')]))
+    expect(await c.removeDevice(B)).toMatchObject({ ok: true, droppedEntries: 1 })
+    expect((fileJson(file).devices as Array<{ id: string }>).map((d) => d.id)).toEqual([A])
+    writeSetting(dir, setting(4320, [first, device(newSecret(), A, 'copy')], { enabled: false }))
+    expect(await c.turnOn()).toMatchObject({ ok: true, droppedEntries: 1 })
+    expect((fileJson(file).devices as Array<{ secretSha256: string }>).map((d) => d.secretSha256)).toEqual([first.secretSha256])
+  })
+
+  // the reviewer's V7: the box says what is true, and lists the Mac once
+  it.each(['last', 'first'] as const)('a second key under a paired Mac\'s id, put %s: the facts say what is true', async (where) => {
+    const h = hub()
+    const laptop = device(newSecret(), A, 'laptop')
+    writeSetting(h.dir, setting(4320, [laptop], { enabled: false }))
+    h.c.start()
+    await h.c.tick()
+    const extra = { id: A, label: 'laptop', secretSha256: 'e'.repeat(64) }
+    writeSetting(h.dir, setting(4320, where === 'last' ? [laptop, extra] : [extra, laptop], { enabled: false }))
+    h.clock.now += 5_000
+    await h.c.tick()
+    const review = await h.c.review()
+    expect(review.flag).toBe(true)
+    expect(review.view.devices.map((d) => d.label)).toEqual(['laptop'])
+    expect(review.view.unreadableDevices).toBe(1)
+    // put last, the second key is dormant: nothing about laptop changed; put first, laptop's key is the new one
+    expect(review.changes).toMatchObject(where === 'last'
+      ? { keyChanged: [], added: [], removed: [], unreadableAdded: 1 }
+      : { keyChanged: ['laptop'], added: [], removed: [], unreadableAdded: 1 })
   })
 })
 

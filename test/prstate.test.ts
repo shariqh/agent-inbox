@@ -738,6 +738,18 @@ describe('the poller runs in the viewer process only', () => {
         .not.toContain('src/viewer-network.ts')
     }
   })
+
+  // #617: the remote entry (a second loopback listener for paired devices) is viewer-process-only too
+  it('the remote entry never enters the stdio MCP import graph, and only the viewer process starts it', () => {
+    expect(STDIO_GRAPH).not.toContain('src/viewer-remote.ts')
+    for (const file of STDIO_GRAPH) {
+      expect(specifiers(read(file)).map((spec) => resolveSpec(file, spec)), `${file} pulls the remote entry into MCP`)
+        .not.toContain('src/viewer-remote.ts')
+    }
+    expect(read('src/viewer-remote.ts').slice(0, 400)).toContain('VIEWER PROCESS ONLY')
+    expect(read('src/viewer-server.ts')).toContain("from './viewer-remote.js'")
+    expect(read('src/viewer.ts')).not.toMatch(/viewer-remote/)
+  })
 })
 
 // Tenet 2: the badge must stay trustworthy. A red CI is the AGENT's problem, not

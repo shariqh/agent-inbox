@@ -21,7 +21,7 @@ const OFF: View = {
   available: true, enabled: false, host: null, port: 4320, devices: [], unreadableDevices: 0, problem: null, flag: false, digest: D1,
   wanted: false, stopped: null, resume: null, needsOwner: null, stateSaved: true, serve: null, removalHint: null,
   command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: false, needsApproval: false }, listening: false,
-  listenError: null, changes: null, refusal: null,
+  listenError: null, changes: null, refusal: null, inboxUnreachable: false,
 }
 const ON: View = { ...OFF, enabled: true, host: HOST, wanted: true, serve: { ok: true }, listening: true }
 const LAPTOP = { id: A, label: 'laptop', pairedAt: '2026-07-19T09:00:00.000Z' }
@@ -96,6 +96,7 @@ const toggle = (el: HTMLInputElement | null) => {
   el.click()
 }
 const instruction = () => text('.remote-instruction p')
+const refusal = () => text('.remote-refusal p')
 
 /** main refusing the next switch-on, as it does: the refusal comes back in get() (review round 1, item 4) */
 function refuse(api: ReturnType<typeof bridge>, reason: string, step: string, devices: number | null = null) {
@@ -221,20 +222,22 @@ describe('Settings → Other devices: what it shows', () => {
     expect($('.remote-instruction')).toBeNull()
   })
 
+  // review round 2, item 1: the status line is the present; a refused switch-on is a message under it
   it.each([
-    ['serve', 'no_handler', 'Run this once in Terminal on this Mac, then switch on again:', true],
-    ['serve', 'wrong_target', 'Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:', true],
-    ['serve', 'handler_fields', 'Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:', true],
-    ['serve', 'foreground', 'Another tailscale serve is running on this Mac. Stop it, then switch on again.', false],
-    ['serve', 'services', 'A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it, then switch on again.', false],
-    ['serve', 'other_path', 'Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them, then switch on again.', false],
-    ['self', 'no_cli', 'Install Tailscale on this Mac and sign in, then switch on again.', false],
-    ['self', 'not_running', 'Open Tailscale on this Mac and connect, then switch on again.', false],
-    ['self', 'no_login', 'Sign in to Tailscale on this Mac, then switch on again.', false],
-    ['self', 'tagged', 'Sharing needs a personal Tailscale login on this Mac. Sign in to Tailscale with your own account, then switch on again.', false],
-    ['file', 'other_viewer', 'The other copy of Agent Inbox on this Mac (the installed app or a build from source) is sharing. Switch it off there first.', false],
-    ['file', 'newer_schema', 'A newer version of Agent Inbox saved these settings. Update Agent Inbox to change them.', false],
-  ])('switching on refused at %s (%s): one instruction', async (step, reason, what, command) => {
+    ['serve', 'no_handler', 'Tailscale Serve wasn’t set up for Agent Inbox. Run this once in Terminal on this Mac, then switch on again:', 'tailscale serve --bg 4320'],
+    ['serve', 'wrong_target', 'Tailscale Serve on this Mac was forwarding this address to something else. Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:', 'tailscale serve --bg 4320'],
+    ['serve', 'handler_fields', 'Tailscale Serve on this Mac was forwarding this address to something else. Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:', 'tailscale serve --bg 4320'],
+    ['serve', 'not_https', 'Tailscale Serve on this Mac was set up in a way Agent Inbox doesn’t recognise. Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise. Run this in Terminal to see it:', 'tailscale serve status'],
+    ['serve', 'foreground', 'another tailscale serve was running. Another tailscale serve is running on this Mac. Stop it, then switch on again.', null],
+    ['serve', 'services', 'a Tailscale Service was set up on this Mac. A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it, then switch on again.', null],
+    ['serve', 'other_path', 'Tailscale Serve on this Mac was forwarding other things too. Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them, then switch on again.', null],
+    ['self', 'no_cli', 'Tailscale wasn’t installed. Install Tailscale on this Mac and sign in, then switch on again.', null],
+    ['self', 'not_running', 'Tailscale wasn’t running. Open Tailscale on this Mac and connect, then switch on again.', null],
+    ['self', 'no_login', 'Tailscale was signed out. Sign in to Tailscale on this Mac, then switch on again.', null],
+    ['self', 'tagged', 'this Mac used a tagged Tailscale login. Sharing needs a personal Tailscale login on this Mac. Sign in to Tailscale with your own account, then switch on again.', null],
+    ['file', 'other_viewer', 'the other copy of Agent Inbox on this Mac was sharing. The other copy of Agent Inbox on this Mac (the installed app or a build from source) is sharing. Switch it off there first.', null],
+    ['file', 'newer_schema', 'a newer Agent Inbox had saved these settings. A newer version of Agent Inbox saved these settings. Update Agent Inbox to change them.', null],
+  ])('switching on refused at %s (%s): the status stays the present, and a message says what happened', async (step, reason, what, command) => {
     const api = bridge(OFF)
     refuse(api, reason, step)
     const writeText = vi.fn(async () => {})
@@ -243,31 +246,55 @@ describe('Settings → Other devices: what it shows', () => {
     toggle(sw())
     await settle()
     expect(sw()?.checked).toBe(false)
-    expect(status()).toMatch(/^Needs you: /)
-    expect(document.querySelectorAll('#remote-settings .remote-instruction')).toHaveLength(1)
-    expect(instruction()).toBe(what)
+    expect(status()).toBe('Off')
+    expect($('.remote-instruction')).toBeNull()
+    expect(document.querySelectorAll('#remote-settings .remote-refusal')).toHaveLength(1)
+    expect(refusal()).toBe(`Switching on didn’t work: ${what}`)
     if (command) {
-      expect(text('.remote-instruction pre')).toBe('tailscale serve --bg 4320')
-      click(button('Copy', $('.remote-instruction')!))
+      expect(text('.remote-refusal pre')).toBe(command)
+      click(button('Copy', $('.remote-refusal')!))
       await settle()
-      expect(writeText).toHaveBeenCalledWith('tailscale serve --bg 4320')
+      expect(writeText).toHaveBeenCalledWith(command)
     } else {
-      expect($('.remote-instruction pre')).toBeNull()
+      expect($('.remote-refusal pre')).toBeNull()
     }
     // switching on again that works clears it
     toggle(sw())
     await settle()
-    expect($('.remote-instruction')).toBeNull()
+    expect($('.remote-refusal')).toBeNull()
   })
 
-  it('a command to look at Serve, not to change it, for a shape it doesn\'t recognise', async () => {
+  // the reviewer's D5: a refusal never outranks a pause
+  it('a refused switch-on beside a live pause: the status says paused, the switch is on, and the refusal is a message', async () => {
+    bridge({ ...OFF, host: HOST, wanted: true, resume: { waiting: 'serve_not_ok:funnel', nextAt: null }, refusal: { reason: 'not_running', step: 'self', devices: null, at: T0 } })
+    await draw()
+    expect(status()).toBe('Paused: Tailscale Funnel is on for this Mac')
+    expect(sw()?.checked).toBe(true)
+    expect(instruction()).toBe('Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac. Sharing then comes back by itself.')
+    expect(refusal()).toBe('Switching on didn’t work: Tailscale wasn’t running. Open Tailscale on this Mac and connect, then switch on again.')
+  })
+
+  it('a refused switch-on lasts 2 minutes at most on the page too', async () => {
     const api = bridge(OFF)
-    refuse(api, 'not_https', 'serve')
+    refuse(api, 'not_running', 'self')
     await draw()
     toggle(sw())
     await settle()
-    expect(instruction()).toBe('Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise. Run this in Terminal to see it:')
-    expect(text('.remote-instruction pre')).toBe('tailscale serve status')
+    expect($('.remote-refusal')).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(121_000)
+    expect($('.remote-refusal')).toBeNull()
+    expect(status()).toBe('Off')
+  })
+
+  it('a refusal that says what the status line already says is not said twice', async () => {
+    const api = bridge({ ...OFF, problem: 'open_to_others' })
+    refuse(api, 'open_to_others', 'file')
+    await draw()
+    toggle(sw())
+    await settle()
+    expect(status()).toBe('Needs you: other accounts on this Mac can read the sharing settings')
+    expect($('.remote-refusal')).toBeNull()
+    expect(document.querySelectorAll('#remote-settings button')).toSatisfy((buttons: NodeListOf<HTMLButtonElement>) => [...buttons].filter((b) => b.textContent === 'Make it private').length === 1)
   })
 
   it('a file other accounts can read: says so and offers to make it private', async () => {
@@ -282,7 +309,7 @@ describe('Settings → Other devices: what it shows', () => {
     expect(text('.remote-message')).toBe('The sharing settings file is private again. Sharing is off, and 1 paired Mac was removed.')
   })
 
-  // review round 1, item 8
+  // review round 1, item 8; round 2, item 4: the paired Macs are named
   it('asks before switching on removes the paired Macs, and removes them only when told to', async () => {
     const api = bridge({ ...OFF, devices: [LAPTOP, { id: B, label: 'desk', pairedAt: null }] })
     refuse(api, 'would_remove_devices', 'file', 2)
@@ -290,13 +317,26 @@ describe('Settings → Other devices: what it shows', () => {
     toggle(sw())
     await settle()
     expect(sw()?.checked).toBe(false)
-    expect(status()).toBe('Needs you: this Mac’s Tailscale name or account changed')
-    expect(instruction()).toBe('This Mac’s Tailscale name or account is not the one these Macs were paired under. Switching on removes the 2 paired Macs; pair them again afterwards.')
+    expect(status()).toBe('Off')
+    expect(refusal()).toBe('This Mac’s Tailscale name or account has changed since these Macs were paired. Switching on removes the 2 paired Macs; pair them again afterwards.')
     click(button('Switch on and remove them'))
     await settle()
     expect(api.turnOnRemovingDevices).toHaveBeenCalledOnce()
     expect(status()).toBe(`On, at https://${HOST}`)
     expect(text('.remote-message')).toBe('Switching on removed 2 paired Macs. Pair them again with Add a Mac.')
+  })
+
+  it('names the one paired Mac it would remove, as text', async () => {
+    const label = '<b>laptop</b>'
+    const api = bridge({ ...OFF, devices: [{ ...LAPTOP, label }] })
+    refuse(api, 'would_remove_devices', 'file', 1)
+    await draw()
+    toggle(sw())
+    await settle()
+    expect(refusal()).toBe(`This Mac’s Tailscale name or account has changed since ${label} was paired. Switching on removes ${label}; pair it again afterwards.`)
+    expect(document.querySelector('#remote-settings .remote-refusal b')).toBeNull()
+    expect(button('Switch on and remove it')).not.toBeNull()
+    expect(button('Switch on and remove them')).toBeNull()
   })
 
   it('Cancel leaves sharing off and the paired Macs as they are', async () => {
@@ -305,44 +345,47 @@ describe('Settings → Other devices: what it shows', () => {
     await draw()
     toggle(sw())
     await settle()
-    expect(instruction()).toBe('This Mac’s Tailscale name or account is not the one this Mac was paired under. Switching on removes the paired Mac; pair it again afterwards.')
+    expect(refusal()).toBe('This Mac’s Tailscale name or account has changed since laptop was paired. Switching on removes laptop; pair it again afterwards.')
     click(button('Cancel'))
     await settle()
     expect(api.turnOnRemovingDevices).not.toHaveBeenCalled()
-    expect($('.remote-instruction')).toBeNull()
+    expect($('.remote-refusal')).toBeNull()
     expect(status()).toBe('Off')
     expect(text('.remote-device-label')).toBe('laptop')
   })
 
-  // review round 1, item 4: what is drawn comes from get() alone
-  it('a refusal goes when main says so: after making the file private, one sentence and no second button', async () => {
-    const api = bridge({ ...OFF, problem: 'open_to_others' })
-    refuse(api, 'open_to_others', 'file')
-    api.repairPermissions.mockImplementationOnce(async () => { api.set({ ...OFF }); return { ok: true, voidedCode: false, devicesRemoved: 1 } })
+  it('the question to remove paired Macs lasts 2 minutes at most, like any message', async () => {
+    const api = bridge({ ...OFF, devices: [LAPTOP] })
+    refuse(api, 'would_remove_devices', 'file', 1)
     await draw()
     toggle(sw())
     await settle()
-    click(button('Make it private'))
-    await settle()
-    expect(status()).toBe('Off')
-    expect(button('Make it private')).toBeNull()
-    expect($('.remote-instruction')).toBeNull()
-    expect(text('.remote-message')).toBe('The sharing settings file is private again. Sharing is off, and 1 paired Mac was removed.')
+    await vi.advanceTimersByTimeAsync(121_000)
+    expect(button('Switch on and remove it')).toBeNull()
   })
 
+  // review round 1, item 4: what is drawn comes from get() alone
   it('a refusal main dropped because the file changed is not drawn: the newer problem is', async () => {
     const api = bridge(OFF)
     refuse(api, 'no_handler', 'serve')
     await draw()
     toggle(sw())
     await settle()
-    expect(instruction()).toBe('Run this once in Terminal on this Mac, then switch on again:')
+    expect(refusal()).toMatch(/^Switching on didn’t work: Tailscale Serve wasn’t set up/)
     api.set({ ...OFF, problem: 'open_to_others' })
     api.ping()
     await settle()
     expect(status()).toBe('Needs you: other accounts on this Mac can read the sharing settings')
     expect(instruction()).toMatch(/^Other accounts on this Mac can read/)
-    expect(document.querySelectorAll('#remote-settings .remote-instruction')).toHaveLength(1)
+    expect($('.remote-refusal')).toBeNull()
+  })
+
+  // review round 2, item 5
+  it('on, but the app can\'t reach its own Inbox: needs you, and what to do', async () => {
+    bridge({ ...ON, listening: false, inboxUnreachable: true })
+    await draw()
+    expect(status()).toBe('Needs you: Agent Inbox can’t reach its own Inbox')
+    expect(instruction()).toBe('Quit and reopen Agent Inbox.')
   })
 
   // review round 1, item 3

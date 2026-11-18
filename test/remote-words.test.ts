@@ -66,6 +66,8 @@ describe('every reason word has words', () => {
     // the status line's reason is a clause: no full stop
     expect(isSentence(entry.why) && !entry.why.endsWith('.'), `${key}.why: ${entry.why}`).toBe(true)
     expect(isSentence(entry.refused), `${key}.refused`).toBe(true)
+    // review round 2, item 1: what a refusal says happened, in the past tense
+    expect(isSentence(entry.was) && !entry.was.endsWith('.'), `${key}.was: ${entry.was}`).toBe(true)
     return { key, entry }
   }
 
@@ -81,10 +83,15 @@ describe('every reason word has words', () => {
     for (const reason of [...WRITES, 'would_remove_devices']) family('turnOn', reason, 'file')
     // `unreadable` is a file that cannot be read at the file step, and Tailscale at the Serve step
     expect(words.reasonFamily('turnOn', 'unreadable', 'file')).not.toBe(words.reasonFamily('turnOn', 'unreadable', 'serve'))
+    // review round 2, item 4: the paired Macs are named, never "this Mac" for two Macs
     expect(words.familyWords('would_remove', { port: 4320, count: 3 }).refused)
-      .toBe('This Mac’s Tailscale name or account is not the one these Macs were paired under. Switching on removes the 3 paired Macs; pair them again afterwards.')
+      .toBe('This Mac’s Tailscale name or account has changed since these Macs were paired. Switching on removes the 3 paired Macs; pair them again afterwards.')
+    expect(words.familyWords('would_remove', { port: 4320, count: 1, label: 'laptop' }).refused)
+      .toBe('This Mac’s Tailscale name or account has changed since laptop was paired. Switching on removes laptop; pair it again afterwards.')
     expect(words.familyWords('would_remove', { port: 4320, count: 1 }).refused)
-      .toBe('This Mac’s Tailscale name or account is not the one this Mac was paired under. Switching on removes the paired Mac; pair it again afterwards.')
+      .toBe('This Mac’s Tailscale name or account has changed since the paired Mac was paired. Switching on removes the paired Mac; pair it again afterwards.')
+    expect(words.familyWords('tailscale_off', VALUES).was).toBe('Tailscale wasn’t running')
+    expect(words.familyWords('port_in_use', VALUES).was).toBe('another program on this Mac was using port 4320')
   })
 
   it('each wait before sharing comes back, including the Tailscale reading behind it, with what to do while paused', () => {
@@ -102,6 +109,8 @@ describe('every reason word has words', () => {
     expect(words.familyWords(words.reasonFamily('problem', 'open_to_others'), VALUES).repair).toBe(true)
     expect(LISTEN).toEqual(['port_in_use', 'cannot_listen'])
     for (const reason of LISTEN) family('listen', reason)
+    // review round 2, item 5
+    expect(words.familyWords('self_unreachable', VALUES)).toMatchObject({ why: 'Agent Inbox can’t reach its own Inbox', refused: 'Quit and reopen Agent Inbox.' })
     expect(words.familyWords('port_in_use', VALUES)).toMatchObject({
       why: 'another program on this Mac is using port 4320',
       refused: 'Quit that program, or switch sharing off. Until then Tailscale forwards your other Macs to it.',

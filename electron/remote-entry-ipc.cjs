@@ -46,6 +46,10 @@ const DIGEST = /^[0-9a-f]{64}$/
 const QUIET_MS = 10 * 60_000
 // at app start, a pause is held this long: one that resumes within it notifies nothing
 const START_GRACE_MS = 2 * 60_000
+// a refused switch-on is news for this long at most (review round 2, item 1)
+const REFUSAL_MS = 2 * 60_000
+// this many status reads in a row that fail: the app can't reach its own Inbox (item 5)
+const UNREACHABLE_AFTER = 3
 const QUIT_WAIT_MS = 5_000
 const WATCH_EVERY_MS = 5_000
 
@@ -126,12 +130,18 @@ function answer(result, fields = []) {
   return out
 }
 
-function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now = Date.now }) {
+/**
+ * `switched()` runs when an owner's switch worked (on, on removing the paired Macs, off, Make it
+ * private): main resets the notifier then (review round 2, item 2).
+ */
+function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, switched = () => {}, now = Date.now }) {
   // when the owner last switched sharing on or off here: a stop before it is history, not news
   let switchedAt = -Infinity
   // the last refused switch-on (review round 1, item 4): kept here, not on the page, and gone once
   // a later operation works or what get() shows changes; `key` is that state, from the next get()
   let refusal = null
+  // status reads in a row that failed
+  let failures = 0
   const ping = () => {
     try {
       changed()
@@ -148,7 +158,13 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
       result = { ok: false, reason: 'failed' }
     }
     if (result.ok) refusal = null
-    else if (switchOn) refusal = { reason: result.reason, step: result.step ?? null, devices: result.devices ?? null, at: now(), key: null }
+    if (result.ok && owner) {
+      try {
+        switched()
+      } catch {
+        // the notifier keeps what it had
+      }
+    } else if (!result.ok && switchOn) refusal = { reason: result.reason, step: result.step ?? null, devices: result.devices ?? null, at: now(), key: null }
     ping()
     return result
   }
@@ -162,17 +178,13 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
     } catch {
       // unknown reads as not listening
     }
+    failures = read ? 0 : failures + 1
     const review = await controller.review()
     const state = await controller.state()
     const view = review.view
-    const key = `${review.digest}|${view.problem}|${view.enabled === true}`
-    if (refusal !== null) {
-      if (refusal.key === null) refusal.key = key
-      else if (refusal.key !== key) refusal = null
-    }
     const stopped = isObject(state.stopped) && state.stopped.at > switchedAt ? state.stopped : null
     const serve = isObject(state.serve) && isObject(state.serve.answer) ? state.serve.answer : null
-    return {
+    const out = {
       available: true,
       enabled: view.enabled === true,
       host: word(view.host),
@@ -194,8 +206,17 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
       listening: read && state.listening === true,
       listenError: read && LISTEN_ERRORS.has(state.listenError) ? state.listenError : null,
       changes: review.flag === true ? changesOf(review.changes) : null,
-      refusal: refusal && { reason: refusal.reason, step: refusal.step, devices: refusal.devices, at: refusal.at },
+      inboxUnreachable: failures >= UNREACHABLE_AFTER,
     }
+    // A refused switch-on is news, not the present (review round 2, item 1): it goes when anything
+    // the panel shows changes, a pause's next try aside, and after 2 minutes at the latest.
+    const key = JSON.stringify({ ...out, resume: out.resume && out.resume.waiting, serve: null, removalHint: null, loginItem: null, stateSaved: null })
+    if (refusal !== null) {
+      if (now() - refusal.at > REFUSAL_MS) refusal = null
+      else if (refusal.key === null) refusal.key = key
+      else if (refusal.key !== key) refusal = null
+    }
+    return { ...out, refusal: refusal && { reason: refusal.reason, step: refusal.step, devices: refusal.devices, at: refusal.at } }
   }
 
   return Object.freeze({
@@ -284,6 +305,11 @@ function createRemoteNotifier({
     /** The app started: pauses in the next 2 minutes are held. */
     started() {
       startedAt = now()
+    },
+    /** The owner's own switch worked: a held pause is dropped, and nothing counts as a repeat. */
+    reset() {
+      release()
+      last = null
     },
     onStopped(reason, detail) {
       ping()

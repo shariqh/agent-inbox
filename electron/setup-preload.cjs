@@ -716,7 +716,7 @@ function remoteView(value) {
   if (value.available !== true) return null
   const {
     enabled, host, port, devices, unreadableDevices, problem, flag, digest, wanted, stopped, resume, needsOwner, stateSaved, serve, removalHint, command, loginItem,
-    listening, listenError, changes, refusal,
+    listening, listenError, changes, refusal, inboxUnreachable,
   } = value
   if (typeof enabled !== 'boolean' || typeof flag !== 'boolean' || typeof wanted !== 'boolean' || typeof listening !== 'boolean') return null
   if (!remoteOr(host, (h) => typeof h === 'string' && h.length <= 253 && REMOTE_HOST.test(h)) || !isRemotePort(port)) return null
@@ -730,7 +730,7 @@ function remoteView(value) {
   if (!remoteOr(serve, (s) => isPlainObject(s) && (s.ok === true || (s.ok === false && remoteOr(s.reason, isRemoteWord))))) return null
   if (!remoteOr(removalHint, (h) => h === REMOTE_REMOVAL_HINT) || command !== `tailscale serve --bg ${port}`) return null
   if (!isPlainObject(loginItem) || typeof loginItem.available !== 'boolean' || typeof loginItem.openAtLogin !== 'boolean' || typeof loginItem.needsApproval !== 'boolean') return null
-  if (!remoteOr(listenError, (w) => w === 'port_in_use' || w === 'cannot_listen')) return null
+  if (!remoteOr(listenError, (w) => w === 'port_in_use' || w === 'cannot_listen') || typeof inboxUnreachable !== 'boolean') return null
   const changed = changes === null ? null : remoteChanges(changes)
   const refused = refusal === null ? null : remoteRefusal(refusal)
   if ((changes !== null && changed === null) || (refusal !== null && refused === null)) return null
@@ -742,7 +742,7 @@ function remoteView(value) {
     serve: serve && (serve.ok ? { ok: true } : { ok: false, reason: serve.reason }),
     removalHint, command,
     loginItem: { available: loginItem.available, openAtLogin: loginItem.openAtLogin, needsApproval: loginItem.needsApproval },
-    listening, listenError, changes: changed, refusal: refused,
+    listening, listenError, changes: changed, refusal: refused, inboxUnreachable,
   }
 }
 

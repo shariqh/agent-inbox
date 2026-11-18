@@ -48,6 +48,8 @@ export interface PanelView {
   changes: RemoteChanges | null
   /** the last refused switch-on, until a later operation works or the state changes (item 4) */
   refusal: { reason: string; step: string | null; devices: number | null; at: number } | null
+  /** three status reads in a row failed: the app can't reach its own Inbox (review round 2, item 5) */
+  inboxUnreachable: boolean
 }
 
 export interface LoginItem {
@@ -83,6 +85,8 @@ export function createRemoteEntryPanel(options: {
   controller: Pick<RemoteEntryController, 'port' | 'entryStatus' | 'recheckHint' | 'review' | 'state' | 'turnOn' | 'turnOff' | 'removeDevice' | 'clearUnreadable' | 'repairPermissions' | 'acknowledge' | 'selfTest' | 'requestCode'> | Record<string, unknown>
   loginItem: LoginItem | { read(): unknown; set(value: boolean): unknown }
   changed?: () => void
+  /** an owner's switch worked: main resets the notifier */
+  switched?: () => void
   now?: () => number
 }): RemoteEntryPanel
 
@@ -97,6 +101,8 @@ export function createRemoteNotifier(options: {
 }): {
   /** the app started: a pause in the next 2 minutes is held */
   started(): void
+  /** the owner's own switch worked: drop a held pause, and forget the last one shown */
+  reset(): void
   onStopped(reason: StopReason | string, detail: { off: boolean; willResume: boolean }): void
   onResumed(): void
   onPaired(label: string): void

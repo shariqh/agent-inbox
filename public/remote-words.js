@@ -8,7 +8,8 @@
 // Serve are product names the owner uses. One style: a status line's reason (`why`) is a clause
 // with no full stop; everything else is whole sentences; "can't" and "couldn't", never "could not".
 
-// What a family says: `why` for the status line ("Paused: <why>" / "Needs you: <why>"), `refused`
+// What a family says: `why` for the status line ("Paused: <why>" / "Needs you: <why>"), `was` for
+// a refused switch-on, in the past tense ("Switching on didn't work: <was>. …"), `refused`
 // for what to do when switching on was refused or sharing stopped, `paused` for what to do while
 // it comes back by itself. `command`: the instruction ends with a command and Copy (true: this
 // build's `tailscale serve --bg <port>`; a string: that command). `repair`: it offers the one
@@ -17,130 +18,163 @@ const THEN = 'Sharing then comes back by itself.'
 const FAMILY_WORDS = Object.freeze({
   serve_setup: {
     why: 'Tailscale Serve is not set up for Agent Inbox',
+    was: 'Tailscale Serve wasn’t set up for Agent Inbox',
     refused: 'Run this once in Terminal on this Mac, then switch on again:',
     paused: 'Run this once in Terminal on this Mac, and sharing comes back by itself:',
     command: true,
   },
   serve_replace: {
     why: 'Tailscale Serve on this Mac forwards this address to something else',
+    was: 'Tailscale Serve on this Mac was forwarding this address to something else',
     refused: 'Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:',
     command: true,
   },
   serve_unknown: {
     why: 'Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise',
+    was: 'Tailscale Serve on this Mac was set up in a way Agent Inbox doesn’t recognise',
     refused: 'Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise. Run this in Terminal to see it:',
     command: 'tailscale serve status',
   },
   serve_other: {
     why: 'Tailscale Serve on this Mac forwards other things too',
+    was: 'Tailscale Serve on this Mac was forwarding other things too',
     refused: 'Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them, then switch on again.',
     paused: `Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them. ${THEN}`,
   },
   funnel: {
     why: 'Tailscale Funnel is on for this Mac',
+    was: 'Tailscale Funnel was on for this Mac',
     refused: 'Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac, then switch on again.',
     paused: `Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac. ${THEN}`,
   },
   serve_running: {
     why: 'another tailscale serve is running',
+    was: 'another tailscale serve was running',
     refused: 'Another tailscale serve is running on this Mac. Stop it, then switch on again.',
     paused: `Another tailscale serve is running on this Mac. Stop it. ${THEN}`,
   },
   serve_service: {
     why: 'a Tailscale Service is set up on this Mac',
+    was: 'a Tailscale Service was set up on this Mac',
     refused: 'A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it, then switch on again.',
     paused: `A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it. ${THEN}`,
   },
   no_tailscale: {
     why: 'Tailscale is not installed',
+    was: 'Tailscale wasn’t installed',
     refused: 'Install Tailscale on this Mac and sign in, then switch on again.',
     paused: `Install Tailscale on this Mac and sign in. ${THEN}`,
   },
   tailscale_off: {
     why: 'Tailscale is not running',
+    was: 'Tailscale wasn’t running',
     refused: 'Open Tailscale on this Mac and connect, then switch on again.',
     paused: `Open Tailscale on this Mac and connect. ${THEN}`,
   },
   tailscale_signin: {
     why: 'Tailscale is signed out',
+    was: 'Tailscale was signed out',
     refused: 'Sign in to Tailscale on this Mac, then switch on again.',
     paused: `Sign in to Tailscale on this Mac. ${THEN}`,
   },
   tailscale_name: {
     why: 'Tailscale gives this Mac no usable name',
+    was: 'Tailscale gave this Mac no usable name',
     refused: 'Check that MagicDNS is on for your Tailscale network, then switch on again.',
     paused: `Check that MagicDNS is on for your Tailscale network. ${THEN}`,
   },
   tailscale_unreadable: {
     why: 'Agent Inbox can’t read Tailscale',
+    was: 'Agent Inbox couldn’t read Tailscale',
     refused: 'Check that Tailscale is running on this Mac, then switch on again.',
     paused: `Check that Tailscale is running on this Mac. ${THEN}`,
   },
   tagged: {
     why: 'this Mac uses a tagged Tailscale login',
+    was: 'this Mac used a tagged Tailscale login',
     refused: 'Sharing needs a personal Tailscale login on this Mac. Sign in to Tailscale with your own account, then switch on again.',
   },
   identity: {
     why: 'this Mac’s Tailscale name or account changed',
+    was: 'this Mac’s Tailscale name or account had changed',
     refused: 'This Mac’s Tailscale name or account changed. Switching on again removes the paired Macs.',
   },
   would_remove: {
     why: 'this Mac’s Tailscale name or account changed',
-    refused: 'This Mac’s Tailscale name or account is not the one {these} paired under. Switching on removes {macs}; pair {them} again afterwards.',
+    was: 'this Mac’s Tailscale name or account had changed',
+    refused: 'This Mac’s Tailscale name or account has changed since {these} paired. Switching on removes {macs}; pair {them} again afterwards.',
   },
   switch_again: {
     why: 'sharing needs you to switch it on again',
+    was: 'sharing needed you to switch it on again',
     refused: 'Switch on again to share.',
   },
   changed: {
     why: 'the sharing settings were changed outside Agent Inbox',
+    was: 'the sharing settings had been changed outside Agent Inbox',
     refused: 'Check the settings above, then switch on again.',
     paused: 'Agent Inbox is checking the changed settings.',
   },
   not_wanted: {
     why: 'sharing was switched on outside Agent Inbox while it was switched off here, so Agent Inbox switched it off again',
+    was: 'sharing had been switched on outside Agent Inbox while it was switched off here',
     refused: 'Sharing was switched on outside Agent Inbox while it was switched off here, so Agent Inbox switched it off again.',
   },
   other_build: {
     why: 'the other copy of Agent Inbox on this Mac is sharing',
+    was: 'the other copy of Agent Inbox on this Mac was sharing',
     refused: 'The other copy of Agent Inbox on this Mac (the installed app or a build from source) is sharing. Switch it off there first.',
   },
   file_open: {
     why: 'other accounts on this Mac can read the sharing settings',
+    was: 'other accounts on this Mac could read the sharing settings',
     refused: 'Other accounts on this Mac can read the sharing settings file. Making it private switches sharing off and removes the paired Macs.',
     repair: true,
   },
   file_newer: {
     why: 'a newer Agent Inbox saved these settings',
+    was: 'a newer Agent Inbox had saved these settings',
     refused: 'A newer version of Agent Inbox saved these settings. Update Agent Inbox to change them.',
   },
   file_fields: {
     why: 'the sharing settings file has a value Agent Inbox can’t use',
+    was: 'the sharing settings file had a value Agent Inbox can’t use',
     refused: 'The sharing settings file has a value Agent Inbox can’t use. Switching on writes it again.',
   },
   file_damaged: {
     why: 'Agent Inbox can’t read its sharing settings file',
+    was: 'Agent Inbox couldn’t read its sharing settings file',
     refused: 'Agent Inbox can’t read its sharing settings file, remote.json beside the Inbox database. Remove that file, then switch on again.',
   },
   write_failed: {
     why: 'Agent Inbox couldn’t save the sharing settings',
+    was: 'Agent Inbox couldn’t save the sharing settings',
     refused: 'Agent Inbox couldn’t save its sharing settings file. Try again.',
     paused: 'Agent Inbox couldn’t save its sharing settings file. It tries again by itself.',
   },
   port_clash: {
     why: 'sharing would use the Inbox’s own port',
+    was: 'sharing would have used the Inbox’s own port',
     refused: 'Sharing can’t use the same port as the Inbox itself. Choose another AGENT_INBOX_REMOTE_PORT.',
   },
   port_in_use: {
     why: 'another program on this Mac is using port {port}',
+    was: 'another program on this Mac was using port {port}',
     refused: 'Quit that program, or switch sharing off. Until then Tailscale forwards your other Macs to it.',
   },
   cannot_listen: {
     why: 'Agent Inbox can’t listen on port {port}',
+    was: 'Agent Inbox couldn’t listen on port {port}',
     refused: 'Switch sharing off and on again. If that doesn’t help, restart this Mac.',
+  },
+  self_unreachable: {
+    why: 'Agent Inbox can’t reach its own Inbox',
+    was: 'Agent Inbox couldn’t reach its own Inbox',
+    refused: 'Quit and reopen Agent Inbox.',
   },
   failed: {
     why: 'something went wrong',
+    was: 'something went wrong',
     refused: 'Something went wrong. Try again.',
   },
 })
@@ -195,16 +229,20 @@ export function reasonFamily(kind, reason, step) {
   return family ?? 'failed'
 }
 
-/** A family's words with this build's port and the count of paired Macs filled in. */
-export function familyWords(family, { port = 0, count = 0 } = {}) {
+/**
+ * A family's words with this build's port and the paired Macs filled in: `count` of them, and for
+ * one, its `label` (text a Mac chose; the page sets every string as text).
+ */
+export function familyWords(family, { port = 0, count = 0, label = null } = {}) {
   const entry = own(FAMILY_WORDS, family) ?? FAMILY_WORDS.failed
   const one = count === 1
+  const name = typeof label === 'string' && label !== '' ? label : 'the paired Mac'
   const fill = (text) => text
     .replaceAll('{port}', String(port))
-    .replaceAll('{these}', one ? 'this Mac was' : 'these Macs were')
-    .replaceAll('{macs}', one ? 'the paired Mac' : `the ${count} paired Macs`)
+    .replaceAll('{these}', one ? `${name} was` : 'these Macs were')
+    .replaceAll('{macs}', one ? name : `the ${count} paired Macs`)
     .replaceAll('{them}', one ? 'it' : 'them')
-  const out = { why: fill(entry.why), refused: fill(entry.refused) }
+  const out = { why: fill(entry.why), was: fill(entry.was), refused: fill(entry.refused) }
   if (entry.paused) out.paused = fill(entry.paused)
   if (entry.command) out.command = entry.command
   if (entry.repair) out.repair = true

@@ -1573,7 +1573,7 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .remote-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); font-size: var(--fs-body); }
 .remote-switch-row { margin: var(--sp-2) 0; }
 .remote-status { font-weight: 650; overflow-wrap: anywhere; }
-.remote-instruction { margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3); border-left: 2px solid var(--app-warning); }
+.remote-instruction, .remote-refusal { margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3); border-left: 2px solid var(--app-warning); }
 .remote-device-list { display: grid; gap: var(--sp-2); margin: 0; padding: 0; list-style: none; }
 .remote-device { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); font-size: var(--fs-body); }
 .remote-device-label { overflow-wrap: anywhere; }

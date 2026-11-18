@@ -8,7 +8,10 @@ import { join } from 'node:path'
 import vm from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 import ipc from '../electron/remote-entry-ipc.cjs'
+import remoteEntry from '../electron/remote-entry.cjs'
 import * as words from '../public/remote-words.js'
+import { removeScratchDirs, scratchDir } from './scratch.js'
+import { cliExists, fakeTailscale, goodServe, selfStatus } from './remote-entry-fixtures.js'
 
 const REPO = join(import.meta.dirname, '..')
 const read = (rel: string) => readFileSync(join(REPO, rel), 'utf8')
@@ -98,8 +101,24 @@ describe('what get() hands the panel', () => {
       flag: true, digest: DIGEST, wanted: true, stopped: { reason: 'funnel', willResume: false }, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200 },
       needsOwner: null, stateSaved: false, serve: { ok: false, reason: 'no_handler' }, removalHint: 'tailscale serve --https=443 off',
       command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true, needsApproval: false }, listening: true,
-      listenError: null, changes: CHANGES, refusal: null,
+      listenError: null, changes: CHANGES, refusal: null, inboxUnreachable: false,
     })
+  })
+
+  // review round 2, item 5
+  it('says this Inbox is unreachable after three status reads in a row fail, and not before', async () => {
+    let fails = 0
+    const c = controllerStub({ entryStatus: vi.fn(async () => (fails > 0 ? (fails -= 1, { ok: false, reason: 'unreachable' }) : { ok: true, status: {} })) })
+    const { panel } = panelOf(c)
+    fails = 3
+    expect((await panel.get()).inboxUnreachable).toBe(false)
+    expect((await panel.get()).inboxUnreachable).toBe(false)
+    expect((await panel.get()).inboxUnreachable).toBe(true)
+    expect((await panel.get()).inboxUnreachable).toBe(false)
+    const throwing = controllerStub({ entryStatus: vi.fn(async () => { throw new Error('x') }) })
+    const other = panelOf(throwing)
+    for (let i = 0; i < 2; i += 1) await other.panel.get()
+    expect((await other.panel.get()).inboxUnreachable).toBe(true)
   })
 
   // review round 1, item 12: unknown reads as not listening
@@ -220,6 +239,91 @@ describe('what get() hands the panel', () => {
     // a later operation that works: gone
     await panel.removeDevice(A)
     expect((await panel.get()).refusal).toBeNull()
+  })
+
+  // review round 2, item 1: anything the panel shows, and 2 minutes at the latest
+  it('a refusal goes when anything the panel shows changes, not only the file, and after 2 minutes', async () => {
+    const c = controllerStub({ turnOn: vi.fn(async () => ({ ok: false, reason: 'not_running', step: 'self' })) })
+    const raw = c.raw as Json
+    const { panel, clock } = panelOf(c)
+    const changes: Array<[string, () => void]> = [
+      ['a pause', () => { raw.resume = { waiting: 'tailscale_not_running', nextAt: 1 } }],
+      ['listening', () => { raw.listening = false }],
+      ['a stop', () => { raw.stopped = { reason: 'not_running', at: 9_000_000, off: true, willResume: true } }],
+      ['needsOwner', () => { raw.needsOwner = 'identity_changed' }],
+    ]
+    for (const [name, change] of changes) {
+      await panel.turnOn()
+      expect((await panel.get()).refusal, name).not.toBeNull()
+      change()
+      expect((await panel.get()).refusal, name).toBeNull()
+    }
+    // nothing shown changes, as when Tailscale comes up while sharing is off: 2 minutes, then gone
+    clock.now = 1_000
+    await panel.turnOn()
+    expect((await panel.get()).refusal).not.toBeNull()
+    clock.now += 119_000
+    expect((await panel.get()).refusal).not.toBeNull()
+    clock.now += 2_000
+    expect((await panel.get()).refusal).toBeNull()
+    // and a pause's next try moving is not a change
+    await panel.turnOn()
+    await panel.get()
+    raw.resume = { ...(raw.resume as Json), nextAt: 99 }
+    expect((await panel.get()).refusal).not.toBeNull()
+  })
+
+  // the reviewer's V4, against the real controller: Tailscale comes up after a refused switch-on
+  it('a switch-on refused while Tailscale was down does not stand in for the present 10 minutes later', async () => {
+    const dir = scratchDir('remote-panel-')
+    const clock = { now: Date.parse('2026-11-20T09:00:00.000Z') }
+    let self: unknown = { ...selfStatus(), BackendState: 'Stopped' }
+    const status = {
+      on: false, listening: false, port: null, host: null, error: null, codePending: false, paired: [],
+      refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0, pair: 0 },
+    }
+    const c = remoteEntry.createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(dir, 'inbox.db') }, ownerToken: 't'.repeat(40),
+      execFile: fakeTailscale({ self: () => self, serve: goodServe(4320) }), exists: cliExists,
+      fetch: async (url: string) => { if (url.endsWith('/api/remote-entry')) return Response.json(status); throw new TypeError('fetch failed') },
+      now: () => clock.now, sleep: async (ms: number) => { clock.now += ms }, setInterval: () => 0, clearInterval: () => {},
+    })
+    const panel = ipc.createRemoteEntryPanel({ controller: c, loginItem: loginItem(false), now: () => clock.now })
+    c.start()
+    await c.tick()
+    expect(await panel.turnOn()).toEqual({ ok: false, reason: 'not_running', step: 'self' })
+    expect((await panel.get()).refusal).toMatchObject({ reason: 'not_running' })
+    self = selfStatus()
+    clock.now += 600_000
+    await c.tick()
+    expect((await panel.get()).refusal).toBeNull()
+    c.stop()
+    removeScratchDirs()
+  })
+
+  // review round 2, item 2
+  it('tells the notifier when an owner\'s switch works, and only then', async () => {
+    const switched = vi.fn()
+    const failing = controllerStub({
+      turnOn: vi.fn(async () => ({ ok: false, reason: 'no_handler', step: 'serve' })),
+      turnOff: vi.fn(async () => ({ ok: false, reason: 'write_failed' })),
+    })
+    const bad = ipc.createRemoteEntryPanel({ controller: failing, loginItem: loginItem(true), switched })
+    await bad.turnOn()
+    await bad.turnOff()
+    expect(switched).not.toHaveBeenCalled()
+    const c = controllerStub()
+    const panel = ipc.createRemoteEntryPanel({ controller: c, loginItem: loginItem(true), switched })
+    await panel.removeDevice(A)
+    await panel.test()
+    await panel.addDevice()
+    await panel.clearUnreadable()
+    expect(switched).not.toHaveBeenCalled()
+    await panel.turnOn()
+    await panel.turnOnRemovingDevices()
+    await panel.turnOff()
+    await panel.repairPermissions()
+    expect(switched).toHaveBeenCalledTimes(4)
   })
 
   it('a problem with the file that appears after a refusal clears it too', async () => {
@@ -468,6 +572,27 @@ describe('notifications', () => {
     expect(later.shown).toHaveLength(2)
   })
 
+  // review round 2, item 2: the owner's own switch resets what the notifier holds and remembers
+  it('a pause held at start is dropped when the owner switches on by hand, so it never fires while sharing is on', async () => {
+    const { n, shown, advance } = notifier({ started: true })
+    n.onStopped('not_running', { off: true, willResume: true })
+    await advance(60_000)
+    n.reset()
+    await advance(120_000)
+    expect(shown).toEqual([])
+  })
+
+  it('after the owner switches by hand, the same pause is news again', async () => {
+    const { n, shown, clock } = notifier()
+    n.onStopped('funnel', { off: true, willResume: true })
+    clock.now += 60_000
+    n.reset()
+    clock.now += 5 * 60_000
+    n.onStopped('funnel', { off: true, willResume: true })
+    await flush()
+    expect(shown.map((note) => note.title)).toEqual(['Agent Inbox paused sharing with your other Macs', 'Agent Inbox paused sharing with your other Macs'])
+  })
+
   it('a notice that throws, or words that never load, stop nothing', async () => {
     const changed = vi.fn()
     const n = ipc.createRemoteNotifier({ show: () => { throw new Error('no notifications') }, words: Promise.reject(new Error('gone')), changed })
@@ -661,6 +786,23 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
     expect(w.notes.map((note) => note.title)).toEqual(['Agent Inbox stopped sharing with your other Macs'])
   })
 
+  // review round 2, item 2: main resets the notifier when the owner's switch works
+  it('a pause held at start never fires after the owner switched on by hand', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const w = world({ notifications: true })
+      w.scope.startRemoteEntry()
+      const options = w.made[0]! as { onStopped(reason: string, detail: { off: boolean; willResume: boolean }): void }
+      options.onStopped('not_running', { off: true, willResume: true })
+      const panel = ((w.handlers.get('options') as Json).panel as () => { turnOn(): Promise<unknown> })()
+      await panel.turnOn()
+      await vi.advanceTimersByTimeAsync(130_000)
+      expect(w.notes).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // review round 1, item 6: the removal hint is read again when the window regains focus
   it('reads Serve again for the removal hint when the window regains focus, then pings', async () => {
     const w = world()
@@ -720,7 +862,7 @@ const GOOD = {
   flag: true, digest: DIGEST, wanted: true, stopped: { reason: 'funnel', willResume: false }, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200 },
   needsOwner: null, stateSaved: false, serve: { ok: false, reason: 'no_handler' }, removalHint: 'tailscale serve --https=443 off',
   command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true, needsApproval: false }, listening: true,
-  listenError: null, changes: CHANGES, refusal: null,
+  listenError: null, changes: CHANGES, refusal: null, inboxUnreachable: false,
 }
 
 describe('the agentInboxRemoteEntry bridge', () => {
@@ -796,6 +938,10 @@ describe('the agentInboxRemoteEntry bridge', () => {
     for (const refusal of [{ reason: '<b>', step: 'serve', devices: null, at: 1 }, { reason: 'x', step: 'shell', devices: null, at: 1 }, { reason: 'x', step: null, devices: -2, at: 1 }, { reason: 'x', step: null, devices: null, at: 'now' }]) {
       const { bridge } = loadPreload(() => ({ ...GOOD, refusal }))
       await expect(bridge.get!(), JSON.stringify(refusal)).resolves.toEqual({ available: false, reason: 'failed' })
+    }
+    for (const inboxUnreachable of ['yes', undefined]) {
+      const { bridge } = loadPreload(() => ({ ...GOOD, inboxUnreachable }))
+      await expect(bridge.get!(), String(inboxUnreachable)).resolves.toEqual({ available: false, reason: 'failed' })
     }
     for (const listenError of ['EADDRINUSE', 7]) {
       const { bridge } = loadPreload(() => ({ ...GOOD, listenError }))

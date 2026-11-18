@@ -766,7 +766,11 @@ function startRemoteEntry() {
     onPaired: remoteNotifier.onPaired,
     onOutsideChange: remoteNotifier.onOutsideChange,
   })
-  remotePanel = createRemoteEntryPanel({ controller: remoteEntry, loginItem: loginItemFor({ app, platform: process.platform }), changed: remoteEntryChanged })
+  remotePanel = createRemoteEntryPanel({
+    controller: remoteEntry, loginItem: loginItemFor({ app, platform: process.platform }), changed: remoteEntryChanged,
+    // the owner's own switch: a held or remembered pause is no longer news
+    switched: () => remoteNotifier.reset(),
+  })
   remoteNotifier.started()
   remoteEntry.start()
   remoteWatch = watchRemoteEntry({ panel: remotePanel, changed: remoteEntryChanged })

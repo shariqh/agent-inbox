@@ -10,8 +10,9 @@
 // browser, or this page shown on another Mac) nothing is drawn. The words, including those of
 // main's notifications, are in /remote-words.js.
 //
-// What is drawn comes from main's get() alone (review round 1, item 4): a refused switch-on comes
-// back in it, and goes when main drops it. While an operation runs every control is disabled and
+// What is drawn comes from main's get() alone (review round 1, item 4). The status line is always
+// the present; a refused switch-on comes back in get() and is a message under it, in the past tense
+// (review round 2, item 1), gone when main drops it and after 2 minutes at the latest. While an operation runs every control is disabled and
 // the status line says what is happening; the switch shows what the file says, never what was
 // clicked (item 5). A message lasts until what it speaks of changes, and 2 minutes at most (item 10).
 import { codeWords, familyWords, reasonFamily, testWords } from '/remote-words.js'
@@ -125,7 +126,7 @@ export function renderRemoteSettings(host, {
     row.append(input, text)
     return { row, input }
   }
-  const words = (family, v, count = 0) => familyWords(family, { port: v.port, count })
+  const words = (family, v, count = 0, label = null) => familyWords(family, { port: v.port, count, label })
 
   function clearCode() {
     code = null
@@ -137,13 +138,11 @@ export function renderRemoteSettings(host, {
   function statusOf(v) {
     const needs = (family, count = 0) => ({ kind: 'needs', family, count, text: `Needs you: ${words(family, v, count).why}` })
     if (v.enabled && v.listenError) return needs(reasonFamily('listen', v.listenError))
+    // three status reads in a row failed: not "starting", the app can't reach its own Inbox
+    if (v.enabled && !v.listening && v.inboxUnreachable) return needs('self_unreachable')
     // the file is on, but the viewer has not opened the listener yet
     if (v.enabled && !v.listening) return { kind: 'on', starting: true, text: 'On, starting…' }
     if (v.enabled) return { kind: 'on', text: `On, at https://${v.host}` }
-    if (v.refusal && v.refusal.at !== dismissed) {
-      const family = reasonFamily('turnOn', v.refusal.reason, v.refusal.step)
-      return { ...needs(family, v.refusal.devices ?? 0), confirm: family === 'would_remove' }
-    }
     if (v.problem) return needs(reasonFamily('problem', v.problem))
     const stop = v.stopped && !v.stopped.willResume && v.stopped.reason !== 'not_wanted' ? reasonFamily('stop', v.stopped.reason) : null
     if (v.resume) {
@@ -200,6 +199,10 @@ export function renderRemoteSettings(host, {
       else if (n.key !== key) notes[slot] = null
     }
     if (testResult && stateKey(next) !== testResult.key) testResult = null
+    // a refused switch-on goes after 2 minutes even when nothing else is drawn again
+    if (next.available && next.refusal && next.refusal.at !== view?.refusal?.at) {
+      setTimeout(paint, Math.max(0, next.refusal.at + MESSAGE_MS - Date.now()) + 1)
+    }
     view = next
     paint()
   }
@@ -367,27 +370,53 @@ export function renderRemoteSettings(host, {
       const command = said.command === true ? v.command : said.command
       box.append(make('pre', '', command), copyButton('Copy', command, 'copy-command'))
     }
-    if (said.repair) {
-      box.append(button('Make it private', 'repair', () => act('other', () => api.repairPermissions(), (r) => {
-        if (r.ok !== true) {
-          note('general', failedWords(r.reason))
-          return
-        }
-        const removed = r.devicesRemoved > 0 ? `, and ${plural(r.devicesRemoved, 'paired Mac was', 'paired Macs were')} removed` : ''
-        note('general', `The sharing settings file is private again. Sharing is off${removed}.`)
-      })))
-    }
-    if (status.confirm) {
-      const at = v.refusal.at
+    if (said.repair) box.append(repairButton())
+    return box
+  }
+
+  function repairButton() {
+    return button('Make it private', 'repair', () => act('other', () => api.repairPermissions(), (r) => {
+      if (r.ok !== true) {
+        note('general', failedWords(r.reason))
+        return
+      }
+      const removed = r.devicesRemoved > 0 ? `, and ${plural(r.devicesRemoved, 'paired Mac was', 'paired Macs were')} removed` : ''
+      note('general', `The sharing settings file is private again. Sharing is off${removed}.`)
+    }))
+  }
+
+  /**
+   * A refused switch-on, as a message: what happened, in the past tense, and what to do. Not drawn
+   * when the status line already says the same, once the owner cancelled it, or after 2 minutes.
+   */
+  function refusalPart(v, status) {
+    const refused = v.refusal
+    if (!refused || refused.at === dismissed || Date.now() - refused.at > MESSAGE_MS) return null
+    const family = reasonFamily('turnOn', refused.reason, refused.step)
+    if (status.family === family) return null
+    const box = make('div', 'remote-refusal')
+    box.setAttribute('role', 'status')
+    if (family === 'would_remove') {
+      const count = refused.devices ?? 0
+      const label = count === 1 && v.devices.length === 1 ? v.devices[0].label : null
       box.append(
-        button('Switch on and remove them', 'remove-all', () => act('turnOn', () => api.turnOnRemovingDevices(), switchedOn)),
+        make('p', '', words(family, v, count, label).refused),
+        button(count === 1 ? 'Switch on and remove it' : 'Switch on and remove them', 'remove-all', () => act('turnOn', () => api.turnOnRemovingDevices(), switchedOn)),
         button('Cancel', 'cancel-remove', () => {
-          dismissed = at
+          dismissed = refused.at
           focusKey = 'remote-switch'
           paint()
         }),
       )
+      return box
     }
+    const said = words(family, v)
+    box.append(make('p', '', `Switching on didn’t work: ${said.was}. ${said.refused}`))
+    if (said.command) {
+      const command = said.command === true ? v.command : said.command
+      box.append(make('pre', '', command), copyButton('Copy', command, 'copy-refused-command'))
+    }
+    if (said.repair) box.append(repairButton())
     return box
   }
 
@@ -503,6 +532,7 @@ export function renderRemoteSettings(host, {
       switchPart(v, status),
       make('p', 'setup-hint remote-risk', RISK),
       instructionPart(v, status),
+      refusalPart(v, status),
       devicesPart(v),
       addPart(v),
       testPart(v),

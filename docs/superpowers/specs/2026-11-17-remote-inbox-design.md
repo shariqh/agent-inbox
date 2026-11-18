@@ -443,7 +443,11 @@ reconciles its listener when its status is read, and main reads it after each wr
 follows at once rather than at the 5-second poll; `turnOn()` answers once the viewer listens (up to 6
 seconds) and the panel says "On, starting…" until then; **Test** first waits for the listener
 (`not_listening`) and reads Serve's 502, 503 or 504 as `no_backend`, not as a Serve that skips the
-gate. `docs/architecture/remote-inbox.md`, "The hub's Settings panel".)
+gate. After review round 1: the notifications say "your other Macs", give the same reason as the
+panel and what to do, and quiet only a repeat; switching on asks before removing the paired Macs
+(`would_remove_devices`); Review shows what changed as facts with no values, or that it can't tell;
+a port another program holds is named. `docs/architecture/remote-inbox.md`, "The hub's Settings
+panel".)
 
 ### 3.3 Connect mode in the desktop app (PR 3)
 

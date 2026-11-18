@@ -650,9 +650,11 @@ and send messages to your sessions, which may act without asking, so only pair M
    On the other Mac, enter them in Settings → Use another Mac's Inbox (that side comes in a later
    version).
 
-The status line beside the switch says Off, On, Paused (sharing comes back by itself, for example
-once Tailscale is running again) or Needs you, with one thing to do. If the sharing settings were
-changed outside Agent Inbox, the panel shows what they are now at the top; press **Looks right**
+The status line beside the switch says Off, On, Paused (sharing comes back by itself once the cause
+is fixed, for example once Tailscale is running again) or Needs you, with one thing to do. If this
+Mac's Tailscale name or account changed, switching on asks first, because it removes the paired
+Macs. If the sharing settings were changed outside Agent Inbox, the panel says what changed at the
+top (or that it can't tell, when the app was closed) and how they are now; press **Looks right**
 once you have checked them, or switch sharing off and remove a Mac you don't know. **Remove** stops
 a paired Mac at its next request. When sharing is off and Tailscale still forwards to this Mac, the
 panel shows the command that stops it, `tailscale serve --https=443 off`.

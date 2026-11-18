@@ -479,6 +479,17 @@ baseline, and nothing comes back by itself.
   device is removed, `wanted` is cleared and saved, and `state().needsOwner` is `identity_changed`:
   only the owner's switch turns it on again (which removes the devices if the identity still
   differs), across restarts too, even when the identity comes back.
+- Off means off. When the state read for this `remote.json` and viewer says `wanted: false` (the
+  owner switched sharing off) and the file is on for this viewer anyway, put back or edited behind
+  the app's back, the watch switches it off again at the first look after `start()` and at every
+  later file check: `enabled: false` and nothing else, the same write as its own stop, before any
+  Tailscale read and without waiting for one. It calls `onStopped('not_wanted', { off, willResume:
+  false })` once per occurrence, `state().stopped` says so, the change is flagged as any other
+  (Review accepts the file as main left it), and a write that does not land is retried at every
+  tick. It never writes `enabled: true`, never removes a device and is never a resume. Only an
+  explicit `wanted: false` read for this file and viewer counts: with no state, a state for another
+  file or viewer, a read that failed or timed out, or no state store, the change is only flagged,
+  because an unknown is not the owner's Off.
 - The owner's `turnOff()`, the watch's own stop and `repairPermissions()` never wait on the state
   store: they write `remote.json` first and the state follows. The watch's file check waits for the
   first read of the state (at most 5 seconds), because the first look needs the kept digest; a
@@ -493,7 +504,7 @@ baseline, and nothing comes back by itself.
 - The state file is a tripwire against a silent change, not a boundary. A process that can write both
   files defeats it: it can set the digest to match its own edit, or set `wanted`. An edit to
   `remote.json` alone is flagged at the next start, including a file put back to an earlier state
-  main wrote. Such a process can already switch the entry on by editing `remote.json`; the state file
+  main wrote, unless the state could not be saved at all. Such a process can already switch the entry on by editing `remote.json`; the state file
   gives it nothing more.
 - Every notice is raised on the hub: a pause, a stop, a resume and an outside change are native
   notifications on the hub Mac, where the owner usually is not. The next PRs must make a pause
@@ -506,6 +517,9 @@ baseline, and nothing comes back by itself.
   connect.
 - On the first run with a state store, a `remote.json` that already holds devices is flagged once,
   and `wanted` starts false: until the owner switches the entry on once, a stop is not a pause.
+- For the owner's Off, the watch's own stop and the repair, the `pending` save is queued before the
+  file write but not awaited, so those operations never wait on the state store. A crash in that
+  window, followed by `remote.json` being put back, can start without a flag.
 - The checkout build and the installed app keep one state between them: when both run, each save
   replaces the other's, and the other's next start reads no state (a file with devices is then
   flagged, and `wanted` is false). Safe, but noisy.

@@ -384,7 +384,11 @@ flagged at the next start, with the notification. The digest covers the watched 
 `host`, `port`, `viewerPort`, `logins`, and each device's id, hash and whether the reader keeps it;
 not a label that stays readable, `pairedAt` or an unknown field. While a change is flagged, and
 around every write main makes, the state holds `pending`, which no file has, so any start before
-the review flags again, even when `remote.json` was put back to an earlier state main wrote. With
+the review flags again, even when `remote.json` was put back to an earlier state main wrote (unless
+the state could not be saved at all). Off means off: when the state read for this file and viewer
+says the owner switched sharing off and the file is on anyway, main switches it off again at once,
+before any Tailscale read, writing only `enabled: false`, and flags the change; with no state, or a
+state it could not read, it only flags. With
 no digest kept (a first run, or the state file lost), a file that is on, holds any device entry or
 cannot be read is flagged; an absent file, or one that is off with no device entry, is the baseline.
 The panel shows the file and the digest from one read (`review()`), so Review accepts what the owner
@@ -588,7 +592,9 @@ serve` run in a terminal must not cost them the Inbox until they are back. A sto
 identity (another host or login, or a tagged node) never resumes: nothing is written, no device is
 removed, and only the owner's switch turns it on again (which removes the devices if the host or
 login still differs, as before), across restarts too. A file switched off or edited by anything
-else is never switched back on, even after the owner reviews it. A stop within 10 minutes of a
+else is never switched back on, even after the owner reviews it; and a file switched on by
+anything else while the owner's switch is off is switched off again (off means off). A stop within
+10 minutes of a
 resume backs off: the next try waits 1 minute, then 2, 4, 8, 16 and at most 30 minutes, and the
 wait is back to normal once the entry stayed on for 10 minutes. The panel shows why it is not back
 yet and when it tries next. These notices are raised on the hub; the next PRs must make a pause

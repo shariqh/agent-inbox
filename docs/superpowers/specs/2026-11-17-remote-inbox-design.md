@@ -516,18 +516,22 @@ switch which view is on top. `Settings…` always shows This Mac, where connect 
 **(As built in PR 3b,** in `electron/hub-view.cjs`, wired by `electron/main.cjs`; the full
 behaviour is in `docs/architecture/remote-inbox.md`, "The hub view". Where it differs from the
 above:
-- `webPreferences` also set `webSecurity: true`, and nothing else is enabled. The partition's
-  session gets `setProxy({ mode: 'direct' })` before any load, so Chromium never uses a system
-  proxy that could see the header, and a device permission handler that denies every device.
+- `webPreferences` also set `webSecurity: true` and `disableDialogs: true` (a macOS sheet shows no
+  origin), and nothing else is enabled. The partition's session gets `setProxy({ mode: 'direct' })`
+  before any load, so Chromium never uses a system proxy that could see the header, and a device
+  permission handler that denies every device. A client-certificate request is answered with none.
+  In a packaged app, developer tools close as soon as they open on the view (the Network panel would
+  show the header); a checkout build keeps them.
 - The header handler is not filtered by URL: it runs for every request in the partition, always
   removes a page-set `X-Agent-Inbox-Device` in any case, and adds the header only where the
   controller's `deviceHeaderFor(url)` answers (the hub's exact `https` origin, after a passed node
-  check).
+  check) and the URL is on the partition's own hub's origin.
 - Navigation is checked with `allowNavigation`, not `isViewerUrl`: an `https` URL on the hub's
   exact origin (the same `hubHref` rule as the header: no user info however written) or the
   offline file's exact `file:` URL. `will-frame-navigate` is checked too, for every frame.
 - New windows are always denied. A prevented top-level `http(s)` navigation and a denied new
-  window go to `openWebLink` only with focus and an input under 5 seconds old. Input is a key event
+  window go to `openWebLink` only with focus and a key press or click in the view in the last 5
+  seconds; any key press counts, so typing into the hub's page counts. Input is a key event
   (`before-input-event`) or a press (`input-event`), since `before-input-event` alone sees no mouse
   click; a mouse move does not count, and each input opens at most one link.
 - This Mac stays on top until the menu or `show()` asks; the view is made when a hub becomes
@@ -535,7 +539,13 @@ above:
   so the offline page does not flash at every start.
 - A hub page that fails to load, or whose renderer goes away, is replaced by the offline file.
   `refused` shows the offline file even over a loaded hub page. Forgetting the hub (or replacing
-  it) closes the view and clears its partition's storage and cache.)
+  it) closes the view and asks its partition's session to clear everything (`clearData()`);
+  `forget` answers once that is done or after 5 seconds. At start, every other `hub-<8 hex>`
+  partition is cleared the same way. No file is removed.
+- A hub page that closes its own view gets a fresh one at the next connection change or `show()`,
+  at most 3 a minute. When the window closes, the view is closed first and its session written to
+  disk in `will-quit`.
+- Notification clicks and Check for Updates… also show This Mac first.)
 
 **The bridge.** `remote-preload.cjs` exposes exactly one object, `agentInboxDesk`:
 `available()` → `{ open: boolean }`; `open({ session })` → `{ ok }` or `{ ok: false, reason }`

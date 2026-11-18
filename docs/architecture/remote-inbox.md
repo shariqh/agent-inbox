@@ -765,7 +765,8 @@ every Electron object injected, so `test/hub-view.test.ts` runs without Electron
 **The view.** One `WebContentsView` for the active hub, laid over the window's content area and
 following its resizes. The local page stays loaded underneath and is never unloaded. Its
 `webPreferences` are exactly `preload: electron/remote-preload.cjs`, `contextIsolation: true`,
-`sandbox: true`, `nodeIntegration: false`, `webSecurity: true` and `partition:
+`sandbox: true`, `nodeIntegration: false`, `webSecurity: true`, `disableDialogs: true` (a macOS sheet
+shows no origin, so the page could put up a dialog that looks like the app's own) and `partition:
 persist:hub-<id>` (`partitionFor` throws for anything but an 8-hex id). Before anything loads, the
 partition's session gets:
 
@@ -773,22 +774,29 @@ partition's session gets:
   TLS-intercepting proxy would see the device header.
 - `webRequest.onBeforeSendHeaders` for every request, whatever its URL or type, through
   `sendHeaders`: every header named `x-agent-inbox-device` in any case is removed first, then the
-  one `deviceHeaderFor(details.url)` answers is added, if it answers one. So a page-set header never
-  leaves, and the secret goes only to the hub's exact origin over `https`, after a passed node check:
-  never to `wss:`, `blob:`, `file:`, plain `http:` or a redirect target on another origin.
+  one `deviceHeaderFor(details.url)` answers is added, if it answers one and the URL is on this
+  partition's own hub's origin. So a page-set header never leaves, and the secret goes only to the
+  hub's exact origin over `https`, after a passed node check: never to `wss:`, `blob:`, `file:`, plain
+  `http:` or a redirect target on another origin. The own-origin check matters during a replace:
+  `deviceHeaderFor` already answers for the new hub while the old hub's partition may still send.
 - Permission request and check handlers that allow only `clipboard-sanitized-write`, asked by the
   top frame of a page on the hub's origin (`allowPermission`). A device permission handler that
   denies every device.
 - `will-download` cancelling every item.
 
 No `certificate-error` handler is registered, so Chromium refuses a certificate it does not trust.
+A `select-client-certificate` request from the view is answered with no certificate (Electron's
+default would offer the first identity in the store to any server the page makes this Mac contact).
+In a packaged app, developer tools are closed as soon as they open on the hub view, since the
+Network panel shows the device header as sent; a checkout build keeps them.
 
 **Navigation.** `will-navigate`, `will-frame-navigate` (every frame) and `will-redirect` are
 prevented unless `allowNavigation` holds: an `https` URL whose origin is exactly the hub's (the
 same `hubHref` rule as the device header) or the offline file's exact `file:` URL, with no query
 or fragment. A prevented top-level `http(s)` navigation goes to the system browser through
-`openWebLink` only when `mayOpenExternally`: the view has focus and its last input is under 5
-seconds old. Input is a key event (`before-input-event`) or a press (`input-event` of type
+`openWebLink` only when `mayOpenExternally`: the view has focus and there was a key press or a click
+in the view in the last 5 seconds. Any key press counts, so typing into the hub's page counts.
+Input is a key event (`before-input-event`) or a press (`input-event` of type
 `mouseDown`, `mouseUp`, `keyDown`, `rawKeyDown`, `keyUp`, `char`, `gestureTap`, `touchStart`,
 `touchEnd`); a mouse move or wheel does not count. Each input opens at most one link: it is used up
 by the open. `setWindowOpenHandler` always denies, and opens an `http(s)` URL externally by the same
@@ -805,17 +813,28 @@ rule. A sub-frame never opens anything.
 | `refused` | the offline file, even over a loaded hub page |
 | a hub page fails to load (not an aborted load), or its renderer goes away | the offline file |
 | `onReload` (the hub's version changed) | reloads a loaded hub page, bypassing the cache |
-| the active hub goes away (`forget`, or a new hub replaces it) | the view is closed, then its partition's storage data and cache are cleared, and This Mac is shown |
+| the active hub goes away (`forget`, or a new hub replaces it) | the view is closed, This Mac is shown, and the partition's session is asked to clear everything (below) |
+| the hub's page closes its own view (`window.close()`) | the dead view is dropped and This Mac shown; a fresh view comes at the next connection change or `show(id)`, at most 3 a minute, after which only `show(id)` makes one, once the minute has passed (`busy` until then) |
 
 The origin comes from the controller's `view()` and must be a canonical `https://<host>`, or no
 view is made. A failing offline file is not loaded again, so nothing loops. When the window closes,
-the view writes its partition's storage to disk and closes; that storage stays. On quit, main stops
-the controller first (`before-quit`).
+the view is closed first and its session kept, so what the page writes as it goes away reaches the
+session; `will-quit` then writes the partition's storage to disk (`flush()`), and that storage stays.
+On quit, main stops the controller first (`before-quit`).
+
+**Clearing a partition.** When the active hub goes away, the session's `clearData()` is called with
+no options, which clears every type it knows (cache, cookies, local storage, IndexedDB, service
+workers, file systems and the rest), also for a partition still being set up. `forget` answers once
+that is done, or after 5 seconds. At start, the names in the profile's `Partitions` folder are listed
+and every `hub-<8 hex>` partition but the stored hub's is cleared the same way; nothing is cleared
+while the store reports a problem or the folder cannot be read. Only sessions are asked: no file is
+removed, so the folders themselves stay.
 
 **Which view is on top.** This Mac stays on top until something asks: `show(id | null)`, from the
 View menu's **This Mac** and **<the hub's label>** (a radio pair, present only while a hub exists)
-or from `agentInboxConnect.show`. An id other than the active hub's is refused. **Settings…** and
-**Check for Updates…** show This Mac first. The window title is `Agent Inbox — <label>` while the
+or from `agentInboxConnect.show`. An id other than the active hub's is refused. **Settings…**,
+**Check for Updates…**, an update notification and a click on an attention notification show This
+Mac first. The window title is `Agent Inbox — <label>` while the
 hub's view is on top. Focus moves to the view that comes forward.
 
 **`agentInboxDesk`, in the hub view.** `remote-preload.cjs` is the view's only preload and exposes
@@ -837,7 +856,8 @@ when `trustedDeskSender` holds, checked on every call from `event.sender` and `e
 the sender is the hub view's own `webContents`, not destroyed, and the frame is its top frame
 (`parent === null`) on the hub's origin or on the offline file. A sub-frame, the view after it
 showed anything else, and the local window's `webContents` are all refused, with `{ available:
-false }` (or `{ ok: false }` for retry).
+false }` (or `{ ok: false }` for retry). Off macOS there is no view: `desk-connection` answers `{
+available: false }` and `desk-retry` answers `{ ok: false }`.
 
 **The offline page.** `electron/remote-offline.html` with `remote-offline.js` and
 `remote-offline.css` beside it: no inline script or style, a Content-Security-Policy meta of
@@ -854,7 +874,7 @@ dark through `prefers-color-scheme` alone.
 
 - `view()` → the controller's `view()` plus `showing` (the id on top, or null).
 - `connect({ address, code, replace })`, `forget(id)` → the controller's answers.
-- `show(id | null)` → `{ ok: true, showing }` or `{ ok: false, reason }` (`bad_id`, `not_found`).
+- `show(id | null)` → `{ ok: true, showing }` or `{ ok: false, reason }` (`bad_id`, `not_found`, `busy`).
 - `onChange(callback)` → an unsubscribe function; the message carries nothing, so the page asks
   `view()` again.
 
@@ -863,7 +883,8 @@ The preload checks each argument and rebuilds each answer field by field. Main
 (`linkSender` and `linkFilesPermitted`, after `installBinding.settled()`, as chat resume is),
 checks the argument count and each type again (`connect` takes exactly one plain object with only
 `address`, `code` and an optional boolean `replace`), and answers anyone else `{ available: false
-}`. Off macOS there is no controller, and every channel answers `{ available: false }`. No answer
+}`. A viewer this app reused rather than started (no file-link grant) gets the same. Off macOS
+there is no controller, and these four channels answer `{ available: false }`. No answer
 holds the secret, the encrypted blob, the device id or the node id: a test sends every channel
 through the real controller and scans the answers.
 
@@ -877,12 +898,18 @@ runs the real `main.cjs` top level against a fake `electron`, enumerates every c
 registers, and requires each to be classified (local page only, or hub view for the two desk
 channels): a channel added later fails until someone classifies it. Every local-only channel must
 answer the hub view (its top frame, a sub-frame, the offline file, or a frame claiming the local
-viewer's URL) exactly as a stranger, and call nothing.
+viewer's URL) exactly as a stranger, and call nothing. Its fake `BrowserWindow.fromWebContents`
+answers the window for the hub view too, so a handler that trusted "a page in my window" would be
+caught, and a source check finds no handler registered through `webContents.ipc` or a frame's `ipc`.
 
 **Not built yet.** The Settings form, the page's own hub-mode touches under `public/` (the banner,
 the This Mac / hub control), the terminal action (`available()` says `open: false`), notifications
-and the dock badge for the hub (PR 4: a notification click today brings the window forward but does
-not switch views), and keyboard shortcuts for the menu items.
+and the dock badge for the hub (PR 4), and keyboard shortcuts for the menu items.
+
+**For the next PR.** The hub's page controls every pixel of its view, so whatever says whose Inbox
+is on screen must be drawn by the app (the window title, the menu, or a strip the local page draws
+beside the view), never by the hub's page. The hub's label is the hub's own machine name (from its
+`/api/version`), so it is never proof of anything.
 
 ## Checked against real Tailscale Serve
 

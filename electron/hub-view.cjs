@@ -9,9 +9,11 @@
 // The page in that view comes from another machine, so it gets none of this app's privileges: its
 // own partition (storage, cache, headers, permission handlers), its own preload
 // (remote-preload.cjs, one object, `agentInboxDesk`), a sandbox, a direct connection, no
-// downloads, one permission (clipboard writes), navigation only on the hub's origin, and new
-// windows only to the system browser after a fresh input. The device secret never reaches it:
-// main adds the header to each request (`sendHeaders`), and a page-set one is always removed.
+// downloads, dialogs or client certificates, one permission (clipboard writes), navigation only on
+// the hub's origin, and new windows only to the system browser after a key press or click in the
+// view in the last 5 seconds (typing into the page counts). The device secret never reaches it: main
+// adds the header to each request for its own hub (`sendHeaders`), a page-set one is always
+// removed, and a packaged app closes developer tools on the view.
 //
 // Policy only, with every Electron object injected, so test/hub-view.test.ts runs without Electron.
 const { pathToFileURL } = require('node:url')
@@ -196,7 +198,7 @@ const isHttp = (url) => {
  * which; `reload()`, `destroy()`, `layout()`, `flush()`, `retry()` and `trusts(event)`. What it
  * shows follows `connect.onConnection`: the hub page once online, kept through `retrying`; the
  * offline file when refused, or while retrying with no hub page; nothing while the first check
- * runs. The active hub going away closes the view and clears its partition.
+ * runs. The active hub going away closes the view and asks its partition to clear everything.
  */
 function createHubView(options) {
   const { window: win, session, WebContentsView, connect, openWebLink, offlineFile, preload } = options

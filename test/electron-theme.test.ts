@@ -22,7 +22,7 @@ describe('Electron theme bridge wiring', () => {
     const main = read('electron/main.cjs')
 
     // #617 PR 3b adds WebContentsView, net and powerMonitor for the hub view
-    expect(main).toContain("const {\n  app, BrowserWindow, WebContentsView, dialog, ipcMain, Menu, Notification, nativeTheme, net, powerMonitor, safeStorage, screen, session, shell,\n} = require('electron')")
+    expect(main).toContain("const {\n  app, BrowserWindow, WebContentsView, dialog, ipcMain, Menu, Notification, nativeTheme, net, powerMonitor, safeStorage, screen, session, shell,\n  webContents,\n} = require('electron')")
     expect(main).toContain("const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])")
     expect(main).toMatch(/const THEME_BACKGROUND_COLORS = \{\s*light: '#edf0f2',\s*dark: '#090b0d',\s*\}/)
     expect(main).toContain("ipcMain.handle('agent-inbox:set-theme-preference'")

@@ -3261,3 +3261,74 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
   }
 
   }
+
+/* #617 PR 3c: another Mac's Inbox. Settings → Use another Mac's Inbox (public/connect-settings.js),
+   the strip this Mac's page draws above the hub's view (public/hub-strip.js, which sets its height
+   from HUB_STRIP_HEIGHT), and the line the page shows from another Mac while it reconnects
+   (public/hub-mode.js). */
+.connect-settings { padding-bottom: var(--sp-4); border-bottom: 1px solid var(--app-border); }
+.connect-form, .connect-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2) var(--sp-3); }
+.connect-form { margin: var(--sp-2) 0; }
+.connect-actions { margin-top: var(--sp-2); }
+.connect-settings [hidden] { display: none; }
+.connect-field { display: grid; gap: var(--sp-1); }
+.connect-field label { color: var(--app-text-soft); font-size: var(--fs-meta); }
+.connect-field input {
+  width: 240px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  font-size: var(--fs-body);
+}
+#connect-code { width: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.connect-field input:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 24%, transparent); outline-offset: 1px; border-color: var(--app-focus); }
+.connect-settings button, .hub-strip-back {
+  padding: 5px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+.connect-settings button.connect-primary { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+.connect-settings button.connect-danger { border-color: var(--app-danger); color: var(--app-danger); }
+.connect-settings button:disabled, .connect-settings input:disabled { opacity: .55; cursor: default; }
+.connect-hub p, .connect-confirm p { margin: 0 0 var(--sp-1); }
+.connect-hub-name { font-weight: 650; }
+.connect-hub-address { color: var(--app-muted); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.connect-hub-status, .connect-busy { font-size: var(--fs-body); overflow-wrap: anywhere; }
+.connect-message { margin: var(--sp-2) 0 0; color: var(--app-danger); font-size: var(--fs-meta); }
+/* a note (the replaced Mac still lists this one), not an error */
+.connect-message.connect-note { color: var(--app-text-soft); }
+.connect-confirm { margin-top: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-elevated); }
+.hub-strip {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  box-sizing: border-box;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-elevated);
+  color: var(--app-text);
+  font-size: var(--fs-body);
+}
+/* in a narrow window the status word gives way first, then the name; This Mac never does */
+.hub-strip-title { flex-shrink: 1; min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.hub-strip-state { flex-shrink: 1000; min-width: 0; overflow: hidden; color: var(--app-muted); text-overflow: ellipsis; white-space: nowrap; }
+.hub-strip-back { margin-left: auto; flex: none; }
+.hub-strip-back:focus-visible, .connect-settings button:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
+.hub-reconnecting { color: var(--app-warning); font-size: var(--fs-body); font-weight: 600; }
+/* the line says the page is reconnecting; the page's own "disconnected" would say it twice */
+body.hub-reconnecting #status { display: none; }

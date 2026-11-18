@@ -19,6 +19,7 @@
 
 const {
   app, BrowserWindow, WebContentsView, dialog, ipcMain, Menu, Notification, nativeTheme, net, powerMonitor, safeStorage, screen, session, shell,
+  webContents,
 } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const { randomBytes, randomUUID } = require('node:crypto')
@@ -43,7 +44,7 @@ const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
 const { createRemoteConnect } = require('./remote-connect.cjs')
-const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle } = require('./hub-view.cjs')
+const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -832,6 +833,10 @@ function startRemoteConnect(win) {
     now: Date.now,
     onChange: () => hubChanged(win),
     isPackaged: app.isPackaged,
+    // #617 PR 3c: the one guard every way of showing the hub goes through: this window's page is the
+    // viewer the app owns, the only page that hears agentInboxConnect and so draws the strip
+    mayShow: () => fileLinkWebContentsId !== null && fileLinkWebContentsId === win.webContents.id,
+    backgroundColor: themeBackgroundColor,
     readPartitions: () => readdirSync(path.join(app.getPath('userData'), 'Partitions')),
   })
   const kick = () => {
@@ -1308,8 +1313,9 @@ function installApplicationMenu(win) {
       if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings')
     },
   }
-  // #617 PR 3b: This Mac and <the hub's label>, a radio pair, only while a hub exists
-  const hubItems = hubMenuItems({ connection: remoteConnect?.connection(), showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })
+  // #617 PR 3b: This Mac and <the hub's label>, a radio pair, only while a hub exists; PR 3c: and only
+  // while it may be shown (this window's page is the owned one, which draws the strip)
+  const hubItems = hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })
   const viewMenu = hubItems.length === 0
     ? { role: 'viewMenu' }
     : {
@@ -1319,7 +1325,8 @@ function installApplicationMenu(win) {
           { type: 'separator' },
           { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
           { type: 'separator' },
-          { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+          // the roles' own work, then the hub view laid out at the local page's new zoom (#617 PR 3c)
+          ...zoomMenuItems({ focused: () => webContents.getFocusedWebContents() ?? win.webContents, after: () => hubView?.layout() }),
           { type: 'separator' },
           { role: 'togglefullscreen' },
         ],
@@ -1576,6 +1583,8 @@ app.whenReady().then(async () => {
       fileLinkWebContentsId = files ? setupWindowWebContentsId : null
       launchWebContentsId = launch ? setupWindowWebContentsId : null
       updateController?.refreshInstallPermission()
+      // #617 PR 3c: the page that draws the strip lost (a reload, a navigation, a crash) or regained the binding
+      hubView?.ownerChanged()
     },
   })
   win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {

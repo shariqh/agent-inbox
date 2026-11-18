@@ -802,8 +802,10 @@ describe('createInstallBinding (#216)', () => {
       return proof.promise
     })
     const refreshInstallPermission = vi.fn()
+    // #617 PR 3c: the hub view hears every change of the window's grants
+    const hubView = { ownerChanged: vi.fn() }
     const wiring = new Function(
-      'createInstallBinding', 'URL_BASE', 'installGate', 'reproveOwnership', 'updateController', 'flags', 'process',
+      'createInstallBinding', 'URL_BASE', 'installGate', 'reproveOwnership', 'updateController', 'flags', 'process', 'hubView',
       `let setupInstallEnabled = flags.setupInstallEnabled
       let viewerOwned = flags.viewerOwned
       let launchEnabled = flags.launchEnabled === true
@@ -818,11 +820,11 @@ describe('createInstallBinding (#216)', () => {
         installBinding,
         ids: () => ({ setup: setupInstallWebContentsId, update: updateInstallWebContentsId, files: fileLinkWebContentsId, launch: launchWebContentsId }),
       }`,
-    )(createInstallBinding, VIEWER, gate, reproveOwnership, { refreshInstallPermission }, flags, { platform: flags.platform ?? 'darwin' }) as {
+    )(createInstallBinding, VIEWER, gate, reproveOwnership, { refreshInstallPermission }, flags, { platform: flags.platform ?? 'darwin' }, hubView) as {
       installBinding: InstallBinding
       ids(): { setup: number | null; update: number | null; files: number | null; launch: number | null }
     }
-    return { ...wiring, gate, reproveOwnership, refreshInstallPermission, proof: () => proofs.at(-1)! }
+    return { ...wiring, gate, reproveOwnership, refreshInstallPermission, hubView, proof: () => proofs.at(-1)! }
   }
 
   it('main rebinds its window to the owned viewer only after the startup proof passes again', async () => {
@@ -830,11 +832,13 @@ describe('createInstallBinding (#216)', () => {
     w.installBinding.navigationStarted(VIEWER)
     expect(w.ids()).toEqual({ setup: 7, update: 7, files: 7, launch: null })
     expect(w.refreshInstallPermission).toHaveBeenCalledTimes(1)
+    expect(w.hubView.ownerChanged).toHaveBeenCalledTimes(1)
 
     w.installBinding.navigationStarted(VIEWER)
     expect(w.ids()).toEqual({ setup: null, update: null, files: null, launch: null })
     // Settings learns at once that this window may no longer install.
     expect(w.refreshInstallPermission).toHaveBeenCalledTimes(2)
+    expect(w.hubView.ownerChanged).toHaveBeenCalledTimes(2)
     const failed = w.installBinding.navigationCommitted(VIEWER)
     expect(w.reproveOwnership).toHaveBeenCalledOnce()
     w.proof().resolve(false)

@@ -28,6 +28,15 @@ const CLEAR_WAIT_MS = 5_000
 // a page that closes its own view gets a fresh one at most this often
 const REBUILDS_PER_MINUTE = 3
 const MINUTE_MS = 60_000
+// #617 PR 3c: the local page draws whose Inbox is on screen in a strip this many CSS pixels tall at
+// the top, since the hub's page controls every pixel of its own view. public/hub-strip.js draws it at
+// the same height (test/dom/hub-strip.test.ts pins the two); the view starts insetFor(the local
+// page's zoom factor) window pixels below the top, so the strip is never covered nor left short.
+const HUB_STRIP_HEIGHT = 36
+// the View menu's zoom steps, as Electron's zoomIn and zoomOut roles take them, within Chromium's range
+const ZOOM_STEP = 0.5
+const ZOOM_MIN = -7.5
+const ZOOM_MAX = 8.5
 const HUB_PARTITION = /^hub-[0-9a-f]{8}$/
 const CLIPBOARD_WRITE = 'clipboard-sanitized-write'
 // Chromium's code for a navigation that was cancelled, a prevented one included: not a failure
@@ -163,6 +172,43 @@ function hubMenuItems({ connection, showing, show }) {
   ]
 }
 
+/** The view's top inset in window pixels: the strip's CSS height at the local page's zoom factor. */
+function insetFor(zoom) {
+  const factor = Number.isFinite(zoom) && zoom > 0 ? zoom : 1
+  return Math.round(HUB_STRIP_HEIGHT * factor)
+}
+
+/**
+ * The View menu's Actual Size, Zoom In and Zoom Out, doing what Electron's roles do to the focused
+ * contents and then calling `after` (main lays the hub view out again: no event says the local page's
+ * zoom changed).
+ */
+function zoomMenuItems({ focused, after }) {
+  const apply = (next) => () => {
+    let contents = null
+    try {
+      contents = focused()
+    } catch {
+      contents = null
+    }
+    try {
+      if (contents && !contents.isDestroyed?.()) contents.setZoomLevel(next(contents.getZoomLevel()))
+    } catch {
+      // nothing zoomed
+    }
+    try {
+      after()
+    } catch {
+      // nothing laid out
+    }
+  }
+  return [
+    { label: 'Actual Size', accelerator: 'CommandOrControl+0', click: apply(() => 0) },
+    { label: 'Zoom In', accelerator: 'CommandOrControl+Plus', click: apply((level) => Math.min(level + ZOOM_STEP, ZOOM_MAX)) },
+    { label: 'Zoom Out', accelerator: 'CommandOrControl+-', click: apply((level) => Math.max(level - ZOOM_STEP, ZOOM_MIN)) },
+  ]
+}
+
 /** Main has no network-change event: `isOnline()` is read every 10 seconds, and a turn from false to true calls `onBack`. */
 function watchOnline({ isOnline, onBack, setInterval: every = setInterval, intervalMs = ONLINE_EVERY_MS }) {
   const read = (fallback) => {
@@ -207,6 +253,16 @@ function createHubView(options) {
   const isPackaged = options.isPackaged !== false
   const readPartitions = options.readPartitions ?? (() => [])
   const setTimeoutFn = options.setTimeout ?? setTimeout
+  // #617 PR 3c: the one guard every way of showing the hub goes through. True only while this
+  // window's page is the one the app owns, which alone hears agentInboxConnect and draws the strip;
+  // false by default, so a caller that does not say never shows the hub.
+  const mayShow = () => {
+    try {
+      return options.mayShow?.() === true
+    } catch {
+      return false
+    }
+  }
   const offlineUrl = pathToFileURL(offlineFile).href
   // sessions whose handlers are in place (a partition is configured once per run)
   const configured = new WeakSet()
@@ -348,15 +404,24 @@ function createHubView(options) {
 
   function layout() {
     if (active === null) return
+    let zoom = 1
+    try {
+      zoom = win.webContents.getZoomFactor()
+    } catch {
+      zoom = 1
+    }
+    const inset = insetFor(zoom)
     try {
       const [width, height] = win.getContentSize()
-      active.view.setBounds({ x: 0, y: 0, width, height })
+      active.view.setBounds({ x: 0, y: inset, width, height: Math.max(0, height - inset) })
     } catch {
       // the window is going away
     }
   }
 
   function place() {
+    // what is on top is laid out at the local page's zoom of this moment
+    layout()
     if (active !== null) {
       try {
         active.view.setVisible(showing === active.id)
@@ -405,17 +470,28 @@ function createHubView(options) {
     } catch {
       origin = null
     }
-    if (at !== epoch || destroyed || origin === null) return
+    if (at !== epoch || destroyed) return
+    if (origin === null) {
+      notBuilt(id)
+      return
+    }
     const ses = session.fromPartition(partitionFor(id))
     try {
       await configure(ses, origin)
     } catch {
+      if (at === epoch && !destroyed) notBuilt(id)
       return
     }
     if (at !== epoch || destroyed) return
     const view = new WebContentsView({
       webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, disableDialogs: true, partition: partitionFor(id) },
     })
+    // opaque before it is added: until its page paints, this Mac's page must not show through
+    try {
+      view.setBackgroundColor(String(options.backgroundColor?.() ?? '#ffffff'))
+    } catch {
+      // the default background
+    }
     const entry = { id, origin, ses, view, contents: view.webContents, loaded: null, lastInputAt: null }
     wire(entry)
     active = entry
@@ -425,6 +501,16 @@ function createHubView(options) {
     layout()
     place()
     render(connect.connection())
+    changed()
+  }
+
+  /** A build that stopped early: nothing is being built, so the next change or show(id) tries again, and nothing claims to be on top. */
+  function notBuilt(id) {
+    if (pending === id) pending = null
+    if (showing === id) {
+      showing = null
+      place()
+    }
     changed()
   }
 
@@ -599,9 +685,14 @@ function createHubView(options) {
         if (typeof id !== 'string' || !HUB_ID.test(id)) return { ok: false, reason: 'bad_id' }
         const hub = activeHub(connect.connection())
         if (hub === null || hub.id !== id) return { ok: false, reason: 'not_found' }
+        if (!mayShow()) return { ok: false, reason: 'not_owned' }
         if (dead === id) {
           if (!mayRebuild()) return { ok: false, reason: 'busy' }
           rebuild(id)
+        } else if (active?.id !== id && pending !== id) {
+          // no view and none being built: start one, and say it is not ready rather than show nothing
+          if (active === null && pending === null) activate(id).catch(() => {})
+          return { ok: false, reason: 'not_ready' }
         }
         showing = id
       }
@@ -609,7 +700,19 @@ function createHubView(options) {
       changed()
       return { ok: true, showing }
     },
-    current: () => showing,
+    /** The hub whose view is really on top, else null: never one being built or rebuilt. */
+    current: () => (showing !== null && active !== null && active.id === showing ? showing : null),
+    /** Whether the hub may be shown now (the menu offers it only then). */
+    canShow: () => mayShow(),
+    /** The local page gained or lost the binding: This Mac comes forward when it is lost. */
+    ownerChanged() {
+      if (destroyed) return
+      if (!mayShow() && showing !== null) {
+        showing = null
+        place()
+      }
+      changed()
+    },
     reload() {
       if (active === null || active.loaded !== 'hub') return
       try {
@@ -704,7 +807,9 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView }) {
 module.exports = {
   CONNECT_CHANNELS,
   DESK_CHANNELS,
+  HUB_STRIP_HEIGHT,
   INPUT_WINDOW_MS,
+  insetFor,
   allowNavigation,
   allowPermission,
   createHubView,
@@ -717,4 +822,5 @@ module.exports = {
   trustedDeskSender,
   watchOnline,
   windowTitle,
+  zoomMenuItems,
 }

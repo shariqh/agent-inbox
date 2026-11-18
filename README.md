@@ -647,8 +647,7 @@ and send messages to your sessions, which may act without asking, so only pair M
    moment after switching on the status says "On, starting…", and Test waits until it says On.
 3. Switch on **Open Agent Inbox at login**, so sharing comes back after this Mac restarts.
 4. Press **Add a Mac**. It shows a code that works once, for 10 minutes, and this Mac's address.
-   On the other Mac, enter them in Settings → Use another Mac's Inbox (that side comes in a later
-   version).
+   On the other Mac, enter them in Settings → Use another Mac's Inbox (next section).
 
 The status line beside the switch says Off, On, Paused (sharing comes back by itself once the cause
 is fixed, for example once Tailscale is running again) or Needs you, with one thing to do. If this
@@ -661,6 +660,26 @@ panel shows the command that stops it, `tailscale serve --https=443 off`.
 
 Sharing works only in the viewer the app started itself; in one it found already running, quit and
 reopen Agent Inbox to change it.
+
+## Use another Mac's Inbox
+
+On macOS, the desktop app can show the Inbox of another Mac of yours, for example the one your
+agents run on, while you sit at a laptop. Both Macs need Tailscale, signed in to your own account,
+and the other Mac must share its Inbox (previous section).
+
+1. On the other Mac: **Settings → Other devices → Add a Mac**. It shows a code and its address
+   (like `mac-name.tail1234.ts.net`).
+2. On this Mac: **Settings → Use another Mac's Inbox**. Type the address and the code, then press
+   **Connect**. Connecting can take 10 seconds or more.
+3. Press **Show its Inbox**. A strip at the top of the window names the Mac whose Inbox is on
+   screen and says Online, Connecting…, Reconnecting… or Not connected. Press **This Mac** in the
+   strip, or choose **View → This Mac**, to come back. While the other Mac's Inbox is on screen,
+   this Mac's own Inbox underneath does nothing, keys included.
+
+If connecting fails, Settings says why and what to do next. **Disconnect** stops this Mac using the
+other Mac's Inbox; the other Mac keeps this Mac in its list until you remove it there. The other
+Mac's settings are changed on that Mac: its Settings page here shows only how the page looks.
+Like sharing, this works only in the viewer the app started itself.
 
 ## Agents view
 

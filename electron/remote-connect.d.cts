@@ -14,7 +14,7 @@ export function normaliseCode(text: unknown): string | null
 export function isDeviceLabel(value: unknown): value is string
 /** This Mac's name on the hub, from its host name; `Mac` when nothing usable is left. */
 export function deviceLabelFor(name: unknown): string
-/** The hub's name on this Mac: its machine, else the first label of its address; at most 40 characters. */
+/** The hub's name on this Mac: its machine, else (or when the machine reads as `thismac` or `local`, ignoring case, spaces, `-` and `_`) the first label of its address; at most 40 characters. */
 export function hubLabelFor(machine: unknown, host: string): string
 /** The mesh rule (inTailnet in src/mesh-config.ts). */
 export function inTailnet(host: string, suffix: string | undefined): boolean
@@ -60,6 +60,11 @@ export type StoreProblem = 'unreadable' | 'bad_file' | 'too_large' | 'not_json' 
 export type ScheduleAnswer = { ok: true } | { ok: false; reason: 'stopped' | 'not_started' | 'failed' }
 export interface ConnectView {
   available: boolean
+  /**
+   * False once the Keychain was needed (a connect, a stored hub) and could not be used. True
+   * before anything needed it: view() never asks macOS for the Keychain by itself, because the
+   * local page reads it at every start.
+   */
   keychain: boolean
   hub: { id: string; label: string; origin: string; machine: string | null; state: ConnectionState | null; reason: string | null } | null
   problem: StoreProblem | null

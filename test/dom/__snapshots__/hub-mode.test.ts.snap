@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the page with no agentInboxDesk (a browser, an older app) > is the local page: none of hub mode or the connect screens, and Setup is still read and drawn > requests 1`] = `
+[
+  "GET /api/activity",
+  "GET /api/activity/history",
+  "GET /api/boards",
+  "GET /api/boards/archived/summary",
+  "GET /api/issues",
+  "GET /api/items",
+  "GET /api/links",
+  "GET /api/messages",
+  "GET /api/projects/closed",
+  "GET /api/setup",
+  "GET /api/version",
+]
+`;

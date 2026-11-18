@@ -323,8 +323,20 @@ the entry is on. A read that fails is tried once more after 5 seconds. Any other
 writes `enabled: false` (the viewer then closes the listener), shows a native notification ("Agent
 Inbox stopped sharing with your other devices: Tailscale Serve is not set up as expected") and
 puts the reason in the status line. Whenever the switch is off and a Serve configuration for that
-port exists, the panel shows the command that removes it, `tailscale serve --bg <port> off`, because
-a `--bg` configuration outlives the switch.
+port exists, the panel shows the command that removes it, `tailscale serve --https=443 off`, because
+a `--bg` configuration outlives the switch. (That form is from Tailscale's documentation; it has not
+yet been seen in real output.)
+**(As built in PR 2c,** `electron/remote-entry.cjs` with its read-only half
+`electron/remote-tailscale.cjs`; the notification and the panel are the next PR's. Stricter than
+above, because unknown is never ok: the handler entry may hold only `Proxy`, and only the
+`127.0.0.1` form, since nothing showed that Tailscale writes `localhost` for a bare port; the TCP
+entry for 443 must be exactly `{ "HTTPS": true }`; a TCP entry on any port, or another host's or
+port's handler, that names the port is refused; a non-empty `Foreground` or `Services`, and any
+top-level key but `TCP`, `Web`, `AllowFunnel`, `Foreground` and `Services`, is refused. Only `{}`
+has been seen from a real `tailscale serve status --json`; every configured shape in the tests is
+from documentation. The watch also turns the entry off when `tailscale status --json` no longer
+gives the stored host and an allowed login. `turnOn` reads Tailscale before it takes the file's
+lock, never under it.)
 
 **Changes made behind the app's back.** An agent on the hub can edit `remote.json`. It already
 controls the hub, so the risk is that the exposure is silent. Main keeps the SHA-256 of the
@@ -333,6 +345,15 @@ seconds. A device the viewer reports in `paired` after a code main asked for is 
 still gets a native notification ("<label> was paired with this Inbox"). Any other difference
 gets a native notification ("Agent Inbox's sharing settings were changed outside the app") and a
 flag on the Settings panel until the owner presses **Review** and confirms or reverts.
+**(As built in PR 2c:** the digest also covers `viewerPort`, which decides which viewer opens the
+entry, and covers each device's `id` and `secretSha256` but not its label. A pairing is expected
+only when the viewer's `paired` list names the device with the `codeId` of a code main's own
+`requestCode()` received in the last 11 minutes, one code per device, because any local process
+can read the owner token and make a code. The viewer's list starts empty when it restarts, so a
+pairing seen across a restart is flagged. The first read after the watch starts is the baseline,
+so a change made while the app was closed is not flagged. The controller never reverts: "Review"
+records the current state as accepted (`acknowledge()`), and the owner reverts with the panel's own
+switch and Remove. Any write by main voids a pending code.)
 
 **The hub's Settings** ("Let my other devices use this Inbox", macOS, owned viewer only) use a
 bridge, `agentInboxRemoteEntry` in `setup-preload.cjs`, gated like `handleLinkSettings`
@@ -340,13 +361,22 @@ bridge, `agentInboxRemoteEntry` in `setup-preload.cjs`, gated like `handleLinkSe
 viewer gets `{ available: false }` and is told to quit and reopen. `tailnetSelf()` reads `tailscale status --json` for this node's
 `Self.DNSName` (trailing dot dropped) and `User[String(Self.UserID)].LoginName`; a tagged hub has
 no user login, so the list starts empty and the switch stays off until a login is added.
+**(As built in PR 2c:** there is no Add or Remove for logins: `turnOn` writes `logins` as exactly
+this node's login, and a tagged hub cannot turn the entry on (`tailnetSelf()` answers `tagged`; its
+`UserID` still resolves to a placeholder user, whose login is never used). When the stored host or
+logins differ from this node's (the machine was renamed, or another account signed in), `turnOn`
+removes every device, since their secrets were issued under another identity. A file with group or
+other bits is rewritten `0600` only by an explicit repair, which also turns it off, since another
+user may have edited it.)
 `selfTest()` fetches `https://<host>/api/version` from main with no device secret. It passes when
 the answer is a 403 and `/api/remote-entry` shows the `device` count rose: that proves Serve, the
 `Host` and the login all reached the gate. A rise in `host` or `login` names the problem.
+**(As built:** it passes only when the `device` count rose by exactly one, and the watch and
+`turnOn` do not depend on it, because §9 item 3 is still open.)
 
 The panel shows, top to bottom: the switch; the risk sentence; the one command to run in Terminal,
-`tailscale serve --bg 4320`, with Copy (the app never runs it); the address; the allowed logins
-with Add and Remove; **Add a device** and the paired devices with Remove; the status line and any
+`tailscale serve --bg 4320`, with Copy (the app never runs it); the address; the allowed login (as
+built, read-only: see above); **Add a device** and the paired devices with Remove; the status line and any
 "changed outside the app" flag; **Test**; the removal command when it applies; and **Open Agent
 Inbox at login**, which is `app.setLoginItemSettings({ openAtLogin })` read back with
 `getLoginItemSettings()`, the app's own setting.
@@ -566,7 +596,7 @@ PR 2 is split because pairing roughly doubles it. PR 2a cannot be turned on by i
 | 0 | This spec | none |
 | 1 | `src/session-place.ts` (`readPlace`, `readDesk`, `readRemoteSession`, patterns); `buildMcpServer`'s `place()` and `refreshPlace` timer; `ensureColumn` ×4, `ActivityUpdate`, `upsertActivityTxn`, `setActivityPlace`, `listActivity`, `Activity` in `src/store.ts`; `machine` in `/api/version`; `public/place.js`; card meta in `public/agents-home.js`; panel meta, Open in claude.ai and Copy attach command in `public/app.js`; `activity-and-live.md` | `test/session-place.test.ts` (each pattern, a leading `-`, a hostile tmux name, timeout, no `TMUX`; the live file: another pid's, a symlink, oversized, a bad id, none); `test/store.test.ts` (`machine`, `pane` kept on omission; `setActivityPlace` writes nulls and moves no stamp; the upsert never names `desk`); `test/live-tick.test.ts` unchanged and green; `test/mcp.integration.test.ts`; `test/place.test.ts` (URL only from a valid id; the quoted attach command); `test/dom/agents-home.test.ts`; `test/csp-source.test.ts` |
 | 2a | `src/viewer-remote.ts` (`readRemoteSetting`, the setting cache, `remoteGate`, `REMOTE_ROUTES`, `startRemoteEntry` with `closeAllConnections`); `src/viewer-server.ts` (second `createViewer`, `GET /api/remote-entry`) | `test/viewer-remote.test.ts` (every gate step and order, header case, `:443`, Funnel header, device header absent, wrong, removed, timing-safe compare of all; `/%61pi/setup`, `%2e%2e`, `//`, `\`, trailing slash, `HEAD` on a refused route; no marker on 403; marker, CSP and framing on 200); `test/remote-routes.test.ts` (every route in `createViewer`'s `app.routes` classified; `/api/owner` absent on `remoteApp`); `test/remote-setting.test.ts` (symlink, other owner, mode `0644`, size, newer schema, bad device dropped, port mismatch, re-read on change, close on off) |
-| 2b | **(As built, viewer process only:** pairing in a new `src/remote-pair.ts`, wired into `src/viewer-remote.ts`'s gate and `src/viewer-server.ts`; `test/remote-pair.test.ts`. Everything after `POST /api/remote-entry/code` in this row moves to the next PR, 2c.) Pairing in `src/viewer-remote.ts` (`POST /api/remote/pair`, the code, rate limit, device write under the lock); `POST /api/remote-entry/code`; `electron/remote-entry.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch); IPC and notifications in `electron/main.cjs`; `agentInboxRemoteEntry` in `setup-preload.cjs`; the Settings section (`public/remote-settings.js`, `public/app.js`) | `test/remote-pair.test.ts` (code once, expired, five wrong tries, rate limit, no code pending, secret answered once, only the hash stored); `test/serve-state.test.ts` (fixtures: the one good shape; a second path; a TCP forward; Funnel; another port; malformed JSON; one failed read retried); `test/remote-entry-settings.test.ts` (writes, outside change flagged, an expected pairing notified); `test/dom/settings-remote.test.ts` |
+| 2b | **(As built, viewer process only:** pairing in a new `src/remote-pair.ts`, wired into `src/viewer-remote.ts`'s gate and `src/viewer-server.ts`; `test/remote-pair.test.ts`. Everything after `POST /api/remote-entry/code` in this row moves to the next PR, 2c. **PR 2c as built:** logic and tests only, `electron/remote-entry.cjs` and `electron/remote-tailscale.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch), with `test/serve-state.test.ts` and `test/remote-entry-settings.test.ts`; IPC, notifications, the preload bridge, the Settings section and the login item move to the PR after it.) Pairing in `src/viewer-remote.ts` (`POST /api/remote/pair`, the code, rate limit, device write under the lock); `POST /api/remote-entry/code`; `electron/remote-entry.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch); IPC and notifications in `electron/main.cjs`; `agentInboxRemoteEntry` in `setup-preload.cjs`; the Settings section (`public/remote-settings.js`, `public/app.js`) | `test/remote-pair.test.ts` (code once, expired, five wrong tries, rate limit, no code pending, secret answered once, only the hash stored); `test/serve-state.test.ts` (fixtures: the one good shape; a second path; a TCP forward; Funnel; another port; malformed JSON; one failed read retried); `test/remote-entry-settings.test.ts` (writes, outside change flagged, an expected pairing notified); `test/dom/settings-remote.test.ts` |
 | 3 | `electron/remote-connect.cjs` (settings, `validateHubOrigin` with the tailnet and peer checks, pairing, `safeStorage`, `hubFetch`, `probeHub`, backoff); `electron/remote-preload.cjs`; `electron/remote-offline.html`; the view, header injection, navigation, redirect, download and permission handlers, menu items and `powerMonitor` in `electron/main.cjs`; `agentInboxConnect` and local `agentInboxDesk` in `setup-preload.cjs`; connect settings and the banner in `public/app.js` | `test/remote-connect.test.ts` (origin rules, outside the tailnet, a tagged or another user's peer, a changed node, marker required, secret never stored in clear, backoff 2→60 s, resume and online triggers, reload only on version change, refused state); `test/remote-preload.test.ts` (one object, exact members); `test/main-source.test.ts` (the view never gets the install binding; the header handler filters on the hub origin); `test/dom/connect-banner.test.ts` |
 | 4 | `createAttentionWatch` in `electron/main.cjs`; `electron/desk-open.cjs` (`fillTemplate`, `deskScript`, `openDesk`, the confirmation dialog); `writeChatScript` generalised; Open desk in `public/place.js`, `public/agents-home.js`, `public/app.js`, `public/chats-view.js` | `test/reply-watch.test.ts` (posts to the hub base with a trailing slash, its Origin and the device header); `test/attention-watch.test.ts` (badge sum, per-source `known`, wake adapter local only); `test/desk-open.test.ts` (each placeholder's quoting, parsed back by `sh` and by a second `sh -c` for `{attach}`; unknown placeholder refused; `sshHost` with a leading `-` refused; no save without the dialog; source by sender; `not_on_hub`, `not_here`; gesture and rate limits); `test/badge.test.ts` still green; `test/dom/chats-view.test.ts` |
 
@@ -630,7 +660,10 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    `tailscale serve status --json` with a configuration (expected: `TCP`, `Web` keyed by
    `host:443` with `Handlers` by path and a `Proxy`, and `AllowFunnel`), the shape of a raw TCP
    forward in it, a peer's `StableID` and `Tags`, and the exact removal command
-   (`tailscale serve --bg <port> off`, from the CLI reference's "add `off` to the command").
+   (`tailscale serve --https=443 off`, from Tailscale's documentation; `tailscale serve --help` on
+   1.102 lists `--bg`, `--https`, `--http`, `--tcp`, `--tls-terminated-tcp`, `--set-path`,
+   `--service`, `--accept-app-caps`, `--proxy-protocol`, `--tun`, `--yes`, `status` and `reset`).
+   Also observed: a tagged node's `Self.UserID` still resolves to a placeholder user in `User`.
 5. **App Nap.** The packaged app runs the viewer in its main process. If hours hidden slow the
    remote entry, hold `powerSaveBlocker.start('prevent-app-suspension')` while it is on.
 6. **Login items.** Does `setLoginItemSettings` need approval in System Settings → Login Items?
@@ -643,5 +676,6 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
 10. **A laptop build for the proof.** The laptop has no app today, so the laptop half of §7
     step 3 runs on the signed release, after the hub-only half has passed.
 11. **`/api/version`'s `machine` and a session's `machine` can differ** when `AGENT_INBOX_MACHINE` is set only for terminals; PR 4's machine checks must allow for it.
-12. **PR 2b: main and the viewer must name the same `remote.json`;** main computes it by the same
-    rule (the folder of `AGENT_INBOX_DB`, else `~/.agent-inbox`) or passes the path.
+12. **Settled in PR 2c: main and the viewer name the same `remote.json`:** main's `remoteFile()`
+    uses the same rule (the folder of `AGENT_INBOX_DB`, else `~/.agent-inbox`), and a test compares
+    it with `remoteDir()` over several environments.

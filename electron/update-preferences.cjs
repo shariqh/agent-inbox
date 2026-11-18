@@ -155,14 +155,16 @@ function createLockedFile(filePath, fsImpl) {
       } catch (error) {
         if (error?.code !== 'EEXIST') throw error
         try {
-          const stat = await fs.stat(lockPath)
+          // lstat, never stat: a dangling symlink at the lock path makes the open EEXIST while stat
+          // (which follows the link) says ENOENT, and that case once retried forever with no sleep
+          const stat = await fs.lstat(lockPath)
           if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
             await fs.unlink(lockPath)
             continue
           }
         } catch (statError) {
           if (statError?.code !== 'ENOENT') throw statError
-          continue
+          // released between the open and the lstat: wait under the same deadline as a held lock
         }
         if (Date.now() >= deadline) throw new Error(`${path.basename(filePath)} is busy in another process`)
         await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS))

@@ -141,14 +141,16 @@ describe('Electron keeps browser storage through a quit', () => {
   const start = main.indexOf(OPEN)
   const willQuit = main.slice(start + OPEN.length, main.indexOf('\n})', start))
 
-  function quit(ready: boolean) {
+  // #617 PR 3b: the hub page's drafts live in the hub view's own partition, written the same way
+  function quit(ready: boolean, hubView: { flush: () => void } | null = null) {
     const flushStorageData = vi.fn()
     const dispose = vi.fn()
-    new Function('app', 'session', 'updateController', 'spawnedViewer', willQuit)(
+    new Function('app', 'session', 'updateController', 'spawnedViewer', 'hubView', willQuit)(
       { isReady: () => ready },
       { defaultSession: { flushStorageData } },
       { dispose },
       null,
+      hubView,
     )
     return { flushStorageData, dispose }
   }
@@ -158,6 +160,9 @@ describe('Electron keeps browser storage through a quit', () => {
     const { flushStorageData, dispose } = quit(true)
     expect(flushStorageData).toHaveBeenCalledExactlyOnceWith()
     expect(dispose).toHaveBeenCalledOnce()
+    const flush = vi.fn()
+    quit(true, { flush })
+    expect(flush).toHaveBeenCalledExactlyOnceWith()
   })
 
   it('never asks for the default session before the app is ready', () => {

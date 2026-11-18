@@ -1,6 +1,7 @@
 'use strict'
 // The pure rules of connect mode (#617, PR 3a), split from electron/remote-connect.cjs for size
-// only; that file is the controller and the only module that requires this one. Nothing here does
+// only; that file is the controller and the only module that requires this one (hub-view.cjs reads
+// `hubHref` through remote-connect.cjs's re-export). Nothing here does
 // any I/O: the hub's address, the pairing code and label rules mirrored from the hub, the tailnet
 // rules mirrored from the mesh command line, reading the peer list, recognising a certificate error, and the
 // stored file's field rules. test/remote-connect.test.ts compares each mirrored rule with the
@@ -81,6 +82,27 @@ function writtenUserInfo(text) {
   return match !== null && match[1].includes('@')
 }
 
+/**
+ * The one decision of "is this URL on the hub's origin": `url` a string or a `URL` (its href read
+ * once), written with no user info, parsing as `https:` with no user or password, and its parsed
+ * origin exactly `origin`. Gives the parsed href the decision was made on, else null. Shared by
+ * the device header (remote-connect.cjs) and the hub view's navigation and permission rules
+ * (hub-view.cjs), so there is no second parser.
+ */
+function hubHref(url, origin) {
+  const text = typeof url === 'string' ? url : url instanceof URL ? url.href : null
+  // user info, even empty and however it is written, which the parser drops without a trace
+  if (typeof text !== 'string' || typeof origin !== 'string' || writtenUserInfo(text)) return null
+  let parsed
+  try {
+    parsed = new URL(text)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '' || parsed.origin !== origin) return null
+  return parsed.href
+}
+
 /** A typed pairing code, the hub's way: case, spaces and dashes ignored, I and L read as 1, O as 0; null unless 10 letters of the alphabet. */
 function normaliseCode(text) {
   if (typeof text !== 'string' || !CODE_TYPED.test(text)) return null
@@ -147,12 +169,16 @@ function userIdText(raw, context) {
 }
 
 const untagged = (tags) => tags === undefined || tags === null || (Array.isArray(tags) && tags.length === 0)
+// a node's DNS name as compared with a host: lowercased, the trailing dot dropped; null when not text
+const dnsName = (node) => (typeof node.DNSName === 'string' ? node.DNSName.toLowerCase().replace(/\.$/, '') : null)
 
 /**
  * From `tailscale status --json`: `{ ok: true, node }` only when the backend runs, this node is
  * untagged and has a person's user, `host` is one label in front of the tailnet's suffix, and
  * exactly one peer has that DNS name, with this node's user, no tags and a string ID (the node).
- * Otherwise `{ ok: false, reason }`. Nothing of the document outlives the call.
+ * `host` may also be this node's own DNS name (the app on the hub itself): then no peer may share
+ * it (`duplicate_name`), and the node is `Self.ID`. Otherwise `{ ok: false, reason }`. Nothing of
+ * the document outlives the call.
  */
 function parsePeers(text, host) {
   const no = (reason) => ({ ok: false, reason })
@@ -170,7 +196,14 @@ function parsePeers(text, host) {
   if (!isObject(user) || typeof user.LoginName !== 'string' || user.LoginName.toLowerCase() === PLACEHOLDER_LOGIN) return no('tagged_self')
   if (typeof host !== 'string' || !inTailnet(host, suffixOf(status))) return no('not_in_tailnet')
   const peers = isObject(status.Peer) ? Object.values(status.Peer) : []
-  const named = peers.filter((peer) => isObject(peer) && typeof peer.DNSName === 'string' && peer.DNSName.toLowerCase().replace(/\.$/, '') === host)
+  const named = peers.filter((peer) => isObject(peer) && dnsName(peer) === host)
+  // PR 3b: this node's own name is the hub when the app runs on the hub itself. A node is never in
+  // its own peer list, so it is read from Self, already checked untagged with a person's user.
+  if (dnsName(self) === host) {
+    if (named.length > 0) return no('duplicate_name')
+    if (typeof self.ID !== 'string' || !NODE_ID.test(self.ID)) return no('not_found')
+    return { ok: true, node: self.ID }
+  }
   if (named.length === 0) return no('not_found')
   if (named.length > 1) return no('duplicate_name')
   const peer = named[0]
@@ -299,6 +332,7 @@ module.exports = {
   certificateFailure,
   deviceLabelFor,
   discard,
+  hubHref,
   hubLabelFor,
   inTailnet,
   isDeviceLabel,

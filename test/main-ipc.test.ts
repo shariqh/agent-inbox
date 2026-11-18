@@ -368,7 +368,7 @@ describe('electron/main.cjs wires the hub view (source)', () => {
 
   it('requires the two modules by destructuring, so the dead-module guard sees them', () => {
     expect(main).toContain("const { createRemoteConnect } = require('./remote-connect.cjs')")
-    expect(main).toContain("const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle } = require('./hub-view.cjs')")
+    expect(main).toContain("const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')")
   })
 
   it('makes connect mode on macOS only, after the window exists, and starts it last', () => {
@@ -406,7 +406,11 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     // Check for Updates… goes through openUpdatesWindow, which shows This Mac first (tested above)
     const updatesClick = menu.slice(menu.indexOf("label: 'Check for Updates…'"), menu.indexOf('const settings = {'))
     expect(updatesClick).toContain('openUpdatesWindow(win)')
-    expect(menu).toContain('hubMenuItems({ connection: remoteConnect?.connection(), showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })')
+    // #617 PR 3c: offered only while the hub may be shown, and only through the one guard (show)
+    expect(menu).toContain('hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })')
+    // the zoom items lay the hub view out again, at the local page's new zoom
+    expect(menu).toContain('...zoomMenuItems({ focused: () => webContents.getFocusedWebContents() ?? win.webContents, after: () => hubView?.layout() })')
+    expect(menu).not.toContain("{ role: 'zoomIn' }")
     expect(menu).toContain("{ role: 'viewMenu' }")
   })
 
@@ -427,5 +431,16 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(changed).toContain('win.setTitle(windowTitle(remoteConnect?.connection(), hubView?.current() ?? null))')
     expect(changed).toContain('fileLinkWebContentsId === win.webContents.id')
     expect(changed).toContain('win.webContents.send(CONNECT_CHANNELS.changed)')
+  })
+
+  // #617 PR 3c fix round: the hub is on top only while this window's page can draw the strip
+  it('lets the hub be shown only while the window shows the viewer the app owns, and goes back to This Mac when that ends', () => {
+    expect(startRemote).toContain('mayShow: () => fileLinkWebContentsId !== null && fileLinkWebContentsId === win.webContents.id,')
+    expect(startRemote).toContain('backgroundColor: themeBackgroundColor,')
+    const binding = main.slice(main.indexOf('installBinding = createInstallBinding({'), main.indexOf("win.webContents.on('did-start-navigation'"))
+    const apply = binding.slice(binding.indexOf('apply({ setup, update, files, launch }) {'))
+    expect(apply.indexOf('hubView?.ownerChanged()')).toBeGreaterThan(apply.indexOf('fileLinkWebContentsId = files ? setupWindowWebContentsId : null'))
+    // nothing else in main shows a hub: every path is hubView.show(id), behind mayShow
+    expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id'])
   })
 })

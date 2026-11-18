@@ -17,7 +17,7 @@ import { cliExists, fakeTailscale } from './remote-entry-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const {
-  CONNECT_CHANNELS, DESK_CHANNELS, HUB_STRIP_HEIGHT, allowNavigation, allowPermission, createHubView, deskConnection, hubMenuItems, mayOpenExternally,
+  CONNECT_CHANNELS, DESK_CHANNELS, HUB_STRIP_HEIGHT, allowNavigation, insetFor, zoomMenuItems, allowPermission, createHubView, deskConnection, hubMenuItems, mayOpenExternally,
   partitionFor, registerHubIpc, sendHeaders, trustedDeskSender, watchOnline, windowTitle,
 } = hubViewModule
 const { createRemoteConnect } = remoteConnect
@@ -293,6 +293,11 @@ class FakeContents extends EventEmitter {
   send(...args: unknown[]) { this.sent.push(args) }
   getURL() { return this.url }
   setWindowOpenHandler(fn: (details: { url: string }) => { action: string }) { this.windowOpen = fn }
+  // the local page's zoom (#617 PR 3c): the view's inset follows it
+  zoomLevel = 0
+  getZoomLevel() { return this.zoomLevel }
+  setZoomLevel(level: number) { this.zoomLevel = level }
+  getZoomFactor() { return 1.2 ** this.zoomLevel }
 }
 
 class FakeSession {
@@ -358,6 +363,8 @@ function fakeElectron() {
       views.push(this)
     }
     setBounds(bounds: unknown) { this.bounds = bounds }
+    background: string | null = null
+    setBackgroundColor(color: string) { this.background = color; log.push(`background ${color}`) }
     setVisible(visible: boolean) { this.visible = visible; log.push(`visible ${visible}`) }
   }
   const local = new FakeContents(log)
@@ -411,7 +418,7 @@ const settle = async () => {
 const hubState = (state: 'online' | 'retrying' | 'refused', reason: string | null = null, extra: Partial<Conn> = {}): Conn =>
   ({ mode: 'hub', id: ID, label: 'studio', state, reason, version: '2.12.0', ...extra }) as Conn
 
-interface WorldOptions { now?: () => number; origin?: string; isPackaged?: boolean; partitions?: () => string[]; stored?: string | null; problem?: string }
+interface WorldOptions { owned?: boolean; noGate?: boolean; now?: () => number; origin?: string; isPackaged?: boolean; partitions?: () => string[]; stored?: string | null; problem?: string }
 
 function world(options: WorldOptions = {}) {
   const electron = fakeElectron()
@@ -419,6 +426,7 @@ function world(options: WorldOptions = {}) {
   if (options.stored !== undefined) connect.store.stored = options.stored
   if (options.problem !== undefined) connect.store.problem = options.problem
   const timers: Array<{ fn: () => void; ms: number }> = []
+  const gate = { owned: options.owned ?? true }
   const opened: string[] = []
   const changes = vi.fn()
   const clock = { t: 5_000_000 }
@@ -435,11 +443,14 @@ function world(options: WorldOptions = {}) {
     ...(options.isPackaged === undefined ? {} : { isPackaged: options.isPackaged }),
     readPartitions: options.partitions ?? (() => []),
     setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms }); return timers.length },
+    // #617 PR 3c: whether this window's page is the one the app owns, so it can draw the strip
+    ...(options.noGate ? {} : { mayShow: () => gate.owned }),
+    backgroundColor: () => '#101214',
   })
   const view = () => electron.views.at(-1)!
   const contents = () => view().webContents
   const ses = () => electron.sessions.get(`persist:hub-${ID}`)!
-  return { ...electron, connect, hub, opened, changes, clock, view, contents, ses, timers }
+  return { ...electron, connect, hub, opened, changes, clock, view, contents, ses, timers, gate }
 }
 
 /** An Electron navigation event: the details object with preventDefault. */
@@ -1331,5 +1342,156 @@ describe('registerHubIpc', () => {
     for (const value of [SECRET, entry.secret, entry.device, entry.node, DEVICE, 'nHubStable1CNTRL', Buffer.from(SECRET).toString('base64')]) {
       expect(text.includes(value), value).toBe(false)
     }
+  })
+})
+
+// #617 PR 3c fix round: the other Mac's view is on top only while this Mac's own page can draw the
+// strip, and current() is a view really on top.
+describe('createHubView: shown only where the strip can be drawn, and current() tells the truth', () => {
+  it('refuses show(id) while this window’s page is not the one the app owns, and says so', async () => {
+    const w = world({ owned: false })
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.canShow()).toBe(false)
+    expect(w.hub.show(ID)).toEqual({ ok: false, reason: 'not_owned' })
+    expect(w.hub.current()).toBeNull()
+    expect(w.view().visible).toBe(false)
+    // This Mac is always allowed
+    expect(w.hub.show(null)).toEqual({ ok: true, showing: null })
+  })
+
+  it('never shows the hub when the caller does not give the guard', async () => {
+    const w = world({ noGate: true })
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.canShow()).toBe(false)
+    expect(w.hub.show(ID)).toEqual({ ok: false, reason: 'not_owned' })
+  })
+
+  it('goes back to This Mac the moment the page loses the binding, and offers the hub again once it has it back', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+    expect(w.hub.current()).toBe(ID)
+    w.changes.mockClear()
+    w.gate.owned = false
+    w.hub.ownerChanged()
+    expect(w.hub.current()).toBeNull()
+    expect(w.view().visible).toBe(false)
+    expect(w.log.at(-1)).toBe(`focus ${w.local.id}`)
+    expect(w.changes).toHaveBeenCalled()
+    w.gate.owned = true
+    w.hub.ownerChanged()
+    expect(w.hub.canShow()).toBe(true)
+    // it does not come back on top by itself
+    expect(w.hub.current()).toBeNull()
+  })
+
+  it('a first build that finds no stored hub is tried again at the next change, and show(id) never answers ok with no view', async () => {
+    const w = world({ stored: null })
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.views).toHaveLength(0)
+    expect(w.hub.show(ID)).toEqual({ ok: false, reason: 'not_ready' })
+    expect(w.hub.current()).toBeNull()
+    w.connect.store.stored = undefined
+    w.connect.set(hubState('retrying', 'unreachable'))
+    await settle()
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.views).toHaveLength(1)
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+    expect(w.hub.current()).toBe(ID)
+  })
+
+  it('a session that cannot be set up is tried again too', async () => {
+    const w = world()
+    const ses = w.session.fromPartition(`persist:hub-${ID}`) as unknown as { setProxy: () => Promise<void> }
+    const real = ses.setProxy.bind(ses)
+    ses.setProxy = async () => { throw new Error('no proxy') }
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.views).toHaveLength(0)
+    ses.setProxy = real
+    w.connect.set(hubState('retrying', 'unreachable'))
+    await settle()
+    expect(w.views).toHaveLength(1)
+  })
+
+  it('show(id) while the view is being built is accepted, but current() stays null until it is on top', async () => {
+    const w = world()
+    let release!: () => void
+    w.connect.store.hold = new Promise<void>((resolve) => { release = resolve })
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+    expect(w.hub.current()).toBeNull()
+    release()
+    await settle()
+    expect(w.hub.current()).toBe(ID)
+    expect(w.view().visible).toBe(true)
+  })
+
+  it('a rebuilt view is not current until it exists', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    w.contents().destroyed = true
+    w.contents().emit('destroyed')
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+    expect(w.hub.current()).toBeNull()
+    await settle()
+    expect(w.hub.current()).toBe(ID)
+  })
+
+  it('gives the view an opaque background before it is added, so this Mac’s page never shows through', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.view().background).toBe('#101214')
+    expect(w.log.indexOf('background #101214')).toBeLessThan(w.log.indexOf('add view'))
+  })
+})
+
+describe('createHubView: the inset follows the local page’s zoom', () => {
+  it('is the strip’s CSS height times the local page’s zoom factor, in window pixels', () => {
+    expect(insetFor(1)).toBe(36)
+    expect(insetFor(1.44)).toBe(52)
+    expect(insetFor(0.8)).toBe(29)
+    expect(insetFor(Number.NaN)).toBe(36)
+    expect(insetFor(0)).toBe(36)
+  })
+
+  it('lays the view out at the local page’s zoom on show and on layout()', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    w.local.zoomLevel = 2
+    w.hub.show(ID)
+    expect(w.view().bounds).toEqual({ x: 0, y: 52, width: 1200, height: 748 })
+    w.local.zoomLevel = 0
+    w.hub.layout()
+    expect(w.view().bounds).toEqual({ x: 0, y: 36, width: 1200, height: 764 })
+  })
+
+  it('the View menu’s zoom items zoom the focused contents, then lay the view out again', () => {
+    const contents = { level: 0, getZoomLevel() { return this.level }, setZoomLevel(l: number) { this.level = l }, isDestroyed: () => false }
+    const after = vi.fn()
+    const items = zoomMenuItems({ focused: () => contents, after })
+    expect(items.map((item) => [item.label, item.accelerator])).toEqual([
+      ['Actual Size', 'CommandOrControl+0'], ['Zoom In', 'CommandOrControl+Plus'], ['Zoom Out', 'CommandOrControl+-'],
+    ])
+    items[1]!.click()
+    items[1]!.click()
+    expect(contents.level).toBe(1)
+    expect(after).toHaveBeenCalledTimes(2)
+    items[2]!.click()
+    expect(contents.level).toBe(0.5)
+    items[0]!.click()
+    expect(contents.level).toBe(0)
+    // with nothing focused, it still lays out
+    zoomMenuItems({ focused: () => null, after })[1]!.click()
+    expect(after).toHaveBeenCalledTimes(5)
   })
 })

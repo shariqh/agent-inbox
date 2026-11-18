@@ -19,6 +19,7 @@
 import { groupCards, laneCounts, laneOf, messageHint, sessionCards, splitLanes } from './sessions.js'
 import { forgettable } from './launches.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
+import { placeLine } from './place.js'
 import { installMeshAgents } from './mesh-section.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
@@ -409,8 +410,15 @@ export function installAgentsHome(deps) {
     const busy = card.state === 'working'
     const hint = busy || card.launch ? null : messageHint(card.row)
     const where = el.querySelector('.sc-where')
-    rebuild(where, JSON.stringify([card.worktree, busy && card.plan, hint]), () => {
+    // #617: where it runs ("machine · desk"), first; a row with none of the fields adds nothing, not even to the key
+    const place = placeLine(card.row)
+    rebuild(where, JSON.stringify(place ? [card.worktree, busy && card.plan, hint, place] : [card.worktree, busy && card.plan, hint]), () => {
       const parts = []
+      if (place) {
+        const mark = make('span', 'sc-place', place)
+        mark.title = 'Where this session runs'
+        parts.push(mark)
+      }
       if (card.worktree) parts.push(make('span', 'sc-worktree', card.worktree))
       if (busy && card.plan) {
         const { segments, done, countable, title } = card.plan

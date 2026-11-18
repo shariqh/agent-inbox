@@ -6,7 +6,7 @@
 // attention surfaces read the same with it drawn.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, recordActivityCall, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
+import { insertItem, recordActivityCall, setActivityPlace, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
 import { advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
 import { closeProject } from '../../src/store.js'
 
@@ -231,4 +231,83 @@ describe('the Agents home (#454)', () => {
     expect(document.getElementById('liveDrawer')).toBeNull()
   })
 
+})
+
+// #617 PR 1: where a session runs. The card shows "machine · desk" in its second line; a row an older
+// server wrote has none of the fields and draws exactly what it drew before.
+describe('where a session runs, on the card (#617)', () => {
+  const work = (d: Database.Database, session: string, place: { machine?: string; pane?: string } = {}) => {
+    upsertActivity(d, { session, agent: 'claude-code', project: 'alpha', stream: 'main', doing: 'Painting', ...place })
+    recordActivityCall(d, session)
+  }
+  const where = (id: string) => card(id)?.querySelector<HTMLElement>('.sc-where') ?? null
+
+  it('shows the machine and desk on the card, and only the machine until a desk is known', async () => {
+    db = freshDb()
+    work(db, 'p', { machine: 'hub', pane: '%3' })
+    work(db, 'm', { machine: 'hub' })
+    setActivityPlace(db, 'p', { desk: 'api', remote_session: 'session_abc' })
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    const place = card('session:p')!.querySelector<HTMLElement>('.sc-where .sc-place')!
+    expect(place.textContent).toBe('hub · api')
+    expect(place.title).toBe('Where this session runs')
+    expect(where('session:p')!.hidden).toBe(false)
+    expect(card('session:m')!.querySelector('.sc-where .sc-place')?.textContent).toBe('hub')
+    // the card carries no link and no command: they are the panel's
+    expect(card('session:p')!.querySelector('a, [data-focus-target]')).toBeNull()
+    expect(card('session:p')!.textContent).not.toContain('claude.ai')
+    expect(card('session:p')!.textContent).not.toContain('tmux attach')
+
+    // a desk that appears later is drawn by the next poll, in the same node's place
+    setActivityPlace(db, 'm', { desk: 'work', remote_session: null })
+    await pollTick()
+    await settle()
+    expect(card('session:m')!.querySelector('.sc-place')?.textContent).toBe('hub · work')
+    // …and one that goes away goes with it
+    setActivityPlace(db, 'm', { desk: null, remote_session: null })
+    await pollTick()
+    await settle()
+    expect(card('session:m')!.querySelector('.sc-place')?.textContent).toBe('hub')
+  })
+
+  it('a row with none of the fields draws exactly what it drew before: no place node, no second line, and the same card around it', async () => {
+    db = freshDb()
+    work(db, 'p', { machine: 'hub' })
+    work(db, 'n')
+    setActivityPlace(db, 'p', { desk: 'api', remote_session: null })
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    const n = card('session:n')!
+    expect(n.querySelector('.sc-place')).toBeNull()
+    expect(where('session:n')!.hidden).toBe(true)
+    expect(where('session:n')!.childElementCount).toBe(0)
+    // the placed card is the unplaced one plus its place line: take it out and the two read alike
+    const p = card('session:p')!
+    p.querySelector('.sc-place')!.remove()
+    expect(where('session:p')!.childElementCount).toBe(0)
+    for (const part of ['.sc-top', '.sc-doing', '.sc-foot']) {
+      expect(p.querySelector(part)!.innerHTML.replaceAll('session:p', 'session:n'), part).toBe(n.querySelector(part)!.innerHTML)
+    }
+  })
+
+  it('draws a name only by textContent, and shows nothing for a value that fails its pattern', async () => {
+    db = freshDb()
+    work(db, 'a', { machine: 'hub' })
+    work(db, 'b', { machine: 'hub' })
+    work(db, 'c')
+    const raw = db.prepare(`UPDATE activity SET machine = ?, desk = ? WHERE session = ?`)
+    raw.run('hub', '<img src=x onerror=alert(1)>', 'a')
+    raw.run('<b>hub</b>', 'api', 'b')
+    raw.run('hub', 'api', 'c')
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    expect(card('session:a')!.querySelector('.sc-place')?.textContent).toBe('hub')
+    expect(card('session:b')!.querySelector('.sc-place')).toBeNull()
+    expect(card('session:c')!.querySelector('.sc-place')?.textContent).toBe('hub · api')
+    expect(document.querySelector('[data-session-card] img, [data-session-card] b')).toBeNull()
+  })
 })

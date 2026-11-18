@@ -55,8 +55,9 @@ import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
   indexLinks, issueRelationsHtml, linkStripHtml, missionDepsHtml, missionOutsideHtml, planGroupHeadHtml, planWaitsChipHtml, PREVIEW_TTL_MS,
-  previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml, textRepo,
+  previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml, textLinkHtml, textRepo,
 } from '/source.js'
+import { attachCommand, claudeSessionUrl, placeLine } from '/place.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
@@ -2469,6 +2470,7 @@ function dashFocusEl() {
       <p class="dash-focus-doing"></p>
       <p class="dash-focus-detail"></p>
       <p class="dash-focus-gone" hidden>This session is no longer listed, or is outside the current filters.</p>
+      <section class="dash-focus-part sp-place" aria-label="Where it runs" hidden><div class="dash-focus-place"></div></section>
       <section class="dash-focus-part sp-approval" aria-label="Approval"><h3>Approval <span class="sp-approval-count"></span></h3><div class="dash-focus-approval"></div></section>
       <section class="dash-focus-part sp-asks" aria-label="Asking you"><h3>Asking you <span class="sp-asks-count"></span></h3><div class="dash-focus-asks"></div></section>
       <section class="dash-focus-part sp-worktree" aria-label="Worktree" hidden><h3>Worktree</h3><dl class="sp-worktree-box"></dl></section>
@@ -2794,8 +2796,9 @@ function renderDashFocus(aside, model, { forced = false } = {}) {
   setText(state, card.label)
   setText(aside.querySelector('#dashFocusTitle'), [card.project, card.branch].filter(Boolean).join(' · '))
   const build = card.row ? sessionBuild(card.row, liveVersion) : null
-  setText(aside.querySelector('.dash-focus-meta'), [`${card.host} · ${card.origin}`,
+  setText(aside.querySelector('.dash-focus-meta'), [`${card.host} · ${card.origin}`, placeLine(card.row),
     card.launch && launchesOn() ? launchUi.panelSummary(card.launch) : card.recency, build?.label ?? ''].filter(Boolean).join(' · '))
+  paintPlace(aside, card.row)
   const hint = aside.querySelector('.sp-hint')
   setText(hint, build?.older || build?.newer ? build.hint : '')
   setHidden(hint, !(build?.older || build?.newer))
@@ -2846,6 +2849,26 @@ function renderDashFocus(aside, model, { forced = false } = {}) {
   setFocusPart(aside, aside.querySelector('.dash-focus-links'), linkStripHtml([...links.values()], {
     key: linksKey, open: openContexts.has(linksKey), actions: linkFileActions(), copyFiles: fileLinksCopy(),
   }))
+}
+
+// #617: where the session runs. "Open in claude.ai" is an ordinary link, built by the one safe
+// link builder from a pattern-checked Remote Control id, never from agent text. "Copy attach command"
+// copies `tmux attach -t '=<desk>'`, built from a pattern-checked desk. A row with neither draws nothing.
+function paintPlace(aside, row) {
+  const url = claudeSessionUrl(row)
+  const command = attachCommand(row)
+  setFocusPart(aside, aside.querySelector('.dash-focus-place'), [
+    url ? textLinkHtml(url, 'Open in claude.ai', 'web') : '',
+    command ? focusButton('place:copy', 'Copy attach command', () => copyAttachCommand(aside, command), { className: 'dash-focus-place-copy' }) : '',
+  ].join(''))
+}
+
+async function copyAttachCommand(aside, command) {
+  const copied = await writeClipboard(document, command)
+  const button = aside.querySelector('.dash-focus-place-copy')
+  if (!button) return
+  button.textContent = copied ? 'Copied ✓' : 'Copy failed'
+  setTimeout(() => { if (button.isConnected) button.textContent = 'Copy attach command' }, 1500)
 }
 
 // The panel's message part: the session's composer and history, one node per

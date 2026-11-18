@@ -91,9 +91,11 @@ async function walk() {
   await pollTick()
 }
 
-// The scratch database and home folders, and the item ids, differ on every run.
+// The scratch database and home folders, the item ids and the checkout's commit (in Settings'
+// build line) differ from run to run.
 const steady = (html: string) => html
   .replace(/\/(?:private|var|tmp|Users)\/[^\s"<]*/g, '<path>')
+  .replace(/HEAD [0-9a-f]{7,40}\b/g, 'HEAD <commit>')
   .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<uuid>')
 
 describe('the page with no agentInboxDesk (a browser, an older app)', () => {

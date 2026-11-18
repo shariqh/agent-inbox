@@ -11,7 +11,13 @@ paths:
   - "test/remote-entry-settings.test.ts"
   - "test/remote-entry-restart.test.ts"
   - "test/remote-connect.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts"
+  - "electron/hub-view.cjs"
+  - "electron/remote-offline.*"
+  - "test/hub-view.test.ts"
+  - "test/remote-preload.test.ts"
+  - "test/remote-offline.test.ts"
+  - "test/main-ipc.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -25,7 +31,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 2e, PR 3a)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2e, PR 3a, PR 3b)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -43,8 +49,11 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 - `electron/remote-connect.cjs` (PR 3a): the other side, for main on the connecting Mac: the
   address check, the hub among this Mac's Tailscale peers, pairing, the encrypted secret, the
   probe, the device header and the connection state. Its pure rules are in
-  `electron/remote-connect-rules.cjs`. Logic and tests only: nothing requires it yet
-  ("Connecting from another Mac", below).
+  `electron/remote-connect-rules.cjs` ("Connecting from another Mac", below).
+- `electron/hub-view.cjs` (PR 3b): the hub's page in its own view in this app's window, its
+  preload `electron/remote-preload.cjs`, the offline page `electron/remote-offline.html` (with its
+  `.js` and `.css`), the `agentInboxDesk` and `agentInboxConnect` bridges, the View menu items and
+  the wiring in `electron/main.cjs` ("The hub view", below).
 
 ## What is not built yet
 
@@ -53,10 +62,10 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   **Test**, the removal command) and Open at login (the next PR). Until then nothing in the app
   writes `remote.json` or asks for a code. Any local process on the hub can still make one: the
   owner token is not a secret from local processes (below).
-- The rest of connect mode (the next PR): the hub's page in its own view with its own partition
-  and preload, the header handler, navigation, download and permission handlers, the menu items,
-  the offline page, `powerMonitor` and the Settings form. Open desk and notifications against a hub
-  are PR 4.
+- The rest of connect mode: the Settings form ("Use another Mac's Inbox") and the page's own
+  hub-mode changes under `public/` (the banner, the This Mac / hub control). Until then connect
+  mode is driven through `agentInboxConnect` from the local page. Open desk (the terminal action)
+  and notifications against a hub are PR 4.
 
 So the entry is still off for everyone until the owner writes `remote.json`. With no device in it,
 every request but pairing is refused.
@@ -543,9 +552,9 @@ else depends on the self test.
 ## Connecting from another Mac (PR 3a)
 
 `electron/remote-connect.cjs` is what main on the connecting Mac (say a laptop) uses to reach a
-hub. Its pure rules are in `electron/remote-connect-rules.cjs`, split for size only. Logic and
-tests only: nothing requires it yet. There is no view, no form, no menu item, no offline page and
-no IPC; the next PR adds them. `createRemoteConnect(options)` returns one object. Every dependency
+hub. Its pure rules are in `electron/remote-connect-rules.cjs`, split for size only. Since PR 3b,
+`electron/main.cjs` makes one on macOS and the hub view uses it ("The hub view", below).
+`createRemoteConnect(options)` returns one object. Every dependency
 is an option (`fsImpl`, `execFile`, `exists`, `fetch`, `safeStorage`, `hostname`, `now`,
 `randomBytes`, `setInterval`, `clearInterval`, `onReload`), so the tests run no command, open no
 socket, touch no Keychain and never sleep. It logs nothing. No public operation rejects: a throw
@@ -586,9 +595,13 @@ string `ID`. That `ID` is the node: Tailscale's stable node id, which the real o
 `ID` (there is no `StableID` key). `UserID` is read from the JSON text, so ids past 2^53 are
 compared by their digits, never as floats. Otherwise a fixed word: `no_cli`, `failed`,
 `not_running`, `tagged_self`, `not_in_tailnet`, `not_found`, `duplicate_name`, `not_your_device`,
-`tagged_device`. The document is parsed inside the call and only the node leaves it. The hub's own
-name is never in `Peer`, so a copy of the app on the hub cannot connect to the hub's own address
-(`not_found`).
+`tagged_device`. The document is parsed inside the call and only the node leaves it.
+
+A node is never in its own `Peer` list, so `host` may also be this node's own `DNSName` (same
+lowercasing and trailing-dot rule): a copy of the app on the hub can connect to the hub's own
+address, which lets the hub view be proved on one machine. Then this node must pass the same
+checks as above (untagged, a person's user), no peer may carry the same name (`duplicate_name`),
+and the node is `Self.ID` (`not_found` when it is not a string `ID`). Added in PR 3b.
 
 The tailnet rules are mirrored from meshctl (`inTailnet` in `src/mesh-config.ts`, `suffixFrom` in
 `src/meshctl.ts`), not loaded from `dist/`, so the module stays synchronous and works without a
@@ -649,13 +662,15 @@ parser does, any `@` before the first `/`, `?` or `#` that follows the scheme an
 slashes and backslashes. So `https://@host/`, `https://:@host/`, `https:@host/`, `https:\@host/`
 and `https:/\@host/` are all refused, though each parses to the hub's own origin.
 
-- `deviceHeaderFor(url)` is synchronous and cheap, for the next PR's `onBeforeSendHeaders`. It
+- `deviceHeaderFor(url)` is synchronous and cheap, for the hub view's `onBeforeSendHeaders`. It
   answers the secret only when a hub is active, the module is not stopped, the last node check
   passed and nothing has distrusted it since, `url` is a string or a `URL` (its `href` read once)
   that parses as `https:` with no user info, and its origin equals the hub's
   `https://<host>`, compared as parsed origins, never as string prefixes. The default port and a
   host written in another case are the same origin; another port, a sub-domain, a look-alike that
-  starts or ends with the hub's name, and a trailing dot are not.
+  starts or ends with the hub's name, and a trailing dot are not. The URL half of that decision is
+  `hubHref(url, origin)` in `remote-connect-rules.cjs`, which the hub view's navigation and
+  permission rules use too, so there is one parser.
 - `hubFetch()` returns a `fetch`-shaped function for main's own requests to the hub. It reads its
   input once, decides on that one parsed value and fetches exactly its `href`, so a `URL` whose
   `href` changes between reads cannot move the request. It rejects (before calling `fetch`) any
@@ -696,7 +711,7 @@ function and calls back only when the answer changes; a callback that throws sto
 - Retrying: from 2 seconds, doubling to 60 (2, 4, 8, 16, 32, 60, 60, ...), with the node check
   before each try.
 - Refused: tried every 60 seconds.
-- `kick()` (the next PR calls it on wake, unlock and when the network comes back) holds the header
+- `kick()` (main calls it on wake, unlock and when the network comes back) holds the header
   back at once, resets the backoff, and checks the node and probes straight away; a kick that lands
   during a check makes that check stale and runs another. It answers `{ ok: true }`.
 - When `version` differs from the last online probe's, `onReload()` is called once. The first online
@@ -724,7 +739,8 @@ Tailscale. It never sends the secret to any origin but the active hub's, never f
 sends no cookie, never stores the secret unencrypted, never returns, logs or throws the secret or
 the code, and never sends the pairing request with a device header.
 
-**What the next PR must do with it.**
+**What the hub view does with it (PR 3b).** These were the next PR's duties; "The hub view",
+below, says how each is met.
 
 - The hub view's partition must use a direct connection (`session.setProxy({ mode: 'direct' })`).
   Chromium uses the system proxy and trust store while main's `fetch` does not, so a
@@ -734,8 +750,166 @@ the code, and never sends the pairing request with a device header.
 - `wss://` gets no header: the hub's page must not depend on one there.
 - While the header is withheld (before the first check after `start()`, after a `kick()` until the
   next check passes, after a failed probe, while `refused` or `stopped`), the hub answers the page's
-  requests with bare 403s, so the view must show the offline page rather than let the hub's page
-  run on them.
+  requests with bare 403s. The view shows the offline page before the first hub page has loaded and
+  whenever the state is `refused`; a hub page already loaded stays through `retrying`, so drafts
+  survive a short drop, and the bridge tells the page the state (below).
+
+## The hub view (PR 3b)
+
+When a hub is connected, the hub's own page is loaded from the hub and shown in this app's window,
+in a view of its own. That page comes from another machine, so it gets none of this app's
+privileges, and no page can read the device secret. The policy is `electron/hub-view.cjs`, with
+every Electron object injected, so `test/hub-view.test.ts` runs without Electron.
+`electron/main.cjs` only wires it.
+
+**The view.** One `WebContentsView` for the active hub, laid over the window's content area and
+following its resizes. The local page stays loaded underneath and is never unloaded. Its
+`webPreferences` are exactly `preload: electron/remote-preload.cjs`, `contextIsolation: true`,
+`sandbox: true`, `nodeIntegration: false`, `webSecurity: true`, `disableDialogs: true` (a macOS sheet
+shows no origin, so the page could put up a dialog that looks like the app's own) and `partition:
+persist:hub-<id>` (`partitionFor` throws for anything but an 8-hex id). Before anything loads, the
+partition's session gets:
+
+- `setProxy({ mode: 'direct' })`, awaited. Chromium would otherwise use the system proxy, and a
+  TLS-intercepting proxy would see the device header.
+- `webRequest.onBeforeSendHeaders` for every request, whatever its URL or type, through
+  `sendHeaders`: every header named `x-agent-inbox-device` in any case is removed first, then the
+  one `deviceHeaderFor(details.url)` answers is added, if it answers one and the URL is on this
+  partition's own hub's origin. So a page-set header never leaves, and the secret goes only to the
+  hub's exact origin over `https`, after a passed node check: never to `wss:`, `blob:`, `file:`, plain
+  `http:` or a redirect target on another origin. The own-origin check matters during a replace:
+  `deviceHeaderFor` already answers for the new hub while the old hub's partition may still send.
+- Permission request and check handlers that allow only `clipboard-sanitized-write`, asked by the
+  top frame of a page on the hub's origin (`allowPermission`). A device permission handler that
+  denies every device.
+- `will-download` cancelling every item.
+
+No `certificate-error` handler is registered, so Chromium refuses a certificate it does not trust.
+A `select-client-certificate` request from the view is answered with no certificate (Electron's
+default would offer the first identity in the store to any server the page makes this Mac contact).
+In a packaged app, developer tools are closed as soon as they open on the hub view, since the
+Network panel shows the device header as sent; a checkout build keeps them.
+
+**Navigation.** `will-navigate`, `will-frame-navigate` (every frame) and `will-redirect` are
+prevented unless `allowNavigation` holds: an `https` URL whose origin is exactly the hub's (the
+same `hubHref` rule as the device header) or the offline file's exact `file:` URL, with no query
+or fragment. A prevented top-level `http(s)` navigation goes to the system browser through
+`openWebLink` only when `mayOpenExternally`: the view has focus and there was a key press or a click
+in the view in the last 5 seconds. Any key press counts, so typing into the hub's page counts.
+Input is a key event (`before-input-event`) or a press (`input-event` of type
+`mouseDown`, `mouseUp`, `keyDown`, `rawKeyDown`, `keyUp`, `char`, `gestureTap`, `touchStart`,
+`touchEnd`); a mouse move or wheel does not count. Each input opens at most one link: it is used up
+by the open. `setWindowOpenHandler` always denies, and opens an `http(s)` URL externally by the same
+rule. A sub-frame never opens anything.
+
+**What it shows**, from the controller's `onConnection`:
+
+| Connection | View |
+|---|---|
+| `retrying` with reason `connecting` (the first check after start), nothing loaded | nothing yet |
+| `online`, no hub page loaded | loads `<origin>/` |
+| `online` or `retrying`, a hub page loaded | keeps it (drafts survive a short drop) |
+| `retrying`, no hub page loaded | the offline file |
+| `refused` | the offline file, even over a loaded hub page |
+| a hub page fails to load (not an aborted load), or its renderer goes away | the offline file |
+| `onReload` (the hub's version changed) | reloads a loaded hub page, bypassing the cache |
+| the active hub goes away (`forget`, or a new hub replaces it) | the view is closed, This Mac is shown, and the partition's session is asked to clear everything (below) |
+| the hub's page closes its own view (`window.close()`) | the dead view is dropped and This Mac shown; a fresh view comes at the next connection change or `show(id)`, at most 3 a minute, after which only `show(id)` makes one, once the minute has passed (`busy` until then) |
+
+The origin comes from the controller's `view()` and must be a canonical `https://<host>`, or no
+view is made. A failing offline file is not loaded again, so nothing loops. When the window closes,
+the view is closed first and its session kept, so what the page writes as it goes away reaches the
+session; `will-quit` then writes the partition's storage to disk (`flush()`), and that storage stays.
+On quit, main stops the controller first (`before-quit`).
+
+**Clearing a partition.** When the active hub goes away, the session's `clearData()` is called with
+no options, which clears every type it knows (cache, cookies, local storage, IndexedDB, service
+workers, file systems and the rest), also for a partition still being set up. `forget` answers once
+that is done, or after 5 seconds. At start, the names in the profile's `Partitions` folder are listed
+and every `hub-<8 hex>` partition but the stored hub's is cleared the same way; nothing is cleared
+while the store reports a problem or the folder cannot be read. Only sessions are asked: no file is
+removed, so the folders themselves stay.
+
+**Which view is on top.** This Mac stays on top until something asks: `show(id | null)`, from the
+View menu's **This Mac** and **<the hub's label>** (a radio pair, present only while a hub exists)
+or from `agentInboxConnect.show`. An id other than the active hub's is refused. **Settings…**,
+**Check for Updates…**, an update notification and a click on an attention notification show This
+Mac first. The window title is `Agent Inbox — <label>` while the
+hub's view is on top. Focus moves to the view that comes forward.
+
+**`agentInboxDesk`, in the hub view.** `remote-preload.cjs` is the view's only preload and exposes
+exactly one object, `agentInboxDesk`, and nothing else on `window`. It runs sandboxed and requires
+only `electron`. Every answer is rebuilt field by field in the preload, so an unexpected field
+never crosses:
+
+- `available()` → a promise of `{ open: false }`, with no IPC. The terminal action is PR 4; the
+  member is here so the page can feature-detect it.
+- `connection()` → a promise of `{ mode: 'hub', label, state, version }`, `state` one of `online`,
+  `retrying` or `refused`, or `null` when main refuses. Never an id, an origin or a reason.
+- `onConnection(callback)` → an unsubscribe function. Main's change message carries nothing; the
+  preload asks `connection()` again and calls back with that.
+- `retry()` → a promise of `{ ok }`. Main takes it only from the offline file: it kicks the
+  controller (the node check and a probe at once) and loads the hub page if the hub is online.
+
+Main answers these two channels (`agent-inbox:desk-connection`, `agent-inbox:desk-retry`) only
+when `trustedDeskSender` holds, checked on every call from `event.sender` and `event.senderFrame`:
+the sender is the hub view's own `webContents`, not destroyed, and the frame is its top frame
+(`parent === null`) on the hub's origin or on the offline file. A sub-frame, the view after it
+showed anything else, and the local window's `webContents` are all refused, with `{ available:
+false }` (or `{ ok: false }` for retry). Off macOS there is no view: `desk-connection` answers `{
+available: false }` and `desk-retry` answers `{ ok: false }`.
+
+**The offline page.** `electron/remote-offline.html` with `remote-offline.js` and
+`remote-offline.css` beside it: no inline script or style, a Content-Security-Policy meta of
+`default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'none';
+font-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, and no remote
+resource. It says "Can't reach <label>" with **Retry**, or, when refused, "<label> no longer
+accepts this Mac" with the instruction to pair again in Settings on This Mac, and no Retry. It gets
+its words only through `agentInboxDesk`, sets the label with `textContent`, and follows light and
+dark through `prefers-color-scheme` alone.
+
+**In the local page.** `setup-preload.cjs` gains the same `agentInboxDesk`, answering `{ mode:
+'local' }` and `{ open: false }`, with a no-op `onConnection`, and no IPC. It also gains
+`agentInboxConnect`, for the Settings form a later PR adds:
+
+- `view()` → the controller's `view()` plus `showing` (the id on top, or null).
+- `connect({ address, code, replace })`, `forget(id)` → the controller's answers.
+- `show(id | null)` → `{ ok: true, showing }` or `{ ok: false, reason }` (`bad_id`, `not_found`, `busy`).
+- `onChange(callback)` → an unsubscribe function; the message carries nothing, so the page asks
+  `view()` again.
+
+The preload checks each argument and rebuilds each answer field by field. Main
+(`registerHubIpc`) answers these four channels only for the viewer this app started and owns
+(`linkSender` and `linkFilesPermitted`, after `installBinding.settled()`, as chat resume is),
+checks the argument count and each type again (`connect` takes exactly one plain object with only
+`address`, `code` and an optional boolean `replace`), and answers anyone else `{ available: false
+}`. A viewer this app reused rather than started (no file-link grant) gets the same. Off macOS
+there is no controller, and these four channels answer `{ available: false }`. No answer
+holds the secret, the encrypted blob, the device id or the node id: a test sends every channel
+through the real controller and scans the answers.
+
+**Main's wiring.** On macOS only, after the window exists: one `createRemoteConnect({ app,
+safeStorage, onReload })`, the hub view, `kick()` on `powerMonitor` `resume` and `unlock-screen`
+and when `net.isOnline()` turns from false to true (read every 10 seconds; main has no event for
+it), then `start()`. `stop()` runs at the top of `before-quit`. Nothing in the hub view is ever
+assigned to `linkWindow`, `themeWindow`, `updateWindow`, `fileLinkWebContentsId`, the install
+binding, or any launch or chat grant; `test/main-ipc.test.ts` pins each assignment. That test also
+runs the real `main.cjs` top level against a fake `electron`, enumerates every channel it
+registers, and requires each to be classified (local page only, or hub view for the two desk
+channels): a channel added later fails until someone classifies it. Every local-only channel must
+answer the hub view (its top frame, a sub-frame, the offline file, or a frame claiming the local
+viewer's URL) exactly as a stranger, and call nothing. Its fake `BrowserWindow.fromWebContents`
+answers the window for the hub view too, so a handler that trusted "a page in my window" would be
+caught, and a source check finds no handler registered through `webContents.ipc` or a frame's `ipc`.
+
+**Not built yet.** The Settings form, the page's own hub-mode touches under `public/` (the banner,
+the This Mac / hub control), the terminal action (`available()` says `open: false`), notifications
+and the dock badge for the hub (PR 4), and keyboard shortcuts for the menu items.
+
+**For the next PR.** The hub's page controls every pixel of its view, so whatever says whose Inbox
+is on screen must be drawn by the app (the window title, the menu, or a strip the local page draws
+beside the view), never by the hub's page. The hub's label is the hub's own machine name (from its
+`/api/version`), so it is never proof of anything.
 
 ## Checked against real Tailscale Serve
 

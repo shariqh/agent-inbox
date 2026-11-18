@@ -2,7 +2,7 @@
 // mode, split from electron/remote-connect.cjs for size only. Runtime lives in the .cjs;
 // electron/remote-connect.d.cts declares the public part, which remote-connect.cjs re-exports.
 export {
-  certificateFailure, deviceLabelFor, hubLabelFor, inTailnet, isDeviceLabel, normaliseCode, parseHubOrigin, parsePeers, suffixFrom,
+  certificateFailure, deviceLabelFor, hubHref, hubLabelFor, inTailnet, isDeviceLabel, normaliseCode, parseHubOrigin, parsePeers, suffixFrom,
 } from './remote-connect.cjs'
 
 export const BLOB: RegExp

@@ -75,6 +75,7 @@ const ENTRY_POINTS = new Map<string, string>([
   ['src/driver-cli.ts', 'the agent-inbox-driver entry (#412 step 2) — `npm run driver`, dist/driver-cli.js'],
   ['electron/main.cjs', "Electron's main-process entry"],
   ['electron/setup-preload.cjs', 'loaded by BrowserWindow webPreferences.preload'],
+  ['electron/remote-preload.cjs', 'loaded by the hub view’s WebContentsView webPreferences.preload (electron/hub-view.cjs)'],
 ])
 
 // Modules built ahead of the PR that wires them in, the same idea as ALLOWED's store.ts entries
@@ -84,7 +85,6 @@ const ENTRY_POINTS = new Map<string, string>([
 // stale-entry check never fires.
 const NOT_YET_WIRED = new Map<string, string>([
   ['electron/remote-entry.cjs', 'the hub remote-entry controller (#617, PR 2c, logic and tests only); the next PR requires it from electron/main.cjs for IPC, notifications and Settings'],
-  ['electron/remote-connect.cjs', 'connect mode on the connecting Mac (#617, PR 3a, logic and tests only); the next PR requires it from electron/main.cjs for the hub view, its header handler, the menu and Settings'],
 ])
 
 // electron/*.cjs is read as a CONSUMER only, never scanned for exports: it

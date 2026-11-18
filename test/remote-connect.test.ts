@@ -313,6 +313,33 @@ describe('parsePeers: the hub must be one of this person’s own untagged device
     expect(parsePeers(peersText(options as PeerOptions), HOST)).toEqual({ ok: false, reason })
   })
 
+  // PR 3b: a node is never in its own peer list, so the hub's own name is read from Self, under
+  // the same rules: this node untagged with a person's user (checked first, above), a string ID.
+  it('accepts this node’s own name as the hub, answering Self.ID as the node', () => {
+    const own = { DNSName: `${HOST}.`, ID: 'nSelfStableCNTRL' }
+    expect(parsePeers(peersText({ hub: null, self: own }), HOST)).toEqual({ ok: true, node: 'nSelfStableCNTRL' })
+    expect(parsePeers(peersText({ hub: null, self: { ...own, DNSName: 'HUB.example.ts.net' } }), HOST)).toEqual({ ok: true, node: 'nSelfStableCNTRL' })
+    expect(parsePeers(peersText({ hub: null, self: { ...own, Tags: null } }), HOST)).toEqual({ ok: true, node: 'nSelfStableCNTRL' })
+  })
+
+  it.each([
+    ['a peer with the same name as this node', { self: { DNSName: `${HOST}.`, ID: 'nSelfCNTRL' } }, 'duplicate_name'],
+    ['a tagged peer with the same name as this node', { self: { DNSName: `${HOST}.`, ID: 'nSelfCNTRL' }, hub: { Tags: ['tag:x'], UserID: TAGGED_USER } }, 'duplicate_name'],
+    ['this node tagged', { hub: null, self: { DNSName: `${HOST}.`, ID: 'nSelfCNTRL', Tags: ['tag:hub'] } }, 'tagged_self'],
+    ['this node on the placeholder user', { hub: null, self: { DNSName: `${HOST}.`, ID: 'nSelfCNTRL', UserID: TAGGED_USER } }, 'tagged_self'],
+    ['this node with no ID', { hub: null, self: { DNSName: `${HOST}.`, ID: undefined } }, 'not_found'],
+    ['this node with a numeric ID', { hub: null, self: { DNSName: `${HOST}.`, ID: 42 } }, 'not_found'],
+    ['this node with an ID holding a space', { hub: null, self: { DNSName: `${HOST}.`, ID: 'n Self' } }, 'not_found'],
+    ['this node whose DNSName is not text', { hub: null, self: { DNSName: 7, ID: 'nSelfCNTRL' } }, 'not_found'],
+    ['this node under another name', { hub: null, self: { DNSName: `laptop.${SUFFIX}.`, ID: 'nSelfCNTRL' } }, 'not_found'],
+  ])('for the own name, refuses %s', (_label, options, reason) => {
+    expect(parsePeers(peersText(options as PeerOptions), HOST)).toEqual({ ok: false, reason })
+  })
+
+  it('still finds a peer by its name when this node has another name', () => {
+    expect(parsePeers(peersText({ self: { DNSName: `laptop.${SUFFIX}.`, ID: 'nLaptopCNTRL' } }), HOST)).toEqual({ ok: true, node: NODE })
+  })
+
   it('refuses a host outside the tailnet, or one level too deep', () => {
     expect(parsePeers(peersText(), 'hub.other.ts.net')).toEqual({ ok: false, reason: 'not_in_tailnet' })
     expect(parsePeers(peersText(), `a.${HOST}`)).toEqual({ ok: false, reason: 'not_in_tailnet' })

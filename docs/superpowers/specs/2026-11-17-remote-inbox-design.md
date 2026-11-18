@@ -453,8 +453,9 @@ for the code and label rules from `src/remote-pair.ts`. The address may also be 
 host; the origin must be exactly `https://<host>`, with no `:443` and no empty user, query or
 fragment as written. The peer must be the only one with that name (two give `duplicate_name`), and
 this node must be untagged with a person's user. The hub's own name is not among its peers, so a
-copy of the app on the hub cannot connect to its own address; §7 step 3's first half needs that
-added or runs from another Mac.)
+copy of the app on the hub could not connect to its own address. **PR 3b** accepts this node's own
+`DNSName` as the hub, read from `Self` under the same rules (untagged, a person's user), with
+`Self.ID` as the node; a peer with the same name is `duplicate_name`.)
 
 **Connect.** The form takes the address, a label and the pairing code. **(As built in PR 3a:** the
 form takes only the address and the code. The label sent to the hub is this Mac's short host name
@@ -512,6 +513,40 @@ The local page stays loaded underneath and keeps working. **This Mac** and **<la
 the View menu, plus a control the local page draws through `agentInboxConnect.show(id | null)`,
 switch which view is on top. `Settings…` always shows This Mac, where connect settings live.
 
+**(As built in PR 3b,** in `electron/hub-view.cjs`, wired by `electron/main.cjs`; the full
+behaviour is in `docs/architecture/remote-inbox.md`, "The hub view". Where it differs from the
+above:
+- `webPreferences` also set `webSecurity: true` and `disableDialogs: true` (a macOS sheet shows no
+  origin), and nothing else is enabled. The partition's session gets `setProxy({ mode: 'direct' })`
+  before any load, so Chromium never uses a system proxy that could see the header, and a device
+  permission handler that denies every device. A client-certificate request is answered with none.
+  In a packaged app, developer tools close as soon as they open on the view (the Network panel would
+  show the header); a checkout build keeps them.
+- The header handler is not filtered by URL: it runs for every request in the partition, always
+  removes a page-set `X-Agent-Inbox-Device` in any case, and adds the header only where the
+  controller's `deviceHeaderFor(url)` answers (the hub's exact `https` origin, after a passed node
+  check) and the URL is on the partition's own hub's origin.
+- Navigation is checked with `allowNavigation`, not `isViewerUrl`: an `https` URL on the hub's
+  exact origin (the same `hubHref` rule as the header: no user info however written) or the
+  offline file's exact `file:` URL. `will-frame-navigate` is checked too, for every frame.
+- New windows are always denied. A prevented top-level `http(s)` navigation and a denied new
+  window go to `openWebLink` only with focus and a key press or click in the view in the last 5
+  seconds; any key press counts, so typing into the hub's page counts. Input is a key event
+  (`before-input-event`) or a press (`input-event`), since `before-input-event` alone sees no mouse
+  click; a mouse move does not count, and each input opens at most one link.
+- This Mac stays on top until the menu or `show()` asks; the view is made when a hub becomes
+  active. While the first check after start runs (`retrying`, reason `connecting`) nothing loads,
+  so the offline page does not flash at every start.
+- A hub page that fails to load, or whose renderer goes away, is replaced by the offline file.
+  `refused` shows the offline file even over a loaded hub page. Forgetting the hub (or replacing
+  it) closes the view and asks its partition's session to clear everything (`clearData()`);
+  `forget` answers once that is done or after 5 seconds. At start, every other `hub-<8 hex>`
+  partition is cleared the same way. No file is removed.
+- A hub page that closes its own view gets a fresh one at the next connection change or `show()`,
+  at most 3 a minute. When the window closes, the view is closed first and its session written to
+  disk in `will-quit`.
+- Notification clicks and Check for Updates… also show This Mac first.)
+
 **The bridge.** `remote-preload.cjs` exposes exactly one object, `agentInboxDesk`:
 `available()` → `{ open: boolean }`; `open({ session })` → `{ ok }` or `{ ok: false, reason }`
 (§3.4); `connection()` → `{ mode: 'hub', label, state: 'online' | 'retrying' | 'refused',
@@ -520,6 +555,13 @@ only when the sender is that view's top frame and its URL is on the hub origin, 
 call. So after any redirect off the origin, the bridge is inert. The page feature-detects every
 member, so an older or newer shell still works. `setup-preload.cjs` gains the same
 `agentInboxDesk`, with `connection()` answering `{ mode: 'local' }`.
+**(As built in PR 3b:** `available()` and `connection()` return promises, in both preloads.
+`available()` is `{ open: false }` and there is no `open()` yet (PR 4). The hub view's object has a
+fourth member, `retry()`, which main accepts only from the offline file's URL. `connection()`
+answers `null` when main refuses. The change message carries nothing: the preload asks main again,
+through the checked channel. Every answer is rebuilt field by field in the preload. The local
+`agentInboxDesk` makes no IPC at all. `agentInboxConnect` (`view`, `connect`, `forget`, `show`,
+`onChange`) is in `setup-preload.cjs`, gated in main as chat resume is; `view()` adds `showing`.)
 
 **When the hub cannot be reached.**
 
@@ -533,7 +575,9 @@ member, so an older or newer shell still works. `setup-preload.cjs` gains the sa
   the view if `/api/version.current` changed. The page always comes from the hub, so it never
   drifts from the hub's server.
 - A 403 from `probeHub` is `refused`: the offline page says "<label> no longer accepts this Mac"
-  with **Pair again**, and retries stay at 60 seconds.
+  with **Pair again**, and retries stay at 60 seconds. **(As built in PR 3b:** no button; the page
+  says to pair this Mac again in Settings on This Mac, and hides Retry. Pairing happens in the
+  local page, which the hub view cannot reach.)
 
 ### 3.4 Native parts against the connected hub (PR 4)
 
@@ -726,9 +770,8 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    minute the entry turns off, a notification shows, and the panel shows the removal command.
 3. **The connect flow.** First a second dev copy on the hub, with its own scratch profile, pairs
    and connects to the Serve address (it waits for the laptop if §9 item 3 says no login).
-   **(As built in PR 3a,** the hub's own name is never among its peers, so a connect to it is
-   `not_found` by decision: there is no second path around the peer check. A single-machine proof
-   adds the Mac to its own peer list in the test harness.) Then a
+   **(As built in PR 3b,** `findHub` accepts this node's own name, read from `Self` under the same
+   rules as a peer, so this half runs on the hub itself with nothing added to the peer list.) Then a
    laptop build: pairing; the page loads; an answer there wakes the hub's scratch session; a
    notification's button answers; restarting the hub app and ten minutes of laptop sleep both
    recover without a click; removing the device shows "no longer accepts this Mac"; and

@@ -14,6 +14,8 @@ export const TAILSCALE_ARGS: { readonly self: readonly string[]; readonly serve:
 
 /** `remote.json` beside the hub database: the folder of AGENT_INBOX_DB, else ~/.agent-inbox. */
 export function remoteFile(env?: Record<string, string | undefined>, home?: string): string
+/** The entry's port: 4320 packaged; 4393 for a checkout build, or AGENT_INBOX_REMOTE_PORT there when it is 1024 to 65535 (#617, PR 2d). */
+export function entryPort(options: { isPackaged: boolean; env?: Record<string, string | undefined> }): number
 /** The first fixed path that exists, else null. Never PATH. */
 export function tailscaleCli(exists?: (path: string) => boolean): string | null
 
@@ -60,6 +62,8 @@ export type WriteReason =
 export type WriteResult = { ok: true; view: RemoteView; voidedCode: boolean; unknownFieldsDropped?: true } | { ok: false; reason: WriteReason }
 export type RepairResult = { ok: true; view: RemoteView; voidedCode: boolean; devicesRemoved: number } | { ok: false; reason: WriteReason }
 export type RemoveResult = { ok: true; view: RemoteView; voidedCode: boolean; droppedEntries: number } | { ok: false; reason: WriteReason }
+/** clearUnreadable (#617, PR 2d): `removed` is how many entries the reader drops were dropped. */
+export type ClearResult = { ok: true; view: RemoteView; voidedCode: boolean; removed: number } | { ok: false; reason: WriteReason }
 export type TurnOnResult =
   | { ok: true; view: RemoteView; voidedCode: boolean; devicesRemoved: number; droppedEntries: number }
   | { ok: false; reason: WriteReason | SelfReason | ServeReason; step: 'file' | 'self' | 'serve' }
@@ -92,7 +96,7 @@ export interface RemoteWatchState {
   flag: boolean
   /** the digest of the flagged state; pass it to acknowledge() */
   flagDigest: string | null
-  stopped: { reason: string; at: number; off: boolean; willResume: boolean } | null
+  stopped: { reason: StopReason; at: number; off: boolean; willResume: boolean } | null
   removalHint: string | null
   /** the owner's intent, kept across restarts (always false with no state store) */
   wanted: boolean
@@ -103,6 +107,9 @@ export interface RemoteWatchState {
   /** set when only the owner's switch can turn the entry on again */
   needsOwner: 'identity_changed' | null
 }
+
+/** Every reason onStopped and state().stopped can give: a reading of this node or of Serve, a changed identity, or the owner's Off kept (PR 2e). */
+export type StopReason = SelfReason | ServeReason | 'identity_changed' | 'not_wanted'
 
 /** Why a resume is not done yet: fixed words, or `serve_not_ok:<ServeReason>`. `write_failed`: every check passed, the write did not land. */
 export type ResumeWaiting =
@@ -118,6 +125,8 @@ export interface RemoteEntryController {
   turnOn(): Promise<TurnOnResult>
   turnOff(): Promise<WriteResult>
   removeDevice(id: unknown): Promise<RemoveResult>
+  /** drops the device entries the reader drops, only on a file the reader reads (#617, PR 2d) */
+  clearUnreadable(): Promise<ClearResult>
   /** the one explicit repair: a file with group or other bits is rewritten 0600, off, with no devices */
   repairPermissions(): Promise<RepairResult>
   requestCode(): Promise<CodeResult>
@@ -158,7 +167,7 @@ export function createRemoteEntry(options: {
   /** the state kept across restarts (createRemoteEntryState); without it, no baseline is kept and nothing resumes */
   stateStore?: RemoteEntryStateStore
   /** `willResume`: the watch will try to switch the entry back on by itself (a pause, not a stop) */
-  onStopped?: (reason: string, detail: { off: boolean; willResume: boolean }) => void
+  onStopped?: (reason: StopReason, detail: { off: boolean; willResume: boolean }) => void
   onPaired?: (label: string) => void
   onOutsideChange?: () => void
   /** the watch switched the entry back on by itself */

@@ -1,7 +1,8 @@
 'use strict'
 // The hub's remote-entry controller (#617, PR 2c): what the desktop app's main process uses to
-// own `remote.json` and to check Tailscale. Logic only: no window, no IPC, no page (the next PR
-// wires it to IPC, a preload bridge, notifications and the Settings panel).
+// own `remote.json` and to check Tailscale. Logic only: no window, no IPC, no page. PR 2d wires it:
+// electron/main.cjs makes one per run, and ./remote-entry-ipc.cjs gives it its channels, its
+// notifications and what Settings → Other devices (public/remote-settings.js) draws.
 //
 // Design: docs/superpowers/specs/2026-11-17-remote-inbox-design.md §3.2 ("Writers", "Serve's
 // shape, checked by main", "Changes made behind the app's back", "The hub's Settings");
@@ -79,6 +80,9 @@ const BACKOFF_MAX_MS = 30 * 60_000
 const STATE_TIMEOUT_MS = 5_000
 const PACKAGED_PORT = 4320
 const CHECKOUT_PORT = 4393
+// a checkout build only (#617, PR 2d), mirroring AGENT_INBOX_PORT: so the panel can be proven
+// against a Serve configuration that already forwards to another port. The packaged app ignores it.
+const REMOTE_PORT_ENV = 'AGENT_INBOX_REMOTE_PORT'
 
 // The viewer's reader rules (src/viewer-remote.ts readRemoteSetting), mirrored;
 // test/remote-entry-settings.test.ts compares the two over many files so they cannot drift.
@@ -104,6 +108,17 @@ const CANONICAL_DEPTH = 32
 function remoteFile(env = process.env, home = os.homedir()) {
   const db = env.AGENT_INBOX_DB
   return path.join(db ? path.dirname(path.resolve(db)) : path.join(home, '.agent-inbox'), REMOTE_FILE)
+}
+
+/**
+ * The entry's loopback port: 4320 for the packaged app; 4393 for a checkout build, or
+ * AGENT_INBOX_REMOTE_PORT when that is written as a plain integer from 1024 to 65535.
+ */
+function entryPort({ isPackaged, env = process.env }) {
+  if (isPackaged === true) return PACKAGED_PORT
+  const text = env[REMOTE_PORT_ENV]
+  const value = typeof text === 'string' && /^[1-9]\d{3,4}$/.test(text) ? Number(text) : null
+  return value !== null && value >= 1024 && value <= 65535 ? value : CHECKOUT_PORT
 }
 
 // ── remote.json ────────────────────────────────────────────────────────────
@@ -322,7 +337,7 @@ function createRemoteEntry(options = {}) {
   const env = options.env ?? process.env
   const file = remoteFile(env, options.home ?? os.homedir())
   const viewerPort = options.viewerPort ?? viewerPortFor({ isPackaged: options.isPackaged === true, env })
-  const port = options.port ?? (options.isPackaged === true ? PACKAGED_PORT : CHECKOUT_PORT)
+  const port = options.port ?? entryPort({ isPackaged: options.isPackaged === true, env })
   const fsImpl = options.fsImpl ?? fsp
   const uid = options.uid ?? process.getuid?.()
   const ownerToken = options.ownerToken
@@ -819,6 +834,27 @@ function createRemoteEntry(options = {}) {
   }
 
   /**
+   * Drops the device entries the reader drops (#617, PR 2d: the panel's Clear), since they still
+   * count toward its limit of 16, and nothing else. Only on a file the reader reads: on one it
+   * refuses, dropping entries could make the rest readable, and so switch the entry on.
+   */
+  async function clearUnreadable() {
+    let removed = 0
+    const result = await write((current) => {
+      if (current.state === 'missing') return {}
+      if (current.state === 'refused') return { refuse: current.reason }
+      if (!current.setting) return { refuse: current.problem }
+      const listed = current.doc.devices
+      if (!Array.isArray(listed)) return {}
+      const kept = listed.filter(validDevice)
+      if (kept.length === listed.length) return {}
+      removed = listed.length - kept.length
+      return { doc: { ...current.doc, devices: kept } }
+    })
+    return result.ok ? { ...result, removed } : result
+  }
+
+  /**
    * The one repair: a file with group or other bits is rewritten 0600, turned off, and stripped of
    * its devices, since another user may have edited it and added one. The result says how many.
    */
@@ -1217,6 +1253,7 @@ function createRemoteEntry(options = {}) {
     turnOn: safe(turnOn, { ok: false, reason: 'failed', step: 'file' }),
     turnOff: safe(turnOff, failed),
     removeDevice: safe(removeDevice, failed),
+    clearUnreadable: safe(clearUnreadable, failed),
     repairPermissions: safe(repairPermissions, failed),
     requestCode: safe(requestCode, failed),
     entryStatus: safe(entryStatus, { ok: false, reason: 'unreachable' }),
@@ -1274,6 +1311,7 @@ module.exports = {
   TAILSCALE_ARGS,
   TAILSCALE_PATHS,
   createRemoteEntry,
+  entryPort,
   parseServeStatus,
   parseTailnetSelf,
   remoteFile,

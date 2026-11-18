@@ -276,6 +276,22 @@ describe('turnOn(): only when this node\'s identity and Serve\'s shape are both 
     expect(fileJson(file)).toMatchObject({ port: 4393, viewerPort: 4392 })
   })
 
+  // #617 PR 2d: a checkout-only knob, so the panel can be proven against an existing Serve configuration
+  it('a checkout build takes AGENT_INBOX_REMOTE_PORT when it is a port from 1024 to 65535; the packaged app never does', async () => {
+    const checkout = hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: '4320' } })
+    expect(checkout.c.port).toBe(4320)
+    expect((await checkout.c.turnOn()).ok).toBe(true)
+    expect(fileJson(checkout.file)).toMatchObject({ port: 4320, viewerPort: 4392 })
+    expect(hub({ isPackaged: true, env: { AGENT_INBOX_REMOTE_PORT: '4999' } }).c.port).toBe(4320)
+    for (const bad of ['', '80', '1023', '65536', '4320.5', ' 4320', '4320 ', '0x10e0', '+4320', '4e3', 'abc', '04320x']) {
+      expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: bad } }).c.port, JSON.stringify(bad)).toBe(4393)
+    }
+    expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: '1024' } }).c.port).toBe(1024)
+    expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: '65535' } }).c.port).toBe(65535)
+    expect(remoteEntry.entryPort({ isPackaged: false, env: {} })).toBe(4393)
+    expect(remoteEntry.entryPort({ isPackaged: true, env: { AGENT_INBOX_REMOTE_PORT: '5000' } })).toBe(4320)
+  })
+
   it('keeps devices and every unknown field, at the top level and in each device, for the same identity', async () => {
     const { c, dir, file } = hub()
     const kept = { ...device(newSecret(), A), future: { x: 1 } }
@@ -406,10 +422,47 @@ describe('turnOff() and removeDevice()', () => {
     for (const bad of ['laptop', 'AAAAAAAAAAAAAAAA', '', null, 7]) expect(await c.removeDevice(bad)).toEqual({ ok: false, reason: 'bad_id' })
   })
 
+  // #617 PR 2d: the panel's Clear for "N entries that can't be read"
+  it('clearUnreadable drops only the entries the reader drops, keeps the rest and unknown fields, and says how many', async () => {
+    const { c, dir, file } = hub()
+    writeSetting(dir, setting(4320, [{ ...device(newSecret(), A), x: 1 }, { id: 'bad' }, device(newSecret(), B, 'lap‮top'), null], { y: 2 }))
+    const result = await c.clearUnreadable()
+    expect(result).toMatchObject({ ok: true, removed: 3, voidedCode: false })
+    const after = fileJson(file) as { devices: Array<{ id: string; x?: number }>; y: number; enabled: boolean }
+    expect(after.devices.map((d) => [d.id, d.x])).toEqual([[A, 1]])
+    expect(after.y).toBe(2)
+    expect(after.enabled).toBe(true)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect((await c.view()).unreadableDevices).toBe(0)
+  })
+
+  it('clearUnreadable with nothing to drop, or no file, writes nothing', async () => {
+    const { c, dir, file } = hub()
+    expect(await c.clearUnreadable()).toMatchObject({ ok: true, removed: 0 })
+    expect(existsSync(file)).toBe(false)
+    writeSetting(dir, setting(4320, [device(newSecret(), A)]))
+    const text = readFileSync(file, 'utf8')
+    const stamp = statSync(file).mtimeMs
+    expect(await c.clearUnreadable()).toMatchObject({ ok: true, removed: 0 })
+    expect(readFileSync(file, 'utf8')).toBe(text)
+    expect(statSync(file).mtimeMs).toBe(stamp)
+  })
+
+  it('clearUnreadable never makes a file the reader refuses readable: 17 entries, one bad, stay as they are', async () => {
+    const { c, dir, file } = hub()
+    const ids = Array.from({ length: 16 }, (_, i) => i.toString(16).padStart(16, '0'))
+    writeSetting(dir, setting(4320, [...ids.map((id) => device(newSecret(), id)), { id: 'bad' }]))
+    const text = readFileSync(file, 'utf8')
+    expect(await c.clearUnreadable()).toEqual({ ok: false, reason: 'bad_devices' })
+    expect(readFileSync(file, 'utf8')).toBe(text)
+    writeSetting(dir, setting(4320, [{ id: 'bad' }]), 0o644)
+    expect(await c.clearUnreadable()).toEqual({ ok: false, reason: 'open_to_others' })
+  })
+
   it('there is no operation that sets logins, host or port, or adds a device', () => {
     const { c } = hub()
     expect(Object.keys(c).sort()).toEqual([
-      'acknowledge', 'entryStatus', 'file', 'port', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'review', 'selfTest',
+      'acknowledge', 'clearUnreadable', 'entryStatus', 'file', 'port', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'review', 'selfTest',
       'serveState', 'settled', 'start', 'state', 'stop', 'tailnetSelf', 'tick', 'turnOff', 'turnOn', 'view', 'viewerPort',
     ])
   })

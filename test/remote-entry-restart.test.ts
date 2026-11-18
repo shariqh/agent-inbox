@@ -1798,6 +1798,8 @@ describe('review round 1: an owner\'s turnOff before the kept state is read', ()
     await s.c.settled()
     expect(s.events.outside).toBe(1)
     expect((await s.c.state()).flag).toBe(true)
+    // #617 PR 2d review round 1, item 7: what it was before the start is not known
+    expect((await s.c.review()).changes).toMatchObject({ unknown: true })
     // and Review accepts the file as main's switch-off left it
     expect(await s.c.acknowledge((await s.c.state()).flagDigest)).toEqual({ ok: true })
   })

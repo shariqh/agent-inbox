@@ -1857,6 +1857,18 @@ describe('review(): what changed, as facts with no values (review round 1, item 
     }
   })
 
+  it('main\'s own write while a change is flagged keeps the facts against what the owner last accepted', async () => {
+    const laptop = device(newSecret(), A, 'laptop')
+    const h = await watched([laptop])
+    const desk = device(newSecret(), B, 'desk')
+    await edit(h, setting(4320, [laptop, desk]))
+    // the owner presses Remove on laptop while the box is up
+    expect((await h.c.removeDevice(A)).ok).toBe(true)
+    const review = await h.c.review()
+    expect(review.flag).toBe(true)
+    expect(review.changes).toMatchObject({ added: ['desk'], removed: ['laptop'] })
+  })
+
   it('a file removed, and a file it cannot read, say so', async () => {
     const h = await watched([device(newSecret(), D, 'laptop')])
     unlinkSync(h.file)

@@ -576,7 +576,7 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
   const start = main.indexOf('// ── sharing this Inbox with your other Macs (#617, PR 2d)')
   const end = main.indexOf('// ── end of sharing this Inbox with your other Macs')
 
-  function world({ platform = 'darwin', owned = true, isPackaged = true } = {}) {
+  function world({ platform = 'darwin', owned = true, isPackaged = true, notifications = false } = {}) {
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
     const made: Json[] = []
@@ -589,21 +589,28 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
       './remote-entry-state.cjs': { createRemoteEntryState: (options: Json) => ({ store: options }) },
       './remote-entry-ipc.cjs': { ...ipc, registerRemoteEntryIpc: (options: Json) => { handlers.set('options', options) }, watchRemoteEntry: () => ({ stop: vi.fn() }) },
     }
+    // a dynamic import() cannot load inside new Function here: the one import of the words is the real module
+    const IMPORT = "import(pathToFileURL(path.join(REPO_ROOT, 'public', 'remote-words.js')).href)"
+    expect(main.slice(start, end).split(IMPORT)).toHaveLength(2)
+    const block = main.slice(start, end).replace(IMPORT, 'loadWords()')
     const windowEvents = new Map<string, () => void>()
+    const notes: Array<{ title: string; body: string }> = []
+    const NotificationFake = Object.assign(function Notification(this: { on(): void }, note: { title: string; body: string }) { notes.push(note); this.on = () => {} }, { isSupported: () => notifications })
     const linkWindow = {
       isDestroyed: () => false, on: (event: string, fn: () => void) => { windowEvents.set(event, fn) },
       webContents: { isDestroyed: () => false, send: (channel: string) => { sent.push(channel) } },
     }
     const scope = new Function(
       'require', 'process', 'app', 'ipcMain', 'Notification', 'notificationRetainer', 'linkSender', 'linkFilesPermitted', 'installBinding', 'OWNER_TOKEN',
-      'REPO_ROOT', 'path', 'pathToFileURL', 'linkWindow', 'viewerOwnedNow',
-      `let viewerOwned = viewerOwnedNow\n${main.slice(start, end)}\nreturn { startRemoteEntry, quitRemoteEntry, remoteEntryChanged }`,
+      'REPO_ROOT', 'path', 'pathToFileURL', 'linkWindow', 'viewerOwnedNow', 'loadWords',
+      `let viewerOwned = viewerOwnedNow\n${block}\nreturn { startRemoteEntry, quitRemoteEntry, remoteEntryChanged }`,
     )(
       (id: string) => { if (!(id in modules)) throw new Error(`unexpected require ${id}`); return modules[id] },
-      { platform }, app, { handle: () => {} }, Object.assign(function Notification() {}, { isSupported: () => false }), { show: () => {} },
+      { platform }, app, { handle: () => {} }, NotificationFake, { show: () => {} },
       () => true, () => true, { settled: async () => {} }, TOKEN, REPO, { join }, (p: string) => new URL(`file://${p}`), linkWindow, owned,
+      async () => words,
     ) as { startRemoteEntry(): void; quitRemoteEntry(event: { preventDefault(): void }): boolean; remoteEntryChanged(): void }
-    return { scope, made, controller, handlers, app, sent, windowEvents }
+    return { scope, made, controller, handlers, app, sent, windowEvents, notes }
   }
 
   it('makes one controller with the owner token, a state store and the four callbacks, and starts it', () => {
@@ -640,6 +647,18 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
     await vi.waitFor(() => expect(w.app.quit).toHaveBeenCalledOnce())
     expect(w.controller.calls).toEqual(['start', 'stop', 'settled'])
     expect(w.scope.quitRemoteEntry(event)).toBe(false)
+  })
+
+  // review round 1, item 2: main tells the notifier the app started, so a pause at start is held
+  it('holds a pause in the first 2 minutes after start: nothing is shown at once', async () => {
+    const w = world({ notifications: true })
+    w.scope.startRemoteEntry()
+    const options = w.made[0]! as { onStopped(reason: string, detail: { off: boolean; willResume: boolean }): void }
+    options.onStopped('not_running', { off: true, willResume: true })
+    options.onStopped('identity_changed', { off: true, willResume: false })
+    await vi.waitFor(() => expect(w.notes).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(w.notes.map((note) => note.title)).toEqual(['Agent Inbox stopped sharing with your other Macs'])
   })
 
   // review round 1, item 6: the removal hint is read again when the window regains focus

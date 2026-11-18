@@ -432,7 +432,7 @@ function world(options: WorldOptions = {}) {
     preload: PRELOAD,
     now: options.now ?? (() => clock.t),
     onChange: changes,
-    isPackaged: options.isPackaged ?? true,
+    ...(options.isPackaged === undefined ? {} : { isPackaged: options.isPackaged }),
     readPartitions: options.partitions ?? (() => []),
     setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms }); return timers.length },
   })
@@ -732,9 +732,12 @@ describe('createHubView: which view is on top', () => {
     const w = world()
     w.connect.set(hubState('online'))
     await settle()
+    const changesBefore = w.changes.mock.calls.length
     w.window.emit('closed')
     expect(w.contents().destroyed).toBe(true)
     expect(w.ses().cleared).toBe(0)
+    // its own close is not taken for the page closing itself: nothing more is announced
+    expect(w.changes.mock.calls.length).toBe(changesBefore)
     // closed first, so what the page writes as it goes is in the session; written in will-quit by flush()
     expect(w.ses().flushed).toBe(0)
     w.hub.flush()
@@ -878,6 +881,10 @@ describe('createHubView: review round 1', () => {
     const checkout = await online({ isPackaged: false })
     checkout.contents().emit('devtools-opened')
     expect(checkout.contents().devtoolsClosed).toBe(0)
+    // not told: treated as packaged
+    const unsaid = await online()
+    unsaid.contents().emit('devtools-opened')
+    expect(unsaid.contents().devtoolsClosed).toBe(1)
   })
 
   it('adds the device header only for its own partition’s origin, whatever deviceHeaderFor says for the hub active now', async () => {
@@ -888,8 +895,10 @@ describe('createHubView: review round 1', () => {
     w.ses().beforeSend!({ url: 'https://other.example.ts.net/api/items', requestHeaders: {} }, (response) => { answer = response })
     expect(answer).toEqual({ requestHeaders: {} })
     w.connect.deviceHeaderFor.mockImplementation(() => SECRET)
-    w.ses().beforeSend!({ url: `${ORIGIN}/api/items`, requestHeaders: {} }, (response) => { answer = response })
+    w.ses().beforeSend!({ url: `${ORIGIN}/api/items?x=1`, requestHeaders: {} }, (response) => { answer = response })
     expect(answer).toEqual({ requestHeaders: { 'X-Agent-Inbox-Device': SECRET } })
+    // asked with the request's own URL, the one the controller decides on
+    expect(w.connect.deviceHeaderFor).toHaveBeenLastCalledWith(`${ORIGIN}/api/items?x=1`)
   })
 
   describe('a hub page that closes itself', () => {

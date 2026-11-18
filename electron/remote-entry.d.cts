@@ -2,6 +2,7 @@
 // controller for the desktop app's main process. Runtime lives in the .cjs (and its read-only
 // Tailscale half in electron/remote-tailscale.cjs, which remote-entry.cjs re-exports).
 import type { UpdatePreferencesFs } from './update-preferences.cjs'
+import type { RemoteEntryStateStore } from './remote-entry-state.cjs'
 
 /** The removal command the panel shows (from Tailscale's documentation, not yet seen in real output). */
 export const REMOVAL_HINT: 'tailscale serve --https=443 off'
@@ -91,9 +92,21 @@ export interface RemoteWatchState {
   flag: boolean
   /** the digest of the flagged state; pass it to acknowledge() */
   flagDigest: string | null
-  stopped: { reason: string; at: number; off: boolean } | null
+  stopped: { reason: string; at: number; off: boolean; willResume: boolean } | null
   removalHint: string | null
+  /** the owner's intent, kept across restarts (always false with no state store) */
+  wanted: boolean
+  /** whether the last write to the state store landed; null with no state store */
+  stateSaved: boolean | null
+  /** why the watch has not switched the entry back on yet; null when it is not waiting */
+  resume: { waiting: ResumeWaiting } | null
+  /** set when only the owner's switch can turn the entry on again */
+  needsOwner: 'identity_changed' | null
 }
+
+/** Why a resume is not done yet: fixed words, or `serve_not_ok:<ServeReason>`. `write_failed`: every check passed, the write did not land. */
+export type ResumeWaiting =
+  | 'tailscale_not_running' | 'tailscale_unreadable' | `serve_not_ok:${ServeReason}` | 'flagged' | 'changed_outside' | 'needs_owner' | 'write_failed'
 
 export interface RemoteEntryController {
   readonly file: string
@@ -138,7 +151,12 @@ export function createRemoteEntry(options: {
   clearTimeout?: (handle: unknown) => void
   setInterval?: (fn: () => void, ms: number) => unknown
   clearInterval?: (handle: unknown) => void
-  onStopped?: (reason: string, detail: { off: boolean }) => void
+  /** the state kept across restarts (createRemoteEntryState); without it, no baseline is kept and nothing resumes */
+  stateStore?: RemoteEntryStateStore
+  /** `willResume`: the watch will try to switch the entry back on by itself (a pause, not a stop) */
+  onStopped?: (reason: string, detail: { off: boolean; willResume: boolean }) => void
   onPaired?: (label: string) => void
   onOutsideChange?: () => void
+  /** the watch switched the entry back on by itself */
+  onResumed?: () => void
 }): RemoteEntryController

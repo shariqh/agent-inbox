@@ -44,7 +44,8 @@ export function watchOnline(input: {
 
 export interface HubView {
   /** Puts the hub view (its id) or This Mac (null) on top. */
-  show(id: unknown): { ok: true; showing: string | null } | { ok: false; reason: 'bad_id' | 'not_found' | 'destroyed' }
+  /** `busy`: the hub's page closed its own view more than 3 times in a minute. */
+  show(id: unknown): { ok: true; showing: string | null } | { ok: false; reason: 'bad_id' | 'not_found' | 'destroyed' | 'busy' }
   /** The id of the hub shown on top, or null for This Mac. */
   current(): string | null
   /** Reloads the hub page when one is loaded. */
@@ -55,6 +56,8 @@ export interface HubView {
   layout(): void
   /** Writes the partition's storage to disk (before quit). */
   flush(): void
+  /** Resolves when the partitions being cleared (after a forget or a replace, or at start) are cleared, or after 5 seconds. */
+  cleared(): Promise<void>
   /** Checks the node and probes now; loads the hub page when it is online. */
   retry(): Promise<{ ok: boolean }>
   /** `trustedDeskSender` for the active view. */
@@ -71,6 +74,11 @@ export interface HubViewOptions {
   preload: string
   now?: () => number
   onChange?: () => void
+  /** A packaged app closes developer tools as soon as they open on the hub view; true by default. */
+  isPackaged?: boolean
+  /** The names in the profile's Partitions folder; every hub-<8 hex> one but the stored hub's is cleared at start. */
+  readPartitions?: () => string[]
+  setTimeout?: (fn: () => void, ms: number) => unknown
 }
 export function createHubView(options: HubViewOptions): HubView
 

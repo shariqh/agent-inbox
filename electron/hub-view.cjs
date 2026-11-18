@@ -21,6 +21,12 @@ const HUB_ID = /^[0-9a-f]{8}$/
 const DEVICE_HEADER_NAME = DEVICE_HEADER.toLowerCase()
 const INPUT_WINDOW_MS = 5_000
 const ONLINE_EVERY_MS = 10_000
+// a forget waits this long at most for the partition to be cleared
+const CLEAR_WAIT_MS = 5_000
+// a page that closes its own view gets a fresh one at most this often
+const REBUILDS_PER_MINUTE = 3
+const MINUTE_MS = 60_000
+const HUB_PARTITION = /^hub-[0-9a-f]{8}$/
 const CLIPBOARD_WRITE = 'clipboard-sanitized-write'
 // Chromium's code for a navigation that was cancelled, a prevented one included: not a failure
 const ERR_ABORTED = -3
@@ -195,6 +201,10 @@ const isHttp = (url) => {
 function createHubView(options) {
   const { window: win, session, WebContentsView, connect, openWebLink, offlineFile, preload } = options
   const now = options.now ?? Date.now
+  // developer tools on the hub view would show the device header as sent: closed in a packaged app
+  const isPackaged = options.isPackaged !== false
+  const readPartitions = options.readPartitions ?? (() => [])
+  const setTimeoutFn = options.setTimeout ?? setTimeout
   const offlineUrl = pathToFileURL(offlineFile).href
   // sessions whose handlers are in place (a partition is configured once per run)
   const configured = new WeakSet()
@@ -205,6 +215,14 @@ function createHubView(options) {
   let showing = null
   let destroyed = false
   let epoch = 0
+  // the session of the last view, kept after the window closes so will-quit can write it
+  let kept = null
+  // the hub whose page closed its own view, waiting for a fresh one; when the fresh ones made in the last minute; held: the limit was hit, so only show() makes the next
+  let dead = null
+  const rebuilds = []
+  let held = false
+  // the clears in flight, each bounded
+  const clears = new Set()
 
   const clock = () => {
     try {
@@ -227,7 +245,8 @@ function createHubView(options) {
     // Chromium would use the system proxy and trust store; a TLS-intercepting proxy would see the header
     await ses.setProxy({ mode: 'direct' })
     ses.webRequest.onBeforeSendHeaders((details, callback) => {
-      callback({ requestHeaders: sendHeaders(details, (url) => connect.deviceHeaderFor(url)) })
+      // this partition's own hub only: during a replace, deviceHeaderFor already answers for the new one
+      callback({ requestHeaders: sendHeaders(details, (url) => (hubHref(url, origin) === null ? null : connect.deviceHeaderFor(url))) })
     })
     ses.setPermissionRequestHandler((_contents, permission, callback, details) => {
       callback(allowPermission(permission, details?.requestingUrl, origin, details?.isMainFrame))
@@ -307,6 +326,22 @@ function createHubView(options) {
       if (isMainFrame === true && code !== ERR_ABORTED) lost(entry)
     })
     contents.on('render-process-gone', () => lost(entry))
+    // no identity from this Mac's store is ever offered to a server the page reaches
+    contents.on('select-client-certificate', (event, _url, _list, callback) => {
+      event.preventDefault()
+      callback()
+    })
+    if (isPackaged) {
+      contents.on('devtools-opened', () => {
+        try {
+          contents.closeDevTools()
+        } catch {
+          // already closed
+        }
+      })
+    }
+    // window.close() from the page: Electron destroys the contents
+    contents.on('destroyed', () => gone(entry))
   }
 
   function layout() {
@@ -377,12 +412,13 @@ function createHubView(options) {
     }
     if (at !== epoch || destroyed) return
     const view = new WebContentsView({
-      webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, partition: partitionFor(id) },
+      webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, disableDialogs: true, partition: partitionFor(id) },
     })
     const entry = { id, origin, ses, view, contents: view.webContents, loaded: null, lastInputAt: null }
     wire(entry)
     active = entry
     pending = null
+    kept = ses
     win.contentView.addChildView(view)
     layout()
     place()
@@ -391,6 +427,7 @@ function createHubView(options) {
   }
 
   function close(entry) {
+    entry.closing = true
     try {
       win.contentView.removeChildView(entry.view)
     } catch {
@@ -407,15 +444,16 @@ function createHubView(options) {
   function drop() {
     epoch += 1
     const entry = active
-    const id = entry?.id ?? pending
+    const id = entry?.id ?? pending ?? dead
     active = null
     pending = null
+    dead = null
+    held = false
+    kept = null
     if (entry !== null) close(entry)
     if (id !== null) {
       try {
-        const ses = entry?.ses ?? session.fromPartition(partitionFor(id))
-        Promise.resolve().then(() => ses.clearStorageData()).catch(() => {})
-        Promise.resolve().then(() => ses.clearCache()).catch(() => {})
+        clearPartition(entry?.ses ?? session.fromPartition(partitionFor(id)))
       } catch {
         // nothing stored
       }
@@ -424,15 +462,93 @@ function createHubView(options) {
     place()
   }
 
+  /** Everything in the partition (cache, cookies, storage, service workers), waited for at most 5 seconds by cleared(). */
+  function clearPartition(ses) {
+    let done
+    try {
+      done = Promise.resolve(ses.clearData()).catch(() => {})
+    } catch {
+      done = Promise.resolve()
+    }
+    const bounded = Promise.race([done, new Promise((resolve) => {
+      const timer = setTimeoutFn(resolve, CLEAR_WAIT_MS)
+      timer?.unref?.()
+    })])
+    clears.add(bounded)
+    bounded.then(() => clears.delete(bounded))
+  }
+
+  /** The page closed its own view: drop it and show This Mac; a fresh one comes at the next change or show(). */
+  function gone(entry) {
+    if (entry.closing || entry !== active) return
+    try {
+      win.contentView.removeChildView(entry.view)
+    } catch {
+      // already removed
+    }
+    active = null
+    dead = entry.id
+    showing = null
+    place()
+    changed()
+  }
+
+  function mayRebuild() {
+    const t = clock()
+    if (!Number.isFinite(t)) return false
+    while (rebuilds.length > 0 && !(t - rebuilds[0] < MINUTE_MS)) rebuilds.shift()
+    return rebuilds.length < REBUILDS_PER_MINUTE
+  }
+
+  function rebuild(id) {
+    rebuilds.push(clock())
+    dead = null
+    held = false
+    activate(id).catch(() => {})
+  }
+
+  /** At start: every hub-<8 hex> partition but the stored hub's is cleared. Only sessions are asked; no file is touched. */
+  async function sweep() {
+    let ids
+    try {
+      const names = readPartitions()
+      ids = Array.isArray(names) ? names.filter((name) => typeof name === 'string' && HUB_PARTITION.test(name)).map((name) => name.slice(4)) : []
+    } catch {
+      return
+    }
+    if (ids.length === 0) return
+    let stored
+    try {
+      const view = await connect.view()
+      // a store that cannot be read may still hold the hub: clear nothing
+      if (view === null || typeof view !== 'object' || (view.problem !== null && view.problem !== undefined)) return
+      stored = view.hub?.id ?? null
+    } catch {
+      return
+    }
+    for (const id of ids) {
+      const hub = activeHub(connect.connection())
+      if (destroyed || id === stored || hub?.id === id || active?.id === id || pending === id || dead === id) continue
+      try {
+        clearPartition(session.fromPartition(partitionFor(id)))
+      } catch {
+        // nothing to clear
+      }
+    }
+  }
+
   function update(connection) {
     if (destroyed) return
     const hub = activeHub(connection)
     if (hub === null) {
-      if (active !== null || pending !== null || showing !== null) drop()
+      if (active !== null || pending !== null || dead !== null || showing !== null) drop()
     } else if (active !== null && active.id === hub.id) {
       render(hub)
+    } else if (dead === hub.id) {
+      if (!held && mayRebuild()) rebuild(hub.id)
+      else held = true
     } else if (pending !== hub.id) {
-      if (active !== null || pending !== null) drop()
+      if (active !== null || pending !== null || dead !== null) drop()
       activate(hub.id).catch(() => {})
     }
     changed()
@@ -440,13 +556,13 @@ function createHubView(options) {
 
   function flush() {
     try {
-      active?.ses.flushStorageData()
+      ;(active?.ses ?? kept)?.flushStorageData()
     } catch {
       // nothing to write
     }
   }
 
-  /** Closes the view; its partition's storage is written and stays (only the hub going away clears it). */
+  /** Closes the view and keeps its session, which will-quit writes with flush(); its storage stays (only the hub going away clears it). */
   function destroy() {
     if (destroyed) return
     destroyed = true
@@ -458,8 +574,7 @@ function createHubView(options) {
     } catch {
       // nothing to remove
     }
-    // the window closes before will-quit, so the hub page's drafts are written now
-    flush()
+    // closed first, so what the page writes as it goes reaches the session; flush() in will-quit writes it
     if (active !== null) close(active)
     active = null
     pending = null
@@ -471,6 +586,7 @@ function createHubView(options) {
   win.on('resize', onResize)
   win.once('closed', destroy)
   update(connect.connection())
+  sweep().catch(() => {})
 
   return Object.freeze({
     show(id) {
@@ -481,6 +597,10 @@ function createHubView(options) {
         if (typeof id !== 'string' || !HUB_ID.test(id)) return { ok: false, reason: 'bad_id' }
         const hub = activeHub(connect.connection())
         if (hub === null || hub.id !== id) return { ok: false, reason: 'not_found' }
+        if (dead === id) {
+          if (!mayRebuild()) return { ok: false, reason: 'busy' }
+          rebuild(id)
+        }
         showing = id
       }
       place()
@@ -508,6 +628,8 @@ function createHubView(options) {
       if (connection.mode === 'hub' && connection.id === entry.id && connection.state === 'online' && entry.loaded !== 'hub') load(entry, 'hub')
       return { ok: true }
     },
+    /** Resolves when the partitions being cleared are cleared, or after 5 seconds. */
+    cleared: () => Promise.all([...clears]).then(() => undefined),
     trusts: (event) => (active === null ? null : trustedDeskSender(event, active.view, active.origin, offlineUrl)),
   })
 }
@@ -552,7 +674,12 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView }) {
     showing: hubView()?.current() ?? null,
   }))
   owned(CONNECT_CHANNELS.connect, connectInput, (controller, input) => controller.connect(input))
-  owned(CONNECT_CHANNELS.forget, (args) => (args.length === 1 && shortText(args[0], 64) ? args[0] : null), (controller, id) => controller.forget(id))
+  // answered once the forgotten hub's partition is cleared, or after 5 seconds
+  owned(CONNECT_CHANNELS.forget, (args) => (args.length === 1 && shortText(args[0], 64) ? args[0] : null), async (controller, id) => {
+    const result = await controller.forget(id)
+    await hubView()?.cleared()
+    return result
+  })
   owned(CONNECT_CHANNELS.show, (args) => (args.length === 1 && (args[0] === null || shortText(args[0], 64)) ? { id: args[0] } : null), (_controller, { id }) => {
     const view = hubView()
     return view === null ? { ...UNAVAILABLE } : view.show(id)

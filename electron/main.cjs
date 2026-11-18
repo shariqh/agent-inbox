@@ -22,7 +22,7 @@ const {
 } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const { randomBytes, randomUUID } = require('node:crypto')
-const { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
+const { chmodSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
 const os = require('node:os')
 const http = require('node:http')
 const path = require('node:path')
@@ -216,6 +216,8 @@ function validateReleaseUrl(value, version) {
 
 function openUpdatesWindow(win) {
   if (win.isDestroyed() || win.webContents.isDestroyed()) return
+  // Settings → Updates is on This Mac's page: bring it forward over the hub view (#617 PR 3b)
+  hubView?.show(null)
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
@@ -740,6 +742,8 @@ function startRemoteConnect(win) {
     preload: path.join(__dirname, 'remote-preload.cjs'),
     now: Date.now,
     onChange: () => hubChanged(win),
+    isPackaged: app.isPackaged,
+    readPartitions: () => readdirSync(path.join(app.getPath('userData'), 'Partitions')),
   })
   const kick = () => {
     remoteConnect?.kick()
@@ -999,6 +1003,7 @@ function startAttentionWatch(win) {
         const note = new Notification(formatResponseReminder(reminders))
         const hash = reminders.length === 1 ? focusHashFor(reminders[0].focusId) : null
         note.on('click', () => {
+          hubView?.show(null)
           if (win.isMinimized()) win.restore()
           win.show()
           win.focus()
@@ -1071,6 +1076,7 @@ function startAttentionWatch(win) {
                 body: `“${answer}” was preserved here because the action changed. Open Agent Inbox to review it.`,
               })
               failed.on('click', () => {
+                hubView?.show(null)
                 if (win.isMinimized()) win.restore()
                 win.show()
                 win.focus()
@@ -1083,6 +1089,7 @@ function startAttentionWatch(win) {
           }
         })
         note.on('click', () => {
+          hubView?.show(null)
           if (win.isMinimized()) win.restore()
           win.show()
           win.focus()
@@ -1196,12 +1203,11 @@ function createWindow() {
 nativeTheme.on('updated', () => syncThemeChrome())
 
 function installApplicationMenu(win) {
-  // both live on This Mac's page, so it comes forward first (#617 PR 3b)
+  // both live on This Mac's page, so it comes forward first (#617 PR 3b; openUpdatesWindow does it for updates)
   const updates = {
     label: 'Check for Updates…',
     enabled: updateFeatureAvailable,
     click() {
-      hubView?.show(null)
       openUpdatesWindow(win)
     },
   }

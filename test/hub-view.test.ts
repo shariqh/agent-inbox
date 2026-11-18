@@ -286,7 +286,9 @@ class FakeContents extends EventEmitter {
   reloadIgnoringCache() { this.reloads += 1; this.log.push('reload') }
   isFocused() { return this.focused }
   focus() { this.log.push(`focus ${this.id}`) }
-  close() { this.destroyed = true; this.log.push('close') }
+  devtoolsClosed = 0
+  close() { this.destroyed = true; this.log.push('close'); this.emit('destroyed') }
+  closeDevTools() { this.devtoolsClosed += 1 }
   isDestroyed() { return this.destroyed }
   send(...args: unknown[]) { this.sent.push(args) }
   getURL() { return this.url }
@@ -306,7 +308,8 @@ class FakeSession {
   constructor(readonly name: string, readonly log: Log) {}
   async setProxy(config: unknown) {
     this.log.push('setProxy')
-    await Promise.resolve()
+    // a later turn, as Chromium answers: a load that does not wait for it would go first
+    await new Promise((resolve) => setImmediate(resolve))
     this.proxy = config
     this.log.push('setProxy done')
   }
@@ -320,9 +323,18 @@ class FakeSession {
   setPermissionCheckHandler(fn: never) { this.log.push('permission check'); this.check = fn }
   setDevicePermissionHandler(fn: never) { this.log.push('device permission'); this.device = fn }
   on(event: string, fn: never) { this.log.push(`session on ${event}`); if (event === 'will-download') this.downloads.push(fn) }
-  async clearStorageData() { this.cleared += 1; this.log.push(`clearStorageData ${this.name}`) }
+  clearOptions: unknown[] = []
+  // how clearData settles: at once by default; a test may hold it
+  clearing: () => Promise<void> = async () => {}
+  async clearStorageData() { this.log.push(`clearStorageData ${this.name}`) }
   async clearCache() { this.cacheCleared += 1 }
-  flushStorageData() { this.flushed += 1 }
+  clearData(...options: unknown[]) {
+    this.cleared += 1
+    this.clearOptions.push(options)
+    this.log.push(`clearData ${this.name}`)
+    return this.clearing()
+  }
+  flushStorageData() { this.flushed += 1; this.log.push(`flush ${this.name}`) }
 }
 
 function fakeElectron() {
@@ -369,14 +381,21 @@ function fakeConnect(origin = ORIGIN) {
   let current: Conn = { mode: 'local' }
   const listeners = new Set<(c: Conn) => void>()
   const kicks: number[] = []
+  // what view() reads from the store: by default the hub the connection names; a test may set another, a problem, or hold the read
+  const store: { stored?: string | null; problem: string | null; hold: Promise<void> | null } = { problem: null, hold: null }
   return {
+    store,
     connection: () => ({ ...current }),
     onConnection(callback: (c: Conn) => void) { listeners.add(callback); return () => listeners.delete(callback) },
-    view: async () => ({
-      available: true, keychain: true, problem: null,
-      hub: current.mode === 'hub' ? { id: current.id, label: current.label, origin, machine: 'studio', state: current.state, reason: current.reason } : null,
-    }),
-    deviceHeaderFor: fakeHeaderFor,
+    view: async () => {
+      if (store.hold) await store.hold
+      const id = store.stored !== undefined ? store.stored : current.mode === 'hub' ? current.id : null
+      return {
+        available: true, keychain: true, problem: store.problem,
+        hub: id === null ? null : { id, label: 'studio', origin, machine: 'studio', state: null, reason: null },
+      }
+    },
+    deviceHeaderFor: vi.fn((url: unknown): string | null => fakeHeaderFor(url)),
     kick: vi.fn(async () => { kicks.push(1); return { ok: true } }),
     set(next: Conn) {
       current = next
@@ -392,9 +411,14 @@ const settle = async () => {
 const hubState = (state: 'online' | 'retrying' | 'refused', reason: string | null = null, extra: Partial<Conn> = {}): Conn =>
   ({ mode: 'hub', id: ID, label: 'studio', state, reason, version: '2.12.0', ...extra }) as Conn
 
-function world(options: { now?: () => number; origin?: string } = {}) {
+interface WorldOptions { now?: () => number; origin?: string; isPackaged?: boolean; partitions?: () => string[]; stored?: string | null; problem?: string }
+
+function world(options: WorldOptions = {}) {
   const electron = fakeElectron()
   const connect = fakeConnect(options.origin)
+  if (options.stored !== undefined) connect.store.stored = options.stored
+  if (options.problem !== undefined) connect.store.problem = options.problem
+  const timers: Array<{ fn: () => void; ms: number }> = []
   const opened: string[] = []
   const changes = vi.fn()
   const clock = { t: 5_000_000 }
@@ -408,11 +432,14 @@ function world(options: { now?: () => number; origin?: string } = {}) {
     preload: PRELOAD,
     now: options.now ?? (() => clock.t),
     onChange: changes,
+    isPackaged: options.isPackaged ?? true,
+    readPartitions: options.partitions ?? (() => []),
+    setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms }); return timers.length },
   })
   const view = () => electron.views.at(-1)!
   const contents = () => view().webContents
   const ses = () => electron.sessions.get(`persist:hub-${ID}`)!
-  return { ...electron, connect, hub, opened, changes, clock, view, contents, ses }
+  return { ...electron, connect, hub, opened, changes, clock, view, contents, ses, timers }
 }
 
 /** An Electron navigation event: the details object with preventDefault. */
@@ -445,7 +472,9 @@ describe('createHubView: the view and its session', () => {
     await settle()
     expect(w.views).toHaveLength(1)
     expect(w.view().options).toEqual({
-      webPreferences: { preload: PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, partition: 'persist:hub-0123abcd' },
+      webPreferences: {
+        preload: PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, disableDialogs: true, partition: 'persist:hub-0123abcd',
+      },
     })
   })
 
@@ -617,9 +646,10 @@ describe('createHubView: what the view shows', () => {
     await settle()
     expect(w.window.children).toEqual([])
     expect(contents.destroyed).toBe(true)
+    // everything in the partition, with clearData (cache, cookies, storage, service workers...), after the view is closed
     expect(w.ses().cleared).toBe(1)
-    expect(w.ses().cacheCleared).toBe(1)
-    expect(w.log.indexOf('close')).toBeLessThan(w.log.indexOf(`clearStorageData persist:hub-${ID}`))
+    expect(w.ses().clearOptions).toEqual([[]])
+    expect(w.log.indexOf('close')).toBeLessThan(w.log.indexOf(`clearData persist:hub-${ID}`))
     expect(w.hub.current()).toBeNull()
     expect(w.log.at(-1) === `focus ${w.local.id}` || w.log.includes(`focus ${w.local.id}`)).toBe(true)
     expect(w.changes).toHaveBeenCalled()
@@ -705,8 +735,11 @@ describe('createHubView: which view is on top', () => {
     w.window.emit('closed')
     expect(w.contents().destroyed).toBe(true)
     expect(w.ses().cleared).toBe(0)
-    // the window closes before will-quit, so the hub page's drafts are written here
+    // closed first, so what the page writes as it goes is in the session; written in will-quit by flush()
+    expect(w.ses().flushed).toBe(0)
+    w.hub.flush()
     expect(w.ses().flushed).toBe(1)
+    expect(w.log.indexOf('close')).toBeLessThan(w.log.indexOf(`flush persist:hub-${ID}`))
     expect(w.hub.show(ID)).toEqual({ ok: false, reason: 'destroyed' })
   })
 
@@ -821,6 +854,229 @@ describe('createHubView: navigation and links', () => {
   })
 })
 
+describe('createHubView: review round 1', () => {
+  async function online(options: WorldOptions = {}) {
+    const w = world(options)
+    w.connect.set(hubState('online'))
+    await settle()
+    return w
+  }
+
+  it('answers a client-certificate request from the hub view with none, so no identity in the store is offered', async () => {
+    const w = await online()
+    const event = { preventDefault: vi.fn() }
+    const callback = vi.fn()
+    w.contents().emit('select-client-certificate', event, 'https://elsewhere.example.com/', [{ subjectName: 'me' }], callback)
+    expect(event.preventDefault).toHaveBeenCalledTimes(1)
+    expect(callback.mock.calls).toEqual([[]])
+  })
+
+  it('closes developer tools on the hub view in a packaged app, and keeps them in a checkout build', async () => {
+    const packaged = await online({ isPackaged: true })
+    packaged.contents().emit('devtools-opened')
+    expect(packaged.contents().devtoolsClosed).toBe(1)
+    const checkout = await online({ isPackaged: false })
+    checkout.contents().emit('devtools-opened')
+    expect(checkout.contents().devtoolsClosed).toBe(0)
+  })
+
+  it('adds the device header only for its own partition’s origin, whatever deviceHeaderFor says for the hub active now', async () => {
+    const w = await online()
+    // the hub being replaced: deviceHeaderFor already answers for the new hub's origin
+    w.connect.deviceHeaderFor.mockImplementation((url: unknown) => (String(url).startsWith('https://other.example.ts.net/') ? 'B-secret' : null))
+    let answer: unknown
+    w.ses().beforeSend!({ url: 'https://other.example.ts.net/api/items', requestHeaders: {} }, (response) => { answer = response })
+    expect(answer).toEqual({ requestHeaders: {} })
+    w.connect.deviceHeaderFor.mockImplementation(() => SECRET)
+    w.ses().beforeSend!({ url: `${ORIGIN}/api/items`, requestHeaders: {} }, (response) => { answer = response })
+    expect(answer).toEqual({ requestHeaders: { 'X-Agent-Inbox-Device': SECRET } })
+  })
+
+  describe('a hub page that closes itself', () => {
+    it('drops the dead view, shows This Mac, and makes a fresh one at the next connection change', async () => {
+      const w = await online()
+      w.hub.show(ID)
+      const first = w.contents()
+      first.destroyed = true
+      first.emit('destroyed')
+      expect(w.window.children).toEqual([])
+      expect(w.hub.current()).toBeNull()
+      expect(w.log.at(-1)).toBe(`focus ${w.local.id}`)
+      // its partition keeps its storage: the hub did not go away
+      expect(w.ses().cleared).toBe(0)
+      w.connect.set(hubState('retrying', 'unreachable'))
+      await settle()
+      expect(w.views).toHaveLength(2)
+      expect(w.window.children).toEqual([w.view()])
+      expect(w.contents().loads).toEqual([OFFLINE_URL])
+    })
+
+    it('makes a fresh one when show(id) asks', async () => {
+      const w = await online()
+      w.contents().destroyed = true
+      w.contents().emit('destroyed')
+      expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+      await settle()
+      expect(w.views).toHaveLength(2)
+      expect(w.view().visible).toBe(true)
+      expect(w.contents().loads).toEqual([`${ORIGIN}/`])
+    })
+
+    it('makes at most 3 fresh views a minute, then stays on This Mac until show() after the minute', async () => {
+      const w = await online()
+      for (let i = 0; i < 3; i += 1) {
+        w.contents().destroyed = true
+        w.contents().emit('destroyed')
+        w.connect.set(hubState(i % 2 === 0 ? 'retrying' : 'online', i % 2 === 0 ? 'unreachable' : null))
+        await settle()
+      }
+      expect(w.views).toHaveLength(4)
+      w.contents().destroyed = true
+      w.contents().emit('destroyed')
+      w.connect.set(hubState('retrying', 'unreachable'))
+      await settle()
+      expect(w.hub.show(ID)).toEqual({ ok: false, reason: 'busy' })
+      await settle()
+      expect(w.views).toHaveLength(4)
+      expect(w.window.children).toEqual([])
+      expect(w.hub.current()).toBeNull()
+      w.clock.t += 60_000
+      w.connect.set(hubState('online'))
+      await settle()
+      expect(w.views).toHaveLength(4)
+      expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+      await settle()
+      expect(w.views).toHaveLength(5)
+    })
+
+    it('does not count the view this module closed itself', async () => {
+      const w = await online()
+      w.connect.set(hubState('online', null, { id: 'ffff0000' }))
+      await settle()
+      // the first view closed by the replace emitted destroyed; the new one stands
+      expect(w.views).toHaveLength(2)
+      expect(w.window.children).toEqual([w.view()])
+    })
+  })
+
+  describe('forgetting clears the partition, bounded', () => {
+    it('cleared() waits for clearData', async () => {
+      const w = await online()
+      let release!: () => void
+      w.ses().clearing = () => new Promise<void>((resolve) => { release = resolve })
+      w.connect.set({ mode: 'local' })
+      let done = false
+      void w.hub.cleared().then(() => { done = true })
+      await settle()
+      expect(done).toBe(false)
+      release()
+      await settle()
+      expect(done).toBe(true)
+    })
+
+    it('cleared() gives up after 5 seconds', async () => {
+      const w = await online()
+      w.ses().clearing = () => new Promise<void>(() => {})
+      w.connect.set({ mode: 'local' })
+      let done = false
+      void w.hub.cleared().then(() => { done = true })
+      await settle()
+      expect(done).toBe(false)
+      const timer = w.timers.find((t) => t.ms === 5_000)!
+      expect(timer).toBeDefined()
+      timer.fn()
+      await settle()
+      expect(done).toBe(true)
+    })
+
+    it('clears a partition still being set up when its hub is dropped, and never makes its view', async () => {
+      const w = world()
+      let release!: () => void
+      w.connect.store.hold = new Promise<void>((resolve) => { release = resolve })
+      w.connect.set(hubState('online'))
+      await settle()
+      w.connect.set({ mode: 'local' })
+      await settle()
+      expect(w.sessions.get(`persist:hub-${ID}`)?.cleared).toBe(1)
+      release()
+      await settle()
+      expect(w.views).toHaveLength(0)
+    })
+  })
+
+  describe('at start, clears every hub partition but the stored hub’s', () => {
+    const NAMES = ['hub-0123abcd', 'hub-ffff0000', 'hub-aaaaaaaa', 'hub-XYZ', 'hub-0123abcd0', 'other', 'hub-0123ABCD']
+
+    it('asks each other hub-<8 hex> partition’s session to clear, and never the stored one', async () => {
+      const w = world({ partitions: () => NAMES, stored: ID })
+      await settle()
+      expect([...w.sessions.entries()].filter(([, s]) => s.cleared > 0).map(([name]) => name).sort()).toEqual(['persist:hub-aaaaaaaa', 'persist:hub-ffff0000'])
+    })
+
+    it('clears every one with no stored hub', async () => {
+      const w = world({ partitions: () => NAMES, stored: null })
+      await settle()
+      expect([...w.sessions.entries()].filter(([, s]) => s.cleared > 0).map(([name]) => name).sort()).toEqual(['persist:hub-0123abcd', 'persist:hub-aaaaaaaa', 'persist:hub-ffff0000'])
+    })
+
+    it('clears nothing while the store has a problem, or when the folder cannot be read', async () => {
+      const troubled = world({ partitions: () => NAMES, stored: null, problem: 'unreadable' })
+      await settle()
+      expect([...troubled.sessions.values()].filter((s) => s.cleared > 0)).toEqual([])
+      const unreadable = world({ partitions: () => { throw new Error('ENOENT') }, stored: null })
+      await settle()
+      expect([...unreadable.sessions.values()].filter((s) => s.cleared > 0)).toEqual([])
+    })
+
+    it('never clears the partition of a hub that became active meanwhile', async () => {
+      // the sweep read a store with no hub; then a connect made this one active before it cleared
+      const w = world({ partitions: () => NAMES, stored: null })
+      w.connect.store.stored = undefined
+      w.connect.set(hubState('online'))
+      await settle()
+      expect(w.ses().cleared).toBe(0)
+      expect(w.contents().loads).toEqual([`${ORIGIN}/`])
+    })
+  })
+
+  it('a retry whose hub was replaced during the check loads nothing into either view', async () => {
+    const w = world()
+    w.connect.set(hubState('retrying', 'unreachable'))
+    await settle()
+    const first = w.contents()
+    w.connect.kick.mockImplementationOnce(async () => {
+      w.connect.set(hubState('retrying', 'unreachable', { id: 'ffff0000' }))
+      await settle()
+      w.connect.set(hubState('online', null, { id: 'ffff0000' }))
+      return { ok: true }
+    })
+    expect(await w.hub.retry()).toEqual({ ok: false })
+    expect(first.loads).toEqual([OFFLINE_URL])
+    await settle()
+    expect(w.contents().loads).toEqual([OFFLINE_URL, `${ORIGIN}/`])
+  })
+
+  it('tells the page of a change only while it shows the hub or the offline file', async () => {
+    const w = await online()
+    const before = w.contents().sent.length
+    w.contents().url = 'https://elsewhere.example.com/'
+    w.connect.set(hubState('retrying', 'unreachable'))
+    await settle()
+    expect(w.contents().sent.length).toBe(before)
+  })
+
+  it('a sub-frame redirect off the origin is prevented and never opens anything, even with fresh input', async () => {
+    const w = await online()
+    w.hub.show(ID)
+    w.contents().focused = true
+    w.contents().emit('before-input-event', {}, { type: 'keyDown' })
+    const event = navEvent('https://elsewhere.example.com/r', false)
+    w.contents().emit('will-redirect', event, event.url)
+    expect(event.defaultPrevented).toBe(true)
+    expect(w.opened).toEqual([])
+  })
+})
+
 describe('trustedDeskSender', () => {
   async function shown() {
     const w = world()
@@ -922,6 +1178,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
         show: (id: unknown) => { shows.push(id); return { ok: true, showing: id } },
         current: () => null,
         retry: async () => { retries.push(1); return { ok: true } },
+        cleared: async () => {},
       }
     : options.hubView
   const connect = options.connect === undefined ? realConnect() : options.connect
@@ -1005,6 +1262,20 @@ describe('registerHubIpc', () => {
     expect(w.shows).toEqual([null, ID])
     const none = ipcWorld({ hubView: null })
     expect(await none.call(CONNECT_CHANNELS.show, none.local, null)).toEqual(UNAVAILABLE)
+  })
+
+  it('forget answers only once the forgotten hub’s partition has been cleared (or given up on)', async () => {
+    let release!: () => void
+    const cleared = vi.fn(() => new Promise<void>((resolve) => { release = resolve }))
+    const w = ipcWorld({ hubView: { trusts: () => null, show: () => ({ ok: true }), current: () => null, retry: async () => ({ ok: true }), cleared } })
+    const connected = await w.connect!.connect({ address: HOST, code: '7K3QX-9M2PD' }) as { id: string }
+    let answer: unknown = 'pending'
+    void (w.call(CONNECT_CHANNELS.forget, w.local, connected.id) as Promise<unknown>).then((value) => { answer = value })
+    await vi.waitFor(() => expect(cleared).toHaveBeenCalled())
+    await settle()
+    expect(answer).toBe('pending')
+    release()
+    await vi.waitFor(() => expect(answer).toEqual({ ok: true }))
   })
 
   it('agentInboxDesk answers the hub view’s top frame only, and retry only from the offline file', async () => {

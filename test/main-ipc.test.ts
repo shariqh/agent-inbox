@@ -8,7 +8,7 @@
 // window, server, network or Keychain is touched. A direct `eval` closure appended to the source
 // sets the window's grants the way createWindow and the install binding would, so the local
 // window is trusted and the comparison means something.
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -87,6 +87,9 @@ function recorder(label: string, calls: string[], answer: unknown = { recorded: 
   })
 }
 
+// what BrowserWindow.fromWebContents answers: the test sets it to the window, for the local page AND the hub view, so a handler that trusts "it is in my window" is caught
+const windowFor: { value: unknown } = { value: null }
+
 function loadMain() {
   const handlers = new Map<string, Handler>()
   const other: string[] = []
@@ -114,7 +117,7 @@ function loadMain() {
   }
   const electron = {
     app, ipcMain, shell, dialog, nativeTheme,
-    BrowserWindow: { getAllWindows: () => [] },
+    BrowserWindow: { getAllWindows: () => [], fromWebContents: () => windowFor.value, getFocusedWindow: () => windowFor.value },
     WebContentsView: class {},
     Menu: { setApplicationMenu: () => {}, buildFromTemplate: (template: unknown) => template },
     Notification: { isSupported: () => false },
@@ -149,6 +152,7 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     main = loadMain()
     urlBase = main.evaluate('URL_BASE') as string
     const win = { webContents: local, isDestroyed: () => false, show: () => {}, setBackgroundColor: () => {} }
+    windowFor.value = win
     const harness = {
       win,
       installBinding: { settled: async () => {}, refresh: () => {} },
@@ -257,6 +261,32 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     expect(await handler(e.localSubFrame, ...args)).toEqual(asStranger)
   })
 
+  it('agentInboxConnect answers a reused viewer (the window’s page with no file-link grant) { available: false } on every channel', async () => {
+    const e = events()
+    const shownBefore = shown.length
+    main.evaluate('fileLinkWebContentsId = null')
+    try {
+      for (const channel of Object.keys(CHANNELS).filter((name) => name.startsWith('agent-inbox:connect-'))) {
+        expect(await main.handlers.get(channel)!(e.local, ...CHANNELS[channel]!.args), channel).toEqual({ available: false })
+      }
+    } finally {
+      main.evaluate('fileLinkWebContentsId = 7')
+    }
+    expect(shown).toHaveLength(shownBefore)
+  })
+
+  it('Check for Updates… and an update notification bring This Mac forward first (openUpdatesWindow)', () => {
+    const calls: string[] = []
+    const shownBefore = shown.length
+    const target = { isDestroyed: () => false, isMinimized: () => false, show: () => calls.push('show'), focus: () => calls.push('focus'), webContents: { isDestroyed: () => false, send: (channel: string) => calls.push(channel) } }
+    ;(globalThis as Record<string, unknown>).__updatesTarget = target
+    main.evaluate('openUpdatesWindow(globalThis.__updatesTarget)')
+    delete (globalThis as Record<string, unknown>).__updatesTarget
+    expect(shown.slice(shownBefore)).toEqual([null])
+    expect(calls).toEqual(['show', 'focus', 'agent-inbox:open-updates'])
+    shown.length = shownBefore
+  })
+
   it('agentInboxDesk answers the hub view’s top frame only, and retry only from the offline file', async () => {
     const e = events()
     const connection = main.handlers.get('agent-inbox:desk-connection')!
@@ -308,6 +338,16 @@ describe('electron/main.cjs never hands the hub view a grant (source)', () => {
   })
 })
 
+describe('no IPC handler is registered any other way (source)', () => {
+  it('nothing in electron/ uses webContents.ipc or a frame’s ipc', () => {
+    const dir = join(REPO, 'electron')
+    for (const name of readdirSync(dir).filter((file) => file.endsWith('.cjs'))) {
+      const text = readFileSync(join(dir, name), 'utf8')
+      expect(text, name).not.toMatch(/\.ipc\s*\.\s*(handle|handleOnce|on|once|addListener|removeHandler)\b|\bipc\s*:/)
+    }
+  })
+})
+
 describe('electron/main.cjs wires the hub view (source)', () => {
   const main = read('electron/main.cjs')
   const startRemote = main.slice(main.indexOf('function startRemoteConnect(win)'), main.indexOf('\n}\n', main.indexOf('function startRemoteConnect(win)')))
@@ -322,6 +362,10 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(startRemote).toContain('remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload() })')
     expect(startRemote).toContain("offlineFile: path.join(__dirname, 'remote-offline.html'),")
     expect(startRemote).toContain("preload: path.join(__dirname, 'remote-preload.cjs'),")
+    // developer tools on the hub view are closed in a packaged app only
+    expect(startRemote).toContain('isPackaged: app.isPackaged,')
+    // the profile's Partitions folder, listed so start-up clears every hub partition but the stored hub's
+    expect(startRemote).toContain("readPartitions: () => readdirSync(path.join(app.getPath('userData'), 'Partitions')),")
     expect(startRemote.trimEnd().endsWith('remoteConnect.start()')).toBe(true)
     expect(main.indexOf('startRemoteConnect(win)\n')).toBeGreaterThan(main.indexOf('const win = createWindow()'))
   })
@@ -345,10 +389,23 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     const settingsClick = menu.slice(menu.indexOf("label: 'Settings…'"))
     expect(settingsClick.indexOf('hubView?.show(null)')).toBeGreaterThan(-1)
     expect(settingsClick.indexOf('hubView?.show(null)')).toBeLessThan(settingsClick.indexOf("win.webContents.send('agent-inbox:toggle-settings')"))
+    // Check for Updates… goes through openUpdatesWindow, which shows This Mac first (tested above)
     const updatesClick = menu.slice(menu.indexOf("label: 'Check for Updates…'"), menu.indexOf('const settings = {'))
-    expect(updatesClick.indexOf('hubView?.show(null)')).toBeLessThan(updatesClick.indexOf('openUpdatesWindow(win)'))
+    expect(updatesClick).toContain('openUpdatesWindow(win)')
     expect(menu).toContain('hubMenuItems({ connection: remoteConnect?.connection(), showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })')
     expect(menu).toContain("{ role: 'viewMenu' }")
+  })
+
+  it('every attention notification click brings This Mac forward before it shows the window and sets its location', () => {
+    const watch = main.slice(main.indexOf('function startAttentionWatch(win)'), main.indexOf('function refreshUpdatesAfterLoad()'))
+    const clicks = [...watch.matchAll(/\.on\('click', \(\) => \{\n([\s\S]*?)\n\s*\}\)/g)].map((m) => m[1]!)
+    expect(clicks).toHaveLength(3)
+    for (const body of clicks) {
+      expect(body.trim().startsWith('hubView?.show(null)'), body).toBe(true)
+      expect(body).toContain('executeJavaScript(\`location.hash')
+    }
+    // the update notifications open Settings → Updates through openUpdatesWindow
+    expect(main.match(/note\.on\('click', \(\) => \{\n\s*if \(updateWindow\) openUpdatesWindow\(updateWindow\)/g)).toHaveLength(2)
   })
 
   it('names the hub in the title while its view is on top, and tells only the owned local page of a change', () => {

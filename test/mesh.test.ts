@@ -1184,7 +1184,8 @@ describe('/api/version carries mesh only with a known agent (agent cards view de
     const home = scratchDir('mesh-home-')
     mkdirSync(join(home, '.claude'), { recursive: true })
     const opts = { agentHome: home, setupInfoPath: join(dbDir, 'none.json') }
-    const keys = async (o: object) => Object.keys(await (await createViewer(db, { ...opts, ...o }).request('/api/version')).json())
+    // `machine` (#617) is this host's own name, so a build's key list must not depend on it; test/session-place.test.ts pins it
+    const keys = async (o: object) => Object.keys(await (await createViewer(db, { ...opts, ...o }).request('/api/version')).json()).filter((key) => key !== 'machine')
     expect(await keys({})).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
     expect(await keys({ mesh: meshAgents({ dir: dbDir }) })).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
     writeFileSync(join(dbDir, 'mesh.json'), '{"schema":1,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420"}}}\n')

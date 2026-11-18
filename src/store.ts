@@ -814,6 +814,14 @@ function runMigrations(db: Database.Database): void {
   // issue #612 — 1 when this session's MCP server tracks requests. Nothing writes it
   // yet (PR 4 turns it on, with the viewer); NULL on every row an older server writes.
   ensureColumn(db, 'activity', 'tracks_requests', 'INTEGER')
+  // issue #617 — where a session runs: its machine, tmux session (desk), tmux pane and Claude
+  // Code Remote Control id. `machine` and `pane` ride the presence upsert, kept on omission
+  // like the build; `desk` and `remote_session` change or go away, so only setActivityPlace
+  // writes them. NULL on every row an older server writes: its statements never name them.
+  ensureColumn(db, 'activity', 'machine', 'TEXT')
+  ensureColumn(db, 'activity', 'desk', 'TEXT')
+  ensureColumn(db, 'activity', 'pane', 'TEXT')
+  ensureColumn(db, 'activity', 'remote_session', 'TEXT')
   // issue #432 — a launch run in its own git worktree: the checkout it was made
   // from, the worktree (equal to cwd), its branch, the base commit and the
   // checkout's branch then, when it was removed, and the driver's turn-end
@@ -3543,6 +3551,15 @@ export interface Activity {
   host_turn_at?: string
   host_idle_at?: string
   host_tool_at?: string
+  /**
+   * Issue #617 — where the session runs: the machine, its tmux session (desk) and pane, and
+   * the Claude Code Remote Control id. Each is served only while set, and only a value its
+   * writer checked against its pattern (src/session-place.ts) is ever stored.
+   */
+  machine?: string
+  desk?: string
+  pane?: string
+  remote_session?: string
 }
 
 export interface ActivityUpdate {
@@ -3589,6 +3606,13 @@ export interface ActivityUpdate {
   receives_messages?: boolean
   /** Issue #411 (channels) — a message is pushed into this session. Kept on omission. */
   push_wake?: boolean
+  /**
+   * Issue #617 — the machine and tmux pane, which never change while the server runs.
+   * Kept on omission, like the build. `desk` and `remote_session` are deliberately NOT
+   * here: they can change or go away, so only setActivityPlace writes them.
+   */
+  machine?: string
+  pane?: string
 }
 
 // One statement for the `activity` presence row, plus (when this write is a
@@ -3601,11 +3625,11 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
   // One statement, two modes. Registration can create idle presence but can
   // neither replace a live claim nor write its historical caption.
   db.prepare(
-    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid, receives_messages, push_wake)
+    `INSERT INTO activity (session, project, stream, agent, doing, last_doing, detail, children, idle, started_at, updated_at, server_version, server_source, host_pid, server_pid, receives_messages, push_wake, machine, pane)
      VALUES (
        @session, @project, @stream, @agent, @doing,
        CASE WHEN @claim = 1 AND @idle = 0 AND @doing <> '' AND @doing <> 'open' THEN @doing ELSE '' END,
-       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid, @receives_messages, @push_wake
+       @detail, @children, @idle, @now, @now, @server_version, @server_source, @host_pid, @server_pid, @receives_messages, @push_wake, @machine, @pane
      )
      ON CONFLICT(session) DO UPDATE SET
        project = @project, stream = @stream, agent = @agent,
@@ -3623,6 +3647,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
        server_pid = COALESCE(@server_pid, server_pid),
        receives_messages = COALESCE(@receives_messages, receives_messages),
        push_wake = COALESCE(@push_wake, push_wake),
+       machine = COALESCE(@machine, machine),
+       pane = COALESCE(@pane, pane),
        updated_at = @now, ended_at = NULL`,
   ).run({
     session: a.session,
@@ -3640,6 +3666,8 @@ const upsertActivityTxn = (db: Database.Database, a: ActivityUpdate): void => {
     server_pid: a.server_pid ?? null,
     receives_messages: a.receives_messages === undefined ? null : a.receives_messages ? 1 : 0,
     push_wake: a.push_wake === undefined ? null : a.push_wake ? 1 : 0,
+    machine: a.machine ?? null,
+    pane: a.pane ?? null,
     now,
   })
   // Registration (`claim: false`) never touches spans — it is not speaking for
@@ -3674,6 +3702,17 @@ export function endActivity(db: Database.Database, session: string): void {
     db.prepare(`UPDATE activity SET ended_at = ? WHERE session = ?`).run(now, session)
     closeOpenSpan(db, session, nowMs)
   })()
+}
+
+// Issue #617 — the two place values that can change or go away while a session runs: its tmux
+// session name and its Remote Control id. One UPDATE that writes EXACTLY what it is given, nulls
+// included (no COALESCE), so a tmux session that was renamed or closed never leaves a stale name.
+// It names no other column: never `updated_at` (liveness), `last_call_at`, a claim or a span, so a
+// place re-read can neither keep a session listed nor revive a cold claim (#45). Returns whether
+// a live row took it: a reading made before the session registered is written by a later call.
+export function setActivityPlace(db: Database.Database, session: string, place: { desk: string | null; remote_session: string | null }): boolean {
+  return db.prepare(`UPDATE activity SET desk = ?, remote_session = ? WHERE session = ? AND ended_at IS NULL`)
+    .run(place.desk, place.remote_session, session).changes > 0
 }
 
 // heartbeat: keep a live session's row from going stale without changing it.
@@ -3798,7 +3837,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   const rows = db
     .prepare(`SELECT a.session, a.project, a.stream, a.agent, a.doing, a.last_doing, a.detail, a.children, a.idle, a.started_at, a.updated_at,
                      a.last_call_at, a.server_version, a.server_source, a.call_minute, a.call_counts, a.receives_messages, a.push_wake,
-                     a.host_turn_at, a.host_idle_at, a.host_tool_at,
+                     a.host_turn_at, a.host_idle_at, a.host_tool_at, a.machine, a.desk, a.pane, a.remote_session,
                      (w.claim_key IS NOT NULL OR c.claim_key IS NOT NULL) AS wakes, (d.claim_key IS NOT NULL) AS driven,
                      substr(d.token, 1, 36) AS driven_launch, t.token AS turn_token, t.claimed_at AS turn_since
               FROM activity a
@@ -3812,9 +3851,10 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
               LEFT JOIN hook_watch_claims t
                 ON d.claim_key IS NOT NULL AND t.claim_key = 'driver-turn:' || substr(d.token, 1, 36)
               WHERE a.ended_at IS NULL AND a.updated_at >= ?`)
-    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at'> & {
+    .all(new Date(now - WAKE_LEASE_MS).toISOString(), freshLeaseCutoff(now), freshLeaseCutoff(now), cutoff) as Array<Omit<Activity, 'children' | 'idle' | 'receives_messages' | 'push_wake' | 'wakes' | 'driven' | 'driven_launch' | 'driven_turn' | 'host_turn_at' | 'host_idle_at' | 'host_tool_at' | 'machine' | 'desk' | 'pane' | 'remote_session'> & {
       children: string | null; idle: number; call_minute: number | null; call_counts: string | null; receives_messages: number | null; push_wake: number | null
       host_turn_at: string | null; host_idle_at: string | null; host_tool_at: string | null
+      machine: string | null; desk: string | null; pane: string | null; remote_session: string | null
       wakes: number; driven: number; driven_launch: string | null; turn_token: string | null; turn_since: string | null
     }>
   const nowMinute = Math.floor(now / 60000)
@@ -3822,7 +3862,7 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
   // public/attention.js classifies an item as "waiting" iff its session id is in
   // this list, so dropping the row would silently downgrade a live blocker. Only
   // the CLAIM decays.
-  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, driven_launch, turn_token, turn_since, host_turn_at, host_idle_at, host_tool_at, ...r }): Activity => {
+  const out = rows.map(({ call_minute, call_counts, receives_messages, push_wake, wakes, driven, driven_launch, turn_token, turn_since, host_turn_at, host_idle_at, host_tool_at, machine, desk, pane, remote_session, ...r }): Activity => {
     const live = (r.last_call_at ?? r.started_at) >= cold
     // #306: the trace is served only while its newest minute is in the window
     const calls = call_minute !== null && nowMinute - call_minute < CALL_TRACE_MINUTES ? parseCallCounts(call_counts) : null
@@ -3837,6 +3877,10 @@ export function listActivity(db: Database.Database, opts: { staleMinutes?: numbe
       ...(host_turn_at ? { host_turn_at } : {}),
       ...(host_idle_at ? { host_idle_at } : {}),
       ...(host_tool_at ? { host_tool_at } : {}),
+      ...(machine ? { machine } : {}),
+      ...(desk ? { desk } : {}),
+      ...(pane ? { pane } : {}),
+      ...(remote_session ? { remote_session } : {}),
       ...(push_wake === 1 ? { push_wake: true as const } : {}),
       ...(wakes === 1 ? { wakes: true as const } : {}),
       ...(driven === 1 ? { driven: true as const } : {}),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdirSync, readFileSync, realpathSync, renameSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
@@ -2778,4 +2778,97 @@ describe('requests (#612)', () => {
       await client.close()
     }
   }, 40000)
+})
+
+// #617 PR 1: where a session runs. The server reads its machine, tmux pane and tmux session
+// name, and for a Claude Code host the Remote Control id in the host's live file. Every
+// fixture is synthetic: a stand-in `tmux` program, a scratch HOME and a made-up id. The
+// child runs directly under Node, so its parent, the host the server reports, is this process.
+describe('where a session runs (#617)', () => {
+  const ID = 'session_TestBridge1'
+
+  function fakeTmux(): { bin: string; log: string } {
+    const dir = scratchDir('mcp-place-bin-')
+    const log = join(dir, 'calls.log')
+    const file = join(dir, 'tmux')
+    writeFileSync(file, `#!/bin/sh\necho "$@" >> '${log}'\necho work-desk\n`)
+    chmodSync(file, 0o755)
+    return { bin: dir, log }
+  }
+
+  async function run(clientName: string, env: Record<string, string>, home: string) {
+    const dbPath = join(scratchDir('mcp-place-'), 'inbox.db')
+    const base: NodeJS.ProcessEnv = { ...process.env, AGENT_INBOX_DB: dbPath, HOME: home }
+    for (const key of ['TMUX', 'TMUX_PANE', 'AGENT_INBOX_MACHINE']) delete base[key]
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/mcp-server.ts'], { env: { ...base, ...env }, stdio: ['pipe', 'pipe', 'inherit'] })
+    const client = new Client({ name: clientName, version: '1.0.0' })
+    await client.connect(childTransport(child))
+    const db = openDb(dbPath)
+    return { client, db, close: async () => { await client.close(); db.close() } }
+  }
+
+  function liveFile(home: string, doc: unknown): void {
+    mkdirSync(join(home, '.claude', 'sessions'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'sessions', `${process.pid}.json`), JSON.stringify(doc))
+  }
+
+  it('a server started in tmux, under Claude Code, writes its machine, pane, desk and Remote Control id', async () => {
+    const { bin, log } = fakeTmux()
+    const home = scratchDir('mcp-place-home-')
+    liveFile(home, { pid: process.pid, sessionId: '00000000-0000-4000-8000-000000000001', bridgeSessionId: ID })
+    const s = await run('claude-code', { PATH: `${bin}:${process.env['PATH']}`, TMUX: '/tmp/tmux-test/default,1,0', TMUX_PANE: '%7', AGENT_INBOX_MACHINE: 'testbox' }, home)
+    try {
+      const row = await waitUntil(() => listActivity(s.db).find((r) => r.desk && r.remote_session), 'the place of the session')
+      expect(row).toMatchObject({ machine: 'testbox', pane: '%7', desk: 'work-desk', remote_session: ID })
+      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['display-message -p -t %7 #{session_name}'])
+      // a later claim and call keep all four: the upsert never names desk or the id, and keeps the other two
+      await s.client.callTool({ name: 'status', arguments: { doing: 'Working in tmux' } })
+      expect(listActivity(s.db)[0]).toMatchObject({ doing: 'Working in tmux', machine: 'testbox', pane: '%7', desk: 'work-desk', remote_session: ID })
+    } finally {
+      await s.close()
+    }
+  }, 30000)
+
+  it('a server with no tmux writes no pane and no desk, and never runs tmux', async () => {
+    const { bin, log } = fakeTmux()
+    const home = scratchDir('mcp-place-home-')
+    const s = await run('claude-code', { PATH: `${bin}:${process.env['PATH']}`, AGENT_INBOX_MACHINE: 'testbox' }, home)
+    try {
+      await waitUntil(() => listActivity(s.db)[0], 'the presence row')
+      // the registration has happened; give the first place reading time to have finished too
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+      const now = listActivity(s.db)[0]!
+      expect(now.machine).toBe('testbox')
+      expect(Object.keys(now)).not.toContain('pane')
+      expect(Object.keys(now)).not.toContain('desk')
+      expect(Object.keys(now)).not.toContain('remote_session')
+      expect(existsSync(log)).toBe(false)
+    } finally {
+      await s.close()
+    }
+  }, 30000)
+
+  it('reads the Remote Control id for a Claude Code host only, and a live file that is not the host’s gives none', async () => {
+    const home = scratchDir('mcp-place-home-')
+    liveFile(home, { pid: process.pid, bridgeSessionId: ID })
+    const copilot = await run('github-copilot-cli', { AGENT_INBOX_MACHINE: 'testbox' }, home)
+    try {
+      await waitUntil(() => listActivity(copilot.db)[0], 'the presence row')
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+      expect(listActivity(copilot.db)[0]).toMatchObject({ machine: 'testbox' })
+      expect(Object.keys(listActivity(copilot.db)[0]!)).not.toContain('remote_session')
+    } finally {
+      await copilot.close()
+    }
+    const other = scratchDir('mcp-place-home-')
+    liveFile(other, { pid: process.pid + 1, bridgeSessionId: ID })
+    const claude = await run('claude-code', {}, other)
+    try {
+      await waitUntil(() => listActivity(claude.db)[0], 'the presence row')
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+      expect(Object.keys(listActivity(claude.db)[0]!)).not.toContain('remote_session')
+    } finally {
+      await claude.close()
+    }
+  }, 30000)
 })

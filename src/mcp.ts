@@ -4,7 +4,8 @@ import type { InitializeRequest, InitializeResult } from '@modelcontextprotocol/
 import { z } from 'zod'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { insertItem, isHandoffInput, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, MESSAGE_MAX_OUTCOME, closeRequest, fileRequest, listSessionRequests, markAcksDelivered, openAgentRequest, updateRequest, getItem, isDrivenSession, messageWatchRunning } from './store.js'
+import { homedir } from 'node:os'
+import { insertItem, isHandoffInput, resolveItem, listPending, markReplySeen, markItemAnnotationDelivered, answerItem, upsertBoard, updateBoardRow, advanceBoardRow, findBoard, archiveBoard, getBoard, getBoardByTitle, listBoards, markBoardRead, markAnnotationDelivered, markHandledDelivered, listPendingRows, upsertActivity, endActivity, touchActivity, recordActivityCall, listIssueSnapshots, listSourceLinks, listPendingMessages, markMessageDelivered, ackMessage, setActivityPlace, MESSAGE_MAX_OUTCOME, closeRequest, fileRequest, listSessionRequests, markAcksDelivered, openAgentRequest, updateRequest, getItem, isDrivenSession, messageWatchRunning } from './store.js'
 import { isReservedProject } from '../public/reserved-projects.js'
 import type { ActionOwner, BoardRow, BoardWithRows, IssueLink, QuestionOption } from './store.js'
 import { makeContextLedger, deliverContext, shapeBoard, summariseBoard, rowKey, itemKey, agentItem } from './shape.js'
@@ -18,6 +19,7 @@ import type { WatchedAsk } from './watch.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { detectServerSource } from './server-source.js'
 import { inferAgent, inferProcessArgs } from './infer.js'
+import { readDesk, readPlace, readRemoteSession, startPlaceRefresh } from './session-place.js'
 import { CHANNEL_CAPABILITY, CHANNEL_INSTRUCTIONS, CHANNEL_METHOD, namesChannel, startChannelPush } from './channel.js'
 
 // The 5-minute liveness tick, hoisted OUT of its setInterval callback on purpose
@@ -119,6 +121,14 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
   // stdio server and its hooks directly, so a hook finds the servers of its own
   // session by its parent pid; the server's own pid lets it check they still run.
   const host = () => ({ host_pid: process.ppid, server_pid: process.pid, ...channel() })
+  // Issue #617 — where this session runs. The machine and the tmux pane never change while the
+  // server runs, so they are read once and ride every presence write, kept on omission like the
+  // build. The tmux session name (desk) and the Claude Code Remote Control id can change or go
+  // away, so the upsert never names them: placeRefresh below re-reads them on a timer of its own
+  // and writes them with setActivityPlace, which touches no stamp. (Not the liveness tick, which
+  // must stay one call.)
+  const where = readPlace(process.env)
+  const place = () => where
   // Issue #411 (channels) — for a Claude Code client only: push a notice for
   // each new message to this session, and say in presence whether Claude Code
   // was launched listening for it. Claude Code gives no signal either way, so the
@@ -146,12 +156,31 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
     closed = true
     stopPush?.()
     stopPush = undefined
+    placeRefresh.stop()
     priorOnClose?.()
   }
+  // Reads once now, again 30 seconds later (Remote Control may register just after the server
+  // starts), then every five minutes, and writes only a changed value. The Remote Control id is
+  // read for a Claude Code host only, and the agent is known only after the handshake.
+  const placeRefresh = startPlaceRefresh(
+    async () => ({
+      desk: where.pane ? await readDesk(where.pane) : null,
+      remote_session: isClaude(clientName()) ? readRemoteSession(homedir(), process.ppid) : null,
+    }),
+    (live) => setActivityPlace(db, sessionId, live),
+  )
+  let placeKnowsAgent = false
   const registerPresence = (): void => {
     try {
       const s = scope.get(clientName())
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, claim: false, ...build, ...host() })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, claim: false, ...build, ...host(), ...place() })
+      // a reading made before the row existed is written now; and once the agent is known to be
+      // Claude Code, its live file is read at once instead of 30 seconds on
+      placeRefresh.flush()
+      if (!placeKnowsAgent && isClaude(clientName())) {
+        placeKnowsAgent = true
+        void placeRefresh.refresh()
+      }
     } catch { /* presence must never break the server */ }
   }
 
@@ -566,11 +595,11 @@ export function buildMcpServer(db: Database.Database, cwd: string): McpServer {
       // row while the machine slept, the next status call recreates it whole.
       if (done) {
         // the effort is over but the session lives on — revert to open presence
-        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [], ...build, ...host() })
+        upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing: 'open', idle: true, children: [], ...build, ...host(), ...place() })
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...messageWatch(s.agent) }) }] }
       }
       if (!doing) throw new Error('doing is required unless done: true')
-      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children, ...build, ...host() })
+      upsertActivity(db, { session: sessionId, project: s.project, stream: s.stream, agent: s.agent, doing, detail, children, ...build, ...host(), ...place() })
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
     },
   )

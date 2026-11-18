@@ -33,6 +33,7 @@ import type { MeshAgents } from './mesh-agents.js'
 import { chatsResponse, createChatIndex } from './chat-index.js'
 import type { ChatIndex } from './chat-index.js'
 import { isChatId } from './chat-parse.js'
+import { readPlace } from './session-place.js'
 
 const require = createRequire(import.meta.url)
 const {
@@ -501,6 +502,8 @@ interface AgentVersion {
   runtimeInstalled: boolean | null
   updatable: boolean
   hosts: { claude: HostVersion; copilot: HostVersion }
+  /** #617 — this viewer's own machine (the short host name, or AGENT_INBOX_MACHINE), only when it is a valid name */
+  machine?: string
   mesh?: { agents: number }
 }
 
@@ -1012,8 +1015,11 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     const hosts = { claude: hostVersion(registered.claude), copilot: hostVersion(registered.copilot) }
     const meshKey = opts.mesh?.version()
     const mesh = meshKey ? { mesh: meshKey } : {}
+    // #617: which machine this hub is, by the rule a session's machine follows; an older viewer sends none
+    const { machine } = readPlace(process.env)
+    const where = machine ? { machine } : {}
     if (baked?.schema !== 2) {
-      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts, ...mesh } satisfies AgentVersion)
+      return c.json({ current: AGENT_INBOX_VERSION, mode: 'dev', runtimeInstalled: null, updatable: false, hosts, ...where, ...mesh } satisfies AgentVersion)
     }
     const lookup = releaseRuntime(baked)
     return c.json({
@@ -1022,6 +1028,7 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
       runtimeInstalled: lookup?.runtime ? true : lookup?.source ? false : null,
       updatable: canUpdateAgents(baked, lookup),
       hosts,
+      ...where,
       ...mesh,
     } satisfies AgentVersion)
   })

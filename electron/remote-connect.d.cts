@@ -38,14 +38,21 @@ export type Connection =
   | { mode: 'hub'; id: string; label: string; state: ConnectionState; reason: string | null; version: string | null }
 
 export type ConnectAnswer =
-  | { ok: true; id: string; label: string; state: ConnectionState; reason: string | null }
-  | { ok: false; reason: ConnectReason | 'failed'; pairedOnHub?: true }
+  /** `replacedHub`: a hub was replaced, and this Mac stays paired on it until the device is removed there. */
+  | { ok: true; id: string; label: string; state: ConnectionState; reason: string | null; replacedHub?: true }
+  /** `forgotten`: forget() removed the new hub during its first probe; `changed`: the store no longer names it. */
+  | { ok: false; reason: ConnectReason | 'forgotten' | 'changed' | 'failed'; pairedOnHub?: true }
 
 export type ProbeAnswer =
   | { ok: true; state: 'online' | 'refused' | 'unreachable' | 'not_agent_inbox'; version: string | null; machine: string | null }
-  | { ok: false; reason: string }
+  | { ok: false; reason: 'no_hub' | 'stopped' | 'changed' | 'failed' | HubReason | 'node_changed' | 'secret_unreadable' | 'no_keychain' }
 
-export type StoreProblem = 'unreadable' | 'too_large' | 'not_json' | 'bad_schema' | 'newer_schema' | 'bad_entry'
+/**
+ * `bad_file`: a symlink, FIFO, folder, another user's file or one open to group or others;
+ * `forget_not_saved`: a forget whose write did not land, so the file still holds that hub.
+ */
+export type StoreProblem = 'unreadable' | 'bad_file' | 'too_large' | 'not_json' | 'bad_schema' | 'newer_schema' | 'bad_entry' | 'forget_not_saved'
+export type ScheduleAnswer = { ok: true } | { ok: false; reason: 'stopped' | 'not_started' | 'failed' }
 export interface ConnectView {
   available: boolean
   keychain: boolean
@@ -64,6 +71,8 @@ export interface RemoteConnectOptions {
   filePath?: string
   app?: { getPath(name: 'userData'): string }
   fsImpl?: unknown
+  /** The user the store must belong to; process.getuid() by default. */
+  uid?: number
   execFile?: unknown
   exists?: (path: string) => boolean
   fetch?: unknown
@@ -91,9 +100,10 @@ export interface RemoteConnect {
   /** Called with the new answer each time it changes; returns the unsubscribe function. */
   onConnection(callback: unknown): () => void
   start(): Promise<void>
+  /** Ends probing and drops the secret until start(); connect() and forget() still change the store. */
   stop(): void
-  kick(): Promise<void>
-  tick(): Promise<void>
+  kick(): Promise<ScheduleAnswer>
+  tick(): Promise<ScheduleAnswer>
   /** The device header's value for a request to `url`, or null. Synchronous. */
   deviceHeaderFor(url: unknown): string | null
   /** A fetch for main's own requests to the hub: refuses any other origin, adds the header, no redirect, a timeout. */

@@ -465,10 +465,11 @@ paired, or its login is not allowed).
 a wrong, expired or used-up code and for a login it does not allow, so `refused` covers both. A
 failure after the hub paired carries `pairedOnHub: true`. `machine` is optional in `/api/version`
 and dropped when it fails §3.1's rule; `current` must be a string. When the first probe fails, the
-pairing is kept and the answer says the state. The node is checked again before the first probe
-after start, after each wake (`kick()`), and before each retry after a probe that was not online;
-until it passes in that connection state, `deviceHeaderFor` answers nothing. Tailscale that cannot
-be read sends nothing and is `retrying`. The full behaviour is in
+pairing is kept and the answer says the state. The node is checked again before every probe, online
+ones included, and a check counts only when no wake (`kick()`), failed probe, stop or forget
+distrusted the last one while it ran; until a check passes, `deviceHeaderFor` answers nothing.
+Tailscale that cannot be read sends nothing and is `retrying`. The store is read with the hub
+reader's checks (no symlink, no FIFO, this user's, no group or other bits). The full behaviour is in
 `docs/architecture/remote-inbox.md`, "Connecting from another Mac".)
 
 **The device header.** Main adds `X-Agent-Inbox-Device` itself, in two places only: its own
@@ -689,7 +690,10 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    server, 403 and `login` rises. The owner adds a second Serve path on the same host; within a
    minute the entry turns off, a notification shows, and the panel shows the removal command.
 3. **The connect flow.** First a second dev copy on the hub, with its own scratch profile, pairs
-   and connects to the Serve address (it waits for the laptop if §9 item 3 says no login). Then a
+   and connects to the Serve address (it waits for the laptop if §9 item 3 says no login).
+   **(As built in PR 3a,** the hub's own name is never among its peers, so a connect to it is
+   `not_found` by decision: there is no second path around the peer check. A single-machine proof
+   adds the Mac to its own peer list in the test harness.) Then a
    laptop build: pairing; the page loads; an answer there wakes the hub's scratch session; a
    notification's button answers; restarting the hub app and ten minutes of laptop sleep both
    recover without a click; removing the device shows "no longer accepts this Mac"; and

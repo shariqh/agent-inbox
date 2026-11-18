@@ -461,15 +461,18 @@ laptop that holds it in plain text, and only in memory.
 and rename under the lock, mode `0600`): `{ schema: 1, active: <id> | null, hubs: { <id>: {
 origin, label, node, machine, device, secret } } }`, `id` 8 random hex characters. One hub at most
 for now, but every hub value sits under its `id`. There is no terminal command or SSH host yet
-(PR 4). Unknown fields are kept, at the top level and in an entry. A file that cannot be read, is
-over 64 KiB, is not JSON, has no valid schema, has a newer schema, or holds an entry that fails any
-rule reads as no hub, with a fixed `problem`: `unreadable`, `too_large`, `not_json`, `bad_schema`,
+(PR 4). Unknown fields are kept, at the top level and in an entry. It is read the way the hub reads
+`remote.json`: opened with `O_NOFOLLOW | O_NONBLOCK`, checked on the open descriptor, and read from
+that descriptor. A symlink, a FIFO, a folder, another user's file or one with any group or other
+bit is `bad_file`, and a FIFO never blocks a read. A file that cannot be read, is over 64 KiB, is not
+JSON, has no valid schema, has a newer schema, or holds an entry that fails any rule reads as no
+hub, with a fixed `problem`: `unreadable`, `bad_file`, `too_large`, `not_json`, `bad_schema`,
 `newer_schema` or `bad_entry`. Such a file is written only by `forget` (when it parses) or by a
 `connect` with `replace: true`, after the owner confirms. A newer schema is never written.
 
 **The address.** `parseHubOrigin(text)` takes `https://<host>` or a bare host, to which it adds
-`https://`. It refuses, as `bad_address`: any other scheme (`http:` included), user info (even
-empty), a port (even `:443`), a path other than `/`, a query or fragment (even empty), a space,
+`https://`. It refuses, as `bad_address`: any other scheme (`http:` included), user info however it
+is written (below), a port (even `:443`), a path other than `/`, a query or fragment (even empty), a space,
 tab, newline, control character, backslash or `%` anywhere, and a host that fails the reader's host
 rule (so an IP address, a trailing dot, an underscore or a non-ASCII name). The host is lowercased;
 the answer is `https://<host>` with no trailing slash. Each rule is checked on the text as written,
@@ -518,7 +521,13 @@ build; the code rule (`normaliseCode`) and the label rule (`isDeviceLabel`) are 
    fails after the hub has paired (the Keychain refuses, the write fails), the answer carries
    `pairedOnHub: true`: the hub lists a device this Mac cannot use, to be removed there.
 7. `probeHub`. When it is online, `machine` and the final label are stored. When it is not, the
-   pairing is kept and the answer says the state: `{ ok: true, id, label, state, reason }`.
+   pairing is kept and the answer says the state: `{ ok: true, id, label, state, reason }`. After
+   `stop()`, the hub is stored but not probed: `state: 'retrying', reason: 'stopped'`. When the
+   owner forgets the new hub during this probe, the answer is `{ ok: false, reason: 'forgotten' }`.
+
+With `replace: true`, a hub already stored is replaced and the answer carries `replacedHub: true`.
+This Mac stays paired on the old hub: it still lists the device until it is removed there, in that
+hub's Settings, as after `forget`.
 
 This Mac's name on the hub (the `label` sent with the code) is its own short host name: the part
 before the first dot, without characters the label rule refuses, at most 40 characters, else `Mac`.
@@ -533,23 +542,36 @@ self-signed certificate and with one issued to another name.
 
 **The secret in use.** It is decrypted once per connection state and kept only in this module's
 memory. A JavaScript string cannot be wiped, so "cleared" means the module drops its only
-reference: on `forget`, on `stop`, on a new pairing or a new stored hub, and whenever the node
-check is refused.
+reference: on `forget`, on `stop`, on a new pairing or a new stored hub, and whenever a node check
+fails, Tailscale unreadable included.
+
+User info is refused however it is written, by one rule the address check, `deviceHeaderFor` and
+`hubFetch` share: after removing tabs and newlines and trimming edge spaces and controls, as the URL
+parser does, any `@` before the first `/`, `?` or `#` that follows the scheme and its leading
+slashes and backslashes. So `https://@host/`, `https://:@host/`, `https:@host/`, `https:\@host/`
+and `https:/\@host/` are all refused, though each parses to the hub's own origin.
 
 - `deviceHeaderFor(url)` is synchronous and cheap, for the next PR's `onBeforeSendHeaders`. It
-  answers the secret only when a hub is active, the node check has passed in this connection state,
-  `url` parses as `https:` with no user info (even empty), and its origin equals the hub's
+  answers the secret only when a hub is active, the module is not stopped, the last node check
+  passed and nothing has distrusted it since, `url` is a string or a `URL` (its `href` read once)
+  that parses as `https:` with no user info, and its origin equals the hub's
   `https://<host>`, compared as parsed origins, never as string prefixes. The default port and a
   host written in another case are the same origin; another port, a sub-domain, a look-alike that
   starts or ends with the hub's name, and a trailing dot are not.
-- `hubFetch()` returns a `fetch`-shaped function for main's own requests to the hub. It rejects
-  (before calling `fetch`) any input that is not a string or `URL` on the hub's origin, sets the
-  header (replacing one the caller set), forces `redirect: 'error'` and a 5-second timeout joined
-  to the caller's signal, and rejects a 3xx response a `fetch` handed back anyway. Its errors carry
-  a fixed message and code, never the secret.
+- `hubFetch()` returns a `fetch`-shaped function for main's own requests to the hub. It reads its
+  input once, decides on that one parsed value and fetches exactly its `href`, so a `URL` whose
+  `href` changes between reads cannot move the request. It rejects (before calling `fetch`) any
+  input that is not a string or `URL` on the hub's origin, sets the header (replacing one the
+  caller set), forces `redirect: 'error'` and a 5-second timeout joined to the caller's signal, and
+  rejects a 3xx response a `fetch` handed back anyway. Its own refusals carry a fixed message and
+  code (`not_hub_origin`, `redirect`); a network error passes through as the runtime's own error,
+  and none of those seen holds the secret.
 
-**The node check.** Before the first probe after `start()`, after each `kick()`, and before the
-first probe after any probe that was not online, `findHub(host)` runs again. When the node differs
+**The node check.** Before every probe, online ones included, `findHub(host)` runs again (a peer
+list of about 600 KB parses in a few milliseconds). A check counts only when nothing distrusted the
+last one while it ran: a `kick()`, a failed probe, a dropped secret, `stop()` or `forget()` each
+make a check already in flight stale, so a peer list read before a wake event never lets the secret
+out, and the round the kick asked for reads the peers again. When the node differs
 from the stored one, or the hub is no longer this person's untagged device, nothing is sent, the
 secret is dropped from memory, and the state is `refused` with `node_changed` (or the `findHub`
 word). It is checked again every 60 seconds; only the stored node passes, so it stays refused until
@@ -572,29 +594,50 @@ label, state, reason, version }`, `state` one of `online`, `retrying` or `refuse
 probe it is `retrying` with the reason `connecting`. `onConnection(callback)` returns an unsubscribe
 function and calls back only when the answer changes; a callback that throws stops nothing.
 
-- Online: probed every 60 seconds, with no node check in between.
+- Online: probed every 60 seconds, with the node check before each probe.
 - Retrying: from 2 seconds, doubling to 60 (2, 4, 8, 16, 32, 60, 60, ...), with the node check
   before each try.
 - Refused: tried every 60 seconds.
 - `kick()` (the next PR calls it on wake, unlock and when the network comes back) holds the header
-  back at once, resets the backoff, and checks the node and probes straight away.
+  back at once, resets the backoff, and checks the node and probes straight away; a kick that lands
+  during a check makes that check stale and runs another. It answers `{ ok: true }`.
 - When `version` differs from the last online probe's, `onReload()` is called once. The first online
   probe after start does not call it.
 - Probes never overlap: connect, forget and every probe run one at a time.
-- `stop()` clears the timer, drops the secret and any probe in flight, and nothing more is sent.
+- `stop()` clears the timer, drops the secret and any probe or node check in flight, and nothing
+  more is sent until `start()`. For an active hub `connection()` then answers `state: 'retrying',
+  reason: 'stopped'`; `deviceHeaderFor` answers null; `probeHub()`, `kick()` and `tick()` do nothing
+  and answer `{ ok: false, reason: 'stopped' }`. `connect()` and `forget()` still change the store,
+  but start no probing. Only `start()` resumes.
 
 **`view()`**, for the Settings form: `{ available, keychain, hub: { id, label, origin, machine,
 state, reason } | null, problem }`. It never holds the secret, the encrypted blob, the device id or
-the node id. `available` is false off macOS.
+the node id. `available` is false off macOS. `problem` is `forget_not_saved` while a `forget` has not
+been written (below).
 
 **`forget(id)`** removes the hub's entry, clears `active`, drops the secret and stops the retries at
-once, even when the file cannot be written. The hub still lists the device until it is removed
-there, in the hub's Settings.
+once, even when the file cannot be written. When the write does not land, the file still holds the
+hub and its encrypted secret, which a restart would use, so `view()` says `forget_not_saved` and the
+next `connect`, `forget` or probe writes it again. The hub still lists the device until it is
+removed there, in the hub's Settings.
 
 **What it never does.** It runs no Tailscale command but `status --json`, and never changes
 Tailscale. It never sends the secret to any origin but the active hub's, never follows a redirect,
 sends no cookie, never stores the secret unencrypted, never returns, logs or throws the secret or
 the code, and never sends the pairing request with a device header.
+
+**What the next PR must do with it.**
+
+- The hub view's partition must use a direct connection (`session.setProxy({ mode: 'direct' })`).
+  Chromium uses the system proxy and trust store while main's `fetch` does not, so a
+  TLS-intercepting proxy with a root the user trusts would otherwise see the device header.
+- Its `onBeforeSendHeaders` handler must delete every page-set device header, whatever its case,
+  before it sets the one `deviceHeaderFor(details.url)` gives.
+- `wss://` gets no header: the hub's page must not depend on one there.
+- While the header is withheld (before the first check after `start()`, after a `kick()` until the
+  next check passes, after a failed probe, while `refused` or `stopped`), the hub answers the page's
+  requests with bare 403s, so the view must show the offline page rather than let the hub's page
+  run on them.
 
 ## Checked against real Tailscale Serve
 

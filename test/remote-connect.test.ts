@@ -831,7 +831,7 @@ describe('view', () => {
     const h = harness()
     writeStore(h.filePath, { schema: 1, active: null, hubs: {}, pad: 'x'.repeat(64 * 1024) })
     expect((await h.connect.view()).problem).toBe('too_large')
-    const fsImpl = { ...(await import('node:fs/promises')).default, readFile: async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } }
+    const fsImpl = { ...(await import('node:fs/promises')).default, open: async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } }
     expect((await harness({ fsImpl }).connect.view()).problem).toBe('unreadable')
   })
 })
@@ -1179,6 +1179,30 @@ interface AppOptions {
   safeStorage?: ReturnType<typeof fakeSafeStorage>
 }
 
+/**
+ * A stand-in for execFile whose `status --json` answer may be a promise, so a test can hold a peer
+ * read open: `{ raw }`, `{ error }`, or a promise of either.
+ */
+function heldTailscale(answer: () => unknown) {
+  const calls: string[][] = []
+  const fn = (file: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+    calls.push([...args])
+    tailscaleCalls.push({ file, args: [...args], options })
+    void Promise.resolve(answer()).then((given) => {
+      const a = given as { raw?: string; error?: Error }
+      if (a && a.error) callback(a.error, '', '')
+      else callback(null, a && typeof a.raw === 'string' ? a.raw : JSON.stringify(a), '')
+    })
+  }
+  return Object.assign(fn, { calls })
+}
+
+/** Waits, a few milliseconds at a time, until `ready()` holds. */
+async function until(ready: () => boolean) {
+  for (let i = 0; i < 400 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+  expect(ready()).toBe(true)
+}
+
 /** The app started again on a paired store, with a clock, recorded timers and the times each check and probe ran. */
 async function app(options: AppOptions = {}) {
   const first = await connected()
@@ -1189,8 +1213,8 @@ async function app(options: AppOptions = {}) {
   let peers = options.peers ?? (() => ({ raw: peersText() }))
   let version = options.version ?? (() => json({ current: '2.12.0', machine: 'studio' }))
   let n = 0
-  const execFile = fakeTailscale({ peers: (() => { checkTimes.push(clock.t - t0); return peers() }) as never })
-  const fetch = fakeFetch({ version: () => { fetchTimes.push(clock.t - t0); n += 1; return version(n) } })
+  const execFile = heldTailscale(() => { checkTimes.push(clock.t - t0); return peers() })
+  const fetch = fakeFetch({ pair: pairOk, version: () => { fetchTimes.push(clock.t - t0); n += 1; return version(n) } })
   const timers: { fn: () => void; ms: number }[] = []
   let cleared = 0
   let reloads = 0
@@ -1243,12 +1267,26 @@ describe('the connection state', () => {
     expect(a.rc.deviceHeaderFor(`${ORIGIN}/api/items`)).toBe(SECRET)
   })
 
-  it('probes every 60 seconds while online, with no node check in between', async () => {
+  it('probes every 60 seconds while online, checking the node before every probe', async () => {
     const a = await app()
     await a.rc.start()
     await a.run(130_000)
     expect(a.fetchTimes).toEqual([0, 60_000, 120_000])
-    expect(a.checkTimes).toEqual([0])
+    expect(a.checkTimes).toEqual([0, 60_000, 120_000])
+  })
+
+  it('a node that moves while online is caught at the next probe: nothing sent, the header withheld, the secret dropped', async () => {
+    const a = await app()
+    await a.rc.start()
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBe(SECRET)
+    a.setPeers(() => ({ raw: peersText({ hub: { ID: 'nSomeoneElseCNTRL' } }) }))
+    await a.run(60_000)
+    expect(a.fetchTimes).toEqual([0])
+    expect(a.rc.connection()).toMatchObject({ state: 'refused', reason: 'node_changed' })
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+    a.setPeers(() => ({ raw: peersText() }))
+    await a.run(60_000)
+    expect(a.safeStorage.calls.decrypt).toBe(2)
   })
 
   it('backs off from 2 seconds, doubling to 60, checking the node before each try', async () => {
@@ -1415,7 +1453,7 @@ describe('the connection state', () => {
     release()
     await started
     expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
-    expect(a.rc.connection()).toMatchObject({ state: 'retrying', reason: 'connecting' })
+    expect(a.rc.connection()).toMatchObject({ state: 'retrying', reason: 'stopped' })
   })
 
   it('forget() stops the retries', async () => {
@@ -1560,5 +1598,246 @@ describe('the source', () => {
     expect(code.match(/headers\.set\(DEVICE_HEADER/g)).toHaveLength(1)
     expect(code.match(/fetchImpl\(/g)).toHaveLength(2)
     expect(code.match(/redirect: 'error'/g)).toHaveLength(2)
+  })
+})
+
+
+// ── review round 1 ────────────────────────────────────────────────────────────
+
+describe('review round 1: a kick during a node check', () => {
+  it('is not lost: the kicked round reads the peers again, and the old list never lets the secret out', async () => {
+    let mode: 'ok' | 'hold' | 'moved' = 'ok'
+    const pending: ((value: unknown) => void)[] = []
+    const a = await app({
+      peers: () => (mode === 'hold' ? new Promise((resolve) => pending.push(resolve))
+        : mode === 'moved' ? { raw: peersText({ hub: { ID: 'nSomeoneElseCNTRL' } }) } : { raw: peersText() }),
+    })
+    await a.rc.start()
+    expect(a.fetchTimes).toEqual([0])
+    mode = 'hold'
+    const first = a.rc.kick()
+    await until(() => pending.length === 1)
+    // the name moves to another node, and a second wake event arrives
+    mode = 'moved'
+    const second = a.rc.kick()
+    // the read that began before the second kick answers with the old list
+    pending.shift()!({ raw: peersText() })
+    await Promise.all([first, second])
+    expect(a.checkTimes).toHaveLength(3)
+    expect(a.fetchTimes).toEqual([0])
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+    expect(a.rc.connection()).toMatchObject({ state: 'refused', reason: 'node_changed' })
+  })
+})
+
+describe('review round 1: Tailscale unreadable with the secret in memory', () => {
+  it('sends nothing, withholds the header and is retrying', async () => {
+    let fail = false
+    const a = await app({ peers: () => (fail ? { error: Object.assign(new Error('Command failed'), { code: 1 }) } : { raw: peersText() }) })
+    await a.rc.start()
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBe(SECRET)
+    fail = true
+    await a.rc.kick()
+    expect(a.fetchTimes).toEqual([0])
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+    expect(a.rc.connection()).toMatchObject({ state: 'retrying', reason: 'failed' })
+    // and at the next 60-second probe while online, the same
+    fail = false
+    await a.rc.kick()
+    fail = true
+    await a.run(60_000)
+    expect(a.fetchTimes).toEqual([0, 0])
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+  })
+})
+
+describe('review round 1: hubFetch reads its input once', () => {
+  it('fetches the very URL it decided on, even from a URL whose href changes between reads', async () => {
+    const h = await connected()
+    let reads = 0
+    class Shifty extends URL {
+      override get href() {
+        reads += 1
+        return reads === 1 ? `${ORIGIN}/api/version` : 'https://evil.example/steal'
+      }
+    }
+    const before = h.fetch.calls.length
+    await h.connect.hubFetch()(new Shifty(`${ORIGIN}/`)).catch(() => undefined)
+    const sent = h.fetch.calls.slice(before)
+    expect(sent.every((call) => call.url.startsWith(`${ORIGIN}/`))).toBe(true)
+    expect(sent.map((call) => call.url)).toEqual([`${ORIGIN}/api/version`])
+  })
+
+  it('refuses a String object rather than reading it twice', async () => {
+    const h = await connected()
+    // eslint-disable-next-line no-new-wrappers
+    await expect(h.connect.hubFetch()(new String(`${ORIGIN}/api/version`))).rejects.toThrow(/not the hub/)
+  })
+})
+
+describe('review round 1: user info written in any form', () => {
+  const forms = [`https:@${HOST}/`, `https:\\@${HOST}/`, `https:/\\@${HOST}/`, `https:/\t/@${HOST}/`, ` https://@${HOST}/`, `https://hub.exa\nmple.ts.net@${HOST}/`]
+
+  it.each(forms)('deviceHeaderFor refuses %j', async (url) => {
+    const { connect } = await connected()
+    expect(connect.deviceHeaderFor(url)).toBeNull()
+  })
+
+  it.each(forms)('hubFetch refuses %j without calling fetch', async (url) => {
+    const h = await connected()
+    const before = h.fetch.calls.length
+    await expect(h.connect.hubFetch()(url)).rejects.toThrow(/not the hub/)
+    expect(h.fetch.calls).toHaveLength(before)
+  })
+
+  it.each(forms)('parseHubOrigin refuses %j', (url) => {
+    expect(parseHubOrigin(url)).toEqual({ ok: false, reason: 'bad_address' })
+  })
+
+  it('still gives the header for a path that holds an @', async () => {
+    const { connect } = await connected()
+    expect(connect.deviceHeaderFor(`${ORIGIN}/api/items/a@b`)).toBe(SECRET)
+  })
+})
+
+describe('review round 1: stop() stops', () => {
+  it('marks the connection stopped, withholds the header and answers stopped to probeHub, kick and tick, sending nothing', async () => {
+    const a = await app()
+    await a.rc.start()
+    a.rc.stop()
+    expect(a.rc.connection()).toEqual({ mode: 'hub', id: a.id, label: 'studio', state: 'retrying', reason: 'stopped', version: '2.12.0' })
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+    const checks = a.checkTimes.length
+    expect(await a.rc.probeHub()).toEqual({ ok: false, reason: 'stopped' })
+    expect(await a.rc.kick()).toEqual({ ok: false, reason: 'stopped' })
+    expect(await a.rc.tick()).toEqual({ ok: false, reason: 'stopped' })
+    await a.run(130_000)
+    expect(a.fetchTimes).toEqual([0])
+    expect(a.checkTimes).toHaveLength(checks)
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+  })
+
+  it('connect() and forget() still work on the store, but start no probing; start() resumes', async () => {
+    const a = await app()
+    await a.rc.start()
+    a.rc.stop()
+    const replaced = await a.rc.connect({ address: HOST, code: CODE, replace: true })
+    expect(replaced).toMatchObject({ ok: true, state: 'retrying', reason: 'stopped' })
+    expect(a.fetchTimes).toEqual([0])
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+    expect(readStore(a.filePath).active).toBe(idOf(replaced).id)
+    await a.rc.start()
+    expect(a.fetchTimes).toEqual([0, 0])
+    expect(a.rc.connection()).toMatchObject({ state: 'online' })
+    a.rc.stop()
+    expect(await a.rc.forget(idOf(replaced).id)).toEqual({ ok: true })
+    expect(readStore(a.filePath).active).toBeNull()
+  })
+
+  it.each(['stop', 'forget'] as const)('%s() during a node check: the late check never puts the header back', async (action) => {
+    let hold = false
+    const pending: ((value: unknown) => void)[] = []
+    const a = await app({ peers: () => (hold ? new Promise((resolve) => pending.push(resolve)) : { raw: peersText() }) })
+    await a.rc.start()
+    hold = true
+    const kicked = a.rc.kick()
+    await until(() => pending.length === 1)
+    if (action === 'stop') a.rc.stop()
+    else void a.rc.forget(a.id)
+    pending.shift()!({ raw: peersText() })
+    await kicked
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+    expect(a.fetchTimes).toEqual([0])
+    expect(a.rc.connection()).toEqual(action === 'stop'
+      ? { mode: 'hub', id: a.id, label: 'studio', state: 'retrying', reason: 'stopped', version: '2.12.0' }
+      : { mode: 'local' })
+  })
+})
+
+describe('review round 1: the store is opened the hub’s way', () => {
+  const race = <T>(promise: Promise<T>) => Promise.race([promise, new Promise<string>((resolve) => setTimeout(() => resolve('TIMEOUT'), 3000))])
+
+  it('reads a FIFO at the path as bad_file, without blocking anything', async () => {
+    const h = harness()
+    ;(await import('node:child_process')).execFileSync('/usr/bin/mkfifo', [h.filePath])
+    expect(await race(h.connect.view())).toEqual({ available: true, keychain: true, hub: null, problem: 'bad_file' })
+    expect(await race(h.connect.connect({ address: HOST, code: CODE }))).toEqual({ ok: false, reason: 'bad_file' })
+    expect(await race(h.connect.forget(ID_A))).toEqual({ ok: false, reason: 'bad_file' })
+    expect(await race(h.connect.probeHub())).toEqual({ ok: false, reason: 'no_hub' })
+    expect(h.fetch.calls).toHaveLength(0)
+  })
+
+  it('reads a symlink to a good store as bad_file, and never follows it', async () => {
+    const h = harness()
+    const real = join(h.dir, 'real.json')
+    writeStore(real, { schema: 1, active: ID_A, hubs: { [ID_A]: entry() } })
+    ;(await import('node:fs')).symlinkSync(real, h.filePath)
+    expect(await h.connect.view()).toMatchObject({ hub: null, problem: 'bad_file' })
+    expect(await h.connect.forget(ID_A)).toEqual({ ok: false, reason: 'bad_file' })
+    expect(readStore(real).active).toBe(ID_A)
+  })
+
+  it('reads a store open to others, a folder, or another user’s file as bad_file', async () => {
+    const open = harness()
+    writeStore(open.filePath, { schema: 1, active: ID_A, hubs: { [ID_A]: entry() } })
+    ;(await import('node:fs')).chmodSync(open.filePath, 0o644)
+    expect(await open.connect.view()).toMatchObject({ hub: null, problem: 'bad_file' })
+    const folder = harness()
+    ;(await import('node:fs')).mkdirSync(folder.filePath)
+    expect(await folder.connect.view()).toMatchObject({ hub: null, problem: 'bad_file' })
+    const dir = scratchDir('rc-')
+    const filePath = join(dir, 'remote-connect.json')
+    writeStore(filePath, { schema: 1, active: ID_A, hubs: { [ID_A]: entry() } })
+    const other = createRemoteConnect({ filePath, uid: (process.getuid?.() ?? 0) + 1, platform: 'darwin', safeStorage: fakeSafeStorage() })
+    expect(await other.view()).toMatchObject({ hub: null, problem: 'bad_file' })
+  })
+
+  it('writes over a bad file only on a connect the owner confirmed', async () => {
+    const h = harness()
+    writeStore(h.filePath, { schema: 1, active: ID_A, hubs: { [ID_A]: entry() } })
+    ;(await import('node:fs')).chmodSync(h.filePath, 0o644)
+    expect(await h.connect.connect({ address: HOST, code: CODE })).toEqual({ ok: false, reason: 'bad_file' })
+    expect(statSync(h.filePath).mode & 0o777).toBe(0o644)
+    expect(await h.connect.connect({ address: HOST, code: CODE, replace: true })).toMatchObject({ ok: true, state: 'online' })
+    expect(statSync(h.filePath).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('review round 1: what the answers say', () => {
+  it('says forget_not_saved while a forget could not be written, and saves it at the next operation', async () => {
+    const h = await connected()
+    const store = readStore(h.filePath)
+    writeStore(h.filePath, { ...store, schema: 2 })
+    expect(await h.connect.forget(h.id)).toEqual({ ok: false, reason: 'newer_schema' })
+    writeStore(h.filePath, store)
+    // the file still holds the hub and its secret: say so
+    expect(await h.connect.view()).toMatchObject({ hub: null, problem: 'forget_not_saved' })
+    // the next operation writes it
+    expect(await h.connect.probeHub()).toEqual({ ok: false, reason: 'no_hub' })
+    expect(readStore(h.filePath)).toMatchObject({ active: null, hubs: {} })
+    expect(await h.connect.view()).toMatchObject({ hub: null, problem: null })
+  })
+
+  it('a connect whose hub is forgotten during its probe answers forgotten', async () => {
+    let release: () => void = () => {}
+    const fetch = fakeFetch({ pair: pairOk, version: () => new Promise((resolve) => { release = () => resolve(json({ current: '2.12.0' })) }) })
+    const h = harness({ fetch })
+    const connecting = h.connect.connect({ address: HOST, code: CODE })
+    await until(() => fetch.calls.length === 2)
+    const id = readStore(h.filePath).active!
+    const forgetting = h.connect.forget(id)
+    release()
+    expect(await connecting).toEqual({ ok: false, reason: 'forgotten' })
+    expect(await forgetting).toEqual({ ok: true })
+    expect(h.connect.connection()).toEqual({ mode: 'local' })
+  })
+
+  it('says when a replace leaves this Mac paired on the old hub', async () => {
+    const h = await connected()
+    const replaced = await h.connect.connect({ address: HOST, code: CODE, replace: true })
+    expect(replaced).toMatchObject({ ok: true, replacedHub: true })
+    const fresh = await harness().connect.connect({ address: HOST, code: CODE, replace: true })
+    expect(fresh.ok && 'replacedHub' in fresh).toBe(false)
   })
 })

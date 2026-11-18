@@ -51,6 +51,7 @@ function parseHubOrigin(text) {
   // the URL parser would quietly drop tabs and newlines and turn a backslash into a slash
   if (typed === '' || /[\s\\\u0000-\u001f\u007f-\u009f]/.test(typed)) return no
   const full = /^[A-Za-z][A-Za-z0-9+.-]*:/.test(typed) ? typed : `https://${typed}`
+  if (writtenUserInfo(full)) return no
   // checked as written: an empty user, `:443`, an empty query or fragment all vanish once parsed
   const match = /^https:\/\/([^/?#@:[\]%]+)\/?$/i.exec(full)
   if (!match) return no
@@ -65,6 +66,19 @@ function parseHubOrigin(text) {
   if (url.protocol !== 'https:' || url.hostname !== host || url.port !== '' || url.username !== '' || url.password !== ''
     || url.pathname !== '/' || url.search !== '' || url.hash !== '') return no
   return { ok: true, origin: `https://${host}`, host }
+}
+
+/**
+ * Whether `text`, read as the URL parser reads it, writes user info: an `@` anywhere before the
+ * first `/`, `?` or `#` after the scheme and its leading slashes and backslashes. Tabs and newlines
+ * are removed first and edge spaces and controls trimmed, as the parser does, so `https:@host`,
+ * `https:\@host`, `https:/\@host` and `https:/<tab>/@host` all count, even where the user is empty.
+ */
+function writtenUserInfo(text) {
+  if (typeof text !== 'string') return false
+  const plain = text.replace(/[\t\n\r]/g, '').replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '')
+  const match = /^[A-Za-z][A-Za-z0-9+.-]*:[/\\]*([^/?#]*)/.exec(plain)
+  return match !== null && match[1].includes('@')
 }
 
 /** A typed pairing code, the hub's way: case, spaces and dashes ignored, I and L read as 1, O as 0; null unless 10 letters of the alphabet. */
@@ -299,4 +313,5 @@ module.exports = {
   validEntry,
   versionText,
   writeBase,
+  writtenUserInfo,
 }

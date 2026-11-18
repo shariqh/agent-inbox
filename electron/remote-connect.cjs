@@ -20,14 +20,17 @@
 // ./remote-connect-rules.cjs, split from this file for size only. Tailscale is read only through
 // ./remote-tailscale.cjs, with the full peer list (`status --json`), never changed.
 const fsp = require('node:fs/promises')
+const { constants } = require('node:fs')
 const os = require('node:os')
 const crypto = require('node:crypto')
 const { createLockedFile, resolveFilePath } = require('./update-preferences.cjs')
 const { isObject, runTailscale, validHost } = require('./remote-tailscale.cjs')
 const {
   DEVICE_ID, HUB_ID, PLACE, SECRET, activeOf, certificateFailure, deviceLabelFor, discard, hubLabelFor, inTailnet, isDeviceLabel, isRedirect,
-  keychainReady, marked, normaliseCode, parseHubOrigin, parsePeers, readJson, suffixFrom, versionText, writeBase,
+  keychainReady, marked, normaliseCode, parseHubOrigin, parsePeers, readJson, suffixFrom, versionText, writeBase, writtenUserInfo,
 } = require('./remote-connect-rules.cjs')
+
+const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants
 
 const FILENAME = 'remote-connect.json'
 const DEVICE_HEADER = 'X-Agent-Inbox-Device'
@@ -57,6 +60,7 @@ const TAILSCALE_UNREADABLE = new Set(['no_cli', 'failed', 'not_running'])
 function createRemoteConnect(options = {}) {
   const filePath = resolveFilePath(options, FILENAME)
   const fsImpl = options.fsImpl ?? fsp
+  const uid = options.uid ?? process.getuid?.()
   const locked = createLockedFile(filePath, fsImpl)
   const safeStorage = options.safeStorage
   const platform = options.platform ?? process.platform
@@ -94,6 +98,13 @@ function createRemoteConnect(options = {}) {
   let kicked = false
   let dueAt = 0
   let failures = 0
+  // after stop(), until start(): no probe, no header, nothing sent
+  let stopped = false
+  // Rises whenever anything distrusts the last node check (a kick, a failed probe, a dropped secret):
+  // a check that began before it is stale and never sets `verified`.
+  let checks = 0
+  // forgets whose write did not land: retried at the next operation, and reported until then
+  const unsaved = new Set()
   // hubs forgotten in this run: never loaded again, even when the file could not be written
   const forgotten = new Set()
   let queue = Promise.resolve()
@@ -123,9 +134,14 @@ function createRemoteConnect(options = {}) {
   }
   const ready = () => keychainReady(safeStorage, platform)
 
+  function distrust() {
+    verified = false
+    checks += 1
+  }
+
   function clearSecret() {
     plain = null
-    verified = false
+    distrust()
   }
 
   function newState() {
@@ -144,16 +160,51 @@ function createRemoteConnect(options = {}) {
     for (const listener of [...listeners]) call(listener, { ...next })
   }
 
-  async function readStore() {
-    let bytes
+  /**
+   * The file's bytes, the hub reader's way: opened without following a symlink and without
+   * blocking (a FIFO), checked on the open descriptor (a regular file this user owns, no group or
+   * other bits, at most the cap), read from that descriptor. `{ missing }`, `{ problem }` or `{ raw }`.
+   */
+  async function readBytes() {
+    let handle
     try {
-      bytes = await locked.readBytes()
-    } catch {
-      return { state: 'problem', problem: 'unreadable' }
+      handle = await fsImpl.open(filePath, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { missing: true }
+      return { problem: error?.code === 'ELOOP' ? 'bad_file' : 'unreadable' }
     }
-    if (bytes === null) return { state: 'missing' }
-    const raw = Buffer.isBuffer(bytes) ? bytes : Buffer.from(String(bytes))
-    if (raw.length > FILE_MAX) return { state: 'problem', problem: 'too_large' }
+    try {
+      const stat = await handle.stat()
+      if (!stat.isFile() || uid === undefined || uid === null || stat.uid !== uid || (stat.mode & 0o077) !== 0) return { problem: 'bad_file' }
+      if (stat.size > FILE_MAX) return { problem: 'too_large' }
+      const buffer = Buffer.alloc(FILE_MAX + 1)
+      let total = 0
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null)
+        if (bytesRead === 0 || total + bytesRead === buffer.length) {
+          total += bytesRead
+          break
+        }
+        total += bytesRead
+      }
+      if (total > FILE_MAX) return { problem: 'too_large' }
+      return { raw: buffer.subarray(0, total) }
+    } catch {
+      return { problem: 'unreadable' }
+    } finally {
+      try {
+        await handle.close()
+      } catch {
+        // a handle that will not close changes nothing that was read
+      }
+    }
+  }
+
+  async function readStore() {
+    const read = await readBytes()
+    if (read.missing) return { state: 'missing' }
+    if (read.problem) return { state: 'problem', problem: read.problem }
+    const raw = read.raw
     let doc
     try {
       doc = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw))
@@ -220,16 +271,13 @@ function createRemoteConnect(options = {}) {
    * `retrying`; any other answer is `refused`. Either way the secret is not sent.
    */
   async function verify(snapshot, at) {
-    if (verified && plain !== null) return { ok: true }
+    const mark = checks
     const found = await findHub(snapshot.host)
-    if (at !== epoch) return { stale: true }
+    // a kick, a stop, a forget or a failed probe since the read began: its answer may be old
+    if (at !== epoch || mark !== checks) return { stale: true }
     if (!found.ok) {
-      if (TAILSCALE_UNREADABLE.has(found.reason)) {
-        verified = false
-        return { ok: false, state: 'retrying', reason: found.reason }
-      }
       clearSecret()
-      return { ok: false, state: 'refused', reason: found.reason }
+      return { ok: false, state: TAILSCALE_UNREADABLE.has(found.reason) ? 'retrying' : 'refused', reason: found.reason }
     }
     if (found.node !== snapshot.node) {
       clearSecret()
@@ -237,26 +285,39 @@ function createRemoteConnect(options = {}) {
     }
     if (plain === null) {
       const opened = openSecret(snapshot.blob)
-      if (!opened.ok) return { ok: false, state: opened.reason === 'no_keychain' ? 'retrying' : 'refused', reason: opened.reason }
+      if (!opened.ok) {
+        distrust()
+        return { ok: false, state: opened.reason === 'no_keychain' ? 'retrying' : 'refused', reason: opened.reason }
+      }
       plain = opened.secret
     }
     verified = true
     return { ok: true }
   }
 
-  /** The header value for a request to `url`, or null. Synchronous: no I/O. */
-  function deviceHeaderFor(url) {
-    if (hub === null || !verified || plain === null) return null
-    // user info, even empty (`https://:@host/`), which the parser drops without a trace
-    if (typeof url === 'string' && /^[^:/?#]*:\/\/[^/?#]*@/.test(url)) return null
+  /**
+   * The decision for one request: `{ value, href }` when `url` is on the hub's origin and the header
+   * may go, else null. A `URL`'s href is read once, the text is parsed once, and `href` is the
+   * parsed value the decision was made on, so the request goes exactly there. Synchronous: no I/O.
+   */
+  function decide(url) {
+    if (stopped || hub === null || !verified || plain === null) return null
+    const text = typeof url === 'string' ? url : url instanceof URL ? url.href : null
+    // user info, even empty and however it is written, which the parser drops without a trace
+    if (typeof text !== 'string' || writtenUserInfo(text)) return null
     let parsed
     try {
-      parsed = url instanceof URL ? new URL(url.href) : typeof url === 'string' ? new URL(url) : null
+      parsed = new URL(text)
     } catch {
       return null
     }
-    if (parsed === null || parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '' || parsed.origin !== hub.origin) return null
-    return plain
+    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '' || parsed.origin !== hub.origin) return null
+    return { value: plain, href: parsed.href }
+  }
+
+  function deviceHeaderFor(url) {
+    const decided = decide(url)
+    return decided === null ? null : decided.value
   }
 
   const refusal = (word) => Object.assign(new Error(word === 'redirect' ? 'the hub answered with a redirect' : 'not the hub origin'), { code: word })
@@ -264,16 +325,16 @@ function createRemoteConnect(options = {}) {
   /** A fetch for main's own requests to the hub: its origin only, the device header, no redirect, a timeout. */
   function hubFetch() {
     return async (input, init = {}) => {
-      const value = typeof input === 'string' || input instanceof URL ? deviceHeaderFor(input) : null
-      if (value === null) throw refusal('not_hub_origin')
+      const decided = decide(input)
+      if (decided === null) throw refusal('not_hub_origin')
       const given = isObject(init) ? init : {}
       const headers = new Headers(given.headers)
-      headers.set(DEVICE_HEADER, value)
+      headers.set(DEVICE_HEADER, decided.value)
       const signals = [AbortSignal.timeout(FETCH_TIMEOUT_MS)]
       if (given.signal instanceof AbortSignal) signals.push(given.signal)
       const request = { method: typeof given.method === 'string' ? given.method : 'GET', headers, redirect: 'error', signal: AbortSignal.any(signals) }
       if (given.body !== undefined) request.body = given.body
-      const response = await fetchImpl(String(input instanceof URL ? input.href : input), request)
+      const response = await fetchImpl(decided.href, request)
       if (isRedirect(response)) {
         await discard(response)
         throw refusal('redirect')
@@ -321,13 +382,13 @@ function createRemoteConnect(options = {}) {
       setConnection(hubConnection('online', null))
       if (changed) call(options.onReload)
     } else if (outcome.state === 'refused') {
-      verified = false
+      distrust()
       failures = 0
       dueAt = t + REFUSED_EVERY_MS
       setConnection(hubConnection('refused', outcome.reason))
     } else {
-      // unreachable, not an Agent Inbox, or Tailscale unreadable: the node is checked again before the next try
-      verified = false
+      // unreachable, not an Agent Inbox, or Tailscale unreadable: nothing is sent until the next check passes
+      distrust()
       failures += 1
       dueAt = t + Math.min(FIRST_RETRY_MS * 2 ** (failures - 1), MAX_RETRY_MS)
       setConnection(hubConnection('retrying', outcome.reason))
@@ -354,8 +415,11 @@ function createRemoteConnect(options = {}) {
     }
   }
 
-  /** One probe of the active hub: the node check when this state has not passed it, then GET /api/version. */
+  /** One probe of the active hub: the node check, every time, then GET /api/version. */
   async function probeActive() {
+    if (stopped) return no('stopped')
+    await saveForgets()
+    if (stopped) return no('stopped')
     const snapshot = await loadActive()
     if (snapshot === null) {
       // nothing to probe: the file is read again in a minute (connect() starts at once)
@@ -424,6 +488,7 @@ function createRemoteConnect(options = {}) {
     if (code === null) return no('bad_code')
     const replace = given.replace === true
     return serial(async () => {
+      await saveForgets()
       // the file is checked before the code is spent, and again under the lock
       const before = writeBase(await readStore(), replace)
       if (before.refuse) return no(before.refuse)
@@ -439,10 +504,13 @@ function createRemoteConnect(options = {}) {
       }
       const entry = { origin: parsed.origin, label: hubLabelFor(null, parsed.host), node: found.node, machine: null, device: paired.device, secret: blob }
       let id
+      let replacedHub = false
       try {
         id = await locked.mutate(async () => {
           const base = writeBase(await readStore(), replace)
           if (base.refuse) return no(base.refuse)
+          // this Mac stays paired on a hub it replaces, until the device is removed there
+          replacedHub = isObject(base.base.hubs) && Object.keys(base.base.hubs).length > 0
           let fresh = randomBytes(4).toString('hex')
           while (isObject(base.base.hubs) && Object.hasOwn(base.base.hubs, fresh)) fresh = randomBytes(4).toString('hex')
           const doc = { ...base.base, schema: SCHEMA, active: fresh, hubs: { [fresh]: entry } }
@@ -460,6 +528,12 @@ function createRemoteConnect(options = {}) {
       failures = 0
       hub = { id, origin: entry.origin, host: parsed.host, label: entry.label, node: entry.node, machine: null, device: entry.device, blob }
       lastOnlineVersion = null
+      const replaced = replacedHub ? { replacedHub: true } : {}
+      if (stopped) {
+        // stored, but nothing is probed or sent until start()
+        setConnection(hubConnection('retrying', 'stopped'))
+        return { ok: true, id, label: entry.label, state: 'retrying', reason: 'stopped', ...replaced }
+      }
       setConnection(hubConnection('retrying', 'connecting'))
       const opened = openSecret(blob)
       if (opened.ok) {
@@ -467,7 +541,9 @@ function createRemoteConnect(options = {}) {
         verified = true
       }
       await probeActive()
-      return { ok: true, id, label: hub?.id === id ? hub.label : entry.label, state: current.state ?? null, reason: current.reason ?? null }
+      if (forgotten.has(id)) return no('forgotten')
+      if (current.mode !== 'hub' || current.id !== id) return no('changed')
+      return { ok: true, id, label: current.label, state: current.state, reason: current.reason, ...replaced }
     })
   }
 
@@ -482,22 +558,39 @@ function createRemoteConnect(options = {}) {
       setConnection(LOCAL)
     }
     return serial(async () => {
-      try {
-        return await locked.mutate(async () => {
-          const read = await readStore()
-          if (read.state === 'missing') return { ok: true }
-          if (read.state === 'problem' && read.problem !== 'bad_entry') return no(read.problem)
-          const doc = read.doc
-          const hubs = isObject(doc.hubs) ? { ...doc.hubs } : {}
-          if (!Object.hasOwn(hubs, id)) return no('not_found')
-          delete hubs[id]
-          await locked.atomicWrite({ ...doc, hubs, active: doc.active === id ? null : (doc.active ?? null) })
-          return { ok: true }
-        })
-      } catch {
-        return no('write_failed')
-      }
+      await saveForgets()
+      const result = await writeForget(id)
+      if (result.ok || result.reason === 'not_found') unsaved.delete(id)
+      else unsaved.add(id)
+      return result
     })
+  }
+
+  /** Removes the hub's entry from the file, under the lock. */
+  async function writeForget(id) {
+    try {
+      return await locked.mutate(async () => {
+        const read = await readStore()
+        if (read.state === 'missing') return { ok: true }
+        if (read.state === 'problem' && read.problem !== 'bad_entry') return no(read.problem)
+        const doc = read.doc
+        const hubs = isObject(doc.hubs) ? { ...doc.hubs } : {}
+        if (!Object.hasOwn(hubs, id)) return no('not_found')
+        delete hubs[id]
+        await locked.atomicWrite({ ...doc, hubs, active: doc.active === id ? null : (doc.active ?? null) })
+        return { ok: true }
+      })
+    } catch {
+      return no('write_failed')
+    }
+  }
+
+  /** Writes the forgets that did not land before; the ones that land, or find nothing to remove, are done. */
+  async function saveForgets() {
+    for (const id of [...unsaved]) {
+      const result = await writeForget(id)
+      if (result.ok || result.reason === 'not_found') unsaved.delete(id)
+    }
   }
 
   async function view() {
@@ -511,12 +604,13 @@ function createRemoteConnect(options = {}) {
       hub: entry === null ? null : {
         id: entry.id, label: entry.label, origin: entry.origin, machine: entry.machine, state: live ? live.state : null, reason: live ? live.reason : null,
       },
-      problem: read.state === 'problem' ? read.problem : null,
+      // the file still holds a forgotten hub and its encrypted secret, which a restart would use
+      problem: unsaved.size > 0 ? 'forget_not_saved' : read.state === 'problem' ? read.problem : null,
     }
   }
 
   /** The probes that are due, one after another, never two at once; a kick during one runs another after it. */
-  function tick() {
+  function runTick() {
     if (ticking !== null) return ticking
     ticking = (async () => {
       for (let round = 0; round < 3 && running && (kicked || clock() >= dueAt); round += 1) {
@@ -532,20 +626,33 @@ function createRemoteConnect(options = {}) {
   function start() {
     if (running) return ticking ?? Promise.resolve()
     running = true
-    verified = false
+    stopped = false
+    distrust()
     failures = 0
     dueAt = 0
     try {
-      timer = setIntervalFn(() => { tick() }, TICK_EVERY_MS)
+      timer = setIntervalFn(() => { runTick() }, TICK_EVERY_MS)
       timer?.unref?.()
     } catch {
       timer = null
     }
-    return tick()
+    return runTick()
+  }
+
+  const NOT_STARTED = Object.freeze({ ok: false, reason: 'not_started' })
+  const STOPPED = Object.freeze({ ok: false, reason: 'stopped' })
+
+  /** The due probes now: `{ ok: true }`, or `stopped` / `not_started`. */
+  async function tick() {
+    if (stopped) return { ...STOPPED }
+    if (!running) return { ...NOT_STARTED }
+    await runTick()
+    return { ok: true }
   }
 
   function stop() {
     running = false
+    stopped = true
     kicked = false
     try {
       if (timer !== null) clearIntervalFn(timer)
@@ -555,15 +662,18 @@ function createRemoteConnect(options = {}) {
     timer = null
     // a probe in flight is dropped, and the secret goes with the connection state
     newState()
+    if (hub !== null) setConnection(hubConnection('retrying', 'stopped'))
   }
 
   /** On wake, unlock and when the network comes back: the backoff starts over and the node is checked before the next request, at once. */
-  function kick() {
-    if (!running) return Promise.resolve()
-    verified = false
+  async function kick() {
+    if (stopped) return { ...STOPPED }
+    if (!running) return { ...NOT_STARTED }
+    distrust()
     failures = 0
     kicked = true
-    return tick()
+    await runTick()
+    return { ok: true }
   }
 
   function onConnection(callback) {
@@ -589,7 +699,7 @@ function createRemoteConnect(options = {}) {
     findHub: safe(findHub, failed),
     connect: safe(connect, failed),
     forget: safe(forget, failed),
-    probeHub: safe(() => serial(probeActive), failed),
+    probeHub: safe(() => (stopped ? { ...STOPPED } : serial(probeActive)), failed),
     view: safe(view, () => ({ available: false, keychain: false, hub: null, problem: 'unreadable' })),
     connection: () => ({ ...current }),
     onConnection,
@@ -601,8 +711,8 @@ function createRemoteConnect(options = {}) {
         // stopped as far as it could
       }
     },
-    kick: safe(kick, undefined),
-    tick: safe(tick, undefined),
+    kick: safe(kick, failed),
+    tick: safe(tick, failed),
     deviceHeaderFor(url) {
       try {
         return deviceHeaderFor(url)

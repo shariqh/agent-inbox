@@ -181,6 +181,10 @@ export function testWords(result, host) {
   const reason = result?.reason
   const address = `https://${host}`
   if (reason === 'off') return 'Sharing is off, so there is nothing to test.'
+  // the viewer had not opened the listener within 6 seconds
+  if (reason === 'not_listening') return 'Sharing is still starting. Try again in a moment.'
+  // Serve answered 502, 503 or 504: it forwards, but nothing answers behind it
+  if (reason === 'no_backend') return 'Tailscale is forwarding, but this Inbox isn’t answering yet. Switch sharing off and on again.'
   if (reason === 'no_status') return 'Agent Inbox couldn’t read its own sharing status. Try again.'
   if (reason === 'unreachable') return `This Mac couldn’t reach ${address} through Tailscale. Check Tailscale Serve.`
   if (reason === 'not_refused') return `${address} answered without asking for a paired Mac. Check Tailscale Serve.`

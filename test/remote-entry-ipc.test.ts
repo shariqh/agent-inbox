@@ -36,14 +36,16 @@ function controllerStub(over: Json = {}) {
     view, serve: { answer: { ok: false, reason: 'no_handler', present: true, login: LOGIN }, at: 5 },
     self: { ok: true, host: HOST, loginAllowed: true, at: 5, login: LOGIN }, flag: false, flagDigest: 'b'.repeat(64),
     stopped: { reason: 'funnel', at: 100, off: true, willResume: false, login: LOGIN }, removalHint: 'tailscale serve --https=443 off',
-    wanted: true, stateSaved: false, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200, codeId: CODE_ID }, needsOwner: null, ...leak,
+    wanted: true, stateSaved: false, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200, codeId: CODE_ID }, needsOwner: null, listening: true, ...leak,
   }
   const c = {
     port: 4320,
     calls,
     raw: state,
     review: vi.fn(async () => { calls.push('review'); return { view, digest: DIGEST, flag: true, ...leak } }),
-    turnOn: vi.fn(async () => { calls.push('turnOn'); return { ok: true, view, voidedCode: true, devicesRemoved: 2, droppedEntries: 1, ...leak } }),
+    turnOn: vi.fn(async () => { calls.push('turnOn'); return { ok: true, view, voidedCode: true, devicesRemoved: 2, droppedEntries: 1, listening: false, ...leak } }),
+    // #617 PR 2d: get() reads the viewer's status first, so `listening` is fresh; never handed on
+    entryStatus: vi.fn(async () => { calls.push('entryStatus'); return { ok: true, status: { on: true, listening: true, port: 4320, paired: [{ device: A, codeId: CODE_ID }] }, ...leak } }),
     turnOff: vi.fn(async () => { calls.push('turnOff'); return { ok: true, view, voidedCode: false, ...leak } }),
     removeDevice: vi.fn(async (id: unknown) => { calls.push(`removeDevice ${String(id)}`); return { ok: true, view, voidedCode: true, droppedEntries: 0, ...leak } }),
     clearUnreadable: vi.fn(async () => { calls.push('clearUnreadable'); return { ok: true, view, voidedCode: false, removed: 1, ...leak } }),
@@ -78,17 +80,26 @@ const secrets = (value: unknown) => {
 }
 
 describe('what get() hands the panel', () => {
-  it('builds every field from one review() and state(), and nothing else', async () => {
+  it('builds every field from one status read, one review() and one state(), and nothing else', async () => {
     const { panel, c } = panelOf()
     const view = await panel.get()
-    expect(c.calls).toEqual(['review', 'state'])
+    expect(c.calls).toEqual(['entryStatus', 'review', 'state'])
     expect(view).toEqual({
       available: true, enabled: true, host: HOST, port: 4320,
       devices: [{ id: A, label: 'laptop', pairedAt: '2026-11-20T09:00:00.000Z' }], unreadableDevices: 1, problem: null,
       flag: true, digest: DIGEST, wanted: true, stopped: { reason: 'funnel', willResume: false }, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200 },
       needsOwner: null, stateSaved: false, serve: { ok: false, reason: 'no_handler' }, removalHint: 'tailscale serve --https=443 off',
-      command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true },
+      command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true }, listening: true,
     })
+  })
+
+  it('says listening only when the last status read said so', async () => {
+    const c = controllerStub()
+    const { panel } = panelOf(c)
+    for (const [value, expected] of [[true, true], [false, false], [null, false], ['yes', false]] as const) {
+      ;(c.raw as Json).listening = value
+      expect((await panel.get()).listening, String(value)).toBe(expected)
+    }
   })
 
   it('never holds a login, a hash, the owner token or a code id, from any answer the controller gives', async () => {
@@ -122,7 +133,7 @@ describe('what get() hands the panel', () => {
 
   it('maps each operation\'s answer to its own few fields, and pings the page after each', async () => {
     const { panel, c, changed } = panelOf()
-    expect(await panel.turnOn()).toEqual({ ok: true, voidedCode: true, devicesRemoved: 2, droppedEntries: 1 })
+    expect(await panel.turnOn()).toEqual({ ok: true, voidedCode: true, devicesRemoved: 2, droppedEntries: 1, listening: false })
     expect(await panel.turnOff()).toEqual({ ok: true, voidedCode: false })
     expect(await panel.removeDevice(A)).toEqual({ ok: true, voidedCode: true })
     expect(await panel.clearUnreadable()).toEqual({ ok: true, voidedCode: false, removed: 1 })
@@ -221,7 +232,7 @@ describe('the IPC channels', () => {
     const w = world()
     for (const [channel, args] of CHANNELS) await w.call(channel, ...args)
     expect(w.p.c.calls).toEqual([
-      'review', 'state', 'turnOn', 'turnOff', `removeDevice ${A}`, 'clearUnreadable', 'repairPermissions', `acknowledge ${DIGEST}`, 'selfTest', 'requestCode',
+      'entryStatus', 'review', 'state', 'turnOn', 'turnOff', `removeDevice ${A}`, 'clearUnreadable', 'repairPermissions', `acknowledge ${DIGEST}`, 'selfTest', 'requestCode',
     ])
   })
 })
@@ -493,7 +504,7 @@ const GOOD = {
   devices: [{ id: A, label: 'laptop', pairedAt: '2026-11-20T09:00:00.000Z' }], unreadableDevices: 1, problem: null,
   flag: true, digest: DIGEST, wanted: true, stopped: { reason: 'funnel', willResume: false }, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200 },
   needsOwner: null, stateSaved: false, serve: { ok: false, reason: 'no_handler' }, removalHint: 'tailscale serve --https=443 off',
-  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true },
+  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true }, listening: true,
 }
 
 describe('the agentInboxRemoteEntry bridge', () => {
@@ -548,7 +559,7 @@ describe('the agentInboxRemoteEntry bridge', () => {
       { ...GOOD, devices: [{ id: A, label: 7, pairedAt: null }] }, { ...GOOD, digest: 'xyz' }, { ...GOOD, command: 'rm -rf /' },
       { ...GOOD, removalHint: 'curl evil' }, { ...GOOD, stopped: { reason: '<b>', willResume: false } }, { ...GOOD, enabled: 'yes' },
       { ...GOOD, resume: { waiting: 'x y', nextAt: 1 } }, { ...GOOD, loginItem: null }, { ...GOOD, unreadableDevices: -1 },
-      { ...GOOD, devices: Array.from({ length: 17 }, () => GOOD.devices[0]) }, null, 'on',
+      { ...GOOD, devices: Array.from({ length: 17 }, () => GOOD.devices[0]) }, { ...GOOD, listening: 'yes' }, { ...GOOD, listening: undefined }, null, 'on',
     ]
     for (const answer of bad) {
       const { bridge } = loadPreload(() => answer)
@@ -571,6 +582,10 @@ describe('the agentInboxRemoteEntry bridge', () => {
   it('rebuilds each operation\'s answer: a code, its expiry, counts and reason words only', async () => {
     const cases: Array<[string, unknown[], unknown, unknown]> = [
       ['turnOn', [], { ok: true, voidedCode: true, devicesRemoved: 2, droppedEntries: 1, view: { logins: [LOGIN] } }, { ok: true, voidedCode: true, devicesRemoved: 2, droppedEntries: 1 }],
+      ['turnOn', [], { ok: true, listening: true }, { ok: true, listening: true }],
+      ['turnOn', [], { ok: true, listening: 'yes' }, { ok: true }],
+      ['test', [], { ok: false, reason: 'no_backend', rose: null }, { ok: false, reason: 'no_backend', rose: null }],
+      ['test', [], { ok: false, reason: 'not_listening', rose: null }, { ok: false, reason: 'not_listening', rose: null }],
       ['turnOn', [], { ok: false, reason: 'no_handler', step: 'serve', login: LOGIN }, { ok: false, reason: 'no_handler', step: 'serve' }],
       ['turnOn', [], { ok: false, reason: 'no handler', step: 'shell' }, { ok: false, reason: 'failed' }],
       ['addDevice', [], { ok: true, code: CODE, expiresAt: '2026-11-20T09:10:00.000Z', codeId: CODE_ID }, { ok: true, code: CODE, expiresAt: '2026-11-20T09:10:00.000Z' }],

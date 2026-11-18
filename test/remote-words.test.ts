@@ -49,7 +49,7 @@ describe('the reason lists read from remote-entry.d.cts', () => {
     expect(PROBLEMS).toContain('open_to_others')
     expect(WRITES).toEqual(expect.arrayContaining([...PROBLEMS, 'port_clash', 'write_failed']))
     expect(WAITING).toEqual(expect.arrayContaining(['tailscale_not_running', 'tailscale_unreadable', 'flagged', 'changed_outside', 'needs_owner', 'write_failed', 'serve_not_ok:funnel']))
-    expect(TESTS).toEqual(['off', 'no_status', 'unreachable', 'not_refused', 'no_device_count'])
+    expect(TESTS).toEqual(['off', 'not_listening', 'no_status', 'unreachable', 'no_backend', 'not_refused', 'no_device_count'])
     expect(CODES).toEqual(['off', 'no_owner_token', 'not_listening', 'refused', 'unreachable', 'bad_answer', 'failed'])
   })
 })
@@ -137,6 +137,12 @@ describe('every reason word has words', () => {
     }
     expect(words.testWords({ ok: false, reason: 'no_device_count', rose: 'login' }, 'h.example.ts.net')).toMatch(/login/)
     expect(words.testWords({ ok: false, reason: 'unreachable', rose: null }, 'h.example.ts.net')).toContain('https://h.example.ts.net')
+    // #617 PR 2d: nothing listening yet, and Serve with nothing behind it
+    expect(words.testWords({ ok: false, reason: 'not_listening', rose: null }, 'h.example.ts.net')).toBe('Sharing is still starting. Try again in a moment.')
+    expect(words.testWords({ ok: false, reason: 'no_backend', rose: null }, 'h.example.ts.net'))
+      .toBe('Tailscale is forwarding, but this Inbox isn’t answering yet. Switch sharing off and on again.')
+    const sentences = new Set([...TESTS, 'failed'].map((reason) => words.testWords({ ok: false, reason, rose: null }, 'h.example.ts.net')))
+    expect(sentences.size).toBe(TESTS.length + 1)
     for (const reason of [...CODES, 'something_new']) expect(isSentence(words.codeWords(reason)), reason).toBe(true)
   })
 })

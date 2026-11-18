@@ -594,8 +594,8 @@ function remoteView(value) {
   if (!isPlainObject(value)) return null
   if (value.available === false) return remoteUnavailable(value)
   if (value.available !== true) return null
-  const { enabled, host, port, devices, unreadableDevices, problem, flag, digest, wanted, stopped, resume, needsOwner, stateSaved, serve, removalHint, command, loginItem } = value
-  if (typeof enabled !== 'boolean' || typeof flag !== 'boolean' || typeof wanted !== 'boolean') return null
+  const { enabled, host, port, devices, unreadableDevices, problem, flag, digest, wanted, stopped, resume, needsOwner, stateSaved, serve, removalHint, command, loginItem, listening } = value
+  if (typeof enabled !== 'boolean' || typeof flag !== 'boolean' || typeof wanted !== 'boolean' || typeof listening !== 'boolean') return null
   if (!remoteOr(host, (h) => typeof h === 'string' && h.length <= 253 && REMOTE_HOST.test(h)) || !isRemotePort(port)) return null
   if (!Array.isArray(devices) || devices.length > 16 || !isRemoteCount(unreadableDevices) || unreadableDevices > 16) return null
   const listed = devices.map(remoteDevice)
@@ -615,6 +615,7 @@ function remoteView(value) {
     serve: serve && (serve.ok ? { ok: true } : { ok: false, reason: serve.reason }),
     removalHint, command,
     loginItem: { available: loginItem.available, openAtLogin: loginItem.openAtLogin },
+    listening,
   }
 }
 
@@ -635,6 +636,7 @@ function remoteResult(value) {
   if (typeof value.voidedCode === 'boolean') out.voidedCode = value.voidedCode
   for (const field of REMOTE_COUNTS) if (isRemoteCount(value[field])) out[field] = value[field]
   if (typeof value.openAtLogin === 'boolean') out.openAtLogin = value.openAtLogin
+  if (typeof value.listening === 'boolean') out.listening = value.listening
   if ('code' in value || 'expiresAt' in value) {
     if (typeof value.code !== 'string' || !REMOTE_CODE.test(value.code) || !isRemoteTime(value.expiresAt)) return remoteFailed()
     out.code = value.code

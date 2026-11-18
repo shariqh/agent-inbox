@@ -18,7 +18,8 @@
 // - loginItemFor: Open Agent Inbox at login, the packaged app on macOS only. A checkout build never
 //   reads or sets it: a development binary must never become a login item.
 // - stopRemoteEntry: stop() then settled(), waited for at most 5 seconds, on quit.
-// - watchRemoteEntry: pings the page when what get() shows changed, every 5 seconds.
+// - watchRemoteEntry: pings the page when what get() shows changed, every 5 seconds. get() reads
+//   the viewer's status first, so `listening` (whether it really answers on the port) stays fresh.
 
 const CHANNELS = Object.freeze({
   get: 'agent-inbox:remote-entry',
@@ -116,6 +117,13 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
   }
 
   async function get() {
+    // one status read first, so `listening` is fresh (and the viewer reconciles its listener now);
+    // only the boolean the controller keeps from it is used
+    try {
+      await controller.entryStatus()
+    } catch {
+      // the controller keeps not listening
+    }
     const review = await controller.review()
     const state = await controller.state()
     const view = review.view
@@ -140,12 +148,13 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
       removalHint: word(state.removalHint),
       command: `tailscale serve --bg ${controller.port}`,
       loginItem: loginItem.read(),
+      listening: state.listening === true,
     }
   }
 
   return Object.freeze({
     get,
-    turnOn: () => run(() => controller.turnOn(), ['voidedCode', 'devicesRemoved', 'droppedEntries'], { owner: true }),
+    turnOn: () => run(() => controller.turnOn(), ['voidedCode', 'devicesRemoved', 'droppedEntries', 'listening'], { owner: true }),
     turnOff: () => run(() => controller.turnOff(), ['voidedCode'], { owner: true }),
     removeDevice: (id) => run(() => controller.removeDevice(id), ['voidedCode']),
     clearUnreadable: () => run(() => controller.clearUnreadable(), ['voidedCode', 'removed']),

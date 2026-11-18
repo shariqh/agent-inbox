@@ -20,9 +20,9 @@ type View = Record<string, unknown>
 const OFF: View = {
   available: true, enabled: false, host: null, port: 4320, devices: [], unreadableDevices: 0, problem: null, flag: false, digest: D1,
   wanted: false, stopped: null, resume: null, needsOwner: null, stateSaved: true, serve: null, removalHint: null,
-  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: false },
+  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: false }, listening: false,
 }
-const ON: View = { ...OFF, enabled: true, host: HOST, wanted: true, serve: { ok: true } }
+const ON: View = { ...OFF, enabled: true, host: HOST, wanted: true, serve: { ok: true }, listening: true }
 const LAPTOP = { id: A, label: 'laptop', pairedAt: '2026-07-19T09:00:00.000Z' }
 
 let db: Database.Database | null = null
@@ -245,6 +245,83 @@ describe('Settings → Other devices: what it shows', () => {
     toggle(sw())
     await settle()
     expect(text('.remote-message')).toBe('Switching on removed 2 paired Macs, because this Mac’s Tailscale name or account changed.')
+  })
+})
+
+// #617 PR 2d, from the real-app run: the viewer opens the listener a moment after the file says on
+describe('while the Inbox is starting to answer', () => {
+  it('on but not listening yet: "On, starting…", with Test and Add a Mac disabled until it listens', async () => {
+    const api = bridge({ ...ON, listening: false })
+    await draw()
+    expect(status()).toBe('On, starting…')
+    expect(sw()?.checked).toBe(true)
+    expect(button('Test')?.disabled).toBe(true)
+    expect(button('Add a Mac')?.disabled).toBe(true)
+    expect(button('Copy address')).toBeNull()
+    api.set({ ...ON, listening: true })
+    api.ping()
+    await settle()
+    expect(status()).toBe(`On, at https://${HOST}`)
+    expect(button('Test')?.disabled).toBe(false)
+    expect(button('Add a Mac')?.disabled).toBe(false)
+  })
+
+  it('a Test result goes when a new test starts', async () => {
+    const api = bridge(ON)
+    await draw()
+    api.test.mockResolvedValueOnce({ ok: false, reason: 'no_backend', rose: null })
+    click(button('Test'))
+    await settle()
+    expect(text('.remote-test-result')).toBe('Tailscale is forwarding, but this Inbox isn’t answering yet. Switch sharing off and on again.')
+    let finish!: (value: View) => void
+    api.test.mockImplementationOnce(() => new Promise<View>((resolve) => { finish = resolve }))
+    click(button('Test'))
+    await settle()
+    expect($('.remote-test-result')).toBeNull()
+    finish({ ok: true })
+    await settle()
+    expect(text('.remote-test-result')).toBe('Working: Tailscale reaches this Inbox, and it asks for a paired Mac.')
+  })
+
+  it('a Test result goes when the switch changes, even if the change is refused', async () => {
+    const api = bridge(ON)
+    api.turnOff.mockResolvedValueOnce({ ok: false, reason: 'write_failed' })
+    await draw()
+    click(button('Test'))
+    await settle()
+    expect($('.remote-test-result')).not.toBeNull()
+    toggle(sw())
+    await settle()
+    expect(status()).toBe(`On, at https://${HOST}`)
+    expect($('.remote-test-result')).toBeNull()
+  })
+
+  it.each([
+    ['paused', { ...ON, enabled: false, resume: { waiting: 'tailscale_not_running', nextAt: null } }],
+    ['off', { ...OFF }],
+    ['on, starting again', { ...ON, listening: false }],
+    ['on at another address', { ...ON, host: 'other.example.ts.net' }],
+  ])('a Test result goes when the state it described changes (%s)', async (_name, next) => {
+    const api = bridge(ON)
+    await draw()
+    click(button('Test'))
+    await settle()
+    expect($('.remote-test-result')).not.toBeNull()
+    api.set(next)
+    api.ping()
+    await settle()
+    expect($('.remote-test-result')).toBeNull()
+  })
+
+  it('a Test result stays while nothing it described changed', async () => {
+    const api = bridge(ON)
+    await draw()
+    click(button('Test'))
+    await settle()
+    api.set({ ...ON, devices: [LAPTOP], digest: D2 })
+    api.ping()
+    await settle()
+    expect(text('.remote-test-result')).toBe('Working: Tailscale reaches this Inbox, and it asks for a paired Mac.')
   })
 })
 

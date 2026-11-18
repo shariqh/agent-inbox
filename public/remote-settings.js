@@ -68,6 +68,8 @@ export function renderRemoteSettings(host, {
   let addMessage = ''
   let flagMessage = ''
   let testResult = ''
+  // the state the Test result describes: it never outlives it
+  let testFor = null
   let message = ''
   let focusKey = null
 
@@ -114,6 +116,8 @@ export function renderRemoteSettings(host, {
   /** The status line's kind (on, paused, needs, off), its words, and the family of what to do. */
   function statusOf(v) {
     const needs = (family) => ({ kind: 'needs', family, text: `Needs you: ${FAMILY_WORDS[family].why}` })
+    // the file is on, but the viewer has not opened the listener yet
+    if (v.enabled && !v.listening) return { kind: 'on', starting: true, text: 'On, starting…' }
     if (v.enabled) return { kind: 'on', text: `On, at https://${v.host}` }
     if (refusal) return needs(reasonFamily('turnOn', refusal.reason, refusal.step))
     if (v.problem) return needs(reasonFamily('problem', v.problem))
@@ -155,12 +159,19 @@ export function renderRemoteSettings(host, {
         }
       }
       if (next.enabled) refusal = null
-      else testResult = ''
       if (!next.flag) flagMessage = ''
       if (confirmId && !next.devices.some((device) => device.id === confirmId)) confirmId = null
     }
+    if (testResult && stateKey(next) !== testFor) testResult = ''
     view = next
     paint()
+  }
+
+  /** What a Test result is about: on, starting, paused or off, and at which address. */
+  function stateKey(v) {
+    if (!v.available) return 'unavailable'
+    const status = statusOf(v)
+    return `${status.kind}:${status.starting === true}:${v.host}`
   }
 
   async function refresh() {
@@ -192,6 +203,7 @@ export function renderRemoteSettings(host, {
 
   const turnOn = () => {
     refusal = null
+    testResult = ''
     return act(() => api.turnOn(), (r) => {
       if (r.ok === false) refusal = { step: r.step, reason: r.reason }
       if (r.ok === true && r.devicesRemoved > 0) {
@@ -201,6 +213,7 @@ export function renderRemoteSettings(host, {
   }
   const turnOff = () => {
     refusal = null
+    testResult = ''
     return act(() => api.turnOff(), (r) => { if (r.ok === false) message = failedWords(r.reason) })
   }
 
@@ -274,7 +287,7 @@ export function renderRemoteSettings(host, {
     line.id = 'remote-status'
     line.setAttribute('role', 'status')
     row.append(line)
-    if (status.kind === 'on') row.append(copyButton('Copy address', `https://${v.host}`, 'copy-address'))
+    if (status.kind === 'on' && !status.starting) row.append(copyButton('Copy address', `https://${v.host}`, 'copy-address'))
     return row
   }
 
@@ -349,7 +362,8 @@ export function renderRemoteSettings(host, {
     const box = make('div', 'remote-add')
     const add = button('Add a Mac', 'add', () => { void addDevice() })
     add.id = 'remote-add'
-    add.disabled = !v.enabled
+    // a code needs a listener: the viewer refuses one until it listens
+    add.disabled = !v.enabled || !v.listening
     box.append(add)
     if (code && v.enabled) {
       box.append(
@@ -366,8 +380,18 @@ export function renderRemoteSettings(host, {
   function testPart(v) {
     if (!v.enabled) return null
     const box = make('div', 'remote-test')
-    const run = button('Test', 'test', () => act(() => api.test(), (r) => { testResult = testWords(r, v.host) }))
+    const run = button('Test', 'test', () => {
+      if (busy) return
+      // a new test: the last result is gone while it runs
+      testResult = ''
+      paint()
+      void act(() => api.test(), (r) => {
+        testResult = testWords(r, v.host)
+        testFor = stateKey(view)
+      })
+    })
     run.id = 'remote-test'
+    run.disabled = !v.listening
     box.append(run)
     if (testResult) box.append(make('p', 'remote-test-result', testResult))
     return box

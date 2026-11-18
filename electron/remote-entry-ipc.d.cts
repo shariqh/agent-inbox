@@ -38,6 +38,8 @@ export interface PanelView {
   removalHint: string | null
   command: string
   loginItem: { available: boolean; openAtLogin: boolean }
+  /** the viewer's last status said it listens on this build's port */
+  listening: boolean
 }
 
 export interface LoginItem {
@@ -68,7 +70,7 @@ export function registerRemoteEntryIpc(options: {
 }): void
 
 export function createRemoteEntryPanel(options: {
-  controller: Pick<RemoteEntryController, 'port' | 'review' | 'state' | 'turnOn' | 'turnOff' | 'removeDevice' | 'clearUnreadable' | 'repairPermissions' | 'acknowledge' | 'selfTest' | 'requestCode'> | Record<string, unknown>
+  controller: Pick<RemoteEntryController, 'port' | 'entryStatus' | 'review' | 'state' | 'turnOn' | 'turnOff' | 'removeDevice' | 'clearUnreadable' | 'repairPermissions' | 'acknowledge' | 'selfTest' | 'requestCode'> | Record<string, unknown>
   loginItem: LoginItem | { read(): unknown; set(value: boolean): unknown }
   changed?: () => void
   now?: () => number

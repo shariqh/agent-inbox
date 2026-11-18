@@ -54,8 +54,12 @@ export function installHubStrip({
 
   // ── this Mac's hidden page acts only through the strip ─────────────────
   function guardKey(event) {
-    if (!shown() || strip.contains(event.target)) return
+    if (!shown()) return
+    // wherever the key is aimed: with the triage deck open the page's handler acts on a digit even
+    // when a button has focus, so `1` pressed on This Mac answered a hidden question
     event.stopImmediatePropagation()
+    // inside the strip the browser's own action stays: Enter and Space press This Mac
+    if (strip.contains(event.target)) return
     event.preventDefault()
     if (event.type === 'keydown' && event.key === 'Tab') back.focus({ preventScroll: true })
   }

@@ -672,7 +672,7 @@ and the other Mac must share its Inbox (previous section).
 2. On this Mac: **Settings → Use another Mac's Inbox**. Type the address and the code, then press
    **Connect**. Connecting can take 10 seconds or more.
 3. Press **Show its Inbox**. A strip at the top of the window names the Mac whose Inbox is on
-   screen and says Online, Connecting…, Reconnecting… or No longer paired. Press **This Mac** in the
+   screen and says Online, Connecting…, Reconnecting… or Not connected. Press **This Mac** in the
    strip, or choose **View → This Mac**, to come back. While the other Mac's Inbox is on screen,
    this Mac's own Inbox underneath does nothing, keys included.
 

@@ -133,8 +133,8 @@ describe('the strip that says whose Inbox is on screen', () => {
     ['retrying', 'unreachable', 'Reconnecting…'],
     ['retrying', 'not_running', 'Reconnecting…'],
     ['retrying', 'bad_certificate', 'Reconnecting…'],
-    ['refused', 'refused', 'No longer paired'],
-    ['refused', 'node_changed', 'No longer paired'],
+    ['refused', 'refused', 'Not connected'],
+    ['refused', 'node_changed', 'Not connected'],
     [null, null, 'Checking…'],
   ])('says %s (%s) as “%s”', async (state, reason, word) => {
     install(connectBridge(view(ID, hub(state, reason))))
@@ -264,7 +264,7 @@ describe('the strip that says whose Inbox is on screen', () => {
     expect(document.getElementById('already-inert')!.hasAttribute('inert')).toBe(true)
   })
 
-  it('stops every key aimed outside it before the page’s own handlers, and lets its own button have them', async () => {
+  it('stops every key before the page’s own handlers, wherever it is aimed, and leaves its own button the browser’s action', async () => {
     const seen: string[] = []
     const pageKeys = (event: KeyboardEvent) => seen.push(`${event.type} ${event.key}`)
     document.addEventListener('keydown', pageKeys, true)
@@ -285,12 +285,14 @@ describe('the strip that says whose Inbox is on screen', () => {
       document.body.dispatchEvent(tab)
       expect(tab.defaultPrevented).toBe(true)
       expect(document.activeElement).toBe(back())
-      // the strip's own button gets its keys
-      const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-      back()!.dispatchEvent(enter)
-      expect(enter.defaultPrevented).toBe(false)
-      expect(seen).toEqual(['keydown Enter', 'keydown Enter'])
-      seen.length = 0
+      // a key aimed at the strip's own button reaches no page handler either (with the triage deck open
+      // the page acts on a digit whatever has focus), but keeps the browser's action: Enter presses it
+      for (const key of ['Enter', ' ', '1', 'j']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+        back()!.dispatchEvent(event)
+        expect(event.defaultPrevented, key).toBe(false)
+      }
+      expect(seen).toEqual([])
       // gone: the page has its keys again
       api.set(view(null))
       await flush()
@@ -332,7 +334,7 @@ describe('the strip that says whose Inbox is on screen', () => {
     expect(strip()?.querySelectorAll('button').length).toBe(1)
     api.set(view(ID, hub('refused', 'refused')))
     await flush()
-    expect(strip()?.querySelector('.hub-strip-state')?.textContent).toBe('No longer paired')
+    expect(strip()?.querySelector('.hub-strip-state')?.textContent).toBe('Not connected')
     api.set(view(null))
     await flush()
     expect(strip()).toBeNull()

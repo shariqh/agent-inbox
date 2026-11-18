@@ -307,7 +307,7 @@ const SENTENCES: Record<string, string> = {
   not_your_device: 'That Mac isn’t signed in to Tailscale with your account. Use a Mac signed in with your own account.',
   tagged_device: 'In Tailscale, that Mac belongs to a tag, not to your account. Use a Mac signed in to Tailscale with your own account.',
   unreachable: 'Couldn’t reach that Mac. Is it awake, with Agent Inbox open?',
-  bad_certificate: 'That Mac’s HTTPS certificate isn’t valid, so nothing was sent. In the Tailscale admin console, check that HTTPS certificates are turned on, then try again.',
+  bad_certificate: 'That Mac’s HTTPS certificate isn’t valid, so nothing was sent. Check this Mac’s date and time, and press Test on the other Mac (Settings → Other devices), then try again.',
   not_agent_inbox: 'That address doesn’t answer as an Agent Inbox. On the other Mac, check Settings → Other devices → Let my other Macs use this Inbox.',
   refused: 'The other Mac said no. The code may be wrong or used up, or its sharing may not allow your Tailscale account. Make a new code there and try again.',
   write_failed: 'This Mac couldn’t save the connection. Try again.',
@@ -478,16 +478,16 @@ const STATUS: Array<[State, string | null, string]> = [
   ['retrying', 'not_running', 'Reconnecting… Tailscale isn’t running on this Mac, or it’s signed out.'],
   ['retrying', 'no_keychain', 'Reconnecting… This Mac’s Keychain isn’t available yet.'],
   ['retrying', 'something_new', 'Reconnecting…'],
-  ['refused', 'refused', 'No longer paired. MBP no longer accepts this Mac.'],
-  ['refused', 'node_changed', 'No longer paired. MBP’s address now belongs to another device.'],
-  ['refused', 'secret_unreadable', 'No longer paired. This Mac can’t read its key for MBP.'],
-  ['refused', 'not_found', 'No longer paired. MBP is no longer in your Tailscale network.'],
-  ['refused', 'not_in_tailnet', 'No longer paired. MBP is no longer in your Tailscale network.'],
-  ['refused', 'duplicate_name', 'No longer paired. More than one device now has MBP’s name.'],
-  ['refused', 'not_your_device', 'No longer paired. MBP is no longer signed in to Tailscale with your account.'],
-  ['refused', 'tagged_device', 'No longer paired. In Tailscale, MBP now belongs to a tag, not to your account.'],
-  ['refused', 'tagged_self', 'No longer paired. In Tailscale, this Mac now belongs to a tag, not to your account.'],
-  ['refused', 'something_new', 'No longer paired. MBP no longer accepts this Mac.'],
+  ['refused', 'refused', 'Not connected. MBP no longer accepts this Mac.'],
+  ['refused', 'node_changed', 'Not connected. MBP’s address now belongs to another device.'],
+  ['refused', 'secret_unreadable', 'Not connected. This Mac can’t read its key for MBP.'],
+  ['refused', 'not_found', 'Not connected. MBP is no longer in your Tailscale network.'],
+  ['refused', 'not_in_tailnet', 'Not connected. MBP is no longer in your Tailscale network.'],
+  ['refused', 'duplicate_name', 'Not connected. More than one device now has MBP’s name.'],
+  ['refused', 'not_your_device', 'Not connected. MBP is no longer signed in to Tailscale with your account.'],
+  ['refused', 'tagged_device', 'Not connected. In Tailscale, MBP now belongs to a tag, not to your account.'],
+  ['refused', 'tagged_self', 'Not connected. In Tailscale, this Mac now belongs to a tag, not to your account.'],
+  ['refused', 'something_new', 'Not connected. MBP no longer accepts this Mac.'],
 ]
 
 describe('with a Mac connected', () => {
@@ -705,7 +705,7 @@ describe('what it draws', () => {
     draw(connectBridge({ ...NONE, hub: hub('refused', 'refused', { label }) }))
     await flush()
     expect(text('connect-hub-name')).toBe(`${label}’s Inbox`)
-    expect(text('connect-hub-status')).toBe(`No longer paired. ${label} no longer accepts this Mac.`)
+    expect(text('connect-hub-status')).toBe(`Not connected. ${label} no longer accepts this Mac.`)
     expect($('connect-settings')?.querySelector('img')).toBeNull()
     expect((globalThis as Record<string, unknown>).pwned).toBeUndefined()
   })

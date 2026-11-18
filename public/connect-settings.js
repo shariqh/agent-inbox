@@ -62,7 +62,7 @@ const REFUSALS = {
   not_your_device: 'That Mac isn’t signed in to Tailscale with your account. Use a Mac signed in with your own account.',
   tagged_device: `In Tailscale, that Mac belongs to a tag, not to your account. ${OWN_ACCOUNT}`,
   unreachable: 'Couldn’t reach that Mac. Is it awake, with Agent Inbox open?',
-  bad_certificate: 'That Mac’s HTTPS certificate isn’t valid, so nothing was sent. In the Tailscale admin console, check that HTTPS certificates are turned on, then try again.',
+  bad_certificate: 'That Mac’s HTTPS certificate isn’t valid, so nothing was sent. Check this Mac’s date and time, and press Test on the other Mac (Settings → Other devices), then try again.',
   not_agent_inbox: `That address doesn’t answer as an Agent Inbox. On the other Mac, check ${SHARING_SWITCH}.`,
   refused: 'The other Mac said no. The code may be wrong or used up, or its sharing may not allow your Tailscale account. Make a new code there and try again.',
   write_failed: 'This Mac couldn’t save the connection. Try again.',
@@ -93,7 +93,7 @@ const PROBLEMS = {
 export function stateWord(hub) {
   if (hub?.state === 'online') return 'Online'
   if (hub?.state === 'retrying') return hub.reason === 'connecting' ? 'Connecting…' : 'Reconnecting…'
-  if (hub?.state === 'refused') return 'No longer paired'
+  if (hub?.state === 'refused') return 'Not connected'
   return 'Checking…'
 }
 

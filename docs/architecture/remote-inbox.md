@@ -28,8 +28,9 @@ paths:
   - "test/dom/settings-connect.test.ts"
   - "test/dom/hub-strip.test.ts"
   - "test/dom/hub-strip-keys.test.ts"
+  - "test/dom/hub-strip-deck-keys.test.ts"
   - "test/dom/hub-mode.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-mode.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -1128,7 +1129,7 @@ and by the other Mac's page for `retrying`:
 | `online` | Online |
 | `retrying`, reason `connecting` (the first check) | Connecting… |
 | `retrying`, any other reason | Reconnecting… (the other Mac's page: "Reconnecting to <label>…") |
-| `refused` | No longer paired |
+| `refused` | Not connected (every refused reason: the other Mac may still list this one) |
 | not known | Checking… |
 
 **Settings → Use another Mac's Inbox** (`public/connect-settings.js`, `renderConnectSettings`,
@@ -1195,11 +1196,16 @@ the name; This Mac never does.
 - An answer that is not `available: true` (the preload turns every failed call into `{ available:
   false }`) or a read that throws changes nothing on screen: the strip reads again after 1, 2, 4, 8
   and 15 seconds, then every 30 seconds, until main answers. A read that lands after a newer one is
-  dropped.
+  dropped. Known limit: when this Mac's own page reloads while the other Mac's Inbox is on top (it
+  reloads itself when the local viewer restarts), main brings This Mac forward at once, and the old
+  page, inert and about to be replaced, keeps its strip until the new page loads.
 - While it shows, this Mac's page is covered by the other Mac's view and acts only through the
-  strip: every other element of `body` (and any added meanwhile) is `inert`, and a `keydown`,
-  `keypress` or `keyup` aimed outside the strip is stopped on the window in the capture phase,
-  before any of the page's own handlers; Tab from outside moves focus to This Mac. Both end the
+  strip: every other element of `body` (and any added meanwhile) is `inert`, and every `keydown`,
+  `keypress` and `keyup` is stopped on the window in the capture phase, before any of the page's
+  own handlers, wherever it is aimed (with the triage deck open the page's handler acts on a digit
+  even when a button has focus: `1` pressed on This Mac answered a hidden question). A key aimed
+  outside the strip also loses its default action, and Tab from outside moves focus to This Mac;
+  inside the strip the browser's own action stays, so Enter and Space press This Mac. Both end the
   moment the strip goes, and what was inert before stays inert. (Reproduced in the real app before
   this: with the other Mac's Inbox on top, `j` then `e` resolved a question on this Mac's hidden
   Inbox.) The strip is reached by keyboard from this Mac's page, which has focus only after a click

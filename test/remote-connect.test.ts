@@ -270,10 +270,10 @@ describe('labels', () => {
 
   // #617 PR 3c: the label is the hub's own choice, and the strip and the menu put it beside This Mac
   it("never takes a machine name that reads as This Mac or local: the address's first label instead", () => {
-    for (const machine of ['thismac', 'ThisMac', 'this-mac', 'This_Mac', 'THIS--MAC', 'local', 'Local', 'LOCAL', '_local_', 'lo-cal']) {
+    for (const machine of ['thismac', 'ThisMac', 'this-mac', 'This_Mac', 'THIS--MAC', 'local', 'Local', 'LOCAL', '_local_', 'lo-cal', 'This.Mac', 'this.mac.', 'lo.cal']) {
       expect(hubLabelFor(machine, HOST), machine).toBe('hub')
     }
-    for (const machine of ['thismacbook', 'localhost', 'studio', 'my-local-mac']) expect(hubLabelFor(machine, HOST), machine).toBe(machine)
+    for (const machine of ['thismacbook', 'localhost', 'studio', 'my-local-mac', 'my.local']) expect(hubLabelFor(machine, HOST), machine).toBe(machine)
   })
 })
 

@@ -129,7 +129,7 @@ function deviceLabelFor(name) {
 /** The hub's name on this Mac: the machine it reports, else the first label of its address, at most 40 characters. */
 // #617 PR 3c: names the strip and the View menu would show beside This Mac as if they were it
 const SELF_NAMES = new Set(['thismac', 'local'])
-const selfName = (name) => SELF_NAMES.has(name.toLowerCase().replace(/[\s_-]/g, ''))
+const selfName = (name) => SELF_NAMES.has(name.toLowerCase().replace(/[\s_.-]/g, ''))
 
 function hubLabelFor(machine, host) {
   // the machine is the hub's own choice: one that reads as This Mac or local gives way to the typed address

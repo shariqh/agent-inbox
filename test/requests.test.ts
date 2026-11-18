@@ -240,7 +240,12 @@ describe('an id is the full uuid or a unique prefix of at least 8 characters, wi
     expect(resolveRequestId(db, 'mcp-a', first.id.slice(0, 7))).toEqual({ ok: false, reason: 'not_found' })
     expect(resolveRequestId(db, 'mcp-a', '')).toEqual({ ok: false, reason: 'not_found' })
     expect(resolveRequestId(db, 'mcp-a', '%%%%%%%%')).toEqual({ ok: false, reason: 'not_found' })
-    expect(resolveRequestId(db, 'mcp-a', first.short.toUpperCase())).toEqual({ ok: false, reason: 'not_found' })
+    // upper case is not an id prefix. Checked on a fixed id with letters in it: the first 8 characters of a
+    // random id are all digits about once in 43 runs, and then its upper case is the same text
+    db.prepare(`INSERT INTO requests (id, project, session, origin, state, opened_at, updated_at) VALUES
+      ('abcdef01-0000-4000-8000-000000000001', 'alpha', 'mcp-a', 'prompt', 'unfiled', ?, ?)`).run(iso(T0), iso(T0))
+    expect(resolveRequestId(db, 'mcp-a', 'abcdef01')).toEqual({ ok: true, id: 'abcdef01-0000-4000-8000-000000000001' })
+    expect(resolveRequestId(db, 'mcp-a', 'ABCDEF01')).toEqual({ ok: false, reason: 'not_found' })
     expect(resolveRequestId(db, 'mcp-a', 'ffffffff')).toEqual({ ok: false, reason: 'not_found' })
     expect(resolveRequestId(db, 'mcp-a', `${first.id}0`)).toEqual({ ok: false, reason: 'not_found' })
     // another session's request reads not_found, by full id and by prefix

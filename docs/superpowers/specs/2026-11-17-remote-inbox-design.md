@@ -236,7 +236,10 @@ loopback entry sends, and no marker. The reason goes only into a counter.
    are checked too: once the laptop app adds the device header by URL filter, a no-cors GET from
    another page in that session would carry it.)
 7. `POST /api/remote/pair` goes to the pairing handler below. It is the one route that passes
-   with the login alone.
+   with the login alone. **(As built:** only `POST` with the raw request target exactly
+   `/api/remote/pair`; a query string, a trailing slash, another method or path goes on to step 8,
+   and a device header sent with it is ignored. Every refusal by the handler is the same bare 403,
+   counted under `pair`.)
 8. **Device.** `X-Agent-Inbox-Device` must hold 43 base64url characters. Its SHA-256 is compared
    with every paired device's `secretSha256` by `crypto.timingSafeEqual`, all of them, with no
    early exit. No match is refused.
@@ -249,6 +252,12 @@ Accepted responses get `Cache-Control: no-store`, the same CSP and `X-Frame-Opti
 
 **Pairing.** On the hub, Settings → **Add a device** asks main for a code, and main asks the
 loopback-only `POST /api/remote-entry/code`, which needs the owner token in a header.
+**(As built in PR 2b:** the header is `X-Agent-Inbox-Owner`, compared with the viewer's token as
+SHA-256 digests by `timingSafeEqual`, else 403; the route exists only when the viewer was started
+with `AGENT_INBOX_OWNER_TOKEN`; the loopback entry's rules still apply, so main also sends
+`Origin: http://127.0.0.1:<port>`; and it answers `409 { "error": "remote_entry_off" }` while the
+remote entry is not on for this viewer or its listener is not bound, so no code is made for a
+listener that is not there. The code is also voided when the entry turns off.)
 
 - The viewer process makes the code: 50 random bits as 10 Crockford base32 characters in two
   groups of five (`7K3QX-9M2PD`), short enough to type from one Mac to the other. It is kept only
@@ -260,6 +269,16 @@ loopback-only `POST /api/remote-entry/code`, which needs the owner token in a he
   minute, refuses with no code pending, counts a wrong code, and on a match makes a random
   32-byte secret and a 16-hex-character id, writes the device under the lock, voids the code, and
   answers `{ ok: true, device: id, secret: <base64url> }` once, with the marker header.
+  **(As built:** the code is voided **before** the write, in the same synchronous step as the
+  compare, so two requests racing with the right code cannot both pair, and a failed write leaves
+  it void. The limit applies to every request that reaches the handler, before its body is read,
+  one counter for the route. The body must be `Content-Type: application/json` exactly, at most
+  1 KiB, exactly the two string keys, and a label by the reader's rule with no lone surrogate; a
+  bad body uses no try. A code string that does not normalise to 10 letters of the alphabet (a
+  `U`, a short code) uses one try. Under the lock the file is read again and not written when it
+  fails the reader, is off for this viewer, no longer names the request's port, `Host` or login,
+  already lists 16 devices, or would pass 64 KiB. Every refusal, the failed write included, is the
+  same bare 403 with no marker; a failed write logs one line naming only the error's code.)
 - The hub stores only the SHA-256: a slow key-derivation function adds nothing for a random
   256-bit value, and matters only for secrets a person chose. Settings lists paired devices with
   **Remove**, which main writes; a removed device's next request fails step 8.
@@ -268,7 +287,8 @@ loopback-only `POST /api/remote-entry/code`, which needs the owner token in a he
 before the static route. It returns `{ on, listening, port, host, error, codePending, paired:
 [ids paired since start], refused: { host, funnel, login, path, origin, device, route, pair } }`,
 counts since the viewer started. It never shows a login, a secret or a header value, and it is not
-on the remote allowlist.
+on the remote allowlist. **(As built:** `paired` keeps the last 16 ids; no label, hash or code is
+shown either.)
 
 **Trust basis, stated plainly.**
 
@@ -502,6 +522,8 @@ sessions do not survive a restart. Keeping the hub awake is a system setting the
 | `/api/owner`, `/api/setup`, any launch route, `/api/chats/copilot/:id` | 403 |
 | A route added to `createViewer` later | 403 until classified (a test fails until then) |
 | Pairing: no code pending, a code reused, expired, or after 5 wrong tries; more than 10 tries a minute | 403 |
+| Pairing: a malformed body; a pairing request with a query, a trailing slash or another method; the file not private, off, a newer schema or full (16 devices) when the write is due | 403, the same bare one; the code stays void once matched |
+| Pairing code asked for without the owner token, or remotely | 403; and 409 while the entry is off |
 | Serve has another path on the host, a raw TCP forward, or Funnel | main turns the entry off and notifies |
 | `remote.json` changed outside the app | native notification and a Settings flag |
 | A connect address outside this tailnet, or not one of the owner's untagged nodes, or a changed node | refused |
@@ -544,7 +566,7 @@ PR 2 is split because pairing roughly doubles it. PR 2a cannot be turned on by i
 | 0 | This spec | none |
 | 1 | `src/session-place.ts` (`readPlace`, `readDesk`, `readRemoteSession`, patterns); `buildMcpServer`'s `place()` and `refreshPlace` timer; `ensureColumn` ×4, `ActivityUpdate`, `upsertActivityTxn`, `setActivityPlace`, `listActivity`, `Activity` in `src/store.ts`; `machine` in `/api/version`; `public/place.js`; card meta in `public/agents-home.js`; panel meta, Open in claude.ai and Copy attach command in `public/app.js`; `activity-and-live.md` | `test/session-place.test.ts` (each pattern, a leading `-`, a hostile tmux name, timeout, no `TMUX`; the live file: another pid's, a symlink, oversized, a bad id, none); `test/store.test.ts` (`machine`, `pane` kept on omission; `setActivityPlace` writes nulls and moves no stamp; the upsert never names `desk`); `test/live-tick.test.ts` unchanged and green; `test/mcp.integration.test.ts`; `test/place.test.ts` (URL only from a valid id; the quoted attach command); `test/dom/agents-home.test.ts`; `test/csp-source.test.ts` |
 | 2a | `src/viewer-remote.ts` (`readRemoteSetting`, the setting cache, `remoteGate`, `REMOTE_ROUTES`, `startRemoteEntry` with `closeAllConnections`); `src/viewer-server.ts` (second `createViewer`, `GET /api/remote-entry`) | `test/viewer-remote.test.ts` (every gate step and order, header case, `:443`, Funnel header, device header absent, wrong, removed, timing-safe compare of all; `/%61pi/setup`, `%2e%2e`, `//`, `\`, trailing slash, `HEAD` on a refused route; no marker on 403; marker, CSP and framing on 200); `test/remote-routes.test.ts` (every route in `createViewer`'s `app.routes` classified; `/api/owner` absent on `remoteApp`); `test/remote-setting.test.ts` (symlink, other owner, mode `0644`, size, newer schema, bad device dropped, port mismatch, re-read on change, close on off) |
-| 2b | Pairing in `src/viewer-remote.ts` (`POST /api/remote/pair`, the code, rate limit, device write under the lock); `POST /api/remote-entry/code`; `electron/remote-entry.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch); IPC and notifications in `electron/main.cjs`; `agentInboxRemoteEntry` in `setup-preload.cjs`; the Settings section (`public/remote-settings.js`, `public/app.js`) | `test/remote-pair.test.ts` (code once, expired, five wrong tries, rate limit, no code pending, secret answered once, only the hash stored); `test/serve-state.test.ts` (fixtures: the one good shape; a second path; a TCP forward; Funnel; another port; malformed JSON; one failed read retried); `test/remote-entry-settings.test.ts` (writes, outside change flagged, an expected pairing notified); `test/dom/settings-remote.test.ts` |
+| 2b | **(As built, viewer process only:** pairing in a new `src/remote-pair.ts`, wired into `src/viewer-remote.ts`'s gate and `src/viewer-server.ts`; `test/remote-pair.test.ts`. Everything after `POST /api/remote-entry/code` in this row moves to the next PR, 2c.) Pairing in `src/viewer-remote.ts` (`POST /api/remote/pair`, the code, rate limit, device write under the lock); `POST /api/remote-entry/code`; `electron/remote-entry.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch); IPC and notifications in `electron/main.cjs`; `agentInboxRemoteEntry` in `setup-preload.cjs`; the Settings section (`public/remote-settings.js`, `public/app.js`) | `test/remote-pair.test.ts` (code once, expired, five wrong tries, rate limit, no code pending, secret answered once, only the hash stored); `test/serve-state.test.ts` (fixtures: the one good shape; a second path; a TCP forward; Funnel; another port; malformed JSON; one failed read retried); `test/remote-entry-settings.test.ts` (writes, outside change flagged, an expected pairing notified); `test/dom/settings-remote.test.ts` |
 | 3 | `electron/remote-connect.cjs` (settings, `validateHubOrigin` with the tailnet and peer checks, pairing, `safeStorage`, `hubFetch`, `probeHub`, backoff); `electron/remote-preload.cjs`; `electron/remote-offline.html`; the view, header injection, navigation, redirect, download and permission handlers, menu items and `powerMonitor` in `electron/main.cjs`; `agentInboxConnect` and local `agentInboxDesk` in `setup-preload.cjs`; connect settings and the banner in `public/app.js` | `test/remote-connect.test.ts` (origin rules, outside the tailnet, a tagged or another user's peer, a changed node, marker required, secret never stored in clear, backoff 2→60 s, resume and online triggers, reload only on version change, refused state); `test/remote-preload.test.ts` (one object, exact members); `test/main-source.test.ts` (the view never gets the install binding; the header handler filters on the hub origin); `test/dom/connect-banner.test.ts` |
 | 4 | `createAttentionWatch` in `electron/main.cjs`; `electron/desk-open.cjs` (`fillTemplate`, `deskScript`, `openDesk`, the confirmation dialog); `writeChatScript` generalised; Open desk in `public/place.js`, `public/agents-home.js`, `public/app.js`, `public/chats-view.js` | `test/reply-watch.test.ts` (posts to the hub base with a trailing slash, its Origin and the device header); `test/attention-watch.test.ts` (badge sum, per-source `known`, wake adapter local only); `test/desk-open.test.ts` (each placeholder's quoting, parsed back by `sh` and by a second `sh -c` for `{attach}`; unknown placeholder refused; `sshHost` with a leading `-` refused; no save without the dialog; source by sender; `not_on_hub`, `not_here`; gesture and rate limits); `test/badge.test.ts` still green; `test/dom/chats-view.test.ts` |
 

@@ -4,13 +4,16 @@ import { createViewer } from './viewer.js'
 import { startGithubPoller } from './issue-poller.js'
 import { startLocalViewer } from './viewer-network.js'
 import { remoteDir, startRemoteEntry } from './viewer-remote.js'
+import { remoteCodeRoute } from './remote-pair.js'
 import { meshDir } from './mesh-config.js'
 import { meshAgents } from './mesh-agents.js'
 
 const port = Number(process.env.AGENT_INBOX_PORT ?? 4319)
 const db = openDb()
 const mesh = meshAgents({ dir: meshDir() })
-const app = createViewer(db, { ownerToken: process.env.AGENT_INBOX_OWNER_TOKEN, mesh })
+// read once, now: the desktop app sets it only while it imports this module in-process
+const ownerToken = process.env.AGENT_INBOX_OWNER_TOKEN
+const app = createViewer(db, { ownerToken, mesh })
 // issue #30 — this is the ONE process allowed to run `gh` (the stdio MCP server
 // never may). Started here rather than inside createViewer because every viewer
 // test constructs the app with app.request(...) and a timer there would leak
@@ -29,6 +32,9 @@ remoteApp.get('/*', serveStatic({ root: './public' }))
 const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port })
 // loopback only, and never on the remote allowlist: counts since start, no login or secret
 app.get('/api/remote-entry', (c) => c.json(remote.status()))
+// loopback only, and only for the desktop app that started this viewer with an owner token: a
+// pairing code (src/remote-pair.ts). Without a token the route does not exist.
+if (ownerToken) app.post('/api/remote-entry/code', remoteCodeRoute(remote, ownerToken))
 
 app.get('/*', serveStatic({ root: './public' }))
 

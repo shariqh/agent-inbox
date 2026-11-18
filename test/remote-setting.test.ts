@@ -169,6 +169,24 @@ describe('readRemoteSetting: the fields', () => {
     }
   })
 
+  // PR 2b review: the pairing request and the reader share one label rule. A label is read by a
+  // person (Settings, a notification), so Unicode format characters (category Cf) are refused with
+  // the control characters, and so is half a surrogate pair. Logins keep their own rule.
+  it('drops a device whose label holds a format character or a lone surrogate', () => {
+    const sha = secretSha256(newSecret())
+    const labels = ['lap‮exe.top', 'zero​width', '﻿bom', '⁦isolate⁩', '\u{1F469}‍\u{1F4BB}', 'soft­hyphen', 'lone\ud800']
+    const devices = labels.map((label, i) => ({ id: `${i}`.repeat(16), label, secretSha256: sha }))
+    const kept = { id: 'aaaaaaaaaaaaaaaa', label: '\u{1F600} Zoë\'s laptop', secretSha256: sha }
+    const read = readValue(setting(4320, [...devices, kept]))
+    expect(read.ok).toBe(true)
+    if (read.ok) expect(read.setting.devices.map((d) => d.id)).toEqual(['aaaaaaaaaaaaaaaa'])
+  })
+
+  it('keeps the login rule as it was: a format character in a login is not refused by the label rule', () => {
+    const read = readValue(setting(4320, [], { logins: [LOGIN, 'zero​width@example.com'] }))
+    expect(read.ok).toBe(true)
+  })
+
   it('drops a malformed device and keeps the rest', () => {
     const good = newSecret()
     const sha = secretSha256(newSecret())
@@ -469,7 +487,9 @@ describe('startRemoteEntry: the listener', () => {
     expect(entry.status()).toEqual({
       on: false, listening: false, port: null, host: null,
       error: expect.stringContaining('other users'),
-      refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0 },
+      codePending: false,
+      paired: [],
+      refused: { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0, pair: 0 },
     })
   })
 })

@@ -22,6 +22,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   browser alias, not a wider bind. Keep it out of the MCP graph and do not add a
   host-widening environment variable.
 
+The tailnet entry is separate and binds loopback too. `src/viewer-remote.ts` (#617) opens a second
+listener on `127.0.0.1`, for Tailscale Serve, only when `remote.json` turns it on, and serves only a
+paired device. It has its own gate, allowlist and marker, `x-agent-inbox-remote-boundary`, and never
+sends this module's marker. This module does not change for it. See `remote-inbox.md`.
+
 ## Invariants in detail
 
 - **The local viewer boundary lives in `src/viewer-network.ts`, never in

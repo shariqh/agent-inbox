@@ -157,8 +157,8 @@ Agent text is still set with `textContent`. This PR is useful on the hub on its 
 
 ### 3.2 The remote entry on the hub (PR 2a and 2b)
 
-**Where the setting lives (my call):** `remote.json` beside `inbox.db` (the folder `meshDir`
-picks), not in userData. The viewer process must read it, and a dev build's viewer child does not
+**Where the setting lives (my call):** `remote.json` beside `inbox.db` (the folder of
+`AGENT_INBOX_DB`, else `~/.agent-inbox`; `AGENT_INBOX_MESH_DIR` does not move it), not in userData. The viewer process must read it, and a dev build's viewer child does not
 know the userData path; a checkout build and the installed app share userData, so a switch there
 would leak between a scratch run and the real one. A scratch hub gets its own file, as
 `mesh.json` does, and no environment variable is added.
@@ -180,7 +180,8 @@ fields kept, a newer schema read as off and never overwritten. The file is writt
 opens with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, `fstat`s the open descriptor, requires a regular
 file owned by this user with `mode & 0o077` zero and at most 64 KiB, reads from that descriptor,
 and parses a JSON object with `schema: 1`. Anything else means off. Then: `host` matches
-`/^[a-z0-9-]+(\.[a-z0-9-]+)+$/` after lowercasing; `logins` holds 1 to 16 strings of 1 to 254
+`/^[a-z0-9-]+(\.[a-z0-9-]+)+$/` after lowercasing and its last label holds a letter (so an address
+such as `127.0.0.1` is refused); `logins` holds 1 to 16 strings of 1 to 254
 characters with no control characters; `devices` holds at most 16 entries, each with a
 16-hex-character `id`, a `label` of 1 to 40 characters and a 64-hex-character `secretSha256` (a bad
 entry is dropped, never turning the rest off); `port` is 1024 to 65535 and not `viewerPort`, by
@@ -198,10 +199,12 @@ it. A bind failure is logged once and shown in the status route.
 **What it serves (my call).** `remoteApp` is a **second** `createViewer(db, { mesh })` built
 without `ownerToken`, so `/api/owner` does not exist on it (`createViewer` starts no timers). The
 gate serves an explicit **allowlist**, `REMOTE_ROUTES`, exported for a test. Its rule, applied the
-same way to every route: a route is **refused** when it can change the hub's processes or files,
-hands out a credential, or returns something only useful on the hub (install paths, registration
-commands, a launch's prompt). Everything else the page uses is the owner's own data shown to the
-owner's paired device, and is allowed.
+same way to every route: a route is **allowed** only when the page needs it to show or answer the
+Inbox. It is **refused** when it acts on the hub's processes or files, hands out a credential, or
+belongs to setup or launching, which only make sense at the hub. `GET /api/chats` (each chat's
+folder, Copilot's automatic titles), `GET /api/mesh/agents` (endpoint and fix hints) and
+`GET /api/mesh/agents/runs` (a forget command) carry the owner's own hub-side details (a folder
+path, command hints) to the owner's paired device, by decision.
 
 | Method | Allowed paths |
 |---|---|
@@ -227,9 +230,11 @@ loopback entry sends, and no marker. The reason goes only into a counter.
    refused anywhere, not only under `/api/`, because `/%61pi/setup` is not under `/api/` until
    decoded; no file in `public/` has `%` in its name.)
 5. An `Origin`, when present, must equal `https://<host>`.
-6. An unsafe method needs that `Origin`. Its `Sec-Fetch-Site`, when present, must be
-   `same-origin` or `none`. **(My call:** `same-site` is dropped. On a tailnet, same-site means
-   another node's Serve page, and step 5 already refuses it.)
+6. On every method, `Sec-Fetch-Site`, when present, must be sent once and be `same-origin` or
+   `none`; an unsafe method also needs that `Origin`. **(My call:** `same-site` is dropped. On a
+   tailnet, same-site means another node's Serve page, and step 5 already refuses it. Safe methods
+   are checked too: once the laptop app adds the device header by URL filter, a no-cors GET from
+   another page in that session would carry it.)
 7. `POST /api/remote/pair` goes to the pairing handler below. It is the one route that passes
    with the login alone.
 8. **Device.** `X-Agent-Inbox-Device` must hold 43 base64url characters. Its SHA-256 is compared
@@ -616,3 +621,5 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
 10. **A laptop build for the proof.** The laptop has no app today, so the laptop half of §7
     step 3 runs on the signed release, after the hub-only half has passed.
 11. **`/api/version`'s `machine` and a session's `machine` can differ** when `AGENT_INBOX_MACHINE` is set only for terminals; PR 4's machine checks must allow for it.
+12. **PR 2b: main and the viewer must name the same `remote.json`;** main computes it by the same
+    rule (the folder of `AGENT_INBOX_DB`, else `~/.agent-inbox`) or passes the path.

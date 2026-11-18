@@ -9,8 +9,8 @@ stdio **MCP server** lets agents `flag` open questions and non-blocking notes an
 **tracking boards** (titled status tables); everything lands in one SQLite hub
 (`~/.agent-inbox/inbox.db`); a local **Hono viewer** renders the cross-project inbox and
 boards. No LLM/model calls anywhere — this is dumb infra (store + viewer + thin MCP
-server). See [`README.md`](README.md) for the full picture and
-[`docs/superpowers/specs/`](docs/superpowers/specs/) for the design docs.
+server). See `README.md` for the full picture and
+`docs/superpowers/specs/` for the design docs.
 
 MCP tools: `flag`, `pending`, `answer`, `resolve`, `register`, `whoami` (items/scope),
 `board_upsert`, `board_row`, `board_advance`, `board_get`, `board_archive` (boards), `ack_message`
@@ -31,8 +31,8 @@ npm run package:app # build the self-contained macOS app
 npm run install:agents [-- --apply]    # DRY RUN of MCP + host-instructions setup
 npm run install:hooks           # DRY RUN of the opt-in backstop hooks installer (docs/hooks.md)
 npm run install:hooks -- --apply    # …and actually write ~/.claude/settings.json
-npm run meshctl -- status                         # Mesh (#397): what mesh.json turns on
-npm run meshctl -- disable [--apply]              # DRY RUN unless --apply
+npm run meshctl -- status                     # Mesh (#397): what mesh.json turns on
+npm run meshctl -- disable [--apply]          # DRY RUN unless --apply
 npx vitest run test/mcp.integration.test.ts   # single file
 npx vitest run test/store.test.ts -t "test name"  # one named test
 npx vitest run test/dom/                      # the jsdom viewer tests only
@@ -136,6 +136,7 @@ read or edit a matching file. Read it yourself before changing these areas:
 | activity, presence, call trace, session builds | `activity-and-live.md` |
 | `src/mcp.ts`, `scope.ts`, `infer.ts`, `shape.ts` | `mcp-server.md` |
 | `src/viewer-network.ts` | `viewer-network.md` |
+| `src/viewer-remote.ts` | `remote-inbox.md` |
 | `public/app.js`, poll, render, drafts, focus, scroll, selection | `viewer-frontend.md` |
 | Dashboard, Agents home, ribbon, motion, layout, search, `style.css` | `viewer-dashboard-and-shell.md` |
 | links in agent text, Settings → Links, repo-relative paths | `links.md` |

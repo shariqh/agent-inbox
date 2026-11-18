@@ -47,6 +47,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the viewer; never by the MCP server.
   `src/chat-index.ts` and the pure `src/chat-parse.ts` (#586) are viewer-only too: they read the two
   tools' chat folders by metadata, never write there and never spawn a process (`chats.md`).
+  `src/viewer-remote.ts` (#617), the remote entry for paired devices, is viewer-only too: a second
+  loopback listener with its own gate, off unless `remote.json` turns it on (`remote-inbox.md`).
   `src/shape.ts` trims agent-facing MCP read payloads and must not affect viewer
   API payloads. `src/hook.ts`/`hook-cli.ts` and `src/watch.ts`/`watch-cli.ts` are
   separate host adapters that still access data through `store.ts`.

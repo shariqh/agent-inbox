@@ -438,8 +438,12 @@ notifications are "Agent Inbox stopped sharing with your other devices" with one
 reason family (also when Tailscale is not running or can't be read, and when the settings file said
 on while the owner's switch was off), "Agent Inbox paused sharing with your other devices" for a
 stop that resumes, "<label> can now use this Inbox." for a pairing, and "Agent Inbox's sharing
-settings were changed outside the app", at most one of each kind in 10 minutes.
-`docs/architecture/remote-inbox.md`, "The hub's Settings panel".)
+settings were changed outside the app", at most one of each kind in 10 minutes. The viewer also
+reconciles its listener when its status is read, and main reads it after each write, so the listener
+follows at once rather than at the 5-second poll; `turnOn()` answers once the viewer listens (up to 6
+seconds) and the panel says "On, starting…" until then; **Test** first waits for the listener
+(`not_listening`) and reads Serve's 502, 503 or 504 as `no_backend`, not as a Serve that skips the
+gate. `docs/architecture/remote-inbox.md`, "The hub's Settings panel".)
 
 ### 3.3 Connect mode in the desktop app (PR 3)
 

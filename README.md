@@ -643,7 +643,8 @@ and send messages to your sessions, which may act without asking, so only pair M
 1. Switch on **Let my other Macs use this Inbox**. If Tailscale Serve is not set up yet, the panel
    shows one command, `tailscale serve --bg 4320`. Run it once in Terminal on this Mac, then switch
    on again. Agent Inbox never changes Tailscale itself.
-2. Press **Test**. It says whether Tailscale reaches this Inbox and asks for a paired Mac.
+2. Press **Test**. It says whether Tailscale reaches this Inbox and asks for a paired Mac. For a
+   moment after switching on the status says "On, starting…", and Test waits until it says On.
 3. Switch on **Open Agent Inbox at login**, so sharing comes back after this Mac restarts.
 4. Press **Add a Mac**. It shows a code that works once, for 10 minutes, and this Mac's address.
    On the other Mac, enter them in Settings → Use another Mac's Inbox (that side comes in a later

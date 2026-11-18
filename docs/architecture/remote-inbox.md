@@ -99,8 +99,10 @@ owner, mode, size, times). A removed device is refused on its next request.
 
 `startRemoteEntry` binds `127.0.0.1` only, at the setting's `port`, while the setting is valid,
 `enabled` is true and `viewerPort` is this viewer's port. So a checkout's viewer never binds beside
-the installed one. A 5-second timer, and any request that sees a changed file, opens or closes the
-listener to match. Closing calls `server.close()` and `server.closeAllConnections()`, so no
+the installed one. A 5-second timer, any request that sees a changed file, and any read of the
+status (`GET /api/remote-entry`) that sees one, opens or closes the listener to match. Main reads
+the status right after it writes `remote.json`, so the listener follows within milliseconds, not at
+the next poll (PR 2d). Closing calls `server.close()` and `server.closeAllConnections()`, so no
 kept-alive connection outlives the switch. A bind failure is logged once and shown in the status;
 the viewer keeps running and the next check tries again.
 
@@ -379,7 +381,13 @@ with the fields the reader knows (`unknownFieldsDropped: true`), because that wr
   does), it removes every device, since their secrets were issued under another identity, and
   says how many. It never takes the entry over while the file is on for the other build's viewer,
   and never writes a file the reader would refuse. A successful `turnOn()` clears the last stop.
-- `turnOff()`: writes `enabled: false` and nothing else. `removeDevice(id)`: by id, never by label
+  After its write, outside the lock, it reads `entryStatus()` every 250 ms for at most 6 seconds
+  until the viewer says it is on and listening on this port, and answers `listening: true`, or
+  `listening: false` when it never does (still `ok`: the file is on). PR 2d.
+- `turnOff()`: writes `enabled: false` and nothing else. It, the watch's own stop, "off means off",
+  the repair and a resume each read `entryStatus()` once after the write, not waited for, so the
+  viewer opens or closes the listener at once. `state().listening` is what the last status read
+  said. `removeDevice(id)`: by id, never by label
   (labels are not unique); an unknown id writes nothing.
 - `turnOn()` and `removeDevice()` drop the device entries the reader would drop when they write,
   and say how many. This is the one place the controller does not keep what it does not
@@ -543,8 +551,11 @@ baseline, and nothing comes back by itself.
   replaces the other's, and the other's next start reads no state (a file with devices is then
   flagged, and `wanted` is false). Safe, but noisy.
 
-**`selfTest()`** fetches `https://<host>/api/version` from main with no device secret, a 5-second
-timeout and redirects refused, and reads `entryStatus()` before and after. It passes on a 403 with
+**`selfTest()`** first waits, as `turnOn()` does, up to 6 seconds for the viewer to listen, and
+answers `not_listening` if it does not (PR 2d). It then fetches `https://<host>/api/version` from
+main with no device secret, a 5-second timeout and redirects refused, and reads `entryStatus()`
+before and after. A 502, 503 or 504 is `no_backend`: Serve forwards, but nothing answers behind it;
+any other answer but 403 is `not_refused`. It passes on a 403 with
 the `device` count up by exactly one; otherwise it names the counter that rose. A request from the
 hub to its own Serve address carries its user's login (below), so that is the right pass. Nothing
 else depends on the self test.
@@ -610,15 +621,19 @@ and the panel uses, so the two never say different things; a test checks every r
 **The panel.** Top to bottom, only the parts that apply: the "changed outside Agent Inbox" box with
 what the settings are now and **Looks right**, which acknowledges the digest `get()` gave for exactly
 what is on screen (if the file changed since, the panel redraws and says "It changed again; check the
-list."); the switch, **Let my other Macs use this Inbox**, with one status line (Off; On, at the
-address, with **Copy address**; Paused: why, next try; Needs you: why); the risk sentence; one
+list."); the switch, **Let my other Macs use this Inbox**, with one status line (Off; On, starting…
+while the file is on but the viewer does not listen yet; On, at the address, with **Copy address**;
+Paused: why, next try; Needs you: why); the risk sentence; one
 instruction for what to do, chosen from the reason, with the Serve command and **Copy** when running
 it is the fix, and **Make it private** for a file other accounts can read; **Paired Macs**, each with
 **Remove** and an inline confirm, and a count of entries that can't be read with **Clear**; **Add a
 Mac**, which shows the code, the address and a countdown until the code is used, runs out or is
 cancelled by a later change; **Test** while on; the Serve removal command while off; **Open Agent
 Inbox at login** (the packaged app only); and a line when the state store could not be saved. The
-switch is on while sharing is on or paused. With no `agentInboxRemoteEntry` (a browser, or this page
+switch is on while sharing is on or paused. **Test** and **Add a Mac** stay disabled until the viewer
+listens; `get()` reads the status each time, and the 5-second ping redraws. A Test result goes when
+a new test starts, when the switch changes, and when the state it described (on, starting, paused,
+off, or the address) changes. With no `agentInboxRemoteEntry` (a browser, or this page
 on another Mac) nothing is drawn.
 
 **Open at login** is `app.getLoginItemSettings()` and `app.setLoginItemSettings({ openAtLogin })`,

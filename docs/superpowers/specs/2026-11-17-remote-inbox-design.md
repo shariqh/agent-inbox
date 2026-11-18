@@ -443,7 +443,24 @@ hub-specific value is keyed by `id`.
   logged. Without `safeStorage.isEncryptionAvailable()`, connect is refused.
 - `template` is covered in §3.4.
 
-**Connect.** The form takes the address, a label and the pairing code. Main checks the address as
+**(As built in PR 3a,** `electron/remote-connect.cjs` with its pure rules in
+`electron/remote-connect-rules.cjs`, logic and tests only: the stored entry is `{ origin, label,
+node, machine, device, secret }`, with no `sshHost` or `template` yet (PR 4). `node` is the peer's
+`ID`, which is Tailscale's stable node id; the real output has no `StableID` key. The tailnet
+helpers are mirrored in the module, not loaded from `dist/`, so it stays synchronous and needs no
+build; a test compares the copies with `inTailnet` and `suffixFrom` over many inputs, as it does
+for the code and label rules from `src/remote-pair.ts`. The address may also be typed as a bare
+host; the origin must be exactly `https://<host>`, with no `:443` and no empty user, query or
+fragment as written. The peer must be the only one with that name (two give `duplicate_name`), and
+this node must be untagged with a person's user. The hub's own name is not among its peers, so a
+copy of the app on the hub cannot connect to its own address; §7 step 3's first half needs that
+added or runs from another Mac.)
+
+**Connect.** The form takes the address, a label and the pairing code. **(As built in PR 3a:** the
+form takes only the address and the code. The label sent to the hub is this Mac's short host name
+(before the first dot, refused characters dropped, at most 40 characters, else `Mac`); the hub's
+label on this Mac is the `machine` from `/api/version`, else the first label of its address. A
+malformed code is refused locally, since on the hub it would use up one of the five tries.) Main checks the address as
 above, then posts the code to `/api/remote/pair` with Node's `fetch` (which validates the
 certificate) and a 5-second timeout. The answer must be a 200 with
 `x-agent-inbox-remote-boundary: tailnet-v1` and `{ ok, device, secret }`. Main saves the
@@ -453,6 +470,20 @@ The marker is a sanity check, not proof: the tailnet check, the certificate and 
 Failures read as one of: not in your tailnet, not one of your devices, cannot reach, certificate
 not valid, not an Agent Inbox remote entry, code refused, or refused by the hub (this Mac is not
 paired, or its login is not allowed).
+**(As built in PR 3a,** the words are: `unsupported` (not macOS), `no_keychain`, `bad_address`,
+`bad_code`, `newer_schema`, `bad_file`, `hub_exists` (a hub is stored and the owner has not confirmed
+`replace`), the `findHub` words (`no_cli`, `failed`, `not_running`, `tagged_self`, `not_in_tailnet`,
+`not_found`, `duplicate_name`, `not_your_device`, `tagged_device`), `unreachable`,
+`bad_certificate`, `not_agent_inbox`, `refused` and `write_failed`. The hub answers one bare 403 for
+a wrong, expired or used-up code and for a login it does not allow, so `refused` covers both. A
+failure after the hub paired carries `pairedOnHub: true`. `machine` is optional in `/api/version`
+and dropped when it fails §3.1's rule; `current` must be a string. When the first probe fails, the
+pairing is kept and the answer says the state. The node is checked again before every probe, online
+ones included, and a check counts only when no wake (`kick()`), failed probe, stop or forget
+distrusted the last one while it ran; until a check passes, `deviceHeaderFor` answers nothing.
+Tailscale that cannot be read sends nothing and is `retrying`. The store is read with the hub
+reader's checks (no symlink, no FIFO, this user's, no group or other bits). The full behaviour is in
+`docs/architecture/remote-inbox.md`, "Connecting from another Mac".)
 
 **The device header.** Main adds `X-Agent-Inbox-Device` itself, in two places only: its own
 fetches, through one `hubFetch(hub)` passed as the `fetchImpl` of `createConditionalReader` and
@@ -694,7 +725,10 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    server, 403 and `login` rises. The owner adds a second Serve path on the same host; within a
    minute the entry turns off, a notification shows, and the panel shows the removal command.
 3. **The connect flow.** First a second dev copy on the hub, with its own scratch profile, pairs
-   and connects to the Serve address (it waits for the laptop if §9 item 3 says no login). Then a
+   and connects to the Serve address (it waits for the laptop if §9 item 3 says no login).
+   **(As built in PR 3a,** the hub's own name is never among its peers, so a connect to it is
+   `not_found` by decision: there is no second path around the peer check. A single-machine proof
+   adds the Mac to its own peer list in the test harness.) Then a
    laptop build: pairing; the page loads; an answer there wakes the hub's scratch session; a
    notification's button answers; restarting the hub app and ten minutes of laptop sleep both
    recover without a click; removing the device shows "no longer accepts this Mac"; and

@@ -698,6 +698,18 @@ describe('createHubView: which view is on top', () => {
     expect(w.view().visible).toBe(true)
   })
 
+  it('closes itself when its window closes, keeping the partition’s storage', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    w.window.emit('closed')
+    expect(w.contents().destroyed).toBe(true)
+    expect(w.ses().cleared).toBe(0)
+    // the window closes before will-quit, so the hub page's drafts are written here
+    expect(w.ses().flushed).toBe(1)
+    expect(w.hub.show(ID)).toEqual({ ok: false, reason: 'destroyed' })
+  })
+
   it('destroy() closes the view and keeps the partition’s storage', async () => {
     const w = world()
     w.connect.set(hubState('online'))

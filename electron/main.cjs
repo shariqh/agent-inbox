@@ -17,7 +17,9 @@
 //      before and kill that child on quit — only because we own it.
 //   4. Open a BrowserWindow on the viewer URL once the server responds.
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, nativeTheme, safeStorage, screen, session, shell } = require('electron')
+const {
+  app, BrowserWindow, WebContentsView, dialog, ipcMain, Menu, Notification, nativeTheme, net, powerMonitor, safeStorage, screen, session, shell,
+} = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const { randomBytes, randomUUID } = require('node:crypto')
 const { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
@@ -40,6 +42,8 @@ const { runWorktreeCommand, startDriver } = require('./driver-process.cjs')
 const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-controller.cjs')
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
+const { createRemoteConnect } = require('./remote-connect.cjs')
+const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle } = require('./hub-view.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -699,6 +703,53 @@ registerChatResumeIpc({
   chatResume: chatResumeFor,
 })
 
+// #617 PR 3b: another Mac's Inbox (the hub) in this window, in its own sealed-off view; the policy
+// is electron/hub-view.cjs. macOS only: elsewhere both stay null and every channel answers
+// { available: false }. agentInboxConnect is the owned local page's, gated as chat resume is;
+// agentInboxDesk answers only the hub view's top frame, and never grants anything above.
+let remoteConnect = null
+let hubView = null
+registerHubIpc({
+  ipcMain,
+  settled: () => installBinding?.settled() ?? Promise.resolve(),
+  isOwned: (event) => linkSender(event) && linkFilesPermitted(event),
+  connect: () => remoteConnect,
+  hubView: () => hubView,
+})
+
+// The menu, the title and the local page follow what is on top and the hub's state.
+function hubChanged(win) {
+  if (win.isDestroyed()) return
+  installApplicationMenu(win)
+  win.setTitle(windowTitle(remoteConnect?.connection(), hubView?.current() ?? null))
+  // a message with nothing in it, to the owned local page only: it asks agentInboxConnect.view() again
+  if (!win.webContents.isDestroyed() && fileLinkWebContentsId === win.webContents.id) win.webContents.send(CONNECT_CHANNELS.changed)
+}
+
+// After the window exists: the controller, the view, and what wakes the controller early.
+function startRemoteConnect(win) {
+  if (process.platform !== 'darwin') return
+  remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload() })
+  hubView = createHubView({
+    window: win,
+    session,
+    WebContentsView,
+    connect: remoteConnect,
+    openWebLink: (url) => openWebLink(url, shell, { readRules: linkRules, ...linkOpening }),
+    offlineFile: path.join(__dirname, 'remote-offline.html'),
+    preload: path.join(__dirname, 'remote-preload.cjs'),
+    now: Date.now,
+    onChange: () => hubChanged(win),
+  })
+  const kick = () => {
+    remoteConnect?.kick()
+  }
+  powerMonitor.on('resume', kick)
+  powerMonitor.on('unlock-screen', kick)
+  watchOnline({ isOnline: () => net.isOnline(), onBack: kick })
+  remoteConnect.start()
+}
+
 // The quit prompt (§7): sessions keep running unless the human stops them all.
 async function askAboutRunningSessions() {
   const running = await runningAtQuit(launchControllerFor())
@@ -1145,10 +1196,12 @@ function createWindow() {
 nativeTheme.on('updated', () => syncThemeChrome())
 
 function installApplicationMenu(win) {
+  // both live on This Mac's page, so it comes forward first (#617 PR 3b)
   const updates = {
     label: 'Check for Updates…',
     enabled: updateFeatureAvailable,
     click() {
+      hubView?.show(null)
       openUpdatesWindow(win)
     },
   }
@@ -1156,10 +1209,27 @@ function installApplicationMenu(win) {
     label: 'Settings…',
     accelerator: 'CommandOrControl+,',
     click() {
+      hubView?.show(null)
       if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings')
     },
   }
-  const standardMenus = [{ role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]
+  // #617 PR 3b: This Mac and <the hub's label>, a radio pair, only while a hub exists
+  const hubItems = hubMenuItems({ connection: remoteConnect?.connection(), showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })
+  const viewMenu = hubItems.length === 0
+    ? { role: 'viewMenu' }
+    : {
+        label: 'View',
+        submenu: [
+          ...hubItems,
+          { type: 'separator' },
+          { role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' },
+          { type: 'separator' },
+          { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
+          { type: 'separator' },
+          { role: 'togglefullscreen' },
+        ],
+      }
+  const standardMenus = [{ role: 'editMenu' }, viewMenu, { role: 'windowMenu' }]
   const template = process.platform === 'darwin'
     ? [{
         label: app.name,
@@ -1429,6 +1499,8 @@ app.whenReady().then(async () => {
     return
   }
   startAttentionWatch(win)
+  // #617 PR 3b: another Mac's Inbox, when one is connected (macOS only)
+  startRemoteConnect(win)
 
   // Self-heal (issue #23): while reusing a viewer we don't own, watch it — if it
   // disappears, start our own server on the same port and reload the dead page.
@@ -1455,6 +1527,8 @@ app.on('window-all-closed', () => {
 // Every time a quit fires: refuse new installs, and cancel and wait for any
 // install still running before letting the app exit (#205 review).
 app.on('before-quit', (event) => {
+  // #617 PR 3b: nothing more is probed or sent to a hub, and the device secret leaves memory
+  remoteConnect?.stop()
   const running = beginAppQuit()
   if (running) {
     event.preventDefault()
@@ -1487,6 +1561,8 @@ app.on('will-quit', () => {
   // still hold the last ones in memory. Every window has closed, and run its
   // pagehide save, before will-quit, so commit them to disk here.
   if (app.isReady()) session.defaultSession.flushStorageData()
+  // and the hub page's, in its own partition (#617 PR 3b)
+  hubView?.flush()
   updateController?.dispose()
   if (spawnedViewer && spawnedViewer.exitCode === null) {
     spawnedViewer.kill()

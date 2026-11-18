@@ -438,9 +438,38 @@ function createHubView(options) {
     changed()
   }
 
+  function flush() {
+    try {
+      active?.ses.flushStorageData()
+    } catch {
+      // nothing to write
+    }
+  }
+
+  /** Closes the view; its partition's storage is written and stays (only the hub going away clears it). */
+  function destroy() {
+    if (destroyed) return
+    destroyed = true
+    epoch += 1
+    try {
+      unsubscribe()
+      win.removeListener('resize', onResize)
+      win.removeListener('closed', destroy)
+    } catch {
+      // nothing to remove
+    }
+    // the window closes before will-quit, so the hub page's drafts are written now
+    flush()
+    if (active !== null) close(active)
+    active = null
+    pending = null
+    showing = null
+  }
+
   const unsubscribe = connect.onConnection(update)
   const onResize = () => layout()
   win.on('resize', onResize)
+  win.once('closed', destroy)
   update(connect.connection())
 
   return Object.freeze({
@@ -467,29 +496,9 @@ function createHubView(options) {
         // the page is going away
       }
     },
-    destroy() {
-      if (destroyed) return
-      destroyed = true
-      epoch += 1
-      try {
-        unsubscribe()
-        win.removeListener?.('resize', onResize)
-      } catch {
-        // nothing to remove
-      }
-      if (active !== null) close(active)
-      active = null
-      pending = null
-      showing = null
-    },
+    destroy,
     layout,
-    flush() {
-      try {
-        active?.ses.flushStorageData()
-      } catch {
-        // nothing to write
-      }
-    },
+    flush,
     async retry() {
       const entry = active
       if (entry === null || destroyed) return { ok: false }

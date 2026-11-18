@@ -9,10 +9,13 @@
 // reached it.
 //
 // Where the Tailscale shapes come from:
-// - `tailscale status --json` (selfStatus, taggedStatus): the fields are as observed on a real
-//   machine running Tailscale 1.102 (Self.DNSName with a trailing dot, Self.UserID a number while
-//   the User map's keys are strings, a tagged node's UserID still resolving to a placeholder user,
-//   BackendState). The values are synthetic.
+// - `tailscale status --json --peers=false` (selfStatus, taggedStatus): the fields are as observed
+//   on a real machine running Tailscale 1.102.4 (Self.DNSName with a trailing dot, Self.UserID a
+//   number while the User map's keys are strings, a tagged node's UserID still resolving to a
+//   placeholder user, BackendState). With `--peers=false` the real output's top-level keys are
+//   AuthURL, BackendState, CertDomains, ClientVersion, CurrentTailnet, ExtraRecords, HaveNodeKey,
+//   Health, MagicDNSSuffix, Peer, Self, TUN, TailscaleIPs, User and Version; `Peer` is `{}` and
+//   `User` has one entry (about 5.5 KB, against 822 KB with 531 peers). The values are synthetic.
 // - `tailscale serve status --json`: two shapes are FROM A REAL RUN (Tailscale 1.102.4, macOS,
 //   2026-11-17; host replaced): `{}` with nothing configured, and goodServe() below, the exact
 //   output after `tailscale serve --bg 4320` (no AllowFunnel, Foreground or Services key). Every
@@ -30,6 +33,7 @@ export function selfStatus(over: Record<string, unknown> = {}, self: Record<stri
     Version: '1.102.0-synthetic',
     BackendState: 'Running',
     Self: { ID: 'nSynthetic', HostName: 'hub', DNSName: `${HOST}.`, UserID: USER_ID, Online: true, ...self },
+    Peer: {},
     User: { [String(USER_ID)]: { ID: USER_ID, LoginName: LOGIN, DisplayName: 'Owner' } },
     CertDomains: [HOST],
     ...over,
@@ -58,18 +62,19 @@ type Answer = unknown | { error: NodeJS.ErrnoException & { killed?: boolean } } 
 type ExecFile = (file: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => void
 
 /**
- * A stand-in for child_process.execFile. `self` answers `status --json`, `serve` answers
- * `serve status --json`; each may be a value (sent as JSON), `{ raw }` (sent as is), `{ error }`,
+ * A stand-in for child_process.execFile. `self` answers `status --json --peers=false`, `serve`
+ * answers `serve status --json`, `peers` answers `status --json`; each may be a value (sent as JSON), `{ raw }` (sent as is), `{ error }`,
  * or a function of the call count giving one of those. Anything else is answered with an error.
  */
-export function fakeTailscale(answers: { self?: Answer | ((n: number) => Answer); serve?: Answer | ((n: number) => Answer) } = {}): ExecFile & { calls: TailscaleCall[] } {
+export function fakeTailscale(answers: { self?: Answer | ((n: number) => Answer); serve?: Answer | ((n: number) => Answer); peers?: Answer | ((n: number) => Answer) } = {}): ExecFile & { calls: TailscaleCall[] } {
   const calls: TailscaleCall[] = []
-  const count = { self: 0, serve: 0 }
+  const count = { self: 0, serve: 0, peers: 0 }
   const fake = ((file, args, options, callback) => {
     const call = { file, args: [...args], options }
     calls.push(call)
     tailscaleCalls.push(call)
-    const which = args.join(' ') === 'status --json' ? 'self' : args.join(' ') === 'serve status --json' ? 'serve' : null
+    const line = args.join(' ')
+    const which = line === 'status --json --peers=false' ? 'self' : line === 'serve status --json' ? 'serve' : line === 'status --json' ? 'peers' : null
     if (which === null) {
       queueMicrotask(() => callback(Object.assign(new Error('unexpected arguments'), { code: 2 }), '', ''))
       return
@@ -91,5 +96,5 @@ export function fakeTailscale(answers: { self?: Answer | ((n: number) => Answer)
 /** Only the first fixed path exists. */
 export const cliExists = (path: string): boolean => path === '/usr/local/bin/tailscale'
 
-/** The two argument lists, and nothing else, ever (design §3.2: the app never changes Tailscale). */
-export const ALLOWED_ARGS = [['status', '--json'], ['serve', 'status', '--json']]
+/** The three argument lists, and nothing else, ever (design §3.2: the app never changes Tailscale). */
+export const ALLOWED_ARGS = [['status', '--json', '--peers=false'], ['serve', 'status', '--json'], ['status', '--json']]

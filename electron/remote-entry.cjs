@@ -9,11 +9,26 @@
 //
 // Agents on the hub may run commands without asking, and a message to a session is as good as
 // running commands, so turning the entry on exposes the whole hub to whoever passes the gate in
-// src/viewer-remote.ts. This module decides when the entry may be on, and every doubt leaves it
-// off. It only ever READS Tailscale, with two fixed argument lists, and never changes Tailscale's
-// configuration; that half lives in ./remote-tailscale.cjs, and this file runs nothing itself
-// (test/serve-state.test.ts checks both sources). It logs nothing. No callback and no state it hands out carries a login (except
-// view().logins), a secret hash, the owner token or a pairing code.
+// src/viewer-remote.ts. This module decides when the entry may be on. `turnOn()` writes
+// `enabled: true` only after this node's identity and Serve's shape both read ok just then. While
+// the entry is on, a check that fails, or that throws, turns it off: a failed read after one retry
+// 5 seconds later, anything else at once, and a turn-off that does not land is retried at every
+// 5-second tick until it does. It only ever READS Tailscale, with three fixed argument lists, and
+// never changes Tailscale's configuration; that half lives in ./remote-tailscale.cjs, and this
+// file runs nothing itself (test/serve-state.test.ts checks both sources). It logs nothing.
+//
+// No callback and no `state()` carries a login, a secret hash, the owner token or a pairing code;
+// `view().logins` holds the file's logins for the panel. `tailnetSelf()` (which returns this node's
+// login) and `entryStatus()` are results for main only and must never be handed to a page. The
+// identity comparison ignores case, as the viewer's gate does.
+//
+// Known gaps, both closed by the next PR, not here:
+// - A change made to remote.json while the app is closed takes effect at the next start with no
+//   notification: the first read after start() is the baseline, so the device list is the only
+//   record. The next PR keeps a baseline in main across restarts.
+// - When Tailscale is not running or cannot be read at the first check after the app starts (the
+//   app opened before Tailscale was up), the entry is switched off and stays off until the owner
+//   switches it on again, against design §3.5 ("coming back by itself").
 const fsp = require('node:fs/promises')
 const { constants } = require('node:fs')
 const path = require('node:path')
@@ -43,9 +58,9 @@ const CHECKOUT_PORT = 4393
 // The viewer's reader rules (src/viewer-remote.ts readRemoteSetting), mirrored;
 // test/remote-entry-settings.test.ts compares the two over many files so they cannot drift.
 const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants
-// Unicode format characters (general category Cf: bidi controls, zero-width joiners) in a label:
-// the viewer's reader refuses them too once the pairing branch's tightened rule lands
-const FORMAT = /\p{Cf}/u
+// A device label by the viewer's one rule (isDeviceLabel in src/remote-pair.ts): 1 to 40
+// characters, none a control (Cc), format (Cf) or lone surrogate (Cs) character
+const LABEL_FORBIDDEN = /[\p{Cc}\p{Cf}\p{Cs}]/u
 const DEVICE_ID = /^[0-9a-f]{16}$/
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const PAIRED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/
@@ -54,7 +69,9 @@ const CODE_ID = /^[0-9a-f]{16}$/
 const COUNTERS = Object.freeze(['host', 'funnel', 'login', 'path', 'origin', 'device', 'route', 'pair'])
 
 const isPort = (value) => Number.isInteger(value) && value >= 1 && value <= 65535
-const validLabel = (label) => plainText(label, 40) && !FORMAT.test(label)
+const validLabel = (label) => typeof label === 'string' && Array.from(label).length >= 1 && Array.from(label).length <= 40 && !LABEL_FORBIDDEN.test(label)
+// past this depth a watched value is never one the reader accepts, so it is compared as a marker
+const CANONICAL_DEPTH = 32
 
 // ── where the file is ──────────────────────────────────────────────────────
 
@@ -134,7 +151,11 @@ async function readDocument(file, fsImpl, uid, allowOpen = false) {
   } catch {
     return refused('unreadable')
   } finally {
-    await handle.close().catch(() => {})
+    try {
+      await handle.close()
+    } catch {
+      // a handle that will not close changes nothing that was read
+    }
   }
   let value
   try {
@@ -152,14 +173,24 @@ async function readDocument(file, fsImpl, uid, allowOpen = false) {
     : { state: 'document', doc: value, setting: null, problem: parsed.reason }
 }
 
-/** JSON with every object's keys sorted, so equal values give equal text. */
-function canonical(value) {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
-  if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
+/**
+ * JSON with every object's keys sorted, so equal values give equal text. Past CANONICAL_DEPTH a
+ * value is written as one marker: no reader-accepted watched value is that deep, so two such values
+ * are both dormant, and a change to or from one still differs from any accepted value.
+ */
+function canonical(value, depth = 0) {
+  if (depth > CANONICAL_DEPTH) return '"\u0000too-deep"'
+  if (Array.isArray(value)) return `[${value.map((child) => canonical(child, depth + 1)).join(',')}]`
+  if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key], depth + 1)}`).join(',')}}`
   return JSON.stringify(value === undefined ? null : value)
 }
 
-/** What the outside-change watch compares: the fields that decide who gets in, as they are in the file. */
+/**
+ * What the outside-change watch compares: the fields that decide who gets in, as they are in the
+ * file, and for each device its id, its hash and whether the reader keeps it. A label decides that
+ * last part (the reader drops a device with a bad label), so an edit that makes a dormant hash live,
+ * or a live one dormant, is a change; a rename that keeps it readable is not.
+ */
 function watchedState(read) {
   if (read.state !== 'document') return { file: read.state === 'missing' ? 'missing' : read.reason }
   const doc = read.doc
@@ -172,7 +203,9 @@ function watchedState(read) {
     viewerPort: pick('viewerPort'),
     logins: pick('logins'),
     devices: Array.isArray(doc.devices)
-      ? doc.devices.map((entry) => (isObject(entry) ? { id: entry.id ?? null, secretSha256: entry.secretSha256 ?? null } : entry))
+      ? doc.devices.map((entry) => (isObject(entry)
+        ? { id: entry.id ?? null, secretSha256: entry.secretSha256 ?? null, readable: validDevice(entry) }
+        : { entry, readable: false }))
       : pick('devices'),
   }
 }
@@ -203,6 +236,32 @@ function checkStatus(body) {
   return {
     on, listening, port, host, error, codePending, paired: paired.map(({ device, codeId }) => ({ device, codeId })),
     refused: Object.fromEntries(COUNTERS.map((key) => [key, refused[key]])),
+  }
+}
+
+/**
+ * The fields the reader knows, from primitives only, for the one write that must land when the
+ * document cannot be written back (an unknown field nested too deep to serialise): turning off.
+ */
+function knownFields(doc) {
+  const known = { schema: SCHEMA, enabled: false }
+  if (typeof doc.host === 'string') known.host = doc.host
+  if (isPort(doc.port)) known.port = doc.port
+  if (isPort(doc.viewerPort)) known.viewerPort = doc.viewerPort
+  if (Array.isArray(doc.logins) && doc.logins.every((login) => typeof login === 'string')) known.logins = [...doc.logins]
+  known.devices = Array.isArray(doc.devices)
+    ? doc.devices.filter(validDevice).map(({ id, label, secretSha256, pairedAt }) => (
+      typeof pairedAt === 'string' ? { id, label, secretSha256, pairedAt } : { id, label, secretSha256 }))
+    : []
+  return known
+}
+
+/** The document as written, or null when it cannot be serialised. */
+function serialise(doc) {
+  try {
+    return `${JSON.stringify(doc, null, 2)}\n`
+  } catch {
+    return null
   }
 }
 
@@ -263,9 +322,17 @@ function createRemoteEntry(options = {}) {
   let hintRead = false
   let stopped = null
   let stopNotified = false
+  // a turn-off that failed: retried at every tick until it lands
+  let pendingStop = null
+  let flagDigest = null
+  // rises with each of main's own writes, so a file check that read before one is not compared after it
+  let writes = 0
   let timer = null
   let ticking = null
-  let fileChecks = Promise.resolve()
+  const NO_STATUS = Object.freeze({ ok: false, reason: 'unreachable' })
+  const FALLBACK_VIEW = Object.freeze({
+    available: false, enabled: false, host: null, port, viewerPort, logins: [], devices: [], unreadableDevices: 0, problem: 'unreadable',
+  })
 
   async function tailnetSelf() {
     const run = await runTailscale('self', deps)
@@ -275,7 +342,11 @@ function createRemoteEntry(options = {}) {
   async function serveState(host, servePort) {
     const run = await runTailscale('serve', deps)
     if (!run.ok) return { ok: false, reason: 'unreadable', present: false }
-    return parseServeStatus(run.text, host, servePort)
+    try {
+      return parseServeStatus(run.text, host, servePort)
+    } catch {
+      return { ok: false, reason: 'unreadable', present: false }
+    }
   }
 
   function viewOf(current) {
@@ -311,6 +382,7 @@ function createRemoteEntry(options = {}) {
 
   function flagOutside(digest) {
     flag = true
+    flagDigest = digest
     if (notified.has(digest)) return
     notified.add(digest)
     call(options.onOutsideChange)
@@ -323,21 +395,20 @@ function createRemoteEntry(options = {}) {
     return codes.filter((entry) => t - entry.at <= ms)
   }
 
-  /** Runs `step` after every earlier observation, one at a time, so a pairing is never announced twice. */
-  function serialized(step) {
-    const run = fileChecks.then(step)
-    fileChecks = run.catch(() => {})
-    return run
-  }
-
   /**
    * Compares the file as read with what main last wrote or accepted. Only devices added at the
    * end, each listed in the viewer's `paired` with the id of a code main's own requestCode()
    * received in the last 11 minutes (one code per device), is an expected pairing: announced, and
    * accepted. Anything else is flagged once per distinct state; a code any other local process
-   * made proves nothing. Nothing is ever reverted.
+   * made proves nothing. Nothing is ever reverted. Synchronous: the viewer's status is read before,
+   * by the caller, so this can run under the lock and two calls can never interleave.
+   *
+   * Known limit: the viewer's `paired` list carries no hash, so a hash swapped under a just-paired id
+   * before the next check is announced as the expected pairing; the owner's device then fails to
+   * connect. The viewer's list also starts empty when it restarts, so a pairing seen across a
+   * restart is flagged (the safe side).
    */
-  async function observe(current, knownStatus) {
+  function observe(current, status) {
     const state = watchedState(current)
     const digest = digestOf(state)
     if (recorded === null) {
@@ -348,7 +419,6 @@ function createRemoteEntry(options = {}) {
     if (digest === recorded.digest) return
     const added = addedDevices(recorded.state, state)
     if (added && current.setting && recentCodes(CODE_WINDOW_MS).length >= added.length) {
-      const status = knownStatus ?? await entryStatus()
       const mine = new Set(recentCodes(CODE_WINDOW_MS).map((entry) => entry.codeId))
       const used = new Set()
       const labels = added.map((entry) => {
@@ -369,9 +439,18 @@ function createRemoteEntry(options = {}) {
     flagOutside(digest)
   }
 
-  /** The watch's file check: read, then observe. */
-  function checkFile() {
-    return serialized(async () => observe(await read()))
+  /** The viewer's status when a code main asked for could explain a change, read before any lock. */
+  async function statusIfNeeded() {
+    return recentCodes(CODE_WINDOW_MS).length > 0 ? entryStatus() : NO_STATUS
+  }
+
+  /** The watch's file check: the status first, then the file, then observe; skipped when main wrote meanwhile. */
+  async function checkFile() {
+    const status = await statusIfNeeded()
+    const before = writes
+    const current = await read()
+    if (writes !== before) return
+    observe(current, status)
   }
 
   /**
@@ -381,29 +460,43 @@ function createRemoteEntry(options = {}) {
    */
   async function write(change) {
     // Nothing that waits on a process or the network runs under the lock: the viewer's pairing write
-    // waits at most about 5 seconds for it. So the viewer's status is asked for first, and only when
-    // a code main asked for could explain a change; a pairing that lands after it is flagged.
-    const status = recentCodes(CODE_WINDOW_MS).length > 0 ? await entryStatus() : { ok: false, reason: 'unreachable' }
+    // waits at most about 5 seconds for it. So the viewer's status is read first, and only when a
+    // code main asked for could explain a change; under the lock it is only compared, synchronously.
+    // A pairing that lands after that read is flagged.
+    const status = await statusIfNeeded()
     let outcome
     try {
       outcome = await locked.mutate(async () => {
         const current = await read()
-        await serialized(() => observe(current, status))
+        observe(current, status)
         const decided = await change(current)
         if (decided.refuse) return { ok: false, reason: decided.refuse }
         if (!decided.doc) return { ok: true }
-        if (Buffer.byteLength(`${JSON.stringify(decided.doc, null, 2)}\n`) > FILE_MAX) return { ok: false, reason: 'too_large_to_write' }
-        await locked.atomicWrite(decided.doc)
-        record(watchedState({ state: 'document', doc: decided.doc }))
+        let doc = decided.doc
+        let text = serialise(doc)
+        let unknownFieldsDropped = false
+        // only turning off falls back to the known fields: that write must land
+        if (text === null && decided.fallback) {
+          doc = decided.fallback
+          text = serialise(doc)
+          unknownFieldsDropped = true
+        }
+        if (text === null) return { ok: false, reason: 'not_serialisable' }
+        if (Buffer.byteLength(text) > FILE_MAX) return { ok: false, reason: 'too_large_to_write' }
+        await locked.atomicWrite(doc)
+        writes += 1
+        record(watchedState({ state: 'document', doc }))
         // any write voids a pending code (the viewer ties a code to the file it was made under)
         const voided = recentCodes(CODE_LIFE_MS).length > 0
         codes.length = 0
-        return { ok: true, voidedCode: voided }
+        return { ok: true, voidedCode: voided, unknownFieldsDropped }
       })
     } catch {
       return { ok: false, reason: 'write_failed' }
     }
-    return outcome.ok ? { ok: true, view: await view(), voidedCode: outcome.voidedCode === true } : outcome
+    if (!outcome.ok) return outcome
+    const result = { ok: true, view: await view(), voidedCode: outcome.voidedCode === true }
+    return outcome.unknownFieldsDropped ? { ...result, unknownFieldsDropped: true } : result
   }
 
   async function turnOn() {
@@ -437,7 +530,10 @@ function createRemoteEntry(options = {}) {
       return { doc: next }
     })
     if (!result.ok) return { ...result, step: 'file' }
+    // a new episode: the last stop is history, and the next stop notifies again
+    stopped = null
     stopNotified = false
+    pendingStop = null
     return { ok: true, view: result.view, voidedCode: result.voidedCode, devicesRemoved: removed, droppedEntries: dropped }
   }
 
@@ -445,7 +541,7 @@ function createRemoteEntry(options = {}) {
     return write((current) => {
       if (current.state === 'missing') return {}
       if (current.state === 'refused') return { refuse: current.reason }
-      return { doc: { ...current.doc, enabled: false } }
+      return { doc: { ...current.doc, enabled: false }, fallback: knownFields(current.doc) }
     })
   }
 
@@ -466,14 +562,20 @@ function createRemoteEntry(options = {}) {
     return result.ok ? { ...result, droppedEntries: dropped } : result
   }
 
-  /** The one repair: a file with group or other bits is rewritten 0600 and turned off (another user may have edited it). */
-  function repairPermissions() {
-    return write(async (current) => {
+  /**
+   * The one repair: a file with group or other bits is rewritten 0600, turned off, and stripped of
+   * its devices, since another user may have edited it and added one. The result says how many.
+   */
+  async function repairPermissions() {
+    let removed = 0
+    const result = await write(async (current) => {
       if (current.state !== 'refused' || current.reason !== 'open_to_others') return { refuse: 'not_needed' }
       const again = await read(true)
       if (again.state !== 'document') return { refuse: again.state === 'missing' ? 'missing' : again.reason }
-      return { doc: { ...again.doc, enabled: false } }
+      removed = Array.isArray(again.doc.devices) ? again.doc.devices.length : 0
+      return { doc: { ...again.doc, enabled: false, devices: [] } }
     })
+    return result.ok ? { ...result, devicesRemoved: removed } : result
   }
 
   async function requestCode() {
@@ -575,6 +677,8 @@ function createRemoteEntry(options = {}) {
   async function stopEntry(reason) {
     const result = await turnOff()
     stopped = { reason, at: now(), off: result.ok }
+    // a turn-off that did not land is tried again at every tick, never left for the next check
+    pendingStop = result.ok ? null : reason
     if (!stopNotified) {
       stopNotified = true
       call(options.onStopped, reason, { off: result.ok })
@@ -586,6 +690,15 @@ function createRemoteEntry(options = {}) {
     const current = await read()
     const setting = current.state === 'document' ? current.setting : null
     const active = setting !== null && setting.enabled && setting.viewerPort === viewerPort
+    if (pendingStop !== null) {
+      if (active) {
+        const result = await turnOff()
+        if (!result.ok) return
+      }
+      pendingStop = null
+      stopped = { ...stopped, off: true }
+      return
+    }
     const t = now()
     if (!active) {
       retryAt = null
@@ -604,21 +717,27 @@ function createRemoteEntry(options = {}) {
     const retrying = retryAt !== null && t >= retryAt
     if (!(force || retrying || lastCheckAt === null || t - lastCheckAt >= CHECK_EVERY_MS)) return
     lastCheckAt = t
-    const self = await tailnetSelf()
     let reason = null
-    if (!self.ok) {
-      lastSelf = { ok: false, reason: self.reason, at: now() }
-      reason = self.reason
-    } else {
-      const loginAllowed = setting.logins.includes(self.login.toLowerCase())
-      lastSelf = { ok: true, host: self.host, loginAllowed, at: now() }
-      if (self.host !== setting.host || !loginAllowed) reason = 'identity_changed'
-    }
-    if (reason === null) {
-      const answer = await serveState(setting.host, setting.port)
-      hintRead = true
-      lastServe = { answer, at: now() }
-      if (!answer.ok) reason = answer.reason
+    try {
+      const self = await tailnetSelf()
+      if (!self.ok) {
+        lastSelf = { ok: false, reason: self.reason, at: now() }
+        reason = self.reason
+      } else {
+        // the stored logins are lowercased by the reader, so case is ignored
+        const loginAllowed = setting.logins.includes(self.login.toLowerCase())
+        lastSelf = { ok: true, host: self.host, loginAllowed, at: now() }
+        if (self.host !== setting.host || !loginAllowed) reason = 'identity_changed'
+      }
+      if (reason === null) {
+        const answer = await serveState(setting.host, setting.port)
+        hintRead = true
+        lastServe = { answer, at: now() }
+        if (!answer.ok) reason = answer.reason
+      }
+    } catch {
+      // anything that throws here is a read that failed: one more try, then off
+      reason = 'unreadable'
     }
     if (reason === null) {
       retryAt = null
@@ -632,6 +751,49 @@ function createRemoteEntry(options = {}) {
     }
     retryAt = null
     await stopEntry(reason)
+  }
+
+  /** Wraps an operation so it never rejects: a throw answers `fallback`. */
+  const safe = (operation, fallback) => async (...args) => {
+    try {
+      return await operation(...args)
+    } catch {
+      return typeof fallback === 'function' ? fallback() : fallback
+    }
+  }
+
+  async function acknowledge(digest) {
+    if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) return { ok: false, reason: 'bad_digest' }
+    const before = writes
+    const current = await read()
+    const state = watchedState(current)
+    const now_ = digestOf(state)
+    if (writes !== before) return { ok: false, reason: 'changed' }
+    if (now_ !== digest) {
+      // the owner saw another state: the flag stays, and a state not yet announced is announced
+      if (recorded !== null && now_ !== recorded.digest) flagOutside(now_)
+      return { ok: false, reason: 'changed' }
+    }
+    recorded = { state, digest: now_ }
+    flag = false
+    flagDigest = null
+    notified.clear()
+    return { ok: true }
+  }
+
+  async function state() {
+    const current = await view()
+    const present = lastServe !== null && (lastServe.answer.ok || lastServe.answer.present === true)
+    return {
+      view: current,
+      serve: lastServe && { answer: { ...lastServe.answer }, at: lastServe.at },
+      self: lastSelf && { ...lastSelf },
+      flag,
+      // the digest of the flagged state, for acknowledge(): only that state is accepted
+      flagDigest: flag ? flagDigest : null,
+      stopped: stopped && { ...stopped },
+      removalHint: !current.enabled && present ? REMOVAL_HINT : null,
+    }
   }
 
   function tick() {
@@ -653,54 +815,50 @@ function createRemoteEntry(options = {}) {
     return ticking
   }
 
+  const failed = { ok: false, reason: 'failed' }
+  // No public operation rejects: each answers `{ ok: false, reason }` (or an unavailable view) instead.
   return Object.freeze({
     file,
     port,
     viewerPort,
-    tailnetSelf,
-    serveState,
-    view,
-    turnOn,
-    turnOff,
-    removeDevice,
-    repairPermissions,
-    requestCode,
-    entryStatus,
-    selfTest,
+    tailnetSelf: safe(tailnetSelf, { ok: false, reason: 'failed' }),
+    serveState: safe(serveState, { ok: false, reason: 'unreadable', present: false }),
+    view: safe(view, () => ({ ...FALLBACK_VIEW })),
+    turnOn: safe(turnOn, { ok: false, reason: 'failed', step: 'file' }),
+    turnOff: safe(turnOff, failed),
+    removeDevice: safe(removeDevice, failed),
+    repairPermissions: safe(repairPermissions, failed),
+    requestCode: safe(requestCode, failed),
+    entryStatus: safe(entryStatus, { ok: false, reason: 'unreachable' }),
+    selfTest: safe(selfTest, { ok: false, reason: 'failed', rose: null }),
     start() {
       if (timer !== null) return
-      timer = setIntervalFn(() => { tick() }, FILE_EVERY_MS)
-      timer?.unref?.()
+      try {
+        timer = setIntervalFn(() => { tick() }, FILE_EVERY_MS)
+        timer?.unref?.()
+      } catch {
+        timer = null
+      }
       tick()
     },
     stop() {
-      if (timer !== null) clearIntervalFn(timer)
+      try {
+        if (timer !== null) clearIntervalFn(timer)
+      } catch {
+        // nothing more to stop
+      }
       timer = null
     },
-    tick,
-    async refresh() {
+    tick: safe(tick, undefined),
+    refresh: safe(async () => {
       await tick()
       await checkFile().catch(() => {})
       await checkServe(true).catch(() => {})
-    },
-    async state() {
-      const current = await view()
-      const present = lastServe !== null && (lastServe.answer.ok || lastServe.answer.present === true)
-      return {
-        view: current,
-        serve: lastServe && { answer: { ...lastServe.answer }, at: lastServe.at },
-        self: lastSelf && { ...lastSelf },
-        flag,
-        stopped: stopped && { ...stopped },
-        removalHint: !current.enabled && present ? REMOVAL_HINT : null,
-      }
-    },
-    async acknowledge() {
-      await fileChecks
-      record(watchedState(await read()))
-      flag = false
-      notified.clear()
-    },
+    }, undefined),
+    state: safe(state, () => ({
+      view: { ...FALLBACK_VIEW }, serve: null, self: null, flag, flagDigest: flag ? flagDigest : null, stopped: stopped && { ...stopped }, removalHint: null,
+    })),
+    acknowledge: safe(acknowledge, failed),
   })
 }
 

@@ -10,6 +10,7 @@
 // --json` fields are as observed on a real machine (Tailscale 1.102); see
 // test/remote-entry-fixtures.ts for which shapes come from documentation only.
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import fsPromises from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
@@ -87,7 +88,13 @@ function hub(opts: {
     if (existsSync(`${file}.lock`)) lockViolations.push(args.join(' '))
     tailscale(file_, args, options, callback)
   }, { calls: tailscale.calls })
-  const { v, fetch } = viewerStub()
+  const stub = viewerStub()
+  const v = stub.v
+  // nothing that waits on the network runs while remote.json's lock is held
+  const fetch = (url: string, init: Record<string, unknown>) => {
+    if (existsSync(`${file}.lock`)) lockViolations.push(`fetch ${url}`)
+    return stub.fetch(url, init)
+  }
   const c = createRemoteEntry({
     isPackaged: opts.isPackaged ?? true,
     env: { AGENT_INBOX_DB: join(dir, 'inbox.db'), ...opts.env },
@@ -156,6 +163,10 @@ describe('the controller reads remote.json by the viewer\'s rules', () => {
     ['no viewerPort', { ...setting(4320, []), viewerPort: undefined }],
     ['17 devices', setting(4320, Array.from({ length: 17 }, (_, i) => device(newSecret(), i.toString(16).padStart(16, '0'))))],
     ['a bad device among good ones', setting(4320, [device(newSecret(), A), { id: 'nope', label: 'x', secretSha256: 'y' }, null, 7])],
+    // the one label rule (isDeviceLabel in src/remote-pair.ts): no Cc, Cf or lone surrogate
+    ['a label with a format character', setting(4320, [device(newSecret(), A), device(newSecret(), B, 'lap\u202etop'), device(newSecret(), C, 'zero\u200dwidth')])],
+    ['a label with a lone surrogate', setting(4320, [device(newSecret(), A), device(newSecret(), B, 'half\ud800')])],
+    ['a label of 41 characters', setting(4320, [device(newSecret(), A), device(newSecret(), B, 'x'.repeat(41))])],
     ['devices not a list', setting(4320, [], { devices: {} })],
     ['mode 0644', setting(4320, []), 0o644],
     ['mode 0640', setting(4320, []), 0o640],
@@ -313,10 +324,10 @@ describe('turnOn(): only when this node\'s identity and Serve\'s shape are both 
   it('checks Serve for this node\'s host and the entry\'s port, after the identity, and not at all when the identity fails', async () => {
     const good = hub()
     await good.c.turnOn()
-    expect(good.tailscale.calls.map((call) => call.args.join(' '))).toEqual(['status --json', 'serve status --json'])
+    expect(good.tailscale.calls.map((call) => call.args.join(' '))).toEqual(['status --json --peers=false', 'serve status --json'])
     const tagged = hub({ self: taggedStatus() })
     await tagged.c.turnOn()
-    expect(tagged.tailscale.calls.map((call) => call.args.join(' '))).toEqual(['status --json'])
+    expect(tagged.tailscale.calls.map((call) => call.args.join(' '))).toEqual(['status --json --peers=false'])
   })
 
   it('never writes a newer schema, a symlink, a file that is not JSON or not this user\'s', async () => {
@@ -443,9 +454,10 @@ describe('a bad file never throws and is never written over', () => {
     expect(await c.removeDevice(A)).toEqual({ ok: false, reason: 'open_to_others' })
     expect(await c.turnOn()).toEqual({ ok: false, reason: 'open_to_others', step: 'file' })
     expect(statSync(file).mode & 0o777).toBe(0o644)
-    expect(await c.repairPermissions()).toMatchObject({ ok: true })
+    // another user may have edited it: the devices go too, and the result says so
+    expect(await c.repairPermissions()).toMatchObject({ ok: true, devicesRemoved: 1 })
     expect(statSync(file).mode & 0o777).toBe(0o600)
-    expect(fileJson(file)).toEqual({ ...value, enabled: false })
+    expect(fileJson(file)).toEqual({ ...value, enabled: false, devices: [] })
     expect(await c.repairPermissions()).toEqual({ ok: false, reason: 'not_needed' })
   })
 })
@@ -599,9 +611,10 @@ describe('requestCode(): a pairing code from the app\'s own viewer', () => {
   })
 
   it('a write after a code says the code was voided', async () => {
-    const { c, v, dir } = await enabled()
-    writeSetting(dir, setting(4320, [device(newSecret(), A)]))
-    await c.acknowledge()
+    const h = hub()
+    writeSetting(h.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
+    expect((await h.c.turnOn()).ok).toBe(true)
+    const { c, v } = h
     v.codes.push(codeAnswer())
     await c.requestCode()
     expect(await c.removeDevice(A)).toMatchObject({ ok: true, voidedCode: true })
@@ -735,25 +748,51 @@ describe('the watch: Serve\'s shape and this node\'s identity while the entry is
     c.stop()
   })
 
-  it('calls onStopped once even when the turn-off write fails, and says the entry is not off', async () => {
+  it('calls onStopped once when the turn-off write fails, then retries the turn-off at the next 5-second tick until it lands', async () => {
     const h = hub({ serve: {} })
     writeSetting(h.dir, setting(4320, []))
     chmodSync(h.dir, 0o500)
     try {
       h.c.start()
       await h.c.tick()
-      for (let i = 0; i < 3; i += 1) {
-        h.clock.now += 60_000
-        await h.c.tick()
-      }
       expect(h.events.stopped).toEqual(['no_handler'])
       expect((await h.c.state()).stopped).toMatchObject({ reason: 'no_handler', off: false })
-      // the watch keeps trying to turn it off
-      expect(h.tailscale.calls.filter((call) => call.args[0] === 'serve').length).toBe(4)
+      h.clock.now += 5_000
+      await h.c.tick()
+      expect(fileJson(h.file).enabled).toBe(true)
     } finally {
       chmodSync(h.dir, 0o700)
     }
-    expect(fileJson(h.file).enabled).toBe(true)
+    // 5 seconds later, not 60: the retry lands
+    h.clock.now += 5_000
+    await h.c.tick()
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect((await h.c.state()).stopped).toMatchObject({ reason: 'no_handler', off: true })
+    expect(h.events.stopped).toEqual(['no_handler'])
+    // the retries wrote; they did not read Serve again
+    expect(h.tailscale.calls.filter((call) => call.args[0] === 'serve').length).toBe(1)
+  })
+
+  it('a successful turnOn clears the last stop, and a second stop after it notifies again', async () => {
+    let bad = true
+    const h = hub()
+    const c = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') },
+      execFile: fakeTailscale({ self: selfStatus(), serve: () => (bad ? {} : goodServe(4320)) }), exists: cliExists,
+      now: () => h.clock.now, setInterval: () => 0, clearInterval: () => {}, fetch: async () => new Response('', { status: 500 }),
+      onStopped: (reason: string) => { h.events.stopped.push(reason) },
+    })
+    writeSetting(h.dir, setting(4320, []))
+    c.start()
+    await c.tick()
+    expect(h.events.stopped).toEqual(['no_handler'])
+    bad = false
+    expect((await c.turnOn()).ok).toBe(true)
+    expect((await c.state()).stopped).toBe(null)
+    bad = true
+    h.clock.now += 60_000
+    await c.tick()
+    expect(h.events.stopped).toEqual(['no_handler', 'no_handler'])
   })
 
   it('turns the entry off when this node no longer has the stored host or a stored login', async () => {
@@ -899,9 +938,11 @@ describe('the watch: changes made outside the app', () => {
     await h.c.tick()
     await h.c.tick()
     expect(h.events.outside).toBe(1)
-    expect((await h.c.state()).flag).toBe(true)
+    const flagged = await h.c.state()
+    expect(flagged.flag).toBe(true)
+    expect(flagged.flagDigest).toMatch(/^[0-9a-f]{64}$/)
     expect(fileJson(h.file)).toEqual(doc)
-    await h.c.acknowledge()
+    expect(await h.c.acknowledge(flagged.flagDigest)).toEqual({ ok: true })
     expect((await h.c.state()).flag).toBe(false)
     await h.c.tick()
     expect(h.events.outside).toBe(1)
@@ -911,13 +952,40 @@ describe('the watch: changes made outside the app', () => {
     expect(h.events.outside).toBe(2)
   })
 
-  it('a label changed by hand is not watched (labels name nothing the gate checks)', async () => {
+  it('a rename that keeps a device readable is not an outside change (the gate never reads a label)', async () => {
     const h = await watched({ code: false })
     const doc = fileJson(h.file) as { devices: Array<Record<string, unknown>> }
     doc.devices[0]!.label = 'renamed'
     writeFileSync(h.file, JSON.stringify(doc), { mode: 0o600 })
     await h.c.tick()
     expect(h.events.outside).toBe(0)
+  })
+
+  it('a label edit that makes a dormant device readable (live) is an outside change, after the dormant one was acknowledged', async () => {
+    const h = await watched({ code: false })
+    // a process appends a device the reader drops for its label
+    const doc = fileJson(h.file) as { devices: Array<Record<string, unknown>> }
+    doc.devices.push(device(newSecret(), B, 'bad\u202elabel'))
+    writeFileSync(h.file, JSON.stringify(doc), { mode: 0o600 })
+    await h.c.tick()
+    expect(h.events.outside).toBe(1)
+    expect(await h.c.acknowledge((await h.c.state()).flagDigest)).toEqual({ ok: true })
+    // only the label changes, to one the reader accepts: the viewer now lets that secret in
+    doc.devices[1]!.label = 'laptop'
+    writeFileSync(h.file, JSON.stringify(doc), { mode: 0o600 })
+    expect((await h.c.view()).devices.map((d) => d.id)).toEqual([A, B])
+    await h.c.tick()
+    expect(h.events.outside).toBe(2)
+    expect((await h.c.state()).flag).toBe(true)
+  })
+
+  it('a label edit that makes a readable device dormant is an outside change too', async () => {
+    const h = await watched({ code: false })
+    const doc = fileJson(h.file) as { devices: Array<Record<string, unknown>> }
+    doc.devices[0]!.label = 'zero\u200bwidth'
+    writeFileSync(h.file, JSON.stringify(doc), { mode: 0o600 })
+    await h.c.tick()
+    expect(h.events.outside).toBe(1)
   })
 
   it('the file made readable by others is an outside change', async () => {
@@ -1006,5 +1074,369 @@ describe('no Tailscale call runs while remote.json\'s lock is held', () => {
     await h.c.refresh()
     expect(h.tailscale.calls.length).toBeGreaterThanOrEqual(4)
     expect(lockViolations.length).toBe(before)
+  })
+})
+
+// ── review round 1 ─────────────────────────────────────────────────────────
+
+/** remote.json's watched hub, as `watched()` above builds it, for the blocks below. */
+async function watchedHub(opts: { code?: boolean } = {}) {
+  const h = hub()
+  writeSetting(h.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
+  expect((await h.c.turnOn()).ok).toBe(true)
+  h.c.start()
+  await h.c.tick()
+  if (opts.code !== false) {
+    h.v.codes.push(codeAnswer())
+    expect((await h.c.requestCode()).ok).toBe(true)
+  }
+  return h
+}
+function appendDevice(file: string, id: string, label = 'laptop', edit?: (doc: Record<string, unknown>) => void) {
+  const doc = fileJson(file) as { devices: unknown[] } & Record<string, unknown>
+  doc.devices.push(device(newSecret(), id, label))
+  edit?.(doc)
+  writeFileSync(file, JSON.stringify(doc, null, 2), { mode: 0o600 })
+}
+const deep = (depth: number) => `${'['.repeat(depth)}${']'.repeat(depth)}`
+/** A Serve answer with nothing for this host and another origin's proxy nested 100,000 deep, so every walk reaches it. */
+const deepServe = () => JSON.stringify({ TCP: { '443': { HTTPS: true } }, Web: { [`${OTHER_HOST}:443`]: { Handlers: { '/': { Proxy: 0 } } } } })
+  .replace('"Proxy":0', `"Proxy":${deep(100_000)}`)
+
+describe('acknowledge(digest): only the state the owner saw', () => {
+  it('refuses when the file changed after the flag, keeps the flag, and flags the new state', async () => {
+    const h = await watchedHub({ code: false })
+    appendDevice(h.file, B)
+    await h.c.tick()
+    const seen = await h.c.state()
+    expect(seen.flag).toBe(true)
+    // another device lands before the owner presses Review
+    appendDevice(h.file, C)
+    expect(await h.c.acknowledge(seen.flagDigest)).toEqual({ ok: false, reason: 'changed' })
+    const now = await h.c.state()
+    expect(now.flag).toBe(true)
+    expect(now.flagDigest).not.toBe(seen.flagDigest)
+    expect(h.events.outside).toBe(2)
+    expect(await h.c.acknowledge(now.flagDigest)).toEqual({ ok: true })
+    expect((await h.c.state()).flag).toBe(false)
+  })
+
+  it('refuses anything that is not the current digest', async () => {
+    const h = await watchedHub({ code: false })
+    for (const bad of [undefined, null, '', 'x', 'f'.repeat(64), 7]) expect(await h.c.acknowledge(bad as never)).toMatchObject({ ok: false })
+  })
+})
+
+describe('the watch survives what would throw', () => {
+  it('a Serve answer nested 100,000 deep (under 1 MiB) is unknown_shape, not a thrown stack overflow', () => {
+    const text = deepServe()
+    expect(text.length).toBeLessThan(1024 * 1024)
+    expect(remoteEntry.parseServeStatus(text, HOST, 4320)).toMatchObject({ ok: false, reason: 'unknown_shape' })
+  })
+
+  it('the watch turns the entry off on that answer, and turnOn refuses it without rejecting', async () => {
+    const text = deepServe()
+    const h = hub({ serve: { raw: text } })
+    expect(await h.c.turnOn()).toEqual({ ok: false, reason: 'unknown_shape', step: 'serve' })
+    writeSetting(h.dir, setting(4320, []))
+    h.c.start()
+    await h.c.tick()
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect(h.events.stopped).toEqual(['unknown_shape'])
+  })
+
+  it('a throw inside the Serve check counts as a failed read: retried once 5 seconds later, then the entry goes off', async () => {
+    const h = hub()
+    let explode = false
+    const c = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') },
+      execFile: fakeTailscale({ self: selfStatus(), serve: () => { explode = true; return goodServe(4320) } }), exists: cliExists,
+      now: () => {
+        if (explode) {
+          explode = false
+          throw new Error('clock broke')
+        }
+        return h.clock.now
+      },
+      setInterval: () => 0, clearInterval: () => {}, fetch: async () => new Response('', { status: 500 }),
+      onStopped: (reason: string) => { h.events.stopped.push(reason) },
+    })
+    writeSetting(h.dir, setting(4320, []))
+    c.start()
+    await c.tick()
+    expect(fileJson(h.file).enabled).toBe(true)
+    h.clock.now += 5_000
+    await c.tick()
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect(h.events.stopped).toEqual(['unreadable'])
+  })
+
+  it('turnOff lands even when an unknown field is nested too deep to write back: only the known fields are kept', async () => {
+    const h = hub({ serve: {} })
+    const text = JSON.stringify({ ...setting(4320, [device(newSecret(), A)]), extra: 0 }).replace('"extra":0', `"extra":${deep(30_000)}`)
+    expect(text.length).toBeLessThan(64 * 1024)
+    writeFileSync(h.file, text, { mode: 0o600 })
+    expect(readRemoteSetting(h.file).ok).toBe(true)
+    h.c.start()
+    await h.c.tick()
+    const after = fileJson(h.file)
+    expect(after.enabled).toBe(false)
+    expect(after.extra).toBeUndefined()
+    expect((after.devices as Array<{ id: string }>).map((d) => d.id)).toEqual([A])
+    expect(h.events.stopped).toEqual(['no_handler'])
+  })
+
+  it('a watched field nested too deep to compare is still flagged as an outside change', async () => {
+    const h = await watchedHub({ code: false })
+    const text = readFileSync(h.file, 'utf8').replace(/"logins": \[[^\]]*\]/, `"logins": ${deep(30_000)}`)
+    writeFileSync(h.file, text, { mode: 0o600 })
+    await h.c.tick()
+    expect(h.events.outside).toBe(1)
+  })
+})
+
+describe('no public operation rejects', () => {
+  // A file system whose handle cannot be closed, and a clock that throws: dependencies that throw.
+  const brokenFs = {
+    ...fsPromises,
+    open: async () => ({
+      stat: async () => ({ isFile: () => true, uid: process.getuid?.() ?? 0, mode: 0o100600, size: 2 }),
+      read: async () => ({ bytesRead: 0 }),
+      close: () => { throw new Error('close broke') },
+    }),
+  }
+  function broken(which: 'fs' | 'clock') {
+    const dir = scratchDir('remote-entry-broken-')
+    writeSetting(dir, setting(4320, [device(newSecret(), A)]))
+    return createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(dir, 'inbox.db') }, ownerToken: TOKEN,
+      execFile: fakeTailscale({ self: selfStatus(), serve: goodServe(4320) }), exists: cliExists,
+      fetch: viewerStub().fetch, setInterval: () => 0, clearInterval: () => {}, sleep: async () => {},
+      ...(which === 'fs' ? { fsImpl: brokenFs as never } : { now: () => { throw new Error('clock broke') } }),
+    })
+  }
+  const operations: Array<[string, (c: ReturnType<typeof createRemoteEntry>) => Promise<unknown>]> = [
+    ['tailnetSelf', (c) => c.tailnetSelf()],
+    ['serveState', (c) => c.serveState(HOST, 4320)],
+    ['view', (c) => c.view()],
+    ['turnOn', (c) => c.turnOn()],
+    ['turnOff', (c) => c.turnOff()],
+    ['removeDevice', (c) => c.removeDevice(A)],
+    ['repairPermissions', (c) => c.repairPermissions()],
+    ['requestCode', (c) => c.requestCode()],
+    ['entryStatus', (c) => c.entryStatus()],
+    ['selfTest', (c) => c.selfTest()],
+    ['tick', (c) => c.tick()],
+    ['refresh', (c) => c.refresh()],
+    ['state', (c) => c.state()],
+    ['acknowledge', (c) => c.acknowledge('f'.repeat(64))],
+  ]
+  for (const which of ['fs', 'clock'] as const) {
+    it.each(operations)(`%s resolves when the ${which === 'fs' ? 'file system' : 'clock'} throws`, async (name, operation) => {
+      // never rejects (the await above would throw)
+      const result = await operation(broken(which))
+      if (['tick', 'refresh'].includes(name)) expect(result).toBeUndefined()
+      else if (name === 'view') expect(result).toHaveProperty('available')
+      else if (name === 'state') expect(result).toHaveProperty('view.available')
+      else if ((result as { ok: boolean }).ok) {
+        // only an operation that does not need the broken dependency may succeed
+        expect(which === 'fs' ? ['tailnetSelf', 'serveState', 'entryStatus'] : ['tailnetSelf', 'serveState', 'entryStatus', 'selfTest']).toContain(name)
+      } else expect(result).toMatchObject({ ok: false })
+    })
+  }
+})
+
+describe('nothing that awaits the network runs while the lock is held', () => {
+  it('a write does not wait, under the lock, for a status request the watch has in flight', async () => {
+    const h = await watchedHub()
+    appendDevice(h.file, B)
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let first = true
+    const c = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') }, ownerToken: TOKEN,
+      execFile: fakeTailscale({ self: selfStatus(), serve: goodServe(4320) }), exists: cliExists,
+      now: () => h.clock.now, setInterval: () => 0, clearInterval: () => {},
+      fetch: async (url: string) => {
+        if (url.endsWith('/code')) return codeAnswer()()
+        if (first && url.endsWith('/api/remote-entry')) {
+          first = false
+          await held
+        }
+        return Response.json(statusBody([{ device: B, codeId: CODE_ID }]))
+      },
+    })
+    c.start()
+    await c.tick()
+    expect((await c.requestCode()).ok).toBe(true)
+    appendDevice(h.file, C)
+    const watching = c.tick()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const done = await Promise.race([c.turnOff().then(() => 'written'), new Promise((resolve) => setTimeout(() => resolve('blocked'), 1_500))])
+    expect(done).toBe('written')
+    expect(existsSync(`${h.file}.lock`)).toBe(false)
+    release()
+    await watching
+  })
+
+  it('the viewer\'s status is read before the lock, so a pairing that landed before main\'s write is announced, not flagged', async () => {
+    const h = await watchedHub()
+    appendDevice(h.file, B)
+    h.v.status = statusBody([{ device: B, codeId: CODE_ID }])
+    expect((await h.c.turnOff()).ok).toBe(true)
+    expect(h.events.paired).toEqual(['laptop'])
+    expect(h.events.outside).toBe(0)
+  })
+})
+
+describe('Serve: "nothing else reaches the port" compares port numbers', () => {
+  const good = () => goodServe(4320) as { TCP: Record<string, unknown>; Web: Record<string, unknown> }
+  const handler = (proxy: string) => ({ Handlers: { '/': { Proxy: proxy } } })
+  it.each([
+    ['a TCP forward with a leading zero', (v: ReturnType<typeof good>) => { v.TCP['8443'] = { TCPForward: '127.0.0.1:04320' } }, 'tcp_forward'],
+    ['a TCP forward to [::1]', (v: ReturnType<typeof good>) => { v.TCP['8443'] = { TCPForward: '[::1]:4320' } }, 'tcp_forward'],
+    ['a TCP forward to a service name', (v: ReturnType<typeof good>) => { v.TCP['8443'] = { TCPForward: '127.0.0.1:http-alt' } }, 'unknown_shape'],
+    ['a TCP forward with no port', (v: ReturnType<typeof good>) => { v.TCP['8443'] = { TCPForward: '127.0.0.1' } }, 'unknown_shape'],
+    ['a TCP forward that is not text', (v: ReturnType<typeof good>) => { v.TCP['8443'] = { TCPForward: 4320 } }, 'unknown_shape'],
+    ['a TCP entry with an unknown key', (v: ReturnType<typeof good>) => { v.TCP['8443'] = { Forward: '127.0.0.1:1' } }, 'unknown_shape'],
+    ['another origin proxying with a leading zero', (v: ReturnType<typeof good>) => { v.Web[`${OTHER_HOST}:443`] = handler('http://127.0.0.1:04320') }, 'other_proxy'],
+    ['another origin proxying with https+insecure', (v: ReturnType<typeof good>) => { v.Web[`${OTHER_HOST}:443`] = handler('https+insecure://127.0.0.1:4320') }, 'other_proxy'],
+    ['another origin proxying to a service name', (v: ReturnType<typeof good>) => { v.Web[`${OTHER_HOST}:443`] = handler('http://127.0.0.1:inbox') }, 'unknown_shape'],
+    ['another origin with an unknown handler key', (v: ReturnType<typeof good>) => { v.Web[`${OTHER_HOST}:443`] = { Handlers: { '/': { Forward: 'x' } } } }, 'unknown_shape'],
+  ] as Array<[string, (v: ReturnType<typeof good>) => void, string]>)('%s', (_name, edit, reason) => {
+    const value = good()
+    edit(value)
+    expect(remoteEntry.parseServeStatus(JSON.stringify(value), HOST, 4320)).toMatchObject({ ok: false, reason })
+  })
+
+  it('another origin\'s default port, a path or text reaching nothing, stays ok', () => {
+    const value = good()
+    value.Web[`${OTHER_HOST}:443`] = { Handlers: { '/': { Proxy: 'http://127.0.0.1' }, '/files': { Path: '/srv/files:4320' }, '/t': { Text: 'port 4320' } } }
+    expect(remoteEntry.parseServeStatus(JSON.stringify(value), HOST, 4320)).toEqual({ ok: true })
+  })
+})
+
+describe('tailnetSelf: the login', () => {
+  it.each([
+    ['the placeholder login with no Tags', selfStatus({ User: { [String(USER_ID)]: { LoginName: 'tagged-devices' } } }), 'tagged'],
+    ['the placeholder login in capitals', selfStatus({ User: { [String(USER_ID)]: { LoginName: 'Tagged-Devices' } } }), 'tagged'],
+    ['a login with a format character', selfStatus({ User: { [String(USER_ID)]: { LoginName: 'owner​@example.com' } } }), 'no_login'],
+    ['a login with a leading space', selfStatus({ User: { [String(USER_ID)]: { LoginName: ' owner@example.com' } } }), 'no_login'],
+    ['a login with a trailing space', selfStatus({ User: { [String(USER_ID)]: { LoginName: 'owner@example.com ' } } }), 'no_login'],
+  ] as Array<[string, unknown, string]>)('refuses %s', (_name, status, reason) => {
+    expect(parseTailnetSelf(JSON.stringify(status))).toEqual({ ok: false, reason })
+  })
+
+  it('reads Tags: null as untagged (pinned)', () => {
+    expect(parseTailnetSelf(JSON.stringify(selfStatus({}, { Tags: null })))).toEqual({ ok: true, host: HOST, login: LOGIN })
+  })
+})
+
+describe('review round 1: the cases surviving mutants showed were untested', () => {
+  it('a legitimate pairing plus a hash swapped on an existing device, in one tick: an outside change', async () => {
+    const h = await watchedHub()
+    appendDevice(h.file, B, 'laptop', (doc) => { (doc.devices as Array<Record<string, unknown>>)[0]!.secretSha256 = 'f'.repeat(64) })
+    h.v.status = statusBody([{ device: B, codeId: CODE_ID }])
+    await h.c.tick()
+    expect(h.events.paired).toEqual([])
+    expect(h.events.outside).toBe(1)
+  })
+
+  it.each([
+    ['enabled', (doc: Record<string, unknown>) => { doc.enabled = false }],
+    ['host', (doc: Record<string, unknown>) => { doc.host = OTHER_HOST }],
+    ['port', (doc: Record<string, unknown>) => { doc.port = 4400 }],
+    ['viewerPort', (doc: Record<string, unknown>) => { doc.viewerPort = 4392 }],
+  ] as Array<[string, (doc: Record<string, unknown>) => void]>)('%s changed beside an expected device: an outside change', async (_name, edit) => {
+    const h = await watchedHub()
+    appendDevice(h.file, B, 'laptop', edit)
+    h.v.status = statusBody([{ device: B, codeId: CODE_ID }])
+    await h.c.tick()
+    expect(h.events.paired).toEqual([])
+    expect(h.events.outside).toBe(1)
+  })
+
+  it.each([
+    ['a newer schema', JSON.stringify(setting(4320, [], { schema: 2 }))],
+    ['not JSON', '{"schema":1,'],
+  ])('repairPermissions on %s with open bits writes nothing', async (_name, text) => {
+    const { c, dir, file } = hub()
+    writeSetting(dir, text, 0o644)
+    expect((await c.repairPermissions()).ok).toBe(false)
+    expect(readFileSync(file, 'utf8')).toBe(text)
+    expect(statSync(file).mode & 0o777).toBe(0o644)
+  })
+
+  it('a command line that ignores the kill is given up 6 seconds after it started', async () => {
+    const timers: Array<{ fn: () => void; ms: number }> = []
+    const c = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(scratchDir('remote-entry-'), 'inbox.db') },
+      execFile: () => {}, exists: cliExists,
+      setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms }); return 1 }, clearTimeout: () => {},
+    })
+    const pending = c.serveState(HOST, 4320)
+    expect(timers.map((timer) => timer.ms)).toEqual([6_000])
+    timers[0]!.fn()
+    expect(await pending).toEqual({ ok: false, reason: 'unreadable', present: false })
+  })
+
+  it('a stored login that differs only in case is the same identity: devices kept, the watch stays on', async () => {
+    const h = hub()
+    writeSetting(h.dir, setting(4320, [device(newSecret(), A)], { enabled: false, logins: ['OWNER@Example.com'] }))
+    expect(await h.c.turnOn()).toMatchObject({ ok: true, devicesRemoved: 0 })
+    writeSetting(h.dir, setting(4320, [device(newSecret(), A)], { logins: ['OWNER@Example.com'] }))
+    h.c.start()
+    await h.c.tick()
+    expect(fileJson(h.file).enabled).toBe(true)
+    expect(h.events.stopped).toEqual([])
+  })
+
+  it('the watch leaves alone a file that is on for the other build\'s viewer', async () => {
+    const h = hub({ serve: {} })
+    writeSetting(h.dir, setting(4320, [], { viewerPort: 4392 }))
+    h.c.start()
+    for (let i = 0; i < 3; i += 1) {
+      await h.c.tick()
+      h.clock.now += 60_000
+    }
+    expect(fileJson(h.file).enabled).toBe(true)
+    expect(h.events.stopped).toEqual([])
+  })
+
+  it('turnOn never writes a file the reader would refuse (17 readable devices)', async () => {
+    const { c, dir, file } = hub()
+    writeSetting(dir, setting(4320, Array.from({ length: 17 }, (_, i) => device(newSecret(), i.toString(16).padStart(16, '0'))), { enabled: false }))
+    const text = readFileSync(file, 'utf8')
+    expect(await c.turnOn()).toEqual({ ok: false, reason: 'bad_file', step: 'file' })
+    expect(readFileSync(file, 'utf8')).toBe(text)
+  })
+
+  it('a clock that went back forgets the codes: a pairing then is an outside change', async () => {
+    const h = await watchedHub()
+    h.clock.now -= 60_000
+    appendDevice(h.file, B)
+    h.v.status = statusBody([{ device: B, codeId: CODE_ID }])
+    await h.c.tick()
+    expect(h.events.paired).toEqual([])
+    expect(h.events.outside).toBe(1)
+  })
+
+  it('selfTest passes only when device rose by exactly one', async () => {
+    const h = hub()
+    expect((await h.c.turnOn()).ok).toBe(true)
+    h.v.version = () => {
+      (h.v.status as ReturnType<typeof statusBody>).refused.device += 2
+      return new Response('Forbidden', { status: 403 })
+    }
+    expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'no_device_count', rose: 'device' })
+  })
+
+  it('never writes past 64 KiB', async () => {
+    const { c, dir, file } = hub()
+    writeSetting(dir, { schema: 1, enabled: false, pad: 'x'.repeat(65_400) })
+    const text = readFileSync(file, 'utf8')
+    expect(text.length).toBeLessThanOrEqual(64 * 1024)
+    expect(await c.turnOn()).toEqual({ ok: false, reason: 'too_large_to_write', step: 'file' })
+    expect(readFileSync(file, 'utf8')).toBe(text)
   })
 })

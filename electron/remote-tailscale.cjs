@@ -4,29 +4,39 @@
 //
 // Design: docs/superpowers/specs/2026-11-17-remote-inbox-design.md §3.2 "Serve's shape, checked by
 // main"; architecture notes in docs/architecture/remote-inbox.md. This file finds the command line
-// at three fixed paths and runs it with exactly two argument lists, argv only, never a shell. It
+// at three fixed paths and runs it with exactly three argument lists, argv only, never a shell. It
 // never changes Tailscale's configuration, and it logs nothing.
 const { existsSync } = require('node:fs')
 const childProcess = require('node:child_process')
 
 const OUTPUT_MAX = 1024 * 1024
+// the whole peer list: a real tailnet with 531 peers printed 822 KB, so it gets its own, larger cap
+const PEERS_OUTPUT_MAX = 16 * 1024 * 1024
 const RUN_TIMEOUT_MS = 5_000
 
 // Shown to the person to remove a background Serve configuration, never run. The `off` form is
 // from Tailscale's documentation; it has not yet been seen in real output.
 const REMOVAL_HINT = 'tailscale serve --https=443 off'
 
+// The third is the App Store or standalone app's own binary: a Mac with no command-line install has
+// only that one, and run directly it answers `version`, `status --json` and `status --json
+// --peers=false` correctly (seen on a real machine, Tailscale 1.102.4).
 const TAILSCALE_PATHS = Object.freeze([
   '/usr/local/bin/tailscale',
   '/opt/homebrew/bin/tailscale',
   '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
 ])
-// The only two argument lists this module ever runs. runTailscale takes a key, never a list.
+// The only three argument lists this module ever runs. runTailscale takes a key, never a list.
+// `self` leaves the peers out: this node, its user and its tags are all it needs, and the full list
+// can pass 1 MiB on a large tailnet, which would switch sharing off. `peers` is the full list, for
+// the connecting Mac to find the hub among its peers (the next PR; there is no peer parser here).
 const TAILSCALE_ARGS = Object.freeze({
-  self: Object.freeze(['status', '--json']),
+  self: Object.freeze(['status', '--json', '--peers=false']),
   serve: Object.freeze(['serve', 'status', '--json']),
+  peers: Object.freeze(['status', '--json']),
 })
-const RUN_OPTIONS = Object.freeze({ timeout: RUN_TIMEOUT_MS, maxBuffer: OUTPUT_MAX, encoding: 'utf8', shell: false, windowsHide: true })
+const OUTPUT_CAPS = Object.freeze({ self: OUTPUT_MAX, serve: OUTPUT_MAX, peers: PEERS_OUTPUT_MAX })
+const RUN_OPTIONS = Object.freeze({ timeout: RUN_TIMEOUT_MS, encoding: 'utf8', shell: false, windowsHide: true })
 
 // The viewer's reader rules for a host and a login (src/viewer-remote.ts), shared with the controller.
 const HOST_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/
@@ -37,7 +47,10 @@ const chars = (text) => Array.from(text).length
 const plainText = (value, max) => typeof value === 'string' && chars(value) >= 1 && chars(value) <= max && !CONTROL.test(value)
 const validHost = (host) => typeof host === 'string' && host.length <= 253 && HOST_PATTERN.test(host)
   && /[a-z]/.test(host.slice(host.lastIndexOf('.') + 1))
-
+// Tailscale's placeholder user for tagged devices: never a person's login, whatever Self.Tags says
+const PLACEHOLDER_LOGIN = 'tagged-devices'
+const FORMAT = /\p{Cf}/u
+const EDGE_SPACE = /^\s|\s$/u
 
 // ── Tailscale, read-only ───────────────────────────────────────────────────
 
@@ -53,10 +66,11 @@ function tailscaleCli(exists = existsSync) {
   return null
 }
 
-/** One read: `self` or `serve`, argv only, no shell, 5 seconds, 1 MiB. Resolves `{ ok, text }` or `{ ok: false, reason }`. */
+/** One read: `self`, `serve` or `peers`, argv only, no shell, 5 seconds, its own output cap. Resolves `{ ok, text }` or `{ ok: false, reason }`. */
 function runTailscale(which, deps) {
-  const args = TAILSCALE_ARGS[which]
+  const args = Object.hasOwn(TAILSCALE_ARGS, which) ? TAILSCALE_ARGS[which] : null
   if (!args) return Promise.resolve({ ok: false, reason: 'failed' })
+  const cap = OUTPUT_CAPS[which]
   const cli = tailscaleCli(deps.exists ?? existsSync)
   if (!cli) return Promise.resolve({ ok: false, reason: 'no_cli' })
   return new Promise((resolve) => {
@@ -73,10 +87,10 @@ function runTailscale(which, deps) {
     guard?.unref?.()
     try {
       const execFile = deps.execFile ?? childProcess.execFile
-      execFile(cli, [...args], { ...RUN_OPTIONS }, (error, stdout) => {
+      execFile(cli, [...args], { ...RUN_OPTIONS, maxBuffer: cap }, (error, stdout) => {
         if (error) return finish({ ok: false, reason: 'failed' })
         const text = typeof stdout === 'string' ? stdout : Buffer.isBuffer(stdout) ? stdout.toString('utf8') : null
-        if (text === null || Buffer.byteLength(text) > OUTPUT_MAX) return finish({ ok: false, reason: 'failed' })
+        if (text === null || Buffer.byteLength(text) > cap) return finish({ ok: false, reason: 'failed' })
         finish({ ok: true, text })
       })
     } catch {
@@ -88,10 +102,19 @@ function runTailscale(which, deps) {
 /**
  * This node from `tailscale status --json`: `{ ok, host, login }`, or `{ ok: false, reason }`.
  * Self.UserID is a number while the User map's keys are strings; it is read from the JSON text so
- * an ID past 2^53 keeps its digits. A tagged node is decided from Self.Tags alone: its UserID
- * still resolves to a placeholder user, whose login is never returned.
+ * an ID past 2^53 keeps its digits. A tagged node is decided from Self.Tags: its UserID still
+ * resolves to a placeholder user, whose login (`tagged-devices`) is refused even without Tags.
+ * Never throws: output nested too deep for the reviver reads as not JSON.
  */
 function parseTailnetSelf(text) {
+  try {
+    return readSelf(text)
+  } catch {
+    return { ok: false, reason: 'not_json' }
+  }
+}
+
+function readSelf(text) {
   let value
   try {
     value = JSON.parse(text, (key, raw, context) => (
@@ -111,37 +134,64 @@ function parseTailnetSelf(text) {
   const key = Number.isSafeInteger(id) && id > 0 ? String(id) : typeof id === 'string' && /^[1-9]\d{0,19}$/.test(id) ? id : null
   const user = key !== null && isObject(value.User) && Object.hasOwn(value.User, key) ? value.User[key] : null
   const login = isObject(user) ? user.LoginName : undefined
-  if (!plainText(login, 254)) return { ok: false, reason: 'no_login' }
+  if (typeof login === 'string' && login.toLowerCase() === PLACEHOLDER_LOGIN) return { ok: false, reason: 'tagged' }
+  // the reader's rule, and no format character or edge space: a person reads it, and it must match exactly
+  if (!plainText(login, 254) || FORMAT.test(login) || EDGE_SPACE.test(login)) return { ok: false, reason: 'no_login' }
   return { ok: true, host, login }
 }
 
 const SERVE_KEYS = new Set(['TCP', 'Web', 'AllowFunnel', 'Foreground', 'Services'])
+// the keys a TCP entry and a web handler may hold (ServeConfig's TCPPortHandler and HTTPHandler)
+const TCP_KEYS = new Set(['HTTPS', 'HTTP', 'TCPForward', 'TerminateTLS', 'ProxyProtocol'])
+const HANDLER_KEYS = new Set(['Path', 'Proxy', 'Text', 'AcceptAppCaps', 'Redirect'])
+// a real configuration is about 8 levels deep (a foreground session adds 2); past this, unknown
+const MAX_DEPTH = 32
 
 /** A Web or AllowFunnel key as host:port, lowercased, a trailing dot on the host dropped. */
 const hostKey = (key) => key.toLowerCase().replace(/\.:(\d+)$/, ':$1')
 
-/** Whether any string inside `value` names `port` (`127.0.0.1:4320`, `localhost:4320`, `http://…:4320/x`, `4320`). */
-function namesPort(value, port) {
-  const pattern = new RegExp(`(?:^|:)${port}(?![0-9])`)
-  const walk = (node) => {
-    if (typeof node === 'string') return pattern.test(node)
-    if (Array.isArray(node)) return node.some(walk)
-    if (isObject(node)) return Object.values(node).some(walk)
-    return false
+/**
+ * Visits every key and string inside `value` with an explicit stack, never recursion, so output
+ * nested 100,000 deep cannot overflow the stack. `visit` returns true to stop. Gives
+ * `{ found, depth }`: whether `visit` stopped it, and the deepest level seen.
+ */
+function walk(value, visit) {
+  const stack = [[value, 0]]
+  let depth = 0
+  while (stack.length > 0) {
+    const [node, level] = stack.pop()
+    if (level > depth) depth = level
+    if (typeof node === 'string') {
+      if (visit(node)) return { found: true, depth }
+    } else if (Array.isArray(node)) {
+      for (const child of node) stack.push([child, level + 1])
+    } else if (isObject(node)) {
+      for (const [key, child] of Object.entries(node)) {
+        if (visit(key)) return { found: true, depth }
+        stack.push([child, level + 1])
+      }
+    }
   }
-  return walk(value)
+  return { found: false, depth }
 }
 
-/** Whether any key or string inside `value` names `host:443`: a Serve configuration the removal hint is for. */
-function namesHost(value, host) {
-  const wanted = `${host}:443`
-  const walk = (node) => {
-    if (typeof node === 'string') return hostKey(node).includes(wanted)
-    if (Array.isArray(node)) return node.some(walk)
-    if (isObject(node)) return Object.entries(node).some(([key, child]) => hostKey(key).includes(wanted) || walk(child))
-    return false
-  }
-  return walk(value)
+/** A port as written: plain decimal digits only (Go reads a leading zero; a service name is not a number). */
+const portNumber = (text) => (typeof text === 'string' && /^\d{1,5}$/.test(text) ? Number(text) : null)
+
+/** `TCPForward`'s port: `host:port` or `[v6]:port`. Null when it is not that shape with a decimal port. */
+function forwardPort(target) {
+  if (typeof target !== 'string') return null
+  const match = target.match(/^(?:\[[^\]]*\]|[^:[\]]+):([^:]*)$/)
+  return match ? portNumber(match[1]) : null
+}
+
+/** A handler's `Proxy` port: `http`, `https` or `https+insecure` URL, the scheme's default when none is written. Null otherwise. */
+function proxyPort(target) {
+  if (typeof target !== 'string') return null
+  const match = target.match(/^(http|https|https\+insecure):\/\/(?:\[[^\]]*\]|[^/:?#[\]]+)(?::([^/?#]*))?(?:[/?#].*)?$/)
+  if (!match) return null
+  if (match[2] === undefined) return match[1] === 'http' ? 80 : 443
+  return portNumber(match[2])
 }
 
 /**
@@ -160,13 +210,19 @@ function parseServeStatus(text, host, port) {
   } catch {
     return { ok: false, reason: 'unreadable', present: false }
   }
-  const present = namesHost(value, target) || namesPort(value, port)
-  const no = (reason) => ({ ok: false, reason, present })
   const ours = `${target}:443`
+  // for the removal hint only: any key or string naming host:443, or naming the port as text
+  const portText = new RegExp(`(?:^|:)0*${port}(?![0-9])`)
+  const scan = walk(value, (text_) => hostKey(text_).includes(ours) || portText.test(text_))
+  const present = scan.found
+  const no = (reason) => ({ ok: false, reason, present })
 
+  if (walk(value, () => false).depth > MAX_DEPTH) return no('unknown_shape')
   if (!isObject(value)) return no('unknown_shape')
   if (Object.keys(value).some((key) => !SERVE_KEYS.has(key))) return no('unknown_shape')
-  // a foreground session or a service carries its own handlers: not checked here, so never ok
+  // A foreground session or a service carries its own handlers: not checked here, so never ok. So a
+  // foreground `tailscale serve` on any port, or any Tailscale Service, switches sharing off, and the
+  // reason says which (`foreground`, `services`).
   if (value.Foreground !== undefined && !(isObject(value.Foreground) && Object.keys(value.Foreground).length === 0)) return no('foreground')
   if (value.Services !== undefined && !(isObject(value.Services) && Object.keys(value.Services).length === 0)) return no('services')
   const tcp = value.TCP === undefined ? {} : value.TCP
@@ -176,8 +232,12 @@ function parseServeStatus(text, host, port) {
 
   // a TCP forward to the port, on any port, with or without TLS: client-sent headers would reach the gate
   for (const entry of Object.values(tcp)) {
-    if (!isObject(entry)) return no('unknown_shape')
-    if (namesPort(entry, port)) return no('tcp_forward')
+    if (!isObject(entry) || Object.keys(entry).some((key) => !TCP_KEYS.has(key))) return no('unknown_shape')
+    if (entry.TCPForward !== undefined) {
+      const forwarded = forwardPort(entry.TCPForward)
+      if (forwarded === null) return no('unknown_shape')
+      if (forwarded === port) return no('tcp_forward')
+    }
   }
   for (const [key, on] of Object.entries(funnel)) {
     if (hostKey(key) === ours && on !== false) return no('funnel')
@@ -185,9 +245,19 @@ function parseServeStatus(text, host, port) {
   const mine = []
   for (const [key, entry] of Object.entries(web)) {
     if (!isObject(entry)) return no('unknown_shape')
-    if (hostKey(key) === ours) mine.push(entry)
-    // another origin's handler that reaches the port: its requests would carry that origin
-    else if (namesPort(entry, port)) return no('other_proxy')
+    if (hostKey(key) === ours) {
+      mine.push(entry)
+      continue
+    }
+    // another origin's handler that proxies to the port: its requests would carry that origin
+    if (Object.keys(entry).some((name) => name !== 'Handlers') || !isObject(entry.Handlers)) return no('unknown_shape')
+    for (const handler of Object.values(entry.Handlers)) {
+      if (!isObject(handler) || Object.keys(handler).some((name) => !HANDLER_KEYS.has(name))) return no('unknown_shape')
+      if (handler.Proxy === undefined) continue
+      const proxied = proxyPort(handler.Proxy)
+      if (proxied === null) return no('unknown_shape')
+      if (proxied === port) return no('other_proxy')
+    }
   }
   if (mine.length > 1) return no('duplicate_host')
   if (mine.length === 0) return no('no_handler')

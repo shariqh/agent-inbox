@@ -8,7 +8,8 @@ export const REMOVAL_HINT: 'tailscale serve --https=443 off'
 /** The only places the Tailscale command line is looked for, in order. */
 export const TAILSCALE_PATHS: readonly string[]
 /** The only two argument lists this module ever runs. */
-export const TAILSCALE_ARGS: { readonly self: readonly string[]; readonly serve: readonly string[] }
+/** The only three argument lists ever run: this node without its peers, Serve, and the full peer list. */
+export const TAILSCALE_ARGS: { readonly self: readonly string[]; readonly serve: readonly string[]; readonly peers: readonly string[] }
 
 /** `remote.json` beside the hub database: the folder of AGENT_INBOX_DB, else ~/.agent-inbox. */
 export function remoteFile(env?: Record<string, string | undefined>, home?: string): string
@@ -52,9 +53,11 @@ export interface RemoteView {
 }
 
 export type WriteReason =
-  | RemoteProblem | 'missing' | 'bad_id' | 'bad_file' | 'too_large_to_write' | 'port_clash' | 'write_failed' | 'not_needed'
+  | RemoteProblem | 'missing' | 'bad_id' | 'bad_file' | 'too_large_to_write' | 'not_serialisable' | 'port_clash' | 'write_failed' | 'not_needed' | 'failed'
 /** `voidedCode`: a code main asked for in the last 10 minutes was pending, and this write voided it. */
-export type WriteResult = { ok: true; view: RemoteView; voidedCode: boolean } | { ok: false; reason: WriteReason }
+/** `unknownFieldsDropped`: only turnOff, when the document could not be written back (an unknown field nested too deep). */
+export type WriteResult = { ok: true; view: RemoteView; voidedCode: boolean; unknownFieldsDropped?: true } | { ok: false; reason: WriteReason }
+export type RepairResult = { ok: true; view: RemoteView; voidedCode: boolean; devicesRemoved: number } | { ok: false; reason: WriteReason }
 export type RemoveResult = { ok: true; view: RemoteView; voidedCode: boolean; droppedEntries: number } | { ok: false; reason: WriteReason }
 export type TurnOnResult =
   | { ok: true; view: RemoteView; voidedCode: boolean; devicesRemoved: number; droppedEntries: number }
@@ -86,6 +89,8 @@ export interface RemoteWatchState {
   /** never the login: only whether it is one the file allows */
   self: { ok: true; host: string; loginAllowed: boolean; at: number } | { ok: false; reason: SelfReason; at: number } | null
   flag: boolean
+  /** the digest of the flagged state; pass it to acknowledge() */
+  flagDigest: string | null
   stopped: { reason: string; at: number; off: boolean } | null
   removalHint: string | null
 }
@@ -100,8 +105,8 @@ export interface RemoteEntryController {
   turnOn(): Promise<TurnOnResult>
   turnOff(): Promise<WriteResult>
   removeDevice(id: unknown): Promise<RemoveResult>
-  /** the one explicit repair: a file with group or other bits is rewritten 0600, and off */
-  repairPermissions(): Promise<WriteResult>
+  /** the one explicit repair: a file with group or other bits is rewritten 0600, off, with no devices */
+  repairPermissions(): Promise<RepairResult>
   requestCode(): Promise<CodeResult>
   entryStatus(): Promise<{ ok: true; status: EntryStatus } | { ok: false; reason: 'unreachable' | 'bad_status' | 'bad_shape' }>
   selfTest(): Promise<SelfTestResult>
@@ -110,7 +115,8 @@ export interface RemoteEntryController {
   tick(): Promise<void>
   refresh(): Promise<void>
   state(): Promise<RemoteWatchState>
-  acknowledge(): Promise<void>
+  /** accepts the flagged state only when the file still has this digest */
+  acknowledge(digest: unknown): Promise<{ ok: true } | { ok: false; reason: 'bad_digest' | 'changed' | 'failed' }>
 }
 
 export function createRemoteEntry(options: {
@@ -128,6 +134,8 @@ export function createRemoteEntry(options: {
   fetch?: (url: string, init: Record<string, unknown>) => Promise<Response>
   now?: () => number
   sleep?: (ms: number) => Promise<void>
+  setTimeout?: (fn: () => void, ms: number) => unknown
+  clearTimeout?: (handle: unknown) => void
   setInterval?: (fn: () => void, ms: number) => unknown
   clearInterval?: (handle: unknown) => void
   onStopped?: (reason: string, detail: { off: boolean }) => void

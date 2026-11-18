@@ -16,11 +16,13 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import remoteEntry from '../electron/remote-entry.cjs'
+import remoteTailscale from '../electron/remote-tailscale.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 import { setting, writeSetting } from './remote-fixtures.js'
 import { ALLOWED_ARGS, HOST, cliExists, fakeTailscale, goodServe, selfStatus, tailscaleCalls } from './remote-entry-fixtures.js'
 
 const { REMOVAL_HINT, TAILSCALE_ARGS, TAILSCALE_PATHS, createRemoteEntry, parseServeStatus, tailscaleCli } = remoteEntry
+const { runTailscale } = remoteTailscale
 
 const PORT = 4320
 const OTHER = 'other.example.ts.net'
@@ -242,9 +244,29 @@ describe('the watch tries a failed read once more, 5 seconds later, before it co
 })
 
 describe('the module never changes Tailscale', () => {
-  it('holds exactly two argument lists, frozen', () => {
-    expect(TAILSCALE_ARGS).toEqual({ self: ['status', '--json'], serve: ['serve', 'status', '--json'] })
-    expect(Object.isFrozen(TAILSCALE_ARGS) && Object.isFrozen(TAILSCALE_ARGS.self) && Object.isFrozen(TAILSCALE_ARGS.serve)).toBe(true)
+  it('holds exactly three argument lists, frozen: this node without its peers, Serve, and the peers for the connecting Mac', () => {
+    expect(TAILSCALE_ARGS).toEqual({ self: ['status', '--json', '--peers=false'], serve: ['serve', 'status', '--json'], peers: ['status', '--json'] })
+    expect(Object.isFrozen(TAILSCALE_ARGS) && Object.values(TAILSCALE_ARGS).every((list) => Object.isFrozen(list))).toBe(true)
+  })
+
+  it('caps self and serve at 1 MiB and the peer list at 16 MiB', async () => {
+    const caps: Record<string, unknown> = {}
+    const fake = (_file: string, args: readonly string[], options: { maxBuffer: number }, callback: (error: Error | null, stdout: string) => void) => {
+      caps[args.join(' ')] = options.maxBuffer
+      callback(null, '{}')
+    }
+    for (const which of ['self', 'serve', 'peers'] as const) {
+      expect(await runTailscale(which, { execFile: fake, exists: cliExists })).toEqual({ ok: true, text: '{}' })
+    }
+    expect(caps).toEqual({ 'status --json --peers=false': 1024 * 1024, 'serve status --json': 1024 * 1024, 'status --json': 16 * 1024 * 1024 })
+    expect(await runTailscale('other' as never, { execFile: fake, exists: cliExists })).toEqual({ ok: false, reason: 'failed' })
+  })
+
+  it('refuses peer output past 16 MiB and self output past 1 MiB, even when handed back', async () => {
+    const big = (bytes: number) => (_file: string, _args: readonly string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) => callback(null, 'x'.repeat(bytes))
+    expect(await runTailscale('peers', { execFile: big(16 * 1024 * 1024 + 1), exists: cliExists })).toEqual({ ok: false, reason: 'failed' })
+    expect((await runTailscale('peers', { execFile: big(2 * 1024 * 1024), exists: cliExists })).ok).toBe(true)
+    expect(await runTailscale('self', { execFile: big(1024 * 1024 + 1), exists: cliExists })).toEqual({ ok: false, reason: 'failed' })
   })
 
   // the controller is two files: remote-tailscale.cjs runs the command line, remote-entry.cjs never does
@@ -262,11 +284,13 @@ describe('the module never changes Tailscale', () => {
     const code = text.replace(hintLine, '')
     // the two lists are defined once, and the one run takes its list from them by key
     expect(code.match(/\[\s*'serve'/g)).toHaveLength(1)
-    expect(code.match(/'--json'/g)).toHaveLength(2)
-    expect(code).toContain("self: Object.freeze(['status', '--json'])")
+    expect(code.match(/'--json'/g)).toHaveLength(3)
+    expect(code.match(/'--peers=false'/g)).toHaveLength(1)
+    expect(code).toContain("self: Object.freeze(['status', '--json', '--peers=false'])")
     expect(code).toContain("serve: Object.freeze(['serve', 'status', '--json'])")
-    expect(code).toContain('const args = TAILSCALE_ARGS[which]')
-    expect(code).toContain('execFile(cli, [...args], { ...RUN_OPTIONS },')
+    expect(code).toContain("peers: Object.freeze(['status', '--json'])")
+    expect(code).toContain('const args = Object.hasOwn(TAILSCALE_ARGS, which) ? TAILSCALE_ARGS[which] : null')
+    expect(code).toContain('execFile(cli, [...args], { ...RUN_OPTIONS, maxBuffer: cap },')
     expect(code).not.toMatch(NO_OTHER_LIST)
     expect(code).not.toMatch(NO_FLAG)
     expect(code).not.toMatch(NO_OTHER_RUN)
@@ -278,7 +302,7 @@ describe('the module never changes Tailscale', () => {
     const code = source('remote-entry.cjs')
     expect(code).not.toMatch(/child_process|execFile\(/)
     expect(code).not.toMatch(NO_OTHER_LIST)
-    expect(code).not.toMatch(/'--json'|\[\s*'serve'|\[\s*'status'/)
+    expect(code).not.toMatch(/'--json'|'--peers|\[\s*'serve'|\[\s*'status'/)
     expect(code).not.toMatch(NO_FLAG)
     expect(code).not.toMatch(NO_OTHER_RUN)
     expect(code).not.toMatch(NO_SEARCH)

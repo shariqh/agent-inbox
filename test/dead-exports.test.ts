@@ -79,7 +79,9 @@ const ENTRY_POINTS = new Map<string, string>([
 
 // Modules built ahead of the PR that wires them in, the same idea as ALLOWED's store.ts entries
 // for exports. Each is checked below to be genuinely unimported still: once something requires
-// it, the entry must go, so it cannot sit here widening the guard.
+// it, the entry must go, so it cannot sit here widening the guard. The reachability check sees only
+// a destructuring require, `const { … } = require('…')`, so the wiring must use that form, or the
+// stale-entry check never fires.
 const NOT_YET_WIRED = new Map<string, string>([
   ['electron/remote-entry.cjs', 'the hub remote-entry controller (#617, PR 2c, logic and tests only); the next PR requires it from electron/main.cjs for IPC, notifications and Settings'],
 ])

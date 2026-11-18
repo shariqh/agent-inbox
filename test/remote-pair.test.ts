@@ -122,8 +122,10 @@ function pair(hub: Hub, body: unknown, opts: {
 }
 
 /** Send, and say which counter rose (exactly one may rise on a refusal, none on success). */
-async function attempt(hub: Hub, request: () => Promise<RawResponse>): Promise<{ response: RawResponse; rose: Reason[] }> {
-  const before = { ...hub.entry.status().refused }
+async function attempt(hub: Hub, request: () => Promise<RawResponse>, counted?: ReturnType<RemoteEntry['status']>['refused']): Promise<{ response: RawResponse; rose: Reason[] }> {
+  // #617 PR 2d: a status read after a change to remote.json reconciles the listener at once, so a
+  // test of what the gate alone does takes its counts before that change (`counted`)
+  const before = counted ?? { ...hub.entry.status().refused }
   const response = await request()
   const after = hub.entry.status().refused
   const rose = (Object.keys(after) as Reason[]).filter((key) => after[key] !== before[key])
@@ -842,8 +844,9 @@ describe('the entry turned off between making the code and pairing', () => {
     // a poll an hour apart: only the request sees the change
     const hub = await startHub()
     const code = await makeCode(hub)
+    const counted = { ...hub.entry.status().refused }
     writeSetting(hub.dir, setting(hub.port, [], { enabled: false }))
-    const off = await attempt(hub, () => pair(hub, { code, label: 'laptop' }))
+    const off = await attempt(hub, () => pair(hub, { code, label: 'laptop' }), counted)
     expect(off.response.status).toBe(403)
     expect(off.rose).toEqual(['host'])
     await waitUntil(() => !hub.entry.status().listening, 'the entry to close')
@@ -867,9 +870,10 @@ describe('the entry turned off between making the code and pairing', () => {
     for (const [value, mode] of [[(port: number) => setting(port, []), 0o640], [(port: number) => setting(port, [], { schema: 2 }), 0o600]] as const) {
       const hub = await startHub()
       const code = await makeCode(hub)
+      const counted = { ...hub.entry.status().refused }
       writeSetting(hub.dir, value(hub.port), mode)
       const written = readFileSync(hub.file, 'utf8')
-      const refused = await attempt(hub, () => pair(hub, { code, label: 'laptop' }))
+      const refused = await attempt(hub, () => pair(hub, { code, label: 'laptop' }), counted)
       expect(refused.response.status).toBe(403)
       expect(refused.rose).toEqual(['host'])
       expect(readFileSync(hub.file, 'utf8')).toBe(written)

@@ -65,11 +65,16 @@ function viewerStub(viewerPort = 4319) {
     codes: [] as Array<() => Response>,
     version: (() => new Response('Forbidden', { status: 403 })) as () => Response,
     calls: [] as Array<{ url: string; init: Record<string, unknown> }>,
+    // #617 PR 2d: holds the status route's answer until it resolves
+    gate: null as Promise<void> | null,
   }
   const fetch = async (url: string, init: Record<string, unknown>): Promise<Response> => {
     v.calls.push({ url, init })
     if (url === `http://127.0.0.1:${viewerPort}/api/remote-entry/code`) return (v.codes.shift() ?? (() => new Response('', { status: 500 })))()
-    if (url === `http://127.0.0.1:${viewerPort}/api/remote-entry`) return Response.json(v.status)
+    if (url === `http://127.0.0.1:${viewerPort}/api/remote-entry`) {
+      if (v.gate) await v.gate
+      return Response.json(v.status)
+    }
     if (url === `https://${HOST}/api/version`) return v.version()
     throw new TypeError('fetch failed')
   }
@@ -168,6 +173,9 @@ describe('the controller reads remote.json by the viewer\'s rules', () => {
     ['a label with a lone surrogate', setting(4320, [device(newSecret(), A), device(newSecret(), B, 'half\ud800')])],
     ['a label of 41 characters', setting(4320, [device(newSecret(), A), device(newSecret(), B, 'x'.repeat(41))])],
     ['devices not a list', setting(4320, [], { devices: {} })],
+    // review round 2, item 3: the first entry with an id is the device
+    ['an id used twice', setting(4320, [device(newSecret(), A), device(newSecret(), B), device(newSecret(), A, 'other')])],
+    ['an id used twice, the first entry unreadable', setting(4320, [{ id: A, label: '', secretSha256: 'f'.repeat(64) }, device(newSecret(), A)])],
     ['mode 0644', setting(4320, []), 0o644],
     ['mode 0640', setting(4320, []), 0o640],
     ['too large', { ...setting(4320, []), pad: 'x'.repeat(65 * 1024) }],
@@ -276,6 +284,22 @@ describe('turnOn(): only when this node\'s identity and Serve\'s shape are both 
     expect(fileJson(file)).toMatchObject({ port: 4393, viewerPort: 4392 })
   })
 
+  // #617 PR 2d: a checkout-only knob, so the panel can be proven against an existing Serve configuration
+  it('a checkout build takes AGENT_INBOX_REMOTE_PORT when it is a port from 1024 to 65535; the packaged app never does', async () => {
+    const checkout = hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: '4320' } })
+    expect(checkout.c.port).toBe(4320)
+    expect((await checkout.c.turnOn()).ok).toBe(true)
+    expect(fileJson(checkout.file)).toMatchObject({ port: 4320, viewerPort: 4392 })
+    expect(hub({ isPackaged: true, env: { AGENT_INBOX_REMOTE_PORT: '4999' } }).c.port).toBe(4320)
+    for (const bad of ['', '80', '1023', '65536', '4320.5', ' 4320', '4320 ', '0x10e0', '+4320', '4e3', 'abc', '04320x', '04320', '01024']) {
+      expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: bad } }).c.port, JSON.stringify(bad)).toBe(4393)
+    }
+    expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: '1024' } }).c.port).toBe(1024)
+    expect(hub({ isPackaged: false, env: { AGENT_INBOX_REMOTE_PORT: '65535' } }).c.port).toBe(65535)
+    expect(remoteEntry.entryPort({ isPackaged: false, env: {} })).toBe(4393)
+    expect(remoteEntry.entryPort({ isPackaged: true, env: { AGENT_INBOX_REMOTE_PORT: '5000' } })).toBe(4320)
+  })
+
   it('keeps devices and every unknown field, at the top level and in each device, for the same identity', async () => {
     const { c, dir, file } = hub()
     const kept = { ...device(newSecret(), A), future: { x: 1 } }
@@ -289,10 +313,12 @@ describe('turnOn(): only when this node\'s identity and Serve\'s shape are both 
     ['another login (another account signed in)', { logins: [OTHER_LOGIN] }],
     ['a second login beside this one', { logins: [LOGIN, OTHER_LOGIN] }],
     ['no host stored', { host: undefined }],
-  ] as Array<[string, Record<string, unknown>]>)('removes every device when the stored identity is %s, and says so', async (_name, stored) => {
+  ] as Array<[string, Record<string, unknown>]>)('removes every device when the stored identity is %s, once the owner agreed, and says so', async (_name, stored) => {
     const { c, dir, file } = hub()
     writeSetting(dir, setting(4320, [device(newSecret(), A), device(newSecret(), B)], { enabled: false, ...stored }))
-    const result = await c.turnOn()
+    // review round 1, item 8: never without being asked
+    expect(await c.turnOn()).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 2 })
+    const result = await c.turnOn({ removeDevices: true })
     expect(result).toMatchObject({ ok: true, devicesRemoved: 2 })
     expect(fileJson(file)).toMatchObject({ host: HOST, logins: [LOGIN], devices: [], enabled: true })
   })
@@ -406,10 +432,47 @@ describe('turnOff() and removeDevice()', () => {
     for (const bad of ['laptop', 'AAAAAAAAAAAAAAAA', '', null, 7]) expect(await c.removeDevice(bad)).toEqual({ ok: false, reason: 'bad_id' })
   })
 
+  // #617 PR 2d: the panel's Clear for "N entries that can't be read"
+  it('clearUnreadable drops only the entries the reader drops, keeps the rest and unknown fields, and says how many', async () => {
+    const { c, dir, file } = hub()
+    writeSetting(dir, setting(4320, [{ ...device(newSecret(), A), x: 1 }, { id: 'bad' }, device(newSecret(), B, 'lap‮top'), null], { y: 2 }))
+    const result = await c.clearUnreadable()
+    expect(result).toMatchObject({ ok: true, removed: 3, voidedCode: false })
+    const after = fileJson(file) as { devices: Array<{ id: string; x?: number }>; y: number; enabled: boolean }
+    expect(after.devices.map((d) => [d.id, d.x])).toEqual([[A, 1]])
+    expect(after.y).toBe(2)
+    expect(after.enabled).toBe(true)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect((await c.view()).unreadableDevices).toBe(0)
+  })
+
+  it('clearUnreadable with nothing to drop, or no file, writes nothing', async () => {
+    const { c, dir, file } = hub()
+    expect(await c.clearUnreadable()).toMatchObject({ ok: true, removed: 0 })
+    expect(existsSync(file)).toBe(false)
+    writeSetting(dir, setting(4320, [device(newSecret(), A)]))
+    const text = readFileSync(file, 'utf8')
+    const stamp = statSync(file).mtimeMs
+    expect(await c.clearUnreadable()).toMatchObject({ ok: true, removed: 0 })
+    expect(readFileSync(file, 'utf8')).toBe(text)
+    expect(statSync(file).mtimeMs).toBe(stamp)
+  })
+
+  it('clearUnreadable never makes a file the reader refuses readable: 17 entries, one bad, stay as they are', async () => {
+    const { c, dir, file } = hub()
+    const ids = Array.from({ length: 16 }, (_, i) => i.toString(16).padStart(16, '0'))
+    writeSetting(dir, setting(4320, [...ids.map((id) => device(newSecret(), id)), { id: 'bad' }]))
+    const text = readFileSync(file, 'utf8')
+    expect(await c.clearUnreadable()).toEqual({ ok: false, reason: 'bad_devices' })
+    expect(readFileSync(file, 'utf8')).toBe(text)
+    writeSetting(dir, setting(4320, [{ id: 'bad' }]), 0o644)
+    expect(await c.clearUnreadable()).toEqual({ ok: false, reason: 'open_to_others' })
+  })
+
   it('there is no operation that sets logins, host or port, or adds a device', () => {
     const { c } = hub()
     expect(Object.keys(c).sort()).toEqual([
-      'acknowledge', 'entryStatus', 'file', 'port', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'review', 'selfTest',
+      'acknowledge', 'clearUnreadable', 'entryStatus', 'file', 'port', 'recheckHint', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'review', 'selfTest',
       'serveState', 'settled', 'start', 'state', 'stop', 'tailnetSelf', 'tick', 'turnOff', 'turnOn', 'view', 'viewerPort',
     ])
   })
@@ -606,8 +669,10 @@ describe('requestCode(): a pairing code from the app\'s own viewer', () => {
     expect(await off.c.requestCode()).toEqual({ ok: false, reason: 'off' })
     expect(off.v.calls).toEqual([])
     const noToken = await enabled({ ownerToken: undefined })
+    // turnOn itself read the status (#617, PR 2d); requestCode adds nothing
+    const before = noToken.v.calls.length
     expect(await noToken.c.requestCode()).toEqual({ ok: false, reason: 'no_owner_token' })
-    expect(noToken.v.calls).toEqual([])
+    expect(noToken.v.calls.length).toBe(before)
   })
 
   it('a write after a code says the code was voided', async () => {
@@ -780,6 +845,8 @@ describe('the watch: Serve\'s shape and this node\'s identity while the entry is
       isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') },
       execFile: fakeTailscale({ self: selfStatus(), serve: () => (bad ? {} : goodServe(4320)) }), exists: cliExists,
       now: () => h.clock.now, setInterval: () => 0, clearInterval: () => {}, fetch: async () => new Response('', { status: 500 }),
+      // turnOn waits for a listener this stub never reports (#617, PR 2d): on the test's clock
+      sleep: async (ms: number) => { h.clock.now += ms },
       onStopped: (reason: string) => { h.events.stopped.push(reason) },
     })
     writeSetting(h.dir, setting(4320, []))
@@ -810,7 +877,8 @@ describe('the watch: Serve\'s shape and this node\'s identity while the entry is
     }
   })
 
-  it('never reads Serve while the entry is off, except once for the removal hint when the file names a host', async () => {
+  // review round 1, item 6: and again every minute while the hint is shown, so it goes once Serve is cleared
+  it('never reads Serve while the entry is off, except for the removal hint when the file names a host: once, then every minute while shown', async () => {
     const h = hub({ serve: { TCP: { '443': { HTTPS: true } }, Web: { [`${HOST}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:4320' } } } } } })
     writeSetting(h.dir, setting(4320, [], { enabled: false }))
     h.c.start()
@@ -818,7 +886,7 @@ describe('the watch: Serve\'s shape and this node\'s identity while the entry is
       await h.c.tick()
       h.clock.now += 60_000
     }
-    expect(h.tailscale.calls.map((call) => call.args.join(' '))).toEqual(['serve status --json'])
+    expect(h.tailscale.calls.map((call) => call.args.join(' '))).toEqual(Array(5).fill('serve status --json'))
     expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
     const none = hub({ serve: {} })
     none.c.start()
@@ -1059,6 +1127,125 @@ describe('selfTest(): a request from the hub to its own Serve address, with no d
     const h = hub()
     expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'off', rose: null })
     expect(h.v.calls).toEqual([])
+  })
+
+  // #617 PR 2d: a Test pressed before the viewer opened the listener met nothing at all
+  it('first waits up to 6 seconds for the viewer to listen, and says so when it does not', async () => {
+    const h = await enabled()
+    ;(h.v.status as ReturnType<typeof statusBody>).listening = false
+    const started = h.clock.now
+    expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'not_listening', rose: null })
+    expect(h.clock.now - started).toBeGreaterThanOrEqual(6_000)
+    expect(h.clock.now - started).toBeLessThan(6_500)
+    expect(h.v.calls.some((call) => call.url.startsWith('https://'))).toBe(false)
+  })
+
+  it('a 502, 503 or 504 means Tailscale reached nothing behind it', async () => {
+    const h = await enabled()
+    for (const status of [502, 503, 504]) {
+      h.v.version = () => new Response('', { status })
+      expect(await h.c.selfTest(), String(status)).toEqual({ ok: false, reason: 'no_backend', rose: null })
+    }
+    for (const status of [200, 401, 500]) {
+      h.v.version = () => new Response('', { status })
+      expect(await h.c.selfTest(), String(status)).toEqual({ ok: false, reason: 'not_refused', rose: null })
+    }
+  })
+})
+
+describe('the controller answers once the Inbox is really answering (#617, PR 2d)', () => {
+  const statusCalls = (h: ReturnType<typeof hub>) => h.v.calls.filter((call) => call.url === 'http://127.0.0.1:4319/api/remote-entry').length
+
+  it('turnOn reads the viewer\'s status every 250 ms until it listens on this port, then says listening', async () => {
+    const h = hub()
+    const body = h.v.status as ReturnType<typeof statusBody>
+    body.listening = false
+    let reads = 0
+    const original = h.v.status
+    h.v.status = new Proxy(original as object, {
+      get(target, key) {
+        if (key === 'listening') {
+          reads += 1
+          return reads >= 4
+        }
+        return Reflect.get(target, key)
+      },
+    })
+    const started = h.clock.now
+    const result = await h.c.turnOn()
+    expect(result).toMatchObject({ ok: true, listening: true })
+    expect(statusCalls(h)).toBe(4)
+    expect(h.clock.now - started).toBe(750)
+    expect((await h.c.state()).listening).toBe(true)
+  })
+
+  it('a listener on another port, or the entry not on, is not listening', async () => {
+    for (const change of [{ port: 4999 }, { on: false }]) {
+      const h = hub()
+      Object.assign(h.v.status as ReturnType<typeof statusBody>, change)
+      const result = await h.c.turnOn()
+      expect(result, JSON.stringify(change)).toMatchObject({ ok: true, listening: false })
+    }
+  })
+
+  it('turnOn gives up after 6 seconds: still ok, since the file is on, but not listening', async () => {
+    const h = hub()
+    ;(h.v.status as ReturnType<typeof statusBody>).listening = false
+    const started = h.clock.now
+    const result = await h.c.turnOn()
+    expect(result).toMatchObject({ ok: true, listening: false })
+    expect(fileJson(h.file).enabled).toBe(true)
+    expect(h.clock.now - started).toBeGreaterThanOrEqual(6_000)
+    expect(h.clock.now - started).toBeLessThan(6_500)
+    expect(statusCalls(h)).toBeLessThanOrEqual(26)
+    expect((await h.c.state()).listening).toBe(false)
+  })
+
+  it('the wait is bounded by its count of reads too: a clock that stands still never keeps turnOn waiting', async () => {
+    const h = hub()
+    ;(h.v.status as ReturnType<typeof statusBody>).listening = false
+    const frozen = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') }, ownerToken: TOKEN,
+      execFile: fakeTailscale({ self: selfStatus(), serve: goodServe(4320) }), exists: cliExists,
+      fetch: (url: string, init: Record<string, unknown>) => viewerStub().fetch(url, init).then(async (response) => (
+        url.endsWith('/api/remote-entry') ? Response.json({ ...statusBody(), listening: false }) : response)),
+      now: () => START, sleep: async () => {}, setInterval: () => 0, clearInterval: () => {},
+    })
+    const result = await frozen.turnOn()
+    expect(result).toMatchObject({ ok: true, listening: false })
+  })
+
+  it('turnOff reads the status once after its write, so the listener closes now, and does not wait for it', async () => {
+    const h = hub()
+    expect((await h.c.turnOn()).ok).toBe(true)
+    const before = statusCalls(h)
+    let release!: () => void
+    h.v.gate = new Promise<void>((resolve) => { release = resolve })
+    const result = await h.c.turnOff()
+    expect(result.ok).toBe(true)
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect(statusCalls(h)).toBe(before + 1)
+    release()
+  })
+
+  it('the watch\'s own stop reads the status once after its write, without waiting for it', async () => {
+    let bad = false
+    const h = hub({ serve: () => (bad ? { ...goodServe(4320), AllowFunnel: { [`${HOST}:443`]: true } } : goodServe(4320)) })
+    expect((await h.c.turnOn()).ok).toBe(true)
+    h.c.start()
+    await h.c.tick()
+    const before = statusCalls(h)
+    let release!: () => void
+    h.v.gate = new Promise<void>((resolve) => { release = resolve })
+    bad = true
+    h.clock.now += 60_000
+    await h.c.tick()
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect(h.events.stopped).toEqual(['funnel'])
+    // the tick finished while the status read is still held
+    expect(statusCalls(h)).toBe(before + 1)
+    release()
+    h.c.stop()
   })
 })
 
@@ -1530,5 +1717,244 @@ describe('review round 1: the cases surviving mutants showed were untested', () 
     expect(text.length).toBeLessThanOrEqual(64 * 1024)
     expect(await c.turnOn()).toEqual({ ok: false, reason: 'too_large_to_write', step: 'file' })
     expect(readFileSync(file, 'utf8')).toBe(text)
+  })
+})
+
+// ── review round 1 (#617, PR 2d) ───────────────────────────────────────────
+
+describe('the viewer\'s bind failure, as a fixed word (review round 1, item 3)', () => {
+  const status = (h: ReturnType<typeof hub>) => h.v.status as ReturnType<typeof statusBody>
+
+  it('turnOn stops waiting at once, state() names it, and Test says the port is in use', async () => {
+    const h = hub()
+    Object.assign(status(h), { listening: false, error: 'could not listen on 127.0.0.1:4320 (EADDRINUSE)' })
+    const started = h.clock.now
+    expect(await h.c.turnOn()).toMatchObject({ ok: true, listening: false })
+    expect(h.clock.now - started).toBeLessThan(1_000)
+    expect((await h.c.state()).listenError).toBe('port_in_use')
+    expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'port_in_use', rose: null })
+    expect(JSON.stringify(await h.c.state())).not.toMatch(/EADDRINUSE|could not listen/)
+  })
+
+  it('another bind failure is cannot_listen; a listener, or an error that is not a bind failure, is none', async () => {
+    const h = hub()
+    expect((await h.c.turnOn()).ok).toBe(true)
+    Object.assign(status(h), { listening: false, error: 'could not listen on 127.0.0.1:4320 (EACCES)' })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBe('cannot_listen')
+    expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'cannot_listen', rose: null })
+    Object.assign(status(h), { listening: false, error: 'could not listen on 127.0.0.1:4999 (EADDRINUSE)' })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBeNull()
+    Object.assign(status(h), { listening: false, error: 'remote.json is not valid JSON' })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBeNull()
+    Object.assign(status(h), { listening: true, error: null })
+    await h.c.entryStatus()
+    expect((await h.c.state()).listenError).toBeNull()
+  })
+})
+
+describe('the removal hint follows Serve while sharing is off (review round 1, item 6)', () => {
+  const serveReads = (h: ReturnType<typeof hub>) => h.tailscale.calls.filter((call) => call.args.join(' ') === 'serve status --json').length
+
+  it('is read again every minute while shown, and goes once Serve no longer names the address or port', async () => {
+    let serve: unknown = goodServe(4320)
+    const h = hub({ serve: () => serve })
+    expect((await h.c.turnOn()).ok).toBe(true)
+    h.c.start()
+    await h.c.tick()
+    await h.c.turnOff()
+    h.clock.now += 6_000
+    await h.c.tick()
+    expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
+    serve = {}
+    h.clock.now += 30_000
+    await h.c.tick()
+    expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
+    h.clock.now += 31_000
+    await h.c.tick()
+    expect((await h.c.state()).removalHint).toBeNull()
+    // once gone, Serve is not read again while off
+    const reads = serveReads(h)
+    for (let i = 0; i < 3; i += 1) {
+      h.clock.now += 60_000
+      await h.c.tick()
+    }
+    expect(serveReads(h)).toBe(reads)
+    h.c.stop()
+  })
+
+  it('recheckHint reads Serve at once while the hint is shown, at most every 5 seconds, and not once it is gone', async () => {
+    let serve: unknown = goodServe(4320)
+    const h = hub({ serve: () => serve })
+    expect((await h.c.turnOn()).ok).toBe(true)
+    await h.c.turnOff()
+    await h.c.refresh()
+    expect((await h.c.state()).removalHint).toBe(REMOVAL_HINT)
+    let reads = serveReads(h)
+    h.clock.now += 2_000
+    await h.c.recheckHint()
+    expect(serveReads(h)).toBe(reads)
+    serve = {}
+    h.clock.now += 4_000
+    await h.c.recheckHint()
+    expect(serveReads(h)).toBe(reads + 1)
+    expect((await h.c.state()).removalHint).toBeNull()
+    reads = serveReads(h)
+    h.clock.now += 60_000
+    await h.c.recheckHint()
+    expect(serveReads(h)).toBe(reads)
+  })
+})
+
+describe('review(): what changed, as facts with no values (review round 1, item 7)', () => {
+  const D = 'dddddddddddddddd'
+  async function watched(devices: unknown[]) {
+    const h = hub()
+    writeSetting(h.dir, setting(4320, devices))
+    h.c.start()
+    await h.c.tick()
+    expect((await h.c.review()).flag).toBe(false)
+    expect((await h.c.review()).changes).toBeNull()
+    return h
+  }
+  const NONE: Record<string, unknown> = {
+    unknown: false, missing: false, unreadable: false, switched: null, address: false, account: false, port: false,
+    added: [], removed: [], keyChanged: [], unreadableAdded: 0, unreadableRemoved: 0,
+  }
+  async function edit(h: Awaited<ReturnType<typeof watched>>, value: unknown, mode?: number) {
+    writeSetting(h.dir, value, mode)
+    h.clock.now += 5_000
+    await h.c.tick()
+    const review = await h.c.review()
+    expect(review.flag).toBe(true)
+    return review
+  }
+  async function accept(h: Awaited<ReturnType<typeof watched>>) {
+    expect(await h.c.acknowledge((await h.c.review()).digest)).toEqual({ ok: true })
+  }
+
+  it('names each kind of change, and carries no login, hash, host or port', async () => {
+    const laptop = device(newSecret(), A, 'laptop')
+    const h = await watched([laptop])
+    const cases: Array<[unknown, Record<string, unknown>]> = [
+      [setting(4320, [laptop], { logins: [LOGIN, OTHER_LOGIN] }), { account: true }],
+      [setting(4320, [{ ...laptop, secretSha256: 'e'.repeat(64) }], { logins: [LOGIN, OTHER_LOGIN] }), { keyChanged: ['laptop'] }],
+      [setting(4320, [{ ...laptop, secretSha256: 'e'.repeat(64) }, device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN] }), { added: ['desk'] }],
+      [setting(4320, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN] }), { removed: ['laptop'] }],
+      [setting(4320, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false }), { switched: 'off' }],
+      [setting(4320, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { address: true }],
+      [setting(4321, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { port: true }],
+      [setting(4321, [device(newSecret(), B, 'desk'), { id: 'bad' }, null], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { unreadableAdded: 2 }],
+      [setting(4321, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], enabled: false, host: OTHER_HOST }), { unreadableRemoved: 2 }],
+      [setting(4321, [device(newSecret(), B, 'desk')], { logins: [LOGIN, OTHER_LOGIN], host: OTHER_HOST }), { switched: 'on' }],
+    ]
+    for (const [value, facts] of cases) {
+      const review = await edit(h, value)
+      // a fresh secret per write would read as a key change: the desk entry keeps its first hash
+      const changes = { ...review.changes, keyChanged: (review.changes?.keyChanged ?? []).filter((label: string) => label !== 'desk') }
+      expect(changes, JSON.stringify(facts)).toEqual({ ...NONE, ...facts })
+      expect(JSON.stringify(review.changes)).not.toMatch(new RegExp([LOGIN, OTHER_LOGIN, HOST, OTHER_HOST, '4321', 'e{64}', '[0-9a-f]{64}'].join('|')))
+      await accept(h)
+    }
+  })
+
+  it('main\'s own write while a change is flagged keeps the facts against what the owner last accepted', async () => {
+    const laptop = device(newSecret(), A, 'laptop')
+    const h = await watched([laptop])
+    const desk = device(newSecret(), B, 'desk')
+    await edit(h, setting(4320, [laptop, desk]))
+    // the owner presses Remove on laptop while the box is up
+    expect((await h.c.removeDevice(A)).ok).toBe(true)
+    const review = await h.c.review()
+    expect(review.flag).toBe(true)
+    expect(review.changes).toMatchObject({ added: ['desk'], removed: ['laptop'] })
+  })
+
+  it('a file removed, and a file it cannot read, say so', async () => {
+    const h = await watched([device(newSecret(), D, 'laptop')])
+    unlinkSync(h.file)
+    expect((await edit(h, setting(4320, [device(newSecret(), D, 'laptop')]), 0o644)).changes).toMatchObject({ unreadable: true })
+    const g = await watched([device(newSecret(), D, 'laptop')])
+    unlinkSync(g.file)
+    g.clock.now += 5_000
+    await g.c.tick()
+    expect((await g.c.review()).changes).toMatchObject({ missing: true })
+  })
+})
+
+describe('an id used twice (review round 2, item 3)', () => {
+  it('the controller lists the first entry only, and counts every later one as unreadable', async () => {
+    const { c, dir } = hub()
+    writeSetting(dir, setting(4320, [device(newSecret(), A, 'laptop'), device(newSecret(), A, 'laptop'), device(newSecret(), B, 'desk')]))
+    const view = await c.view()
+    expect(view.devices.map((d) => d.label)).toEqual(['laptop', 'desk'])
+    expect(view.unreadableDevices).toBe(1)
+  })
+
+  it('a write keeps the first entry with an id and drops the later ones, as the reader does', async () => {
+    const { c, dir, file } = hub()
+    const first = device(newSecret(), A, 'laptop')
+    writeSetting(dir, setting(4320, [first, device(newSecret(), A, 'copy'), device(newSecret(), B, 'desk')]))
+    expect(await c.clearUnreadable()).toMatchObject({ ok: true, removed: 1 })
+    expect((fileJson(file).devices as Array<{ id: string; secretSha256: string }>).map((d) => [d.id, d.secretSha256])).toEqual([[A, first.secretSha256], [B, expect.any(String)]])
+    writeSetting(dir, setting(4320, [first, device(newSecret(), A, 'copy'), device(newSecret(), B, 'desk')]))
+    expect(await c.removeDevice(B)).toMatchObject({ ok: true, droppedEntries: 1 })
+    expect((fileJson(file).devices as Array<{ id: string }>).map((d) => d.id)).toEqual([A])
+    writeSetting(dir, setting(4320, [first, device(newSecret(), A, 'copy')], { enabled: false }))
+    expect(await c.turnOn()).toMatchObject({ ok: true, droppedEntries: 1 })
+    expect((fileJson(file).devices as Array<{ secretSha256: string }>).map((d) => d.secretSha256)).toEqual([first.secretSha256])
+  })
+
+  // the reviewer's V7: the box says what is true, and lists the Mac once
+  it.each(['last', 'first'] as const)('a second key under a paired Mac\'s id, put %s: the facts say what is true', async (where) => {
+    const h = hub()
+    const laptop = device(newSecret(), A, 'laptop')
+    writeSetting(h.dir, setting(4320, [laptop], { enabled: false }))
+    h.c.start()
+    await h.c.tick()
+    const extra = { id: A, label: 'laptop', secretSha256: 'e'.repeat(64) }
+    writeSetting(h.dir, setting(4320, where === 'last' ? [laptop, extra] : [extra, laptop], { enabled: false }))
+    h.clock.now += 5_000
+    await h.c.tick()
+    const review = await h.c.review()
+    expect(review.flag).toBe(true)
+    expect(review.view.devices.map((d) => d.label)).toEqual(['laptop'])
+    expect(review.view.unreadableDevices).toBe(1)
+    // put last, the second key is dormant: nothing about laptop changed; put first, laptop's key is the new one
+    expect(review.changes).toMatchObject(where === 'last'
+      ? { keyChanged: [], added: [], removed: [], unreadableAdded: 1 }
+      : { keyChanged: ['laptop'], added: [], removed: [], unreadableAdded: 1 })
+  })
+})
+
+describe('turnOn() never removes paired Macs without being asked (review round 1, item 8)', () => {
+  it('refuses when the stored account or address is not this node\'s and the file holds any device entry', async () => {
+    for (const extra of [{ logins: [OTHER_LOGIN] }, { host: OTHER_HOST }, { host: undefined }, { logins: 'x' }]) {
+      const h = hub()
+      writeSetting(h.dir, setting(4320, [device(newSecret(), A)], { enabled: false, ...extra }))
+      const text = readFileSync(h.file, 'utf8')
+      expect(await h.c.turnOn(), JSON.stringify(extra)).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 1 })
+      expect(readFileSync(h.file, 'utf8')).toBe(text)
+      expect(await h.c.turnOn({ removeDevices: true })).toMatchObject({ ok: true, devicesRemoved: 1 })
+      expect(fileJson(h.file)).toMatchObject({ enabled: true, devices: [], logins: [LOGIN], host: HOST })
+    }
+  })
+
+  it('counts an entry the reader drops too', async () => {
+    const h = hub()
+    writeSetting(h.dir, setting(4320, [{ id: 'bad' }], { enabled: false, logins: [OTHER_LOGIN] }))
+    expect(await h.c.turnOn()).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 1 })
+  })
+
+  it('goes ahead with no device entry, or for the same account and address', async () => {
+    const empty = hub()
+    writeSetting(empty.dir, setting(4320, [], { enabled: false, logins: [OTHER_LOGIN] }))
+    expect(await empty.c.turnOn()).toMatchObject({ ok: true, devicesRemoved: 0 })
+    const same = hub()
+    writeSetting(same.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
+    expect(await same.c.turnOn()).toMatchObject({ ok: true, devicesRemoved: 0 })
+    expect((fileJson(same.file).devices as unknown[]).length).toBe(1)
   })
 })

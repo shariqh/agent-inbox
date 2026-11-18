@@ -705,6 +705,95 @@ registerChatResumeIpc({
   chatResume: chatResumeFor,
 })
 
+// ── sharing this Inbox with your other Macs (#617, PR 2d) ───────────────────
+// One hub controller per run (electron/remote-entry.cjs), made only on macOS for the viewer this
+// app started and owns, and started once that viewer is up. Settings → Other devices reaches it
+// through electron/remote-entry-ipc.cjs's channels, gated as Settings → Links is. On quit it is
+// stopped and its state store waited for, at most 5 seconds.
+const { createRemoteEntry } = require('./remote-entry.cjs')
+const { createRemoteEntryState } = require('./remote-entry-state.cjs')
+const {
+  CHANGED: REMOTE_ENTRY_CHANGED, createRemoteEntryPanel, createRemoteNotifier, loginItemFor, registerRemoteEntryIpc, stopRemoteEntry, watchRemoteEntry,
+} = require('./remote-entry-ipc.cjs')
+let remoteEntry = null
+let remotePanel = null
+let remoteWatch = null
+let remoteEntryQuitting = false
+// the notifications' words: the table Settings → Other devices shows (public/remote-words.js)
+const remoteWords = import(pathToFileURL(path.join(REPO_ROOT, 'public', 'remote-words.js')).href)
+remoteWords.catch(() => {})
+
+// a bare ping to the viewer window; the page asks for the panel again
+function remoteEntryChanged() {
+  if (!linkWindow || linkWindow.isDestroyed() || linkWindow.webContents.isDestroyed()) return
+  linkWindow.webContents.send(REMOTE_ENTRY_CHANGED)
+}
+
+const remoteNotifier = createRemoteNotifier({
+  words: remoteWords,
+  changed: remoteEntryChanged,
+  show: ({ title, body }) => {
+    if (!Notification.isSupported()) return
+    const note = new Notification({ title, body })
+    note.on('click', () => {
+      const win = linkWindow
+      if (!win || win.isDestroyed()) return
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    })
+    notificationRetainer.show(note)
+  },
+})
+
+registerRemoteEntryIpc({
+  ipcMain,
+  platform: process.platform,
+  panel: () => remotePanel,
+  settled: () => installBinding?.settled() ?? Promise.resolve(),
+  isTrusted: linkSender,
+  isOwned: linkFilesPermitted,
+})
+
+function startRemoteEntry() {
+  if (process.platform !== 'darwin' || !viewerOwned || remoteEntry !== null) return
+  remoteEntry = createRemoteEntry({
+    isPackaged: app.isPackaged,
+    ownerToken: OWNER_TOKEN,
+    stateStore: createRemoteEntryState({ app }),
+    onStopped: remoteNotifier.onStopped,
+    onResumed: remoteNotifier.onResumed,
+    onPaired: remoteNotifier.onPaired,
+    onOutsideChange: remoteNotifier.onOutsideChange,
+  })
+  remotePanel = createRemoteEntryPanel({
+    controller: remoteEntry, loginItem: loginItemFor({ app, platform: process.platform }), changed: remoteEntryChanged,
+    // the owner's own switch: a held or remembered pause is no longer news
+    switched: () => remoteNotifier.reset(),
+  })
+  remoteNotifier.started()
+  remoteEntry.start()
+  remoteWatch = watchRemoteEntry({ panel: remotePanel, changed: remoteEntryChanged })
+  // the removal hint is read again when the window regains focus (Settings opening asks too)
+  const controller = remoteEntry
+  linkWindow?.on('focus', () => {
+    controller.recheckHint().then(remoteEntryChanged, () => {})
+  })
+  // a panel drawn as unowned while the controller was not made yet asks again
+  remoteEntryChanged()
+}
+
+// For before-quit: true when it held this quit to stop the controller first; app.quit() follows.
+function quitRemoteEntry(event) {
+  if (remoteEntry === null || remoteEntryQuitting) return false
+  remoteEntryQuitting = true
+  event.preventDefault()
+  remoteWatch?.stop()
+  stopRemoteEntry(remoteEntry).finally(() => app.quit())
+  return true
+}
+// ── end of sharing this Inbox with your other Macs ──────────────────────────
+
 // #617 PR 3b: another Mac's Inbox (the hub) in this window, in its own sealed-off view; the policy
 // is electron/hub-view.cjs. macOS only: elsewhere both stay null and every channel answers
 // { available: false }. agentInboxConnect is the owned local page's, gated as chat resume is;
@@ -1505,6 +1594,8 @@ app.whenReady().then(async () => {
     return
   }
   startAttentionWatch(win)
+  // #617 PR 2d: sharing this Inbox with your other Macs (macOS, the owned viewer only)
+  startRemoteEntry()
   // #617 PR 3b: another Mac's Inbox, when one is connected (macOS only)
   startRemoteConnect(win)
 
@@ -1541,6 +1632,8 @@ app.on('before-quit', (event) => {
     running.then(() => app.quit())
     return
   }
+  // #617 PR 2d: the sharing controller stops, and its state store settles, first (at most 5 s)
+  if (quitRemoteEntry(event)) return
   // The committed update helper is waiting for this process to exit.
   if (updateRestartRequested) return
   // Quitting mid-install stops it first, so nothing staged or mounted is left behind.

@@ -480,6 +480,19 @@ describe('a change made while the app was closed is flagged at the next start', 
     }
   })
 
+  // #617 PR 2d review round 1, item 7: the panel says it cannot tell what changed
+  it('a change found at the first look after a start has nothing to compare with: review() says unknown', async () => {
+    const p = place()
+    writeSetting(p.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
+    const { store } = memoryStore({ digest: 'a'.repeat(64), wanted: true, file: fileIdOf(p), viewerPort: 4319 })
+    const s = open(p, { store })
+    s.c.start()
+    await s.c.tick()
+    const review = await s.c.review()
+    expect(review.flag).toBe(true)
+    expect(review.changes).toMatchObject({ unknown: true })
+  })
+
   it('a state store that fails to read counts as none kept', async () => {
     const p = place()
     writeSetting(p.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
@@ -1005,7 +1018,9 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     await after(p, s, 5_000)
     expect((await s.c.state()).needsOwner).toBe('identity_changed')
     expect(deviceIds(p.file)).toEqual([A])
-    expect(await s.c.turnOn()).toMatchObject({ ok: true, devicesRemoved: 1 })
+    // review round 1, item 8: only once the owner agreed
+    expect(await s.c.turnOn()).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 1 })
+    expect(await s.c.turnOn({ removeDevices: true })).toMatchObject({ ok: true, devicesRemoved: 1 })
     expect(fileJson(p.file)).toMatchObject({ enabled: true, host: OTHER_HOST, devices: [] })
     expect((await s.c.state()).wanted).toBe(true)
   })
@@ -1783,6 +1798,8 @@ describe('review round 1: an owner\'s turnOff before the kept state is read', ()
     await s.c.settled()
     expect(s.events.outside).toBe(1)
     expect((await s.c.state()).flag).toBe(true)
+    // #617 PR 2d review round 1, item 7: what it was before the start is not known
+    expect((await s.c.review()).changes).toMatchObject({ unknown: true })
     // and Review accepts the file as main's switch-off left it
     expect(await s.c.acknowledge((await s.c.state()).flagDigest)).toEqual({ ok: true })
   })

@@ -50,6 +50,8 @@ import { installDashHead } from '/dash-head.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
+// #617 PR 2d: Settings → Other devices, sharing this Inbox with the owner's other Macs
+import { refreshRemoteSettings, renderRemoteSettings } from '/remote-settings.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
@@ -6380,6 +6382,7 @@ function showPanel(id) {
     refreshLinkPermission()
     refreshLinkSettings()
     refreshLaunchSettings()
+    refreshRemoteSettings()
   }
 }
 
@@ -11628,6 +11631,8 @@ async function renderSetup() {
   // #586: which terminal Open in Terminal and Take over use; the buttons' titles follow at once
   renderTerminalSettings(host, { onChange: () => launchUi?.refresh() })
   renderLaunchSettings(host, { onChange: (state) => launchUi?.setState(state) })
+  // #617 PR 2d: drawn only in the desktop app, after the sections above
+  renderRemoteSettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {

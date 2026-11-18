@@ -141,8 +141,18 @@ function parseSetting(value: unknown): RemoteDocumentRead {
 
   const listed = doc['devices'] === undefined ? [] : doc['devices']
   if (!Array.isArray(listed) || listed.length > 16) return { ok: false, reason: 'bad-devices' }
-  // a malformed device is dropped, never turning the rest off
-  const devices = listed.map(parseDevice).filter((device): device is RemoteDevice => device !== null)
+  // a malformed device is dropped, never turning the rest off. The first entry with an id is the
+  // device: a later entry with that id is dropped whatever it holds, so its key never opens the gate
+  // (#617, PR 2d review round 2; electron/remote-entry.cjs reads it the same way)
+  const devices: RemoteDevice[] = []
+  const seen = new Set<string>()
+  for (const entry of listed) {
+    const id = entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>)['id'] : undefined
+    const first = typeof id === 'string' && !seen.has(id)
+    if (typeof id === 'string') seen.add(id)
+    const device = parseDevice(entry)
+    if (device && first) devices.push(device)
+  }
 
   return {
     ok: true,
@@ -595,6 +605,9 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
   return {
     status() {
       const read = current()
+      // #617 PR 2d: main reads this right after it writes remote.json, so a changed file opens or
+      // closes the listener now, as the gate's own read does, not at the next poll
+      if (cache.version !== reconciled) setImmediate(reconcile)
       const setting = read.ok ? read.setting : null
       let error = bindError
       if (!read.ok && read.reason !== 'missing') error = REFUSAL_WORDS[read.reason]

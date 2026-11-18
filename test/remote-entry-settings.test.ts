@@ -409,8 +409,8 @@ describe('turnOff() and removeDevice()', () => {
   it('there is no operation that sets logins, host or port, or adds a device', () => {
     const { c } = hub()
     expect(Object.keys(c).sort()).toEqual([
-      'acknowledge', 'entryStatus', 'file', 'port', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'selfTest',
-      'serveState', 'start', 'state', 'stop', 'tailnetSelf', 'tick', 'turnOff', 'turnOn', 'view', 'viewerPort',
+      'acknowledge', 'entryStatus', 'file', 'port', 'refresh', 'removeDevice', 'repairPermissions', 'requestCode', 'review', 'selfTest',
+      'serveState', 'settled', 'start', 'state', 'stop', 'tailnetSelf', 'tick', 'turnOff', 'turnOn', 'view', 'viewerPort',
     ])
   })
 })

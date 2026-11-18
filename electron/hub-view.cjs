@@ -28,6 +28,10 @@ const CLEAR_WAIT_MS = 5_000
 // a page that closes its own view gets a fresh one at most this often
 const REBUILDS_PER_MINUTE = 3
 const MINUTE_MS = 60_000
+// #617 PR 3c: the view starts this far (CSS pixels) below the top of the content area. The local page
+// draws whose Inbox is on screen in that strip, since the hub's page controls every pixel of its own
+// view. public/hub-strip.js draws it at the same height; test/dom/hub-strip.test.ts pins the two.
+const HUB_STRIP_HEIGHT = 36
 const HUB_PARTITION = /^hub-[0-9a-f]{8}$/
 const CLIPBOARD_WRITE = 'clipboard-sanitized-write'
 // Chromium's code for a navigation that was cancelled, a prevented one included: not a failure
@@ -350,7 +354,7 @@ function createHubView(options) {
     if (active === null) return
     try {
       const [width, height] = win.getContentSize()
-      active.view.setBounds({ x: 0, y: 0, width, height })
+      active.view.setBounds({ x: 0, y: HUB_STRIP_HEIGHT, width, height: Math.max(0, height - HUB_STRIP_HEIGHT) })
     } catch {
       // the window is going away
     }
@@ -704,6 +708,7 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView }) {
 module.exports = {
   CONNECT_CHANNELS,
   DESK_CHANNELS,
+  HUB_STRIP_HEIGHT,
   INPUT_WINDOW_MS,
   allowNavigation,
   allowPermission,

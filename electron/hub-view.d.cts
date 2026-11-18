@@ -4,6 +4,8 @@
 import type { Connection, RemoteConnect } from './remote-connect.cjs'
 
 export const INPUT_WINDOW_MS: 5000
+/** #617 PR 3c: the view is laid out this many CSS pixels below the top, where the local page draws its strip. */
+export const HUB_STRIP_HEIGHT: 36
 export const DESK_CHANNELS: Readonly<{ connection: 'agent-inbox:desk-connection'; retry: 'agent-inbox:desk-retry'; changed: 'agent-inbox:desk-changed' }>
 export const CONNECT_CHANNELS: Readonly<{
   view: 'agent-inbox:connect-view'; connect: 'agent-inbox:connect-connect'; forget: 'agent-inbox:connect-forget'; show: 'agent-inbox:connect-show'
@@ -52,7 +54,7 @@ export interface HubView {
   reload(): void
   /** Closes the view; its partition's storage stays (a forget clears it). */
   destroy(): void
-  /** Sizes the view to the window's content area. */
+  /** Sizes the view to the window's content area below the top `HUB_STRIP_HEIGHT` pixels. */
   layout(): void
   /** Writes the partition's storage to disk (before quit). */
   flush(): void

@@ -17,7 +17,7 @@ import { cliExists, fakeTailscale } from './remote-entry-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const {
-  CONNECT_CHANNELS, DESK_CHANNELS, allowNavigation, allowPermission, createHubView, deskConnection, hubMenuItems, mayOpenExternally,
+  CONNECT_CHANNELS, DESK_CHANNELS, HUB_STRIP_HEIGHT, allowNavigation, allowPermission, createHubView, deskConnection, hubMenuItems, mayOpenExternally,
   partitionFor, registerHubIpc, sendHeaders, trustedDeskSender, watchOnline, windowTitle,
 } = hubViewModule
 const { createRemoteConnect } = remoteConnect
@@ -519,15 +519,21 @@ describe('createHubView: the view and its session', () => {
     expect(w.ses().device!({ deviceType: 'hid' })).toBe(false)
   })
 
-  it('fills the window’s content area and follows resizes', async () => {
+  // #617 PR 3c: the top inset is left to the local page, which draws whose Inbox is on screen there
+  it('fills the window’s content area below the local page’s strip, and follows resizes', async () => {
+    expect(HUB_STRIP_HEIGHT).toBe(36)
     const w = world()
     w.connect.set(hubState('online'))
     await settle()
     expect(w.window.children).toEqual([w.view()])
-    expect(w.view().bounds).toEqual({ x: 0, y: 0, width: 1200, height: 800 })
+    expect(w.view().bounds).toEqual({ x: 0, y: 36, width: 1200, height: 764 })
     w.window.size = [900, 600]
     w.window.emit('resize')
-    expect(w.view().bounds).toEqual({ x: 0, y: 0, width: 900, height: 600 })
+    expect(w.view().bounds).toEqual({ x: 0, y: 36, width: 900, height: 564 })
+    // a window shorter than the strip leaves the view no height, never a negative one
+    w.window.size = [900, 20]
+    w.window.emit('resize')
+    expect(w.view().bounds).toEqual({ x: 0, y: 36, width: 900, height: 0 })
   })
 
   it('never unloads the local page: it is never navigated, closed or removed', async () => {

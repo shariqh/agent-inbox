@@ -147,12 +147,16 @@ function userIdText(raw, context) {
 }
 
 const untagged = (tags) => tags === undefined || tags === null || (Array.isArray(tags) && tags.length === 0)
+// a node's DNS name as compared with a host: lowercased, the trailing dot dropped; null when not text
+const dnsName = (node) => (typeof node.DNSName === 'string' ? node.DNSName.toLowerCase().replace(/\.$/, '') : null)
 
 /**
  * From `tailscale status --json`: `{ ok: true, node }` only when the backend runs, this node is
  * untagged and has a person's user, `host` is one label in front of the tailnet's suffix, and
  * exactly one peer has that DNS name, with this node's user, no tags and a string ID (the node).
- * Otherwise `{ ok: false, reason }`. Nothing of the document outlives the call.
+ * `host` may also be this node's own DNS name (the app on the hub itself): then no peer may share
+ * it (`duplicate_name`), and the node is `Self.ID`. Otherwise `{ ok: false, reason }`. Nothing of
+ * the document outlives the call.
  */
 function parsePeers(text, host) {
   const no = (reason) => ({ ok: false, reason })
@@ -170,7 +174,14 @@ function parsePeers(text, host) {
   if (!isObject(user) || typeof user.LoginName !== 'string' || user.LoginName.toLowerCase() === PLACEHOLDER_LOGIN) return no('tagged_self')
   if (typeof host !== 'string' || !inTailnet(host, suffixOf(status))) return no('not_in_tailnet')
   const peers = isObject(status.Peer) ? Object.values(status.Peer) : []
-  const named = peers.filter((peer) => isObject(peer) && typeof peer.DNSName === 'string' && peer.DNSName.toLowerCase().replace(/\.$/, '') === host)
+  const named = peers.filter((peer) => isObject(peer) && dnsName(peer) === host)
+  // PR 3b: this node's own name is the hub when the app runs on the hub itself. A node is never in
+  // its own peer list, so it is read from Self, already checked untagged with a person's user.
+  if (dnsName(self) === host) {
+    if (named.length > 0) return no('duplicate_name')
+    if (typeof self.ID !== 'string' || !NODE_ID.test(self.ID)) return no('not_found')
+    return { ok: true, node: self.ID }
+  }
   if (named.length === 0) return no('not_found')
   if (named.length > 1) return no('duplicate_name')
   const peer = named[0]

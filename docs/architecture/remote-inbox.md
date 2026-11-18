@@ -381,8 +381,10 @@ owner token is never returned or logged.
 - While the entry is on: at start and every 60 seconds, `tailnetSelf()` and `serveState()`. A read
   that failed, or a check that threw, is tried once more 5 seconds later before it counts. When the
   shape is not ok, or this node no longer has the stored host and an allowed login (ignoring case),
-  the watch calls `turnOff()` and then `onStopped(reason, { off })` once. When that turn-off did
-  not land (`off: false`), each later tick tries it again until it does. While the entry is off,
+  the watch calls `turnOff()` and then `onStopped(reason, { off })`, once per stop. When that
+  turn-off did not land (`off: false`), each later tick tries it again until it does, without a new
+  notice. An entry switched back on (by `turnOn()` or by hand) that fails again is a new stop,
+  announced again. While the entry is off,
   Serve is read once after start (when the file names a host) and on `refresh()`, for the removal
   hint only. The watch leaves a file that is on for the other build's viewer alone.
 - Every tick reads the file and compares a SHA-256 over the canonical JSON of `enabled`, `host`,

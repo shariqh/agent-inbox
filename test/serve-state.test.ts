@@ -259,7 +259,9 @@ describe('the module never changes Tailscale', () => {
       expect(await runTailscale(which, { execFile: fake, exists: cliExists })).toEqual({ ok: true, text: '{}' })
     }
     expect(caps).toEqual({ 'status --json --peers=false': 1024 * 1024, 'serve status --json': 1024 * 1024, 'status --json': 16 * 1024 * 1024 })
-    expect(await runTailscale('other' as never, { execFile: fake, exists: cliExists })).toEqual({ ok: false, reason: 'failed' })
+    for (const inherited of ['other', 'constructor', 'toString', '__proto__']) {
+      expect(await runTailscale(inherited as never, { execFile: fake, exists: cliExists })).toEqual({ ok: false, reason: 'failed' })
+    }
   })
 
   it('refuses peer output past 16 MiB and self output past 1 MiB, even when handed back', async () => {

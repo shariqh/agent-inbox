@@ -1309,6 +1309,19 @@ describe('Serve: "nothing else reaches the port" compares port numbers', () => {
     expect(remoteEntry.parseServeStatus(JSON.stringify(value), HOST, 4320)).toMatchObject({ ok: false, reason })
   })
 
+  it('a value deeper than 32 levels where no check reads it is still unknown_shape', () => {
+    const text = JSON.stringify({ ...goodServe(4320), AllowFunnel: { [`${OTHER_HOST}:443`]: 0 } }).replace(`"${OTHER_HOST}:443":0`, `"${OTHER_HOST}:443":${deep(40)}`)
+    expect(remoteEntry.parseServeStatus(text, HOST, 4320)).toMatchObject({ ok: false, reason: 'unknown_shape' })
+    const shallow = JSON.stringify({ ...goodServe(4320), AllowFunnel: { [`${OTHER_HOST}:443`]: false } })
+    expect(remoteEntry.parseServeStatus(shallow, HOST, 4320)).toEqual({ ok: true })
+  })
+
+  it('another origin\'s entry with a key besides Handlers is unknown_shape', () => {
+    const value = good()
+    value.Web[`${OTHER_HOST}:443`] = { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } }, Extra: true }
+    expect(remoteEntry.parseServeStatus(JSON.stringify(value), HOST, 4320)).toMatchObject({ ok: false, reason: 'unknown_shape' })
+  })
+
   it('another origin\'s default port, a path or text reaching nothing, stays ok', () => {
     const value = good()
     value.Web[`${OTHER_HOST}:443`] = { Handlers: { '/': { Proxy: 'http://127.0.0.1' }, '/files': { Path: '/srv/files:4320' }, '/t': { Text: 'port 4320' } } }
@@ -1357,12 +1370,12 @@ describe('review round 1: the cases surviving mutants showed were untested', () 
   })
 
   it.each([
-    ['a newer schema', JSON.stringify(setting(4320, [], { schema: 2 }))],
-    ['not JSON', '{"schema":1,'],
-  ])('repairPermissions on %s with open bits writes nothing', async (_name, text) => {
+    ['a newer schema', JSON.stringify(setting(4320, [], { schema: 2 })), 'newer_schema'],
+    ['not JSON', '{"schema":1,', 'not_json'],
+  ])('repairPermissions on %s with open bits writes nothing, and says why', async (_name, text, reason) => {
     const { c, dir, file } = hub()
     writeSetting(dir, text, 0o644)
-    expect((await c.repairPermissions()).ok).toBe(false)
+    expect(await c.repairPermissions()).toEqual({ ok: false, reason })
     expect(readFileSync(file, 'utf8')).toBe(text)
     expect(statSync(file).mode & 0o777).toBe(0o644)
   })
@@ -1389,6 +1402,85 @@ describe('review round 1: the cases surviving mutants showed were untested', () 
     await h.c.tick()
     expect(fileJson(h.file).enabled).toBe(true)
     expect(h.events.stopped).toEqual([])
+  })
+
+  it('the watch compares the node\'s login without regard to case', async () => {
+    const h = hub({ self: selfStatus({ User: { [String(USER_ID)]: { LoginName: 'Owner@Example.com' } } }) })
+    writeSetting(h.dir, setting(4320, [device(newSecret(), A)]))
+    h.c.start()
+    await h.c.tick()
+    expect(fileJson(h.file).enabled).toBe(true)
+    expect(h.events.stopped).toEqual([])
+  })
+
+  it('a handle that will not close does not stop a turn-off', async () => {
+    const h = hub()
+    writeSetting(h.dir, setting(4320, [device(newSecret(), A)]))
+    const c = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') }, setInterval: () => 0, clearInterval: () => {},
+      fsImpl: {
+        ...fsPromises,
+        open: async (...args: Parameters<typeof fsPromises.open>) => {
+          const handle = await fsPromises.open(...args)
+          const close = handle.close.bind(handle)
+          Object.assign(handle, { close: async () => { await close(); throw new Error('close broke') } })
+          return handle
+        },
+      } as never,
+    })
+    expect((await c.turnOff()).ok).toBe(true)
+    expect(fileJson(h.file).enabled).toBe(false)
+  })
+
+  it('a file check that read before main\'s own write does not flag that write', async () => {
+    const h = hub()
+    writeSetting(h.dir, setting(4320, [device(newSecret(), A)]))
+    let armed = false
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const c = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') },
+      execFile: fakeTailscale({ self: selfStatus(), serve: goodServe(4320) }), exists: cliExists,
+      now: () => h.clock.now, setInterval: () => 0, clearInterval: () => {}, fetch: async () => new Response('', { status: 500 }),
+      onOutsideChange: () => { h.events.outside += 1 },
+      fsImpl: {
+        ...fsPromises,
+        // the watch's read opens the file as it is, then waits; main's write lands meanwhile
+        open: async (...args: Parameters<typeof fsPromises.open>) => {
+          const handle = await fsPromises.open(...args)
+          if (armed) {
+            armed = false
+            await gate
+          }
+          return handle
+        },
+      } as never,
+    })
+    c.start()
+    await c.tick()
+    armed = true
+    h.clock.now += 5_000
+    const watching = c.tick()
+    await waitUntil(() => !armed, 'the watch to open the file')
+    expect((await c.turnOff()).ok).toBe(true)
+    release()
+    await watching
+    expect(h.events.outside).toBe(0)
+    expect((await c.state()).flag).toBe(false)
+  })
+
+  it('an entry switched back on by hand that fails again is a second stop, with a second notice', async () => {
+    const h = hub({ serve: {} })
+    writeSetting(h.dir, setting(4320, []))
+    h.c.start()
+    await h.c.tick()
+    expect(h.events.stopped).toEqual(['no_handler'])
+    writeSetting(h.dir, setting(4320, []))
+    h.clock.now += 60_000
+    await h.c.tick()
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect(h.events.stopped).toEqual(['no_handler', 'no_handler'])
+    expect(h.events.outside).toBe(1)
   })
 
   it('the watch leaves alone a file that is on for the other build\'s viewer', async () => {

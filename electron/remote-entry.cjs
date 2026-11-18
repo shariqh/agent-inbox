@@ -321,7 +321,6 @@ function createRemoteEntry(options = {}) {
   let retryAt = null
   let hintRead = false
   let stopped = null
-  let stopNotified = false
   // a turn-off that failed: retried at every tick until it lands
   let pendingStop = null
   let flagDigest = null
@@ -530,9 +529,8 @@ function createRemoteEntry(options = {}) {
       return { doc: next }
     })
     if (!result.ok) return { ...result, step: 'file' }
-    // a new episode: the last stop is history, and the next stop notifies again
+    // a new episode: the last stop is history
     stopped = null
-    stopNotified = false
     pendingStop = null
     return { ok: true, view: result.view, voidedCode: result.voidedCode, devicesRemoved: removed, droppedEntries: dropped }
   }
@@ -677,12 +675,11 @@ function createRemoteEntry(options = {}) {
   async function stopEntry(reason) {
     const result = await turnOff()
     stopped = { reason, at: now(), off: result.ok }
-    // a turn-off that did not land is tried again at every tick, never left for the next check
+    // a turn-off that did not land is tried again at every tick (checkServe), never left for the
+    // next check, and without calling this again: so each stop is announced once. An entry switched
+    // back on (by turnOn or by hand) that fails again is a new stop, announced again.
     pendingStop = result.ok ? null : reason
-    if (!stopNotified) {
-      stopNotified = true
-      call(options.onStopped, reason, { off: result.ok })
-    }
+    call(options.onStopped, reason, { off: result.ok })
   }
 
   /** Serve's shape and this node's identity while the entry is on; one reading for the removal hint while it is off. */
@@ -741,7 +738,6 @@ function createRemoteEntry(options = {}) {
     }
     if (reason === null) {
       retryAt = null
-      stopNotified = false
       return
     }
     // a read that failed gets one more try, 5 seconds later, before it counts

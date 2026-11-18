@@ -132,7 +132,15 @@ function createRemoteConnect(options = {}) {
       return 0
     }
   }
-  const ready = () => keychainReady(safeStorage, platform)
+  // The Keychain is asked only when a key must be written or read (a connect, a stored hub's
+  // start), and by view() from then on. Never before: this Mac's own page reads view() at every
+  // start, and asking macOS there would create the app's Keychain item, and could prompt, for
+  // people who never use another Mac's Inbox.
+  let keychainAsked = false
+  const ready = () => {
+    keychainAsked = true
+    return keychainReady(safeStorage, platform)
+  }
 
   function distrust() {
     verified = false
@@ -591,7 +599,7 @@ function createRemoteConnect(options = {}) {
     const live = entry !== null && current.mode === 'hub' && current.id === entry.id ? current : null
     return {
       available: platform === 'darwin',
-      keychain: ready(),
+      keychain: keychainAsked ? ready() : true,
       hub: entry === null ? null : {
         id: entry.id, label: entry.label, origin: entry.origin, machine: entry.machine, state: live ? live.state : null, reason: live ? live.reason : null,
       },

@@ -907,7 +907,11 @@ function and calls back only when the answer changes; a callback that throws sto
 **`view()`**, for the Settings form: `{ available, keychain, hub: { id, label, origin, machine,
 state, reason } | null, problem }`. It never holds the secret, the encrypted blob, the device id or
 the node id. `available` is false off macOS. `problem` is `forget_not_saved` while a `forget` has not
-been written (below).
+been written (below). `keychain` is false once the Keychain was needed and could not be used, and
+true before anything needed it: `view()` asks `safeStorage` only after a connect or a stored hub's
+start has. This Mac's own page reads `view()` at every start (the strip), and
+`safeStorage.isEncryptionAvailable()` reads or creates the app's Keychain item on macOS, so asking
+there would touch the Keychain, and could prompt, for people who never use another Mac's Inbox.
 
 **`forget(id)`** removes the hub's entry, clears `active`, drops the secret and stops the retries at
 once, even when the file cannot be written. When the write does not land, the file still holds the
@@ -1142,7 +1146,7 @@ lands after a newer one is dropped.
 | State | What it shows |
 |---|---|
 | `available: false` | one sentence: macOS only (when `navigator.platform` is not a Mac), else that another Agent Inbox viewer is running, so this window can't use another Mac's Inbox: quit it, then reopen Agent Inbox (the hub panel's sentence for the same case is the model; main answers both the same way) |
-| no hub, `keychain: false` | one sentence about the Keychain (unlock, choose Allow if macOS asks); no form |
+| no hub, `keychain: false` (only after a connect found the Keychain unusable) | one sentence about the Keychain (unlock, choose Allow if macOS asks); no form |
 | no hub | **Address** (placeholder `mac-name.tail1234.ts.net`), **Code** and **Connect**, and one line of help naming Settings → Other devices → Add a Mac on the other Mac; a saved file's `problem` is said above it, and `newer_schema` hides the form, since that file is never written |
 | no hub, `problem: 'forget_not_saved'` (main's answer after a disconnect whose write failed) | "This Mac has stopped using the other Mac's Inbox, but couldn't save that. Connecting a Mac will try again.", with the form |
 | connecting or disconnecting | every input and button disabled, and "Connecting…" or "Disconnecting…"; main may store the hub before `connect()` answers, but the form stays until it does |

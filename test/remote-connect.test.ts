@@ -14,6 +14,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import remoteConnect from '../electron/remote-connect.cjs'
+import remoteConnectRules from '../electron/remote-connect-rules.cjs'
 import { inTailnet as tsInTailnet } from '../src/mesh-config.js'
 import { suffixFrom as tsSuffixFrom } from '../src/meshctl.js'
 import { isDeviceLabel as tsIsDeviceLabel, normaliseCode as tsNormaliseCode } from '../src/remote-pair.js'
@@ -24,6 +25,7 @@ const {
   DEVICE_HEADER, createRemoteConnect, certificateFailure, deviceLabelFor, hubLabelFor, inTailnet, isDeviceLabel, normaliseCode,
   parseHubOrigin, parsePeers, suffixFrom,
 } = remoteConnect
+const { keychainReady } = remoteConnectRules
 
 afterEach(() => removeScratchDirs())
 
@@ -813,15 +815,47 @@ describe('view', () => {
     expect(await h.connect.view()).toEqual({ available: true, keychain: true, hub: null, problem: null })
   })
 
-  it('reads Linux’s plain-text secret store as no Keychain', async () => {
+  it('reads Linux’s plain-text secret store as no Keychain', () => {
     const basic = { ...fakeSafeStorage(), getSelectedStorageBackend: () => 'basic_text' }
-    expect((await harness({ platform: 'linux', safeStorage: basic as never }).connect.view()).keychain).toBe(false)
-    expect((await harness({ platform: 'linux', safeStorage: { ...basic, getSelectedStorageBackend: () => 'gnome_libsecret' } as never }).connect.view()).keychain).toBe(true)
+    expect(keychainReady(basic, 'linux')).toBe(false)
+    expect(keychainReady({ ...basic, getSelectedStorageBackend: () => 'gnome_libsecret' }, 'linux')).toBe(true)
   })
 
   it('says when this Mac cannot connect at all', async () => {
     expect((await harness({ platform: 'linux' }).connect.view()).available).toBe(false)
-    expect((await harness({ safeStorage: fakeSafeStorage(false) }).connect.view()).keychain).toBe(false)
+  })
+
+  // The local page reads view() at every start (the strip). Asking macOS for the Keychain there
+  // would create the app's Keychain item, and could prompt, for people who never use this.
+  it('never asks the Keychain until something needs it, and from then on says what the Keychain says', async () => {
+    let asked = 0
+    let unlocked = false
+    const storage = { ...fakeSafeStorage(), isEncryptionAvailable: () => { asked += 1; return unlocked } }
+    const h = harness({ safeStorage: storage as never })
+    // the app's start with no Mac stored, then the page's reads
+    await h.connect.start()
+    expect((await h.connect.view()).keychain).toBe(true)
+    expect((await h.connect.view()).keychain).toBe(true)
+    expect(asked).toBe(0)
+    // a connect needs it
+    expect(await h.connect.connect({ address: HOST, code: CODE })).toEqual({ ok: false, reason: 'no_keychain' })
+    expect(asked).toBe(1)
+    expect((await h.connect.view()).keychain).toBe(false)
+    // and view() asks again each time from then on, so unlocking is seen when Settings is opened again
+    unlocked = true
+    expect((await h.connect.view()).keychain).toBe(true)
+    expect(asked).toBe(3)
+  })
+
+  it('asks the Keychain for a stored hub at start, as it must to read the key, and view() then reports it', async () => {
+    const first = harness()
+    expect(await first.connect.connect({ address: HOST, code: CODE })).toMatchObject({ ok: true })
+    let asked = 0
+    const storage = { ...fakeSafeStorage(), isEncryptionAvailable: () => { asked += 1; return true } }
+    const again = harness({ filePath: first.filePath, safeStorage: storage as never })
+    await again.connect.probeHub()
+    expect(asked).toBeGreaterThan(0)
+    expect((await again.connect.view()).keychain).toBe(true)
   })
 
   it('shows the hub with its state, and never the secret, the blob, the device id or the node id', async () => {

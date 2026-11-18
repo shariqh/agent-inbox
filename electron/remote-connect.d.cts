@@ -60,6 +60,11 @@ export type StoreProblem = 'unreadable' | 'bad_file' | 'too_large' | 'not_json' 
 export type ScheduleAnswer = { ok: true } | { ok: false; reason: 'stopped' | 'not_started' | 'failed' }
 export interface ConnectView {
   available: boolean
+  /**
+   * False once the Keychain was needed (a connect, a stored hub) and could not be used. True
+   * before anything needed it: view() never asks macOS for the Keychain by itself, because the
+   * local page reads it at every start.
+   */
   keychain: boolean
   hub: { id: string; label: string; origin: string; machine: string | null; state: ConnectionState | null; reason: string | null } | null
   problem: StoreProblem | null

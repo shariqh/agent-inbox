@@ -2820,7 +2820,11 @@ describe('where a session runs (#617)', () => {
     try {
       const row = await waitUntil(() => listActivity(s.db).find((r) => r.desk && r.remote_session), 'the place of the session')
       expect(row).toMatchObject({ machine: 'testbox', pane: '%7', desk: 'work-desk', remote_session: ID })
-      expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(['display-message -p -t %7 #{session_name}'])
+      // one reading at start and one right after a Claude Code client registers: each asks tmux this and nothing
+      // else, and how many have run by now depends on timing, so the count is not pinned
+      const asked = readFileSync(log, 'utf8').trim().split('\n')
+      expect(asked.length).toBeGreaterThanOrEqual(1)
+      expect(new Set(asked)).toEqual(new Set(['display-message -p -t %7 #{session_name}']))
       // a later claim and call keep all four: the upsert never names desk or the id, and keeps the other two
       await s.client.callTool({ name: 'status', arguments: { doing: 'Working in tmux' } })
       expect(listActivity(s.db)[0]).toMatchObject({ doing: 'Working in tmux', machine: 'testbox', pane: '%7', desk: 'work-desk', remote_session: ID })

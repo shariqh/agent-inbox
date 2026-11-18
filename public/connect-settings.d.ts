@@ -12,6 +12,9 @@ export interface DeskBridge {
   available?(): Promise<unknown>
 }
 
+/** One word per connection state: Online, Connecting…, Reconnecting…, No longer paired, Checking…; shared with the strip. */
+export function stateWord(hub: { state?: unknown; reason?: unknown } | null | undefined): string
+
 /** The hub's pairing-code rule (normaliseCode in src/remote-pair.ts and electron/remote-connect-rules.cjs). */
 export function normaliseCode(text: unknown): string | null
 

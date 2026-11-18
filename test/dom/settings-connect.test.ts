@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import remoteConnect from '../../electron/remote-connect.cjs'
-import { normaliseCode, renderConnectSettings } from '../../public/connect-settings.js'
+import { normaliseCode, refreshConnectSettings, renderConnectSettings } from '../../public/connect-settings.js'
 import { bootApp, click, freshDb, settle, useDomTest } from './harness.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -165,9 +165,9 @@ describe('where the section is drawn', () => {
 
 describe('when it is not available', () => {
   it.each([
-    ['a Mac, in a viewer the app does not own', 'MacIntel', { available: false }, 'This works only in Agent Inbox’s own window, not in a viewer it found already running. Quit that viewer and open Agent Inbox again.'],
+    ['a Mac, in a viewer the app does not own', 'MacIntel', { available: false }, 'Another Agent Inbox viewer is running on this Mac, so this window can’t use another Mac’s Inbox. Quit it, then reopen Agent Inbox.'],
     ['another system', 'Win32', { available: false }, 'Using another Mac’s Inbox works only on macOS.'],
-    ['a Mac without the Keychain', 'MacIntel', { ...NONE, keychain: false }, 'The Keychain isn’t available on this Mac, so Agent Inbox can’t keep the other Mac’s key safe. Unlock this Mac and open Settings again.'],
+    ['a Mac without the Keychain', 'MacIntel', { ...NONE, keychain: false }, 'Agent Inbox can’t use this Mac’s Keychain, so it can’t keep the other Mac’s key safe. Unlock this Mac, choose Allow if macOS asks, then open Settings again.'],
   ])('says one sentence for %s, and draws no form', async (_name, platform, view, sentence) => {
     draw(connectBridge(view as View), localDesk(), platform)
     await flush()
@@ -189,7 +189,7 @@ describe('with no Mac connected', () => {
     const code = $<HTMLInputElement>('connect-code')!
     expect(document.querySelector(`label[for="connect-address"]`)?.textContent).toBe('Address')
     expect(document.querySelector(`label[for="connect-code"]`)?.textContent).toBe('Code')
-    expect(address.placeholder).toBe('mac-name.your-tailnet.ts.net')
+    expect(address.placeholder).toBe('mac-name.tail1234.ts.net')
     expect(code.placeholder).toBe('10 letters and digits')
     expect($('connect-submit')?.textContent).toBe('Connect')
     expect(($('connect-submit') as HTMLButtonElement).type).toBe('submit')
@@ -291,24 +291,24 @@ describe('with no Mac connected', () => {
 
 const SENTENCES: Record<string, string> = {
   unsupported: 'Using another Mac’s Inbox works only on macOS.',
-  no_keychain: 'The Keychain isn’t available on this Mac, so Agent Inbox can’t keep the other Mac’s key safe. Unlock this Mac and try again.',
-  bad_address: 'That address isn’t right. Copy it from the other Mac: it looks like mac-name.your-tailnet.ts.net.',
+  no_keychain: 'Agent Inbox couldn’t use this Mac’s Keychain to keep the other Mac’s key safe. Unlock this Mac, choose Allow if macOS asks, then try again.',
+  bad_address: 'That address isn’t right. Copy it from the other Mac: it looks like mac-name.tail1234.ts.net.',
   bad_code: 'The code is 10 letters and digits. Check it on the other Mac and try again.',
   newer_schema: 'A newer Agent Inbox saved this Mac’s connection. Update Agent Inbox on this Mac, then try again.',
   bad_file: 'This Mac’s saved connection can’t be used.',
   hub_exists: 'A Mac is already connected.',
   no_cli: 'Tailscale isn’t installed on this Mac. Install it, sign in, and try again.',
-  failed: 'That didn’t work. Check that Tailscale is running on this Mac, then try again.',
+  failed: 'Something went wrong while connecting. Try again. If it keeps happening, check that Tailscale is running on this Mac.',
   not_running: 'Tailscale isn’t running on this Mac, or it’s signed out. Open Tailscale, sign in, and try again.',
-  tagged_self: 'This Mac is a tagged device in Tailscale. Sign this Mac in to your own Tailscale account, then try again.',
-  not_in_tailnet: 'That address isn’t in your tailnet. Copy the address the other Mac shows.',
-  not_found: 'None of your Tailscale devices has that address. Is the other Mac on and signed in to Tailscale?',
-  duplicate_name: 'More than one device in your tailnet has that name. Rename one in Tailscale, then try again.',
-  not_your_device: 'That address isn’t one of your Tailscale devices. Use a Mac signed in to your own Tailscale account.',
-  tagged_device: 'That address is a tagged device in Tailscale. Use a Mac signed in to your own Tailscale account.',
+  tagged_self: 'In Tailscale, this Mac belongs to a tag, not to your account. Sign this Mac in to Tailscale with your own account, then try again.',
+  not_in_tailnet: 'That address isn’t in your Tailscale network. Copy the address the other Mac shows.',
+  not_found: 'None of the devices in your Tailscale network has that address. Is the other Mac on and signed in to Tailscale?',
+  duplicate_name: 'More than one device in your Tailscale network has that name. Rename one in Tailscale, then try again.',
+  not_your_device: 'That Mac isn’t signed in to Tailscale with your account. Use a Mac signed in with your own account.',
+  tagged_device: 'In Tailscale, that Mac belongs to a tag, not to your account. Use a Mac signed in to Tailscale with your own account.',
   unreachable: 'Couldn’t reach that Mac. Is it awake, with Agent Inbox open?',
-  bad_certificate: 'That Mac’s certificate isn’t valid, so nothing was sent. Check the address and try again.',
-  not_agent_inbox: 'That address isn’t an Agent Inbox sharing its Inbox. Is sharing switched on there?',
+  bad_certificate: 'That Mac’s HTTPS certificate isn’t valid, so nothing was sent. In the Tailscale admin console, check that HTTPS certificates are turned on, then try again.',
+  not_agent_inbox: 'That address doesn’t answer as an Agent Inbox. On the other Mac, check Settings → Other devices → Let my other Macs use this Inbox.',
   refused: 'The other Mac said no. The code may be wrong or used up, or its sharing may not allow your Tailscale account. Make a new code there and try again.',
   write_failed: 'This Mac couldn’t save the connection. Try again.',
   too_large: 'This Mac couldn’t save the connection: its saved file is too large.',
@@ -334,7 +334,7 @@ describe('a refusal', () => {
     const message = text('connect-message')
     expect(message).not.toBe('')
     expect(message).not.toBe(FALLBACK)
-    expect(message).not.toMatch(/undefined|null|_/)
+    expect(message).not.toMatch(/undefined|null|_|tailnet/)
     expect(SENTENCES[reason], `no sentence pinned here for ${reason}`).toBeDefined()
     expect(message).toBe(SENTENCES[reason])
     expect($<HTMLInputElement>('connect-address')?.value).toBe('mbp.example.ts.net')
@@ -366,7 +366,7 @@ describe('a refusal', () => {
     submit()
     await flush()
     expect(shown('connect-form')).toBe(false)
-    expect(text('connect-hint')).toMatch(/^This works only in Agent Inbox’s own window/)
+    expect(text('connect-hint')).toMatch(/^Another Agent Inbox viewer is running on this Mac/)
   })
 
   it('a connect that throws reads as the fallback, never a stuck “Connecting…”', async () => {
@@ -408,6 +408,31 @@ describe('Replace it', () => {
     expect(api.connect).toHaveBeenLastCalledWith({ address: 'mbp.example.ts.net', code: 'ABCDEFGHJK', replace: true })
     expect(text('connect-hub-name')).toBe('MBP’s Inbox')
     expect(text('connect-message')).toBe('Studio still lists this Mac until you remove it there.')
+    // a note, not an error: not in the danger colour
+    expect($('connect-message')?.classList.contains('connect-note')).toBe(true)
+  })
+
+  it('typing in the form after the refusal drops the offer, so Replace never sends what was typed before', async () => {
+    const api = await refusedWith({ ok: false, reason: 'hub_exists' })
+    api.quietly({ ...NONE, hub: hub('online', null, { label: 'Studio' }) })
+    expect(shown('connect-replace')).toBe(true)
+    type('connect-code', 'ZZZZZZZZZZ')
+    await flush()
+    expect(shown('connect-replace')).toBe(false)
+    expect(shown('connect-confirm')).toBe(false)
+    expect(api.connect).toHaveBeenCalledTimes(1)
+  })
+
+  it('typing while asked to confirm closes the question too', async () => {
+    const api = await refusedWith({ ok: false, reason: 'hub_exists' })
+    api.quietly({ ...NONE, hub: hub('online', null, { label: 'Studio' }) })
+    press('connect-replace')
+    await flush()
+    expect(shown('connect-confirm')).toBe(true)
+    type('connect-address', 'other.tail1234.ts.net')
+    await flush()
+    expect(shown('connect-confirm')).toBe(false)
+    expect(shown('connect-replace')).toBe(false)
   })
 
   it('Keep sends nothing and shows what is connected', async () => {
@@ -445,24 +470,24 @@ const STATUS: Array<[State, string | null, string]> = [
   [null, null, 'Checking…'],
   ['retrying', 'connecting', 'Connecting…'],
   ['retrying', 'stopped', 'Reconnecting…'],
-  ['retrying', 'unreachable', 'Can’t reach MBP. Trying again…'],
-  ['retrying', 'bad_certificate', 'MBP’s certificate isn’t valid. Trying again…'],
-  ['retrying', 'not_agent_inbox', 'MBP isn’t sharing its Inbox right now. Is sharing still on there?'],
-  ['retrying', 'no_cli', 'Tailscale isn’t installed on this Mac. Trying again…'],
-  ['retrying', 'failed', 'Tailscale on this Mac can’t be read. Trying again…'],
-  ['retrying', 'not_running', 'Tailscale isn’t running on this Mac, or it’s signed out. Trying again…'],
-  ['retrying', 'no_keychain', 'The Keychain isn’t available on this Mac yet. Trying again…'],
+  ['retrying', 'unreachable', 'Reconnecting… Can’t reach MBP.'],
+  ['retrying', 'bad_certificate', 'Reconnecting… MBP’s HTTPS certificate isn’t valid.'],
+  ['retrying', 'not_agent_inbox', 'Reconnecting… MBP isn’t sharing its Inbox. On MBP, check Settings → Other devices → Let my other Macs use this Inbox.'],
+  ['retrying', 'no_cli', 'Reconnecting… Tailscale isn’t installed on this Mac.'],
+  ['retrying', 'failed', 'Reconnecting… Tailscale on this Mac can’t be read.'],
+  ['retrying', 'not_running', 'Reconnecting… Tailscale isn’t running on this Mac, or it’s signed out.'],
+  ['retrying', 'no_keychain', 'Reconnecting… This Mac’s Keychain isn’t available yet.'],
   ['retrying', 'something_new', 'Reconnecting…'],
-  ['refused', 'refused', 'MBP no longer accepts this Mac: pair again.'],
-  ['refused', 'node_changed', 'MBP’s address now belongs to another device: pair again.'],
-  ['refused', 'secret_unreadable', 'This Mac can’t read its key for MBP: pair again.'],
-  ['refused', 'not_found', 'MBP is no longer in your tailnet: pair again.'],
-  ['refused', 'not_in_tailnet', 'MBP is no longer in your tailnet: pair again.'],
-  ['refused', 'duplicate_name', 'More than one device now has MBP’s name: pair again.'],
-  ['refused', 'not_your_device', 'MBP is no longer one of your Tailscale devices: pair again.'],
-  ['refused', 'tagged_device', 'MBP is now a tagged device in Tailscale: pair again.'],
-  ['refused', 'tagged_self', 'This Mac is now a tagged device in Tailscale: pair again.'],
-  ['refused', 'something_new', 'MBP no longer accepts this Mac: pair again.'],
+  ['refused', 'refused', 'No longer paired. MBP no longer accepts this Mac.'],
+  ['refused', 'node_changed', 'No longer paired. MBP’s address now belongs to another device.'],
+  ['refused', 'secret_unreadable', 'No longer paired. This Mac can’t read its key for MBP.'],
+  ['refused', 'not_found', 'No longer paired. MBP is no longer in your Tailscale network.'],
+  ['refused', 'not_in_tailnet', 'No longer paired. MBP is no longer in your Tailscale network.'],
+  ['refused', 'duplicate_name', 'No longer paired. More than one device now has MBP’s name.'],
+  ['refused', 'not_your_device', 'No longer paired. MBP is no longer signed in to Tailscale with your account.'],
+  ['refused', 'tagged_device', 'No longer paired. In Tailscale, MBP now belongs to a tag, not to your account.'],
+  ['refused', 'tagged_self', 'No longer paired. In Tailscale, this Mac now belongs to a tag, not to your account.'],
+  ['refused', 'something_new', 'No longer paired. MBP no longer accepts this Mac.'],
 ]
 
 describe('with a Mac connected', () => {
@@ -509,6 +534,8 @@ describe('with a Mac connected', () => {
   it.each([
     ['busy', 'MBP’s Inbox closed itself several times. Try again in a minute.'],
     ['not_found', 'That Mac isn’t connected any more.'],
+    ['not_ready', 'MBP’s Inbox isn’t ready yet. Try again in a moment.'],
+    ['not_owned', 'Another Agent Inbox viewer is running on this Mac, so this window can’t use another Mac’s Inbox. Quit it, then reopen Agent Inbox.'],
     ['destroyed', 'Agent Inbox couldn’t show it. Try again.'],
   ])('says why Show its Inbox did not (%s)', async (reason, sentence) => {
     const api = connectBridge({ ...NONE, hub: hub('online') })
@@ -518,6 +545,50 @@ describe('with a Mac connected', () => {
     press('connect-show')
     await flush()
     expect(text('connect-message')).toBe(sentence)
+  })
+
+  it('a sentence goes when what is shown changes', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.show.mockResolvedValueOnce({ ok: false, reason: 'busy' })
+    draw(api)
+    await flush()
+    press('connect-show')
+    await flush()
+    expect(text('connect-message')).toBe('MBP’s Inbox closed itself several times. Try again in a minute.')
+    // main says the hub is on top now
+    api.set({ ...NONE, hub: hub('online'), showing: ID })
+    await flush()
+    expect(text('connect-message')).toBe('')
+    expect($('connect-message')?.classList.contains('connect-note')).toBe(false)
+  })
+
+  it('a sentence goes when the hub’s state changes, and when Settings is opened again', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.show.mockResolvedValue({ ok: false, reason: 'not_ready' })
+    draw(api)
+    await flush()
+    press('connect-show')
+    await flush()
+    expect(text('connect-message')).not.toBe('')
+    api.set({ ...NONE, hub: hub('retrying', 'unreachable') })
+    await flush()
+    expect(text('connect-message')).toBe('')
+    press('connect-show')
+    await flush()
+    expect(text('connect-message')).not.toBe('')
+    await refreshConnectSettings()
+    await flush()
+    expect(text('connect-message')).toBe('')
+  })
+
+  it('a refusal stays while nothing changes, and goes when Settings is opened again', async () => {
+    const api = await refusedWith({ ok: false, reason: 'unreachable' })
+    api.set(NONE)
+    await flush()
+    expect(text('connect-message')).toBe(SENTENCES.unreachable)
+    await refreshConnectSettings()
+    await flush()
+    expect(text('connect-message')).toBe('')
   })
 
   it('Disconnect asks inline first; Keep does nothing', async () => {
@@ -560,13 +631,38 @@ describe('with a Mac connected', () => {
     expect(text('connect-busy')).toBe('')
   })
 
-  it('says plainly when a disconnect could not be saved, and offers Disconnect again', async () => {
-    const api = connectBridge({ ...NONE, hub: hub(null), problem: 'forget_not_saved' })
+  // what main answers then (test/remote-connect.test.ts): no hub, and the problem
+  const UNSAVED: View = { ...NONE, hub: null, problem: 'forget_not_saved' }
+  const UNSAVED_TEXT = 'This Mac has stopped using the other Mac’s Inbox, but couldn’t save that. Connecting a Mac will try again.'
+
+  it('says plainly when a disconnect could not be saved, also after Settings is opened again', async () => {
+    draw(connectBridge(UNSAVED))
+    await flush()
+    expect(text('connect-message')).toBe(UNSAVED_TEXT)
+    expect(shown('connect-form')).toBe(true)
+    expect(shown('connect-hub')).toBe(false)
+  })
+
+  it('a disconnect whose save failed says that, not “couldn’t disconnect”', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.forget.mockImplementation(async () => {
+      api.quietly(UNSAVED)
+      return { ok: false, reason: 'failed' }
+    })
     draw(api)
     await flush()
-    expect(text('connect-hub-status')).toBe('This Mac stopped using MBP’s Inbox, but couldn’t save that. Press Disconnect to try again.')
-    expect(shown('connect-show')).toBe(false)
-    expect(shown('connect-disconnect')).toBe(true)
+    press('connect-disconnect')
+    await flush()
+    press('connect-confirm-yes')
+    await flush()
+    expect(text('connect-message')).toBe(UNSAVED_TEXT)
+    expect(shown('connect-form')).toBe(true)
+  })
+
+  it('“a Mac is already connected” with no Mac stored is that same unsaved disconnect, with no Replace', async () => {
+    await refusedWith({ ok: false, reason: 'hub_exists' }, UNSAVED)
+    expect(text('connect-message')).toBe('This Mac still couldn’t save that it stopped using the other Mac’s Inbox. Try again in a moment.')
+    expect(shown('connect-replace')).toBe(false)
   })
 
   it('says when a disconnect failed', async () => {
@@ -609,7 +705,7 @@ describe('what it draws', () => {
     draw(connectBridge({ ...NONE, hub: hub('refused', 'refused', { label }) }))
     await flush()
     expect(text('connect-hub-name')).toBe(`${label}’s Inbox`)
-    expect(text('connect-hub-status')).toBe(`${label} no longer accepts this Mac: pair again.`)
+    expect(text('connect-hub-status')).toBe(`No longer paired. ${label} no longer accepts this Mac.`)
     expect($('connect-settings')?.querySelector('img')).toBeNull()
     expect((globalThis as Record<string, unknown>).pwned).toBeUndefined()
   })

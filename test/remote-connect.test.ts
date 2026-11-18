@@ -267,6 +267,14 @@ describe('labels', () => {
     expect(hubLabelFor(null, `${'h'.repeat(50)}.${SUFFIX}`)).toBe('h'.repeat(40))
     expect(tsIsDeviceLabel(hubLabelFor('m'.repeat(64), HOST))).toBe(true)
   })
+
+  // #617 PR 3c: the label is the hub's own choice, and the strip and the menu put it beside This Mac
+  it("never takes a machine name that reads as This Mac or local: the address's first label instead", () => {
+    for (const machine of ['thismac', 'ThisMac', 'this-mac', 'This_Mac', 'THIS--MAC', 'local', 'Local', 'LOCAL', '_local_', 'lo-cal']) {
+      expect(hubLabelFor(machine, HOST), machine).toBe('hub')
+    }
+    for (const machine of ['thismacbook', 'localhost', 'studio', 'my-local-mac']) expect(hubLabelFor(machine, HOST), machine).toBe(machine)
+  })
 })
 
 // ── findHub ────────────────────────────────────────────────────────────────────

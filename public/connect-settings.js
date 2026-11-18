@@ -29,35 +29,41 @@ export function normaliseCode(text) {
 }
 
 const HELP = 'On the other Mac: Settings → Other devices → Add a Mac shows the address and a code.'
-const UNOWNED = 'This works only in Agent Inbox’s own window, not in a viewer it found already running. Quit that viewer and open Agent Inbox again.'
+// the hub panel's sentence for the same situation (public/remote-settings.js) is the model
+const UNOWNED = 'Another Agent Inbox viewer is running on this Mac, so this window can’t use another Mac’s Inbox. Quit it, then reopen Agent Inbox.'
 const NOT_MAC = 'Using another Mac’s Inbox works only on macOS.'
-const NO_KEYCHAIN = 'The Keychain isn’t available on this Mac, so Agent Inbox can’t keep the other Mac’s key safe.'
+const NO_KEYCHAIN = 'Agent Inbox can’t use this Mac’s Keychain, so it can’t keep the other Mac’s key safe. Unlock this Mac, choose Allow if macOS asks, then open Settings again.'
 const BAD_CODE = 'The code is 10 letters and digits. Check it on the other Mac and try again.'
 const FALLBACK = 'Agent Inbox couldn’t connect. Try again.'
 const PAIRED_ON_HUB = 'The other Mac now lists this Mac, but this Mac couldn’t save the connection. On the other Mac, remove this Mac under Settings → Other devices, then try again with a new code.'
-const OWN_ACCOUNT = 'Use a Mac signed in to your own Tailscale account.'
+const OWN_ACCOUNT = 'Use a Mac signed in to Tailscale with your own account.'
+const SHARING_SWITCH = 'Settings → Other devices → Let my other Macs use this Inbox'
+// forget() could not write the file: main answers no hub and the problem `forget_not_saved`
+const UNSAVED = 'This Mac has stopped using the other Mac’s Inbox, but couldn’t save that. Connecting a Mac will try again.'
+const STILL_UNSAVED = 'This Mac still couldn’t save that it stopped using the other Mac’s Inbox. Try again in a moment.'
 
 // One sentence for every word connect() can answer (electron/remote-connect.d.cts, ConnectAnswer).
+// `failed` is also what the preload answers for any failed call, so it blames nothing in particular.
 const REFUSALS = {
   unsupported: NOT_MAC,
-  no_keychain: `${NO_KEYCHAIN} Unlock this Mac and try again.`,
-  bad_address: 'That address isn’t right. Copy it from the other Mac: it looks like mac-name.your-tailnet.ts.net.',
+  no_keychain: 'Agent Inbox couldn’t use this Mac’s Keychain to keep the other Mac’s key safe. Unlock this Mac, choose Allow if macOS asks, then try again.',
+  bad_address: 'That address isn’t right. Copy it from the other Mac: it looks like mac-name.tail1234.ts.net.',
   bad_code: BAD_CODE,
   newer_schema: 'A newer Agent Inbox saved this Mac’s connection. Update Agent Inbox on this Mac, then try again.',
   bad_file: 'This Mac’s saved connection can’t be used.',
   hub_exists: 'A Mac is already connected.',
   no_cli: 'Tailscale isn’t installed on this Mac. Install it, sign in, and try again.',
-  failed: 'That didn’t work. Check that Tailscale is running on this Mac, then try again.',
+  failed: 'Something went wrong while connecting. Try again. If it keeps happening, check that Tailscale is running on this Mac.',
   not_running: 'Tailscale isn’t running on this Mac, or it’s signed out. Open Tailscale, sign in, and try again.',
-  tagged_self: 'This Mac is a tagged device in Tailscale. Sign this Mac in to your own Tailscale account, then try again.',
-  not_in_tailnet: 'That address isn’t in your tailnet. Copy the address the other Mac shows.',
-  not_found: 'None of your Tailscale devices has that address. Is the other Mac on and signed in to Tailscale?',
-  duplicate_name: 'More than one device in your tailnet has that name. Rename one in Tailscale, then try again.',
-  not_your_device: `That address isn’t one of your Tailscale devices. ${OWN_ACCOUNT}`,
-  tagged_device: `That address is a tagged device in Tailscale. ${OWN_ACCOUNT}`,
+  tagged_self: 'In Tailscale, this Mac belongs to a tag, not to your account. Sign this Mac in to Tailscale with your own account, then try again.',
+  not_in_tailnet: 'That address isn’t in your Tailscale network. Copy the address the other Mac shows.',
+  not_found: 'None of the devices in your Tailscale network has that address. Is the other Mac on and signed in to Tailscale?',
+  duplicate_name: 'More than one device in your Tailscale network has that name. Rename one in Tailscale, then try again.',
+  not_your_device: 'That Mac isn’t signed in to Tailscale with your account. Use a Mac signed in with your own account.',
+  tagged_device: `In Tailscale, that Mac belongs to a tag, not to your account. ${OWN_ACCOUNT}`,
   unreachable: 'Couldn’t reach that Mac. Is it awake, with Agent Inbox open?',
-  bad_certificate: 'That Mac’s certificate isn’t valid, so nothing was sent. Check the address and try again.',
-  not_agent_inbox: 'That address isn’t an Agent Inbox sharing its Inbox. Is sharing switched on there?',
+  bad_certificate: 'That Mac’s HTTPS certificate isn’t valid, so nothing was sent. In the Tailscale admin console, check that HTTPS certificates are turned on, then try again.',
+  not_agent_inbox: `That address doesn’t answer as an Agent Inbox. On the other Mac, check ${SHARING_SWITCH}.`,
   refused: 'The other Mac said no. The code may be wrong or used up, or its sharing may not allow your Tailscale account. Make a new code there and try again.',
   write_failed: 'This Mac couldn’t save the connection. Try again.',
   too_large: 'This Mac couldn’t save the connection: its saved file is too large.',
@@ -77,42 +83,56 @@ const PROBLEMS = {
   bad_schema: DAMAGED,
   bad_entry: DAMAGED,
   newer_schema: 'A newer Agent Inbox saved this Mac’s connection. Update Agent Inbox on this Mac to change it.',
+  forget_not_saved: UNSAVED,
 }
 
-// The connected Mac's status, from view().hub.state and .reason (the controller's connection state).
+/**
+ * One word per connection state, the same in the strip (public/hub-strip.js), in this section and,
+ * for `retrying`, on the other Mac's page ("Reconnecting to <label>…", public/hub-mode.js).
+ */
+export function stateWord(hub) {
+  if (hub?.state === 'online') return 'Online'
+  if (hub?.state === 'retrying') return hub.reason === 'connecting' ? 'Connecting…' : 'Reconnecting…'
+  if (hub?.state === 'refused') return 'No longer paired'
+  return 'Checking…'
+}
+
+// What this section adds to the word: why, from view().hub.reason.
 const RETRYING = {
-  connecting: () => 'Connecting…',
-  unreachable: (name) => `Can’t reach ${name}. Trying again…`,
-  bad_certificate: (name) => `${name}’s certificate isn’t valid. Trying again…`,
-  not_agent_inbox: (name) => `${name} isn’t sharing its Inbox right now. Is sharing still on there?`,
-  no_cli: () => 'Tailscale isn’t installed on this Mac. Trying again…',
-  failed: () => 'Tailscale on this Mac can’t be read. Trying again…',
-  not_running: () => 'Tailscale isn’t running on this Mac, or it’s signed out. Trying again…',
-  no_keychain: () => 'The Keychain isn’t available on this Mac yet. Trying again…',
+  unreachable: (name) => `Can’t reach ${name}.`,
+  bad_certificate: (name) => `${name}’s HTTPS certificate isn’t valid.`,
+  not_agent_inbox: (name) => `${name} isn’t sharing its Inbox. On ${name}, check ${SHARING_SWITCH}.`,
+  no_cli: () => 'Tailscale isn’t installed on this Mac.',
+  failed: () => 'Tailscale on this Mac can’t be read.',
+  not_running: () => 'Tailscale isn’t running on this Mac, or it’s signed out.',
+  no_keychain: () => 'This Mac’s Keychain isn’t available yet.',
 }
 const REFUSED = {
-  node_changed: (name) => `${name}’s address now belongs to another device: pair again.`,
-  secret_unreadable: (name) => `This Mac can’t read its key for ${name}: pair again.`,
-  not_found: (name) => `${name} is no longer in your tailnet: pair again.`,
-  not_in_tailnet: (name) => `${name} is no longer in your tailnet: pair again.`,
-  duplicate_name: (name) => `More than one device now has ${name}’s name: pair again.`,
-  not_your_device: (name) => `${name} is no longer one of your Tailscale devices: pair again.`,
-  tagged_device: (name) => `${name} is now a tagged device in Tailscale: pair again.`,
-  tagged_self: () => 'This Mac is now a tagged device in Tailscale: pair again.',
+  refused: (name) => `${name} no longer accepts this Mac.`,
+  node_changed: (name) => `${name}’s address now belongs to another device.`,
+  secret_unreadable: (name) => `This Mac can’t read its key for ${name}.`,
+  not_found: (name) => `${name} is no longer in your Tailscale network.`,
+  not_in_tailnet: (name) => `${name} is no longer in your Tailscale network.`,
+  duplicate_name: (name) => `More than one device now has ${name}’s name.`,
+  not_your_device: (name) => `${name} is no longer signed in to Tailscale with your account.`,
+  tagged_device: (name) => `In Tailscale, ${name} now belongs to a tag, not to your account.`,
+  tagged_self: () => 'In Tailscale, this Mac now belongs to a tag, not to your account.',
 }
 
 function hubStatus(hub) {
+  const word = stateWord(hub)
   const name = hub.label
-  const reason = typeof hub.reason === 'string' && Object.hasOwn(hub.state === 'refused' ? REFUSED : RETRYING, hub.reason) ? hub.reason : null
-  if (hub.state === 'online') return 'Online'
-  if (hub.state === 'retrying') return reason ? RETRYING[reason](name) : 'Reconnecting…'
-  if (hub.state === 'refused') return reason ? REFUSED[reason](name) : `${name} no longer accepts this Mac: pair again.`
-  return 'Checking…'
+  const reason = typeof hub.reason === 'string' ? hub.reason : null
+  if (hub.state === 'retrying' && reason !== null && Object.hasOwn(RETRYING, reason)) return `${word} ${RETRYING[reason](name)}`
+  if (hub.state === 'refused') return `${word}. ${(reason !== null && Object.hasOwn(REFUSED, reason) ? REFUSED[reason] : REFUSED.refused)(name)}`
+  return word
 }
 
 const SHOW_REFUSALS = {
   busy: (name) => `${name}’s Inbox closed itself several times. Try again in a minute.`,
   not_found: () => 'That Mac isn’t connected any more.',
+  not_ready: (name) => `${name}’s Inbox isn’t ready yet. Try again in a moment.`,
+  not_owned: () => UNOWNED,
 }
 
 const hostOf = (origin) => {
@@ -175,7 +195,7 @@ export function renderConnectSettings(host, {
   hint.id = 'connect-hint'
 
   const address = make('input')
-  address.placeholder = 'mac-name.your-tailnet.ts.net'
+  address.placeholder = 'mac-name.tail1234.ts.net'
   address.maxLength = 300
   const code = make('input')
   code.placeholder = '10 letters and digits'
@@ -233,6 +253,8 @@ export function renderConnectSettings(host, {
   let view = null
   let busy = null // null | 'connect' | 'forget'
   let said = '' // the last answer's sentence
+  let note = false // that sentence is a note, not an error
+  let shownKey = null // what is shown (the hub, its state, what is on top): a sentence goes when it changes
   let offered = null // { reason, address, code, label } after a refusal Replace can get past
   let confirming = null // null | 'replace' | 'disconnect'
   let reads = 0
@@ -244,7 +266,6 @@ export function renderConnectSettings(host, {
     const keychain = available && view.keychain === true
     const hub = connected() ? view.hub : null
     const problem = available && typeof view.problem === 'string' ? view.problem : null
-    const unsaved = problem === 'forget_not_saved'
     // a refusal Replace can get past keeps the form, whatever main stores meanwhile
     const showHub = hub !== null && busy !== 'connect' && offered === null
     const showForm = available && !showHub && (keychain || busy === 'connect') && problem !== 'newer_schema'
@@ -252,7 +273,7 @@ export function renderConnectSettings(host, {
     if ((confirming === 'disconnect' && !showHub) || (confirming === 'replace' && offered === null)) confirming = null
 
     if (!available) hint.textContent = /^Mac/.test(String(platform())) ? UNOWNED : NOT_MAC
-    else if (!showHub && !keychain && busy !== 'connect') hint.textContent = `${NO_KEYCHAIN} Unlock this Mac and open Settings again.`
+    else if (!showHub && !keychain && busy !== 'connect') hint.textContent = NO_KEYCHAIN
     else hint.textContent = showForm ? HELP : ''
     hint.hidden = hint.textContent === ''
 
@@ -260,21 +281,19 @@ export function renderConnectSettings(host, {
     if (showHub) {
       hubName.textContent = `${hub.label}’s Inbox`
       hubAddress.textContent = hostOf(hub.origin)
-      hubStatusLine.textContent = unsaved
-        ? `This Mac stopped using ${hub.label}’s Inbox, but couldn’t save that. Press Disconnect to try again.`
-        : hubStatus(hub)
-      const refused = !unsaved && hub.state === 'refused'
+      hubStatusLine.textContent = hubStatus(hub)
+      const refused = hub.state === 'refused'
       pairAgain.textContent = refused ? `To pair again: press Disconnect, then connect with a new code from ${hub.label}.` : ''
       pairAgain.hidden = !refused
-      show.hidden = unsaved
     }
     form.hidden = !showForm
 
     busyLine.textContent = busy === 'connect' ? 'Connecting…' : busy === 'forget' ? 'Disconnecting…' : ''
     busyLine.hidden = busyLine.textContent === ''
     // a sentence from the last answer first; with none, the saved file's problem while no Mac is connected
-    message.textContent = said !== '' ? said : !showHub && available && problem && !unsaved ? PROBLEMS[problem] ?? DAMAGED : ''
+    message.textContent = said !== '' ? said : !showHub && available && problem ? PROBLEMS[problem] ?? DAMAGED : ''
     message.hidden = message.textContent === ''
+    message.classList.toggle('connect-note', said !== '' && note)
     offer.hidden = offered === null || confirming !== null
     confirmBox.hidden = confirming === null
     if (confirming === 'replace' && offered) {
@@ -309,6 +328,13 @@ export function renderConnectSettings(host, {
     if (mine !== reads) return view
     view = next !== null && typeof next === 'object' ? next : { available: false }
     if (offered !== null && offered.reason === 'hub_exists' && view.hub) offered.label = view.hub.label
+    // a sentence is about what was shown when it was said; an offer keeps its own until answered
+    const key = JSON.stringify([view.available === true, view.showing ?? null, view.hub?.id ?? null, view.hub?.state ?? null])
+    if (shownKey !== null && key !== shownKey && offered === null && busy === null) {
+      said = ''
+      note = false
+    }
+    shownKey = key
     paint()
     return view
   }
@@ -317,6 +343,7 @@ export function renderConnectSettings(host, {
     if (busy !== null) return null
     busy = kind
     said = ''
+    note = false
     confirming = null
     paint()
     let answer
@@ -338,6 +365,7 @@ export function renderConnectSettings(host, {
       said = ''
     } else if (answer !== null && typeof answer === 'object' && answer.ok === true) {
       said = answer.replacedHub === true && label ? `${label} still lists this Mac until you remove it there.` : ''
+      note = said !== ''
       address.value = ''
       code.value = ''
     } else {
@@ -345,7 +373,10 @@ export function renderConnectSettings(host, {
       if (answer?.pairedOnHub === true) said = PAIRED_ON_HUB
       else said = Object.hasOwn(REFUSALS, reason) ? REFUSALS[reason] : FALLBACK
       if (answer === null) said = FALLBACK
-      if (answer?.pairedOnHub !== true && REPLACEABLE.has(reason)) {
+      // the file still holds the Mac a disconnect could not save: that, not a stored Mac to replace
+      const unsaved = reason === 'hub_exists' && !connected() && view?.problem === 'forget_not_saved'
+      if (unsaved && answer?.pairedOnHub !== true) said = STILL_UNSAVED
+      else if (answer?.pairedOnHub !== true && REPLACEABLE.has(reason)) {
         offered = { reason, address: input.address, code: input.code, label: reason === 'hub_exists' ? view?.hub?.label ?? null : null }
       }
     }
@@ -368,6 +399,17 @@ export function renderConnectSettings(host, {
     }
     paint()
   })
+
+  // the offer and its question are about what was typed then: any change drops them
+  for (const input of [address, code]) {
+    input.addEventListener('input', () => {
+      if (offered === null && confirming !== 'replace') return
+      offered = null
+      if (confirming === 'replace') confirming = null
+      said = ''
+      paint()
+    })
+  }
 
   replace.addEventListener('click', () => {
     if (offered === null) return
@@ -400,7 +442,10 @@ export function renderConnectSettings(host, {
     } else if (confirming === 'disconnect' && connected()) {
       const id = view.hub.id
       void run('forget', () => api.forget(id)).then((answer) => {
-        said = answer !== null && typeof answer === 'object' && (answer.ok === true || answer.available === false) ? '' : 'Agent Inbox couldn’t disconnect. Try again.'
+        const done = answer !== null && typeof answer === 'object' && (answer.ok === true || answer.available === false)
+        // stopped but not saved: the state's own sentence says so (PROBLEMS.forget_not_saved)
+        const unsaved = !connected() && view?.problem === 'forget_not_saved'
+        said = done || unsaved ? '' : 'Agent Inbox couldn’t disconnect. Try again.'
         paint()
         keepFocus(connected() ? disconnect : address)
       })
@@ -440,7 +485,17 @@ export function renderConnectSettings(host, {
       const stop = api.onChange(() => { void refresh() })
       stopShown = typeof stop === 'function' ? stop : null
     }
-    refreshShown = () => (section.isConnected ? refresh() : Promise.resolve(null))
+    // Settings opened again: what was said before is about a moment that has passed
+    refreshShown = () => {
+      if (!section.isConnected) return Promise.resolve(null)
+      if (busy === null) {
+        said = ''
+        note = false
+        offered = null
+        confirming = null
+      }
+      return refresh()
+    }
     await refresh()
   })()
   return section

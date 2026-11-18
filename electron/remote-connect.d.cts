@@ -14,7 +14,7 @@ export function normaliseCode(text: unknown): string | null
 export function isDeviceLabel(value: unknown): value is string
 /** This Mac's name on the hub, from its host name; `Mac` when nothing usable is left. */
 export function deviceLabelFor(name: unknown): string
-/** The hub's name on this Mac: its machine, else the first label of its address; at most 40 characters. */
+/** The hub's name on this Mac: its machine, else (or when the machine reads as `thismac` or `local`, ignoring case, spaces, `-` and `_`) the first label of its address; at most 40 characters. */
 export function hubLabelFor(machine: unknown, host: string): string
 /** The mesh rule (inTailnet in src/mesh-config.ts). */
 export function inTailnet(host: string, suffix: string | undefined): boolean

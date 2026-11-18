@@ -43,9 +43,21 @@ const BODY_MAX = 1024
 const MAX_DEVICES = 16
 const PAIRED_SHOWN = 16
 const LABEL_MAX = 40
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
-// half of a surrogate pair on its own: JSON can carry one, and it is not text
-const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+// A label is read by a person (Settings, a notification), so besides control characters (Cc) it
+// may hold no Unicode format character (Cf: bidirectional controls, zero-width characters, the
+// byte-order mark, a zero-width joiner even inside an emoji sequence, the soft hyphen) and no half
+// of a surrogate pair (Cs), which JSON can carry.
+const LABEL_FORBIDDEN = /[\p{Cc}\p{Cf}\p{Cs}]/u
+
+/**
+ * A device label, by the one rule the pairing request and remote.json's reader
+ * (src/viewer-remote.ts) both use: a string of 1 to 40 characters with none of LABEL_FORBIDDEN.
+ */
+export function isDeviceLabel(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const length = Array.from(value).length
+  return length >= 1 && length <= LABEL_MAX && !LABEL_FORBIDDEN.test(value)
+}
 
 const sha256 = (text: string): Buffer => crypto.createHash('sha256').update(text, 'utf8').digest()
 
@@ -100,9 +112,8 @@ async function readBody(request: Request, incoming: IncomingMessage | undefined)
 }
 
 /**
- * `{ code, label }` and nothing else, both strings, the label by remote.json's reader rule (1 to
- * 40 characters, no control characters) and well-formed. `code` is null when it does not
- * normalise: that still counts as a wrong try.
+ * `{ code, label }` and nothing else, both strings, the label by isDeviceLabel. `code` is null when
+ * it does not normalise: that still counts as a wrong try.
  */
 function parseRequest(text: string): { code: string | null; label: string } | null {
   let value: unknown
@@ -115,22 +126,33 @@ function parseRequest(text: string): { code: string | null; label: string } | nu
   const doc = value as Record<string, unknown>
   if (Object.keys(doc).sort().join(',') !== 'code,label') return null
   const { code, label } = doc
-  if (typeof code !== 'string' || typeof label !== 'string') return null
-  const length = Array.from(label).length
-  if (length < 1 || length > LABEL_MAX || CONTROL.test(label) || LONE_SURROGATE.test(label)) return null
+  if (typeof code !== 'string' || !isDeviceLabel(label)) return null
   return { code: normaliseCode(code), label }
 }
 
 export type PairingRead<S> = { ok: true; setting: S; doc: Record<string, unknown> } | { ok: false }
 
+/** A new code as the code route answers it. `codeId` names the code and nothing else: random, not derived from it. */
+export interface MadeCode {
+  code: string
+  codeId: string
+  expiresAt: string
+}
+
+/** A device paired since this viewer started, and the identity of the code that paired it. */
+export interface PairedDevice {
+  device: string
+  codeId: string
+}
+
 export interface Pairing {
-  /** A new code, voiding any older one: `{ code: "7K3QX-9M2PD", expiresAt }`. */
-  makeCode(): { code: string; expiresAt: string }
-  /** Voids the code (the entry turned off). */
+  /** A new code, voiding any older one: `{ code: "7K3QX-9M2PD", codeId, expiresAt }`. */
+  makeCode(): MadeCode
+  /** Voids the code (the entry turned off, or remote.json changed). */
   voidCode(): void
   codePending(): boolean
-  /** The ids paired since this viewer started, the last 16. */
-  paired(): string[]
+  /** The devices paired since this viewer started, each with the code that paired it, the last 16. */
+  paired(): PairedDevice[]
   /** POST /api/remote/pair, behind the gate's steps 1 to 6. */
   handler: Handler
 }
@@ -150,9 +172,9 @@ export function createPairing<S>(opts: {
   refused: () => void
 }): Pairing {
   const lock = createLockedFile(opts.file, fsPromises)
-  let code: { digest: Buffer; madeAt: number; wrong: number } | null = null
+  let code: { digest: Buffer; madeAt: number; wrong: number; id: string } | null = null
   const admitted: number[] = []
-  const paired: string[] = []
+  const paired: PairedDevice[] = []
 
   /** The pending code, or null; an expired one is voided here. A clock that went back reads as expired. */
   function live(): typeof code {
@@ -216,6 +238,7 @@ export function createPairing<S>(opts: {
     }
     // void FIRST: whatever happens to the write, this code never pairs again
     code = null
+    const codeId = pending.id
 
     const secret = crypto.randomBytes(32).toString('base64url')
     let id: string | null
@@ -227,7 +250,7 @@ export function createPairing<S>(opts: {
       id = null
     }
     if (id === null) return refuse()
-    paired.push(id)
+    paired.push({ device: id, codeId })
     if (paired.length > PAIRED_SHOWN) paired.splice(0, paired.length - PAIRED_SHOWN)
     // the secret exists in this one response and nowhere else
     return c.json({ ok: true, device: id, secret }, 200)
@@ -237,14 +260,15 @@ export function createPairing<S>(opts: {
     makeCode() {
       const plain = Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[crypto.randomInt(32)]!).join('')
       const madeAt = opts.now()
-      code = { digest: sha256(plain), madeAt, wrong: 0 }
-      return { code: `${plain.slice(0, 5)}-${plain.slice(5)}`, expiresAt: new Date(madeAt + CODE_TTL_MS).toISOString() }
+      const codeId = crypto.randomBytes(8).toString('hex')
+      code = { digest: sha256(plain), madeAt, wrong: 0, id: codeId }
+      return { code: `${plain.slice(0, 5)}-${plain.slice(5)}`, codeId, expiresAt: new Date(madeAt + CODE_TTL_MS).toISOString() }
     },
     voidCode() {
       code = null
     },
     codePending: () => live() !== null,
-    paired: () => [...paired],
+    paired: () => paired.map((entry) => ({ ...entry })),
     handler: async (c) => {
       const incoming = (c.env as { incoming?: IncomingMessage } | undefined)?.incoming
       try {
@@ -260,11 +284,15 @@ export function createPairing<S>(opts: {
 
 /**
  * POST /api/remote-entry/code, for the loopback app only, and only when the viewer was started with
- * an owner token: `X-Agent-Inbox-Owner` must equal it, else 403. The loopback entry's own rules
- * apply first, so the request also needs the loopback `Origin`. 409 `{ error: "remote_entry_off" }`
- * while the remote entry is not on and listening, so no code is made for a listener that is not there.
+ * an owner token: `X-Agent-Inbox-Owner` must equal it, else 403. The token keeps the route from
+ * existing on a viewer the desktop app did not start; it does not limit who on the hub can make a
+ * code, because any local process can read it from GET /api/owner (the loopback viewer's own trust).
+ * So the answer carries `codeId`, which only the caller learns: the app tells its own code's pairing
+ * from another's by it. The loopback entry's own rules apply first, so the request also needs the
+ * loopback `Origin`. 409 `{ error: "remote_entry_off" }` while the remote entry is not on and
+ * listening, so no code is made for a listener that is not there.
  */
-export function remoteCodeRoute(entry: { makeCode(): { code: string; expiresAt: string } | null }, ownerToken: string): Handler {
+export function remoteCodeRoute(entry: { makeCode(): MadeCode | null }, ownerToken: string): Handler {
   return (c) => {
     if (!ownerTokenMatches(c.req.header('x-agent-inbox-owner'), ownerToken)) return c.text('Forbidden', 403)
     const made = entry.makeCode()

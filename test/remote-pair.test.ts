@@ -18,7 +18,9 @@ import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
 import { startRemoteEntry } from '../src/viewer-remote.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
-import { normaliseCode, remoteCodeRoute } from '../src/remote-pair.js'
+import { createPairing, normaliseCode, remoteCodeRoute } from '../src/remote-pair.js'
+import { Hono } from 'hono'
+import { once } from 'node:events'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 import { waitUntil } from './wait.js'
 import {
@@ -95,11 +97,14 @@ async function postCode(hub: Hub, headers: Record<string, string> = { 'X-Agent-I
   })
 }
 
-async function makeCode(hub: Hub): Promise<string> {
+async function makeCodeWithId(hub: Hub): Promise<{ code: string; codeId: string }> {
   const response = await postCode(hub)
   expect(response.status).toBe(200)
-  const body = await response.json() as { code: string }
-  return body.code
+  return await response.json() as { code: string; codeId: string }
+}
+
+async function makeCode(hub: Hub): Promise<string> {
+  return (await makeCodeWithId(hub)).code
 }
 
 /** One pairing request through the remote entry. The clock moves 6.1 s first, so a run of requests stays under ten a minute. */
@@ -172,10 +177,23 @@ describe('the code', () => {
     const response = await postCode(hub)
     expect(response.status).toBe(200)
     expect(response.headers.get('cache-control')).toBe('no-store')
-    const body = await response.json() as { code: string; expiresAt: string }
-    expect(Object.keys(body).sort()).toEqual(['code', 'expiresAt'])
+    const body = await response.json() as { code: string; codeId: string; expiresAt: string }
+    expect(Object.keys(body).sort()).toEqual(['code', 'codeId', 'expiresAt'])
     expect(body.code).toMatch(CODE_SHAPE)
     expect(body.expiresAt).toBe(new Date(START + 10 * 60_000).toISOString())
+  })
+
+  it('has an identity: 16 random hex characters, new for each code, unrelated to the code', async () => {
+    const hub = await startHub()
+    const ids = new Set<string>()
+    for (let i = 0; i < 20; i += 1) {
+      const { code, codeId } = await makeCodeWithId(hub)
+      expect(codeId).toMatch(/^[0-9a-f]{16}$/)
+      const plain = code.replace('-', '')
+      for (const hash of ['sha256', 'sha1', 'md5']) expect(crypto.createHash(hash).update(plain).digest('hex')).not.toContain(codeId)
+      ids.add(codeId)
+    }
+    expect(ids.size).toBe(20)
   })
 
   it('draws every character from the alphabet, from node:crypto', async () => {
@@ -270,6 +288,53 @@ describe('the code', () => {
     expect(devicesIn(hub)).toHaveLength(1)
   })
 
+  it('over real HTTP: eight requests that release the right code\'s body in the same tick pair one device', async () => {
+    const hub = await startHub()
+    const code = await makeCode(hub)
+    const body = JSON.stringify({ code, label: 'laptop' })
+    const sockets = Array.from({ length: 8 }, () => connect(hub.port, '127.0.0.1'))
+    await Promise.all(sockets.map((socket) => once(socket, 'connect')))
+    const answers = sockets.map((socket) => new Promise<number>((resolve, reject) => {
+      let text = ''
+      socket.on('data', (chunk) => { text += chunk.toString() })
+      socket.on('end', () => resolve(Number(text.split(' ')[1])))
+      socket.on('error', reject)
+    }))
+    const head = [...PAIR_HEADERS.map(([k, v]) => `${k}: ${v}`), 'Content-Type: application/json', `Content-Length: ${Buffer.byteLength(body)}`, 'Connection: close']
+    for (const socket of sockets) socket.write(`POST /api/remote/pair HTTP/1.1\r\n${head.join('\r\n')}\r\n\r\n`)
+    // every request is in the handler by now, waiting for its body
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    for (const socket of sockets) socket.write(body)
+    expect((await Promise.all(answers)).sort()).toEqual([200, 403, 403, 403, 403, 403, 403, 403])
+    expect(devicesIn(hub)).toHaveLength(1)
+    expect(hub.entry.status().refused.pair).toBe(7)
+  })
+
+  it('in process: concurrent calls of the handler with the right code pair once', async () => {
+    const dir = scratchDir('remote-pair-')
+    const file = join(dir, 'remote.json')
+    writeFileSync(file, JSON.stringify({ devices: [] }), { mode: 0o600 })
+    let refusals = 0
+    const pairing = createPairing<null>({
+      file,
+      maxBytes: 64 * 1024,
+      now: () => START,
+      read: (path) => ({ ok: true, setting: null, doc: JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> }),
+      stillOn: () => true,
+      refused: () => { refusals += 1 },
+    })
+    const app = new Hono()
+    app.post('/pair', pairing.handler)
+    const { code } = pairing.makeCode()
+    const incoming = { rawHeaders: ['Content-Type', 'application/json'] }
+    const answers = await Promise.all(Array.from({ length: 8 }, () => app.request('/pair', {
+      method: 'POST', body: JSON.stringify({ code, label: 'laptop' }), headers: { 'content-type': 'application/json' },
+    }, { incoming })))
+    expect(answers.map((answer) => answer.status).sort()).toEqual([200, 403, 403, 403, 403, 403, 403, 403])
+    expect(refusals).toBe(7)
+    expect((JSON.parse(readFileSync(file, 'utf8')) as { devices: unknown[] }).devices).toHaveLength(1)
+  })
+
   it('compares SHA-256 digests with timingSafeEqual', async () => {
     const hub = await startHub()
     const code = await makeCode(hub)
@@ -339,7 +404,7 @@ describe('Crockford normalisation', () => {
 })
 
 describe('the rate limit', () => {
-  it('lets at most ten requests a minute reach the comparison; one over the limit uses no try', async () => {
+  it('lets at most ten requests a minute into the handler, counted when each arrives; one over the limit uses no try', async () => {
     const hub = await startHub()
     const code = await makeCode(hub)
     // four wrong tries and six malformed bodies: ten requests in the minute, four tries used
@@ -389,6 +454,17 @@ describe('the body', () => {
     ['a number for the code', () => ({ body: { code: 1234567890, label: 'laptop' } })],
     ['a list for the code', (code: string) => ({ body: { code: [code], label: 'laptop' } })],
     ['a number for the label', (code: string) => ({ body: { code, label: 7 } })],
+    ['a list for the label', (code: string) => ({ body: { code, label: ['laptop'] } })],
+    ['an array-like object for the label', (code: string) => ({ body: { code, label: { 0: 'x', length: 1 } } })],
+    ['a small number for the code', () => ({ body: { code: 7, label: 'laptop' } })],
+    ['a list of one letter for the code', () => ({ body: { code: ['x'], label: 'laptop' } })],
+    ['an empty JSON array', () => ({ body: '[]' })],
+    ['a JSON string of text', () => ({ body: '"text"' })],
+    ['a bidirectional override and a zero-width space in the label', (code: string) => ({ body: { code, label: 'lap‮exe.top​' } })],
+    ['a zero-width space alone', (code: string) => ({ body: { code, label: '​' } })],
+    ['a byte-order mark in the label', (code: string) => ({ body: { code, label: '﻿laptop' } })],
+    ['a bidirectional isolate in the label', (code: string) => ({ body: { code, label: '⁦laptop⁩' } })],
+    ['a zero-width joiner inside an emoji sequence', (code: string) => ({ body: { code, label: '\u{1F469}‍\u{1F4BB} desk' } })],
     ['an empty label', (code: string) => ({ body: { code, label: '' } })],
     ['a 41-character label', (code: string) => ({ body: { code, label: 'x'.repeat(41) } })],
     ['a newline in the label', (code: string) => ({ body: { code, label: 'lap\ntop' } })],
@@ -455,6 +531,13 @@ describe('the body', () => {
     expect(response.rose).toEqual(['pair'])
     expect(Date.now() - started).toBeLessThan(3_000)
     expect(hub.entry.status().codePending).toBe(true)
+  })
+
+  it('takes a label with an emoji and accents that holds no format character', async () => {
+    const hub = await startHub()
+    const code = await makeCode(hub)
+    await expectPaired(hub, () => pair(hub, { code, label: '\u{1F600} Zoë\'s laptop' }))
+    expect(devicesIn(hub).map((d) => d['label'])).toEqual(['\u{1F600} Zoë\'s laptop'])
   })
 
   it('takes a body of exactly 1 KiB and a 40-character label', async () => {
@@ -680,6 +763,80 @@ describe('the write, under the lock', () => {
   })
 })
 
+describe('a lock path that is a dangling symlink', () => {
+  it('answers the bare 403 within the lock deadline, and a later code pairs once the link is gone', async () => {
+    const hub = await startHub()
+    const lines: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+    const lock = `${hub.file}.lock`
+    symlinkSync(join(hub.dir, 'nowhere'), lock)
+    const code = await makeCode(hub)
+    const started = Date.now()
+    await expectRefused(hub, 'pair', () => pair(hub, { code, label: 'laptop' }))
+    expect(Date.now() - started).toBeLessThan(9_000)
+    expect(lines).toEqual(['agent-inbox remote entry: pairing could not write remote.json (error)'])
+    expect(devicesIn(hub)).toEqual([])
+    unlinkSync(lock)
+    const next = await makeCode(hub)
+    await expectPaired(hub, () => pair(hub, { code: next, label: 'laptop' }))
+    expect(devicesIn(hub)).toHaveLength(1)
+  }, 20_000)
+})
+
+describe('a code is tied to the file it was made under', () => {
+  // raw requests here, never attempt(): its status call would read the file first
+  const send = (hub: Hub, code: string) => pair(hub, { code, label: 'laptop' })
+
+  it('the entry off and on again with no poll or request between: the code is void', async () => {
+    const hub = await startHub()
+    const code = await makeCode(hub)
+    writeSetting(hub.dir, setting(hub.port, [], { enabled: false }))
+    writeSetting(hub.dir, setting(hub.port, []))
+    const response = await send(hub, code)
+    expect(response.status).toBe(403)
+    expect(hub.entry.status()).toMatchObject({ codePending: false, paired: [] })
+    expect(hub.entry.status().refused.pair).toBe(1)
+    expect(devicesIn(hub)).toEqual([])
+  })
+
+  it('a hand edit that changes nothing the entry uses voids the code', async () => {
+    const hub = await startHub()
+    const code = await makeCode(hub)
+    writeSetting(hub.dir, setting(hub.port, [], { note: 'edited by hand' }))
+    expect((await send(hub, code)).status).toBe(403)
+    expect(hub.entry.status().refused.pair).toBe(1)
+    expect(devicesIn(hub)).toEqual([])
+  })
+
+  it('a device removed by anyone voids the code', async () => {
+    const hub = await startHub({ devices: [device(newSecret(), 'aaaaaaaaaaaaaaaa')] })
+    const code = await makeCode(hub)
+    writeSetting(hub.dir, setting(hub.port, []))
+    expect((await send(hub, code)).status).toBe(403)
+    expect(devicesIn(hub)).toEqual([])
+  })
+
+  it('a pairing\'s own write does not disturb the next code', async () => {
+    const hub = await startHub()
+    const first = await makeCode(hub)
+    expect((await send(hub, first)).status).toBe(200)
+    const next = await makeCode(hub)
+    expect((await send(hub, next)).status).toBe(200)
+    expect(devicesIn(hub)).toHaveLength(2)
+  })
+
+  it('a file left as it was keeps the code', async () => {
+    const hub = await startHub({ intervalMs: 20 })
+    const code = await makeCode(hub)
+    // the poll and the status read it again and again, unchanged
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      expect(hub.entry.status().codePending).toBe(true)
+    }
+    expect((await send(hub, code)).status).toBe(200)
+  })
+})
+
 describe('the entry turned off between making the code and pairing', () => {
   it('refuses at the gate on the next request, before the listener closes, and voids the code', async () => {
     // a poll an hour apart: only the request sees the change
@@ -886,33 +1043,38 @@ describe('POST /api/remote-entry/code, loopback only', () => {
 })
 
 describe('the status', () => {
-  it('adds codePending, the ids paired since start and the pair count, and nothing secret', async () => {
+  it('adds codePending, each device paired since start with the code that paired it, the pair count, and nothing secret', async () => {
     const hub = await startHub()
     const start = hub.entry.status()
     expect(start.codePending).toBe(false)
     expect(start.paired).toEqual([])
     expect(start.refused.pair).toBe(0)
-    const code = await makeCode(hub)
+    const { code, codeId } = await makeCodeWithId(hub)
     expect(hub.entry.status().codePending).toBe(true)
+    // the pending code's identity is never shown: only the app that asked for it knows it
+    expect(JSON.stringify(hub.entry.status())).not.toContain(codeId)
     await expectRefused(hub, 'pair', () => pair(hub, { code: wrongCode(code), label: 'my-secret-label' }))
     const { device: id, secret } = await expectPaired(hub, () => pair(hub, { code, label: 'my-secret-label' }))
     const status = hub.entry.status()
-    expect(status).toMatchObject({ codePending: false, paired: [id] })
+    expect(status).toMatchObject({ codePending: false, paired: [{ device: id, codeId }] })
+    expect(Object.keys(status.paired[0]!).sort()).toEqual(['codeId', 'device'])
     expect(status.refused.pair).toBe(1)
     expect(Object.keys(status).sort()).toEqual(['codePending', 'error', 'host', 'listening', 'on', 'paired', 'port', 'refused'])
-    const text = JSON.stringify(status)
-    for (const value of [secret, secretSha256(secret), 'my-secret-label', code, code.replace('-', ''), LOGIN]) expect(text).not.toContain(value)
+    const next = await makeCodeWithId(hub)
+    expect(JSON.stringify(hub.entry.status())).not.toContain(next.codeId)
+    const text = JSON.stringify(hub.entry.status())
+    for (const value of [secret, secretSha256(secret), 'my-secret-label', code, code.replace('-', ''), next.code, LOGIN]) expect(text).not.toContain(value)
     // and the loopback route serves the same
     const served = await fetch(`http://127.0.0.1:${hub.localPort}/api/remote-entry`).then((r) => r.json())
     expect(served).toEqual(JSON.parse(JSON.stringify(hub.entry.status())))
   })
 
-  it('lists at most the last 16 ids paired since start', async () => {
+  it('lists at most the last 16 devices paired since start', async () => {
     const hub = await startHub()
-    const ids: string[] = []
+    const ids: Array<{ device: string; codeId: string }> = []
     for (let i = 0; i < 17; i += 1) {
-      const code = await makeCode(hub)
-      ids.push((await expectPaired(hub, () => pair(hub, { code, label: 'laptop' }))).device)
+      const { code, codeId } = await makeCodeWithId(hub)
+      ids.push({ device: (await expectPaired(hub, () => pair(hub, { code, label: 'laptop' }))).device, codeId })
       // the owner removes it again, as main will
       writeSetting(hub.dir, setting(hub.port, []))
     }

@@ -378,13 +378,18 @@ owner's device then fails to connect. The controller never reverts: "Review" pas
 state's digest to `acknowledge(digest)`, which accepts it only if the file still has that digest
 (otherwise the flag stays and the new state is announced), and the owner reverts with the panel's
 own switch and Remove. Any write by main voids a pending code.) **(As built in PR 2e:** main keeps
-the digest it last wrote or accepted across restarts, in userData `remote-entry-state.json`, so a
-change made to `remote.json` while the app was closed is flagged at the next start, with the
-notification. With no digest kept (a first run, or the state file lost), a file that is on, holds
-any device entry or cannot be read is flagged; an absent file, or one that is off with no device
-entry, is the baseline. The baseline stays the kept digest until the owner acknowledges. Nothing is
-reverted. A process that can write `remote.json` can write the state file too, so this is a
-tripwire against a silent change, not a boundary against a local process.)
+the digest it last wrote or accepted across restarts, in userData `remote-entry-state.json`, named
+for this `remote.json` and this viewer, so a change made to `remote.json` while the app was closed is
+flagged at the next start, with the notification. The digest covers the watched fields: `enabled`,
+`host`, `port`, `viewerPort`, `logins`, and each device's id, hash and whether the reader keeps it;
+not a label that stays readable, `pairedAt` or an unknown field. While a change is flagged, and
+around every write main makes, the state holds `pending`, which no file has, so any start before
+the review flags again, even when `remote.json` was put back to an earlier state main wrote. With
+no digest kept (a first run, or the state file lost), a file that is on, holds any device entry or
+cannot be read is flagged; an absent file, or one that is off with no device entry, is the baseline.
+The panel shows the file and the digest from one read (`review()`), so Review accepts what the owner
+saw. Nothing is reverted. A process that can write both files defeats this: it is a tripwire against
+a silent change, not a boundary against a local process.)
 
 **The hub's Settings** ("Let my other devices use this Inbox", macOS, owned viewer only) use a
 bridge, `agentInboxRemoteEntry` in `setup-preload.cjs`, gated like `handleLinkSettings`
@@ -570,18 +575,24 @@ laptop follows §3.3's retry rules, and its secret survives restarts in the Keyc
 **(As built in PR 2e.)** When Tailscale is not running or cannot be read at the first check after
 the app starts (the app opens before Tailscale is up), the watch still switches the entry off at
 once, and `onStopped` says it will resume, so the notification can say paused, not stopped. Main
-keeps the owner's intent
-(`wanted`, set by the switch, cleared by switching off or by the permissions repair) beside the
-digest, and while it holds and the file is off, the watch tries to switch the entry back on: every
-5 seconds for the first 2 minutes after the app starts or after its own stop, then every minute. It
-does so only when, at that moment, nothing is flagged, the file is exactly the one main itself
-switched off (for this viewer and port, with one login), this node has the stored host and login,
-and Serve's shape is ok; it then writes `enabled: true` and nothing else, under the lock, after
-reading the file again. When the host or login changed, or the node is tagged, it writes nothing,
-removes no device, and only the owner's switch turns it on again (which removes the devices if the
-host or login still differs, as before). A file switched off or edited by anything else is never switched back on, even after
-the owner reviews it. A stop within a minute of a resume waits a minute before the next try. The
-panel shows why it is not back yet.
+keeps the owner's intent (`wanted`, set by the switch, cleared by switching off, by the permissions
+repair and by an identity stop) beside the digest, and while it holds and the file is off, the
+watch tries to switch the entry back on: every 5 seconds for the first 2 minutes after the app
+starts or after its own stop, then every minute. It does so only when, at that moment, nothing is
+flagged, the file's watched fields are exactly those main itself wrote when it switched off (for
+this viewer and port, with one login), this node has the stored host and login, and Serve's shape
+is ok; it then writes `enabled: true` and nothing else, under the lock, after reading the file
+again. A stop for Serve's shape (Funnel, another path, a TCP forward, a foreground session) resumes
+once the shape is right again: the owner is usually not at this Mac, and an ad-hoc `tailscale
+serve` run in a terminal must not cost them the Inbox until they are back. A stop for this node's
+identity (another host or login, or a tagged node) never resumes: nothing is written, no device is
+removed, and only the owner's switch turns it on again (which removes the devices if the host or
+login still differs, as before), across restarts too. A file switched off or edited by anything
+else is never switched back on, even after the owner reviews it. A stop within 10 minutes of a
+resume backs off: the next try waits 1 minute, then 2, 4, 8, 16 and at most 30 minutes, and the
+wait is back to normal once the entry stayed on for 10 minutes. The panel shows why it is not back
+yet and when it tries next. These notices are raised on the hub; the next PRs must make a pause
+visible from the connected Mac too.
 
 **Still needs a person:** after the hub restarts, its user must log in before the app or tmux
 runs, and with FileVault on macOS needs the password at boot. Agent sessions and their tmux
@@ -603,7 +614,8 @@ sessions do not survive a restart. Keeping the hub awake is a system setting the
 | Pairing code asked for without the owner token, or remotely | 403; and 409 while the entry is off. Any local process can read the token, so the token limits where the route exists, not who on the hub makes a code; `codeId` tells the app's code from another's |
 | Serve has another path on the host, a raw TCP forward, or Funnel | main turns the entry off and notifies |
 | `remote.json` changed outside the app, including while the app was closed (PR 2e) | native notification and a Settings flag |
-| The watch switched the entry off and Tailscale comes back | switched on again only on the file main itself switched off, with no flag, the same host and login, and Serve ok; otherwise it stays off and the panel says why |
+| The watch switched the entry off and Tailscale or Serve's shape comes back | switched on again only on the file main itself switched off, with no flag, the same host and login, and Serve ok; never after an identity stop; backing off to 30 minutes when it flaps; otherwise it stays off and the panel says why |
+| `remote.json` put back while the app was closed to a state main wrote before a change it flagged | flagged at the next start (the kept state says a review is due) |
 | A connect address outside this tailnet, or not one of the owner's untagged nodes, or a changed node | refused |
 | Invalid or self-signed certificate | refused by Node's `fetch` and by Chromium |
 | The hub page calls a privileged bridge, or reads the device secret | absent in `remote-preload.cjs`; the header is added by main |

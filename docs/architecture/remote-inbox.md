@@ -95,7 +95,9 @@ off. Then:
 - `devices`: at most 16. Each needs a 16-character lowercase hex `id`, a `label` by the device
   label rule (1 to 40 characters, no control character, no Unicode format character, no lone
   surrogate: the same rule as a pairing request, below), and a 64-character lowercase hex `secretSha256`. A bad
-  device is dropped; the rest still count.
+  device is dropped; the rest still count. The first entry with an id is the device: a later entry
+  with the same id is dropped whatever it holds, so its key never opens the gate (PR 2d review round
+  2; the controller reads it the same way, and a test compares the two readers on such a file).
 - `enabled` is on only when it is exactly `true`.
 
 `secretSha256` is the SHA-256 of the device secret's 43 base64url characters, as ASCII, in
@@ -629,8 +631,13 @@ loginItem: { available, openAtLogin, needsApproval }, listening, listenError, ch
 - `changes` (only while flagged): what changed since the owner last accepted, from `review()`, as
   facts with no values (below).
 - `refusal`: the last refused switch-on, `{ reason, step, devices, at }`, kept in main, not the page.
-  It goes as soon as a later operation works, or the next `get()` finds another digest, problem or
-  on/off. The page keeps no refusal of its own.
+  It goes as soon as a later operation works, when anything the panel shows changes (a pause's next
+  try aside), and 2 minutes after it at the latest: Tailscale's state is not in the file, so a
+  refusal must not outlive the moment. The page keeps no refusal of its own, and draws it as a
+  message under the status line, never as the status line (review round 2).
+- `inboxUnreachable`: the last three status reads all failed (the viewer down, a non-200, a bad
+  shape): the status line says "Needs you: Agent Inbox can't reach its own Inbox" with "Quit and
+  reopen Agent Inbox." instead of "On, starting…".
 - A stop older than the owner's last switch on or off here is left out: it is history.
 
 Never a login, a secret hash, the owner token, a code's id or a raw Tailscale answer. Each operation
@@ -652,7 +659,10 @@ the same family as the panel's status line: a pause says "Paused: <why>. Open Se
 devices to see what to do."; a stop says "<Why>. Open Settings → Other devices to see what to
 do."; a resume, a pairing ("<label> can now use this Inbox.") and a change outside the app have
 their own words. A pause, a stop or a resume is quieted only when it is the same kind and reason as
-the last one shown, less than 10 minutes ago; a resume between two pauses lets the second through.
+the last one shown, less than 10 minutes ago; a resume between two pauses lets the second through,
+and so does the owner's own switch: when switching on (with or without removing the paired Macs),
+off or Make it private works, main resets the notifier, dropping a held pause and the last one
+shown.
 A pairing and an outside change are never quieted (the controller announces each flagged state
 once). For the first 2 minutes after the app starts, a pause is held: if it resumes within 2 minutes
 nothing is shown at all, and if it still stands then, it is shown. The words come from
@@ -673,12 +683,16 @@ and remove the paired Macs." When the file cannot be read, it says so and offers
 changed since, the panel redraws and says "It changed again; check the list."
 
 **The panel.** Top to bottom, only the parts that apply: the review box; the switch, **Let my other
-Macs use this Inbox**, with one status line (Off; On, starting… while the file is on but the viewer
-does not listen yet; On, at the address, with **Copy address**; Paused: why, next try at a time;
-Needs you: why, including "another program on this Mac is using port <port>"); the risk sentence;
-one instruction for what to do, chosen from the reason (with a command and **Copy** when running it
-is the fix or shows the cause, **Make it private** for a file other accounts can read, and **Switch on
-and remove them** / **Cancel** when switching on would remove paired Macs); **Paired Macs**, each
+Macs use this Inbox**, with one status line that is always the present (Off; On, starting… while the
+file is on but the viewer does not listen yet; On, at the address, with **Copy address**; Paused:
+why, next try at a time; Needs you: why, from a standing stop, `needsOwner`, a problem with the file,
+the port held by another program, or the app unable to reach its own Inbox); the risk sentence; one
+instruction for the present (with a command and **Copy** when running it is the fix or shows the
+cause, and **Make it private** for a file other accounts can read); a refused switch-on as a message,
+"Switching on didn't work: <why, past tense>. <what to do>", or, when switching on would remove
+paired Macs, the question naming them ("…has changed since laptop was paired. Switching on removes
+laptop; pair it again afterwards." with **Switch on and remove it** / **Cancel**, or for several,
+**Switch on and remove them**); **Paired Macs**, each
 with **Remove** and an inline confirm, and paired Macs that can't be read with **Clear**; **Add a
 Mac**, which shows the code, the address and a countdown until the code is used, runs out or is
 cancelled by a later change; **Test** while on; the Serve removal command while off; **Open Agent

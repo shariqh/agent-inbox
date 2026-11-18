@@ -542,10 +542,13 @@ The local page stays loaded underneath and keeps working. **This Mac** and **<la
 the View menu, plus a control the local page draws through `agentInboxConnect.show(id | null)`,
 switch which view is on top. `Settings…` always shows This Mac, where connect settings live.
 **(As built in PR 3c:** the control is a strip the local page draws above the hub's view, which is
-laid out 36 CSS pixels below the top of the content area (`HUB_STRIP_HEIGHT`, the same number in
-`electron/hub-view.cjs` and `public/hub-strip.js`, pinned by a test) instead of covering all of it.
-The strip shows only while the hub's view is on top: "Showing <label>'s Inbox", its status in a word
-and **This Mac**, which is never disabled. The hub's page controls every pixel of its own view and
+laid out below the strip instead of covering all of it: the strip is 36 CSS pixels
+(`HUB_STRIP_HEIGHT`, the same number in `electron/hub-view.cjs` and `public/hub-strip.js`, pinned by
+a test), and the view starts that height times the local page's zoom factor below the top. The strip
+shows only while the hub's view is on top: "Showing <label>'s Inbox", its status in a word and
+**This Mac**, which is never disabled. The hub is shown only while this window's page is the viewer
+the app owns, the only page that can draw the strip (one guard in main that every way of showing it
+goes through), and while it is on top this Mac's page underneath is inert and its keys are stopped. The hub's page controls every pixel of its own view and
 chooses its own label, so whose Inbox is on screen is said only outside it. The form, Settings →
 Use another Mac's Inbox, is drawn only on this Mac's own page (`agentInboxDesk` says `local`), takes
 the address and the code, checks the code here before sending it, and says each refusal in plain

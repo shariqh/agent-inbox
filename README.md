@@ -663,22 +663,23 @@ reopen Agent Inbox to change it.
 
 ## Use another Mac's Inbox
 
-On macOS, the desktop app can show the Inbox of another Mac of yours, for example the
-one your agents run on, while you sit at a laptop. Both Macs need Tailscale, signed in
-to your own account, and the other Mac must share its Inbox.
+On macOS, the desktop app can show the Inbox of another Mac of yours, for example the one your
+agents run on, while you sit at a laptop. Both Macs need Tailscale, signed in to your own account,
+and the other Mac must share its Inbox (previous section).
 
-1. On the other Mac: **Settings → Other devices → Add a Mac**. It shows its address
-   (like `mac-name.your-tailnet.ts.net`) and a 10-character code.
-2. On this Mac: **Settings → Use another Mac's Inbox**. Type the address and the code,
-   then press **Connect**. Connecting can take 10 seconds or more.
-3. Press **Show its Inbox**. A strip at the top of the window says whose Inbox is on
-   screen and whether it is online. Press **This Mac** in the strip (or choose
-   **View → This Mac**) to come back.
+1. On the other Mac: **Settings → Other devices → Add a Mac**. It shows a code and its address
+   (like `mac-name.tail1234.ts.net`).
+2. On this Mac: **Settings → Use another Mac's Inbox**. Type the address and the code, then press
+   **Connect**. Connecting can take 10 seconds or more.
+3. Press **Show its Inbox**. A strip at the top of the window names the Mac whose Inbox is on
+   screen and says Online, Connecting…, Reconnecting… or No longer paired. Press **This Mac** in the
+   strip, or choose **View → This Mac**, to come back. While the other Mac's Inbox is on screen,
+   this Mac's own Inbox underneath does nothing, keys included.
 
-If connecting fails, Settings says why and what to do next. **Disconnect** stops this
-Mac using the other Mac's Inbox; the other Mac keeps this Mac in its list until you
-remove it there. The other Mac's own settings are changed on that Mac: its Settings
-page here shows only how the page looks.
+If connecting fails, Settings says why and what to do next. **Disconnect** stops this Mac using the
+other Mac's Inbox; the other Mac keeps this Mac in its list until you remove it there. The other
+Mac's settings are changed on that Mac: its Settings page here shows only how the page looks.
+Like sharing, this works only in the viewer the app started itself.
 
 ## Agents view
 

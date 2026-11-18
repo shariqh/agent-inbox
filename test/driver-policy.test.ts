@@ -123,10 +123,11 @@ describe('modes, phases and the option allow-list (§4.1)', () => {
 })
 
 describe('the child’s environment and the registration (§3.2, §8)', () => {
-  it('drops ELECTRON_*, AGENT_INBOX_*, NODE_OPTIONS and every COPILOT_* but HOME and the token, then sets its own', () => {
+  it('drops ELECTRON_*, AGENT_INBOX_*, NODE_OPTIONS, TMUX, TMUX_PANE and every COPILOT_* but HOME and the token, then sets its own', () => {
     const env = childEnv({
       PATH: '/usr/bin', SSH_AUTH_SOCK: '/agent.sock', HTTPS_PROXY: 'http://proxy', NODE_EXTRA_CA_CERTS: '/ca.pem',
       ELECTRON_RUN_AS_NODE: '1', AGENT_INBOX_DB: '/elsewhere.db', AGENT_INBOX_HOOKS: '1', NODE_OPTIONS: '--inspect',
+      TMUX: '/tmp/tmux-test/default,1,0', TMUX_PANE: '%3',
       COPILOT_ALLOW_ALL: 'true', COPILOT_AGENT_SESSION_ID: 'parent', COPILOT_LOADER_PID: '1', COPILOT_HOME: '/copilot-home',
       COPILOT_GITHUB_TOKEN: 'gho_placeholder',
     }, { path: '/hub/inbox.db', isDefault: false })

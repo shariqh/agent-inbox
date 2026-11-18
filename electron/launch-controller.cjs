@@ -513,13 +513,14 @@ const within = (folder, root) => {
 
 // The captured env through the driver's denylist (§8), applied here too so
 // nothing of Electron's or Agent Inbox's own reaches the spec: no ELECTRON_*,
-// AGENT_INBOX_*, NODE_OPTIONS, or COPILOT_* but COPILOT_HOME and
+// AGENT_INBOX_*, NODE_OPTIONS, TMUX, TMUX_PANE, or COPILOT_* but COPILOT_HOME and
 // COPILOT_GITHUB_TOKEN. The driver applies it again and adds its own settings.
 function launchEnv(env) {
   const out = {}
   for (const [name, value] of Object.entries(env)) {
     if (typeof value !== 'string') continue
-    if (name.startsWith('ELECTRON_') || name.startsWith('AGENT_INBOX_') || name === 'NODE_OPTIONS') continue
+    // TMUX and TMUX_PANE name the tmux session the app was started from, not this session's (#617)
+    if (name.startsWith('ELECTRON_') || name.startsWith('AGENT_INBOX_') || name === 'NODE_OPTIONS' || name === 'TMUX' || name === 'TMUX_PANE') continue
     if (name.startsWith('COPILOT_') && name !== 'COPILOT_HOME' && name !== 'COPILOT_GITHUB_TOKEN') continue
     out[name] = value
   }

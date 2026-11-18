@@ -40,6 +40,7 @@ import {
   getBoardByTitle,
   markBoardRead,
   upsertActivity,
+  setActivityPlace,
   endActivity,
   listActivity,
   touchActivity,
@@ -1572,6 +1573,159 @@ describe('live activity — the server build a session registered with (#197)', 
     expect(row()).toMatchObject({ server_version: null, server_source: null })
     register(BUILD)
     expect(row()).toMatchObject(BUILD)
+  })
+})
+
+// ── #617 PR 1: where a session runs. `machine` and `pane` ride the presence upsert and are
+// kept on omission like the build; `desk` and `remote_session` can change or go away, so
+// only setActivityPlace writes them, exactly, and moves no stamp ─────────────────────────
+describe('live activity — where a session runs (#617)', () => {
+  let db: Database.Database
+  const START = Date.parse('2026-11-17T09:00:00.000Z')
+  const SCOPE = { session: 's1', project: 'agent-inbox', stream: 'main', agent: 'claude-code' } as const
+  const PLACE = { machine: 'hub', pane: '%3' } as const
+
+  beforeEach(() => {
+    db = freshDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(START)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  const register = (place: { machine?: string; pane?: string } = {}, session = 's1'): void => {
+    upsertActivity(db, { ...SCOPE, session, doing: 'open', idle: true, claim: false, ...place })
+  }
+  const row = (session = 's1') => listActivity(db).find((a) => a.session === session)!
+  const stamps = (session = 's1') =>
+    db.prepare(`SELECT started_at, updated_at, last_call_at, ended_at FROM activity WHERE session = ?`).get(session)
+
+  it('serves each of the four only when it is set, and a row with none carries none of the keys', () => {
+    register()
+    for (const key of ['machine', 'desk', 'pane', 'remote_session']) expect(Object.keys(row()), key).not.toContain(key)
+    register(PLACE)
+    setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })
+    expect(row()).toMatchObject({ machine: 'hub', pane: '%3', desk: 'api', remote_session: 'session_abc' })
+    setActivityPlace(db, 's1', { desk: null, remote_session: null })
+    expect(Object.keys(row())).not.toContain('desk')
+    expect(Object.keys(row())).not.toContain('remote_session')
+    expect(row()).toMatchObject(PLACE)
+  })
+
+  it('keeps machine and pane on omission, through claims, status, registration, calls and the tick', () => {
+    register(PLACE)
+    expect(row()).toMatchObject(PLACE)
+    vi.setSystemTime(START + 60_000)
+    upsertActivity(db, { ...SCOPE, doing: 'Shipping the release', detail: 'step 2' }) // status({doing}) from a caller that sends none
+    expect(row()).toMatchObject(PLACE)
+    upsertActivity(db, { ...SCOPE, doing: 'open', idle: true, children: [] })
+    register()
+    recordActivityCall(db, 's1')
+    touchActivity(db, 's1')
+    expect(row()).toMatchObject(PLACE)
+  })
+
+  it('writes a new machine or pane when the caller carries one, and one of the two leaves the other alone', () => {
+    register(PLACE)
+    register({ machine: 'laptop' })
+    expect(row()).toMatchObject({ machine: 'laptop', pane: '%3' })
+    register({ pane: '%9' })
+    expect(row()).toMatchObject({ machine: 'laptop', pane: '%9' })
+  })
+
+  it('the upsert never names desk or remote_session: neither writes, clears nor creates them', () => {
+    register(PLACE)
+    setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })
+    register(PLACE)
+    upsertActivity(db, { ...SCOPE, doing: 'Shipping', ...PLACE })
+    upsertActivity(db, { ...SCOPE, doing: 'open', idle: true, ...PLACE })
+    expect(row()).toMatchObject({ desk: 'api', remote_session: 'session_abc' })
+    // a row born from an upsert holds neither
+    register(PLACE, 'fresh')
+    expect(Object.keys(row('fresh'))).not.toContain('desk')
+    const source = readFileSync(new URL('../src/store.ts', import.meta.url), 'utf8')
+    const upsert = source.slice(source.indexOf('const upsertActivityTxn'), source.indexOf('export function upsertActivity('))
+    expect(upsert).not.toMatch(/\bdesk\b|remote_session/)
+  })
+
+  it('setActivityPlace writes the exact values, nulls included, and moves no timestamp', () => {
+    register(PLACE)
+    recordActivityCall(db, 's1')
+    const before = stamps()
+    vi.setSystemTime(START + 10 * 60_000) // inside the presence window, so the row is still listed
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api', remote_session: 'session_abc' })
+    expect(stamps()).toEqual(before)
+    // one value cleared, the other written: no COALESCE keeps the old one
+    expect(setActivityPlace(db, 's1', { desk: null, remote_session: 'session_def' })).toBe(true)
+    expect(row()).toMatchObject({ remote_session: 'session_def' })
+    expect(Object.keys(row())).not.toContain('desk')
+    expect(setActivityPlace(db, 's1', { desk: 'api2', remote_session: null })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api2' })
+    expect(Object.keys(row())).not.toContain('remote_session')
+    expect(stamps()).toEqual(before)
+  })
+
+  it('setActivityPlace changes the row only when a value differs, and says whether it did', () => {
+    register(PLACE)
+    expect(setActivityPlace(db, 's1', { desk: null, remote_session: null })).toBe(false) // nothing to change
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: null })).toBe(true)
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: null })).toBe(false)
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })).toBe(true)
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })).toBe(false)
+    expect(setActivityPlace(db, 's1', { desk: null, remote_session: 'session_abc' })).toBe(true)
+    expect(Object.keys(row())).not.toContain('desk')
+    // it is one statement that skips an unchanged row, so an unchanged reading writes nothing
+    const source = readFileSync(new URL('../src/store.ts', import.meta.url), 'utf8')
+    expect(source.slice(source.indexOf('export function setActivityPlace'), source.indexOf('// heartbeat: keep a live'))).toMatch(/IS NOT/)
+  })
+
+  it('setActivityPlace leaves a field alone when it is undefined (a failed read), and still writes the other', () => {
+    register(PLACE)
+    setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })
+    expect(setActivityPlace(db, 's1', { desk: undefined, remote_session: null })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api' })
+    expect(Object.keys(row())).not.toContain('remote_session')
+    expect(setActivityPlace(db, 's1', { desk: undefined, remote_session: undefined })).toBe(false)
+    expect(setActivityPlace(db, 's1', { remote_session: 'session_def' })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api', remote_session: 'session_def' })
+    expect(setActivityPlace(db, 's1', { desk: 'api2' })).toBe(true)
+    expect(row()).toMatchObject({ desk: 'api2', remote_session: 'session_def' })
+  })
+
+  it('setActivityPlace touches no claim, no span and no other session, and says when there was no row', () => {
+    register(PLACE)
+    register(PLACE, 'other')
+    upsertActivity(db, { ...SCOPE, doing: 'Shipping', detail: 'step 1' })
+    const claim = row()
+    const spans = listActivitySpans(db)
+    expect(setActivityPlace(db, 's1', { desk: 'api', remote_session: null })).toBe(true)
+    expect({ ...row(), desk: undefined }).toEqual({ ...claim, desk: undefined })
+    expect(listActivitySpans(db)).toEqual(spans)
+    expect(Object.keys(row('other'))).not.toContain('desk')
+    expect(setActivityPlace(db, 'nobody', { desk: 'api', remote_session: null })).toBe(false)
+    endActivity(db, 's1')
+    expect(setActivityPlace(db, 's1', { desk: 'late', remote_session: null })).toBe(false)
+  })
+
+  it('migrates a legacy activity table: the four read absent until a session writes them', () => {
+    const path = join(scratchDir('inbox-legacy-place-'), 'inbox.db')
+    const legacy = new Database(path)
+    const now = new Date(START).toISOString()
+    legacy.exec(`
+      CREATE TABLE activity (
+        session TEXT PRIMARY KEY, project TEXT NOT NULL, stream TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT 'unknown',
+        doing TEXT NOT NULL, last_doing TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '', children TEXT,
+        idle INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_call_at TEXT, ended_at TEXT
+      );
+    `)
+    legacy.prepare(`INSERT INTO activity (session, project, agent, doing, idle, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run('s1', 'agent-inbox', 'claude-code', 'open', 1, now, now)
+    legacy.close()
+    db = openDb(path)
+    for (const key of ['machine', 'desk', 'pane', 'remote_session']) expect(Object.keys(row()), key).not.toContain(key)
+    register(PLACE)
+    setActivityPlace(db, 's1', { desk: 'api', remote_session: 'session_abc' })
+    expect(row()).toMatchObject({ ...PLACE, desk: 'api', remote_session: 'session_abc' })
   })
 })
 

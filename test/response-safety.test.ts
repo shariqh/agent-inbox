@@ -12,6 +12,7 @@ import {
   upsertBoard,
 } from '../src/store.js'
 import { buildMcpServer } from '../src/mcp.js'
+import { quietPlace } from './quiet-place.js'
 import { createViewer } from '../src/viewer.js'
 import replyWatch from '../electron/reply-watch.cjs'
 import { scratchDir } from './scratch.js'
@@ -71,7 +72,7 @@ describe('response lifecycle safety', () => {
         }
       })
     }
-    server = buildMcpServer(agent, process.cwd())
+    server = buildMcpServer(agent, process.cwd(), { place: quietPlace })
     client = new Client({ name: 'claude-code', version: 'test' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)

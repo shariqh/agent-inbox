@@ -19,6 +19,7 @@
 import { groupCards, laneCounts, laneOf, messageHint, sessionCards, splitLanes } from './sessions.js'
 import { forgettable } from './launches.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
+import { placeLine } from './place.js'
 import { installMeshAgents } from './mesh-section.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
@@ -409,8 +410,15 @@ export function installAgentsHome(deps) {
     const busy = card.state === 'working'
     const hint = busy || card.launch ? null : messageHint(card.row)
     const where = el.querySelector('.sc-where')
-    rebuild(where, JSON.stringify([card.worktree, busy && card.plan, hint]), () => {
+    // #617: where it runs ("machine · desk"), first; a row with none of the fields adds nothing, not even to the key
+    const place = placeLine(card.row)
+    rebuild(where, JSON.stringify(place ? [card.worktree, busy && card.plan, hint, place] : [card.worktree, busy && card.plan, hint]), () => {
       const parts = []
+      if (place) {
+        const mark = make('span', 'sc-place', place)
+        mark.title = place
+        parts.push(mark)
+      }
       if (card.worktree) parts.push(make('span', 'sc-worktree', card.worktree))
       if (busy && card.plan) {
         const { segments, done, countable, title } = card.plan
@@ -513,6 +521,19 @@ export function installAgentsHome(deps) {
       ...(card.branch ? partsOf([['sc-branch', card.branch, card.branch]]) : []),
       ...(card.worktree ? [make('span', 'sc-worktree', card.worktree)] : []),
     ])
+    // #617: where it runs, after the caption, muted; a row with none of the fields adds no node
+    const caption = el.querySelector('.qt-caption')
+    const place = placeLine(card.row)
+    const mark = caption.querySelector('.sc-place')
+    if (!place) mark?.remove()
+    else if (!mark) {
+      const added = make('span', 'sc-place', place)
+      added.title = place
+      caption.append(added)
+    } else {
+      setText(mark, place)
+      if (mark.title !== place) mark.title = place
+    }
     const hint = card.launch ? '' : messageHint(card.row)
     paintActions(el.querySelector('.sc-actions'), card, actionsOf(card, granted, { open: true, hint }))
   }

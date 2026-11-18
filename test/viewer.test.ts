@@ -170,24 +170,31 @@ describe('viewer api', () => {
     }
     const read = async (app: ReturnType<typeof createViewer>): Promise<unknown> => (await app.request('/api/version')).json()
     const UNREGISTERED = { claude: { kind: 'none' }, copilot: { kind: 'none' } }
+    // #617: the answer names this hub's machine, so the name is pinned here instead of read from the host
+    const savedMachine = process.env['AGENT_INBOX_MACHINE']
+    beforeEach(() => { process.env['AGENT_INBOX_MACHINE'] = 'testbox' })
+    afterEach(() => {
+      if (savedMachine === undefined) delete process.env['AGENT_INBOX_MACHINE']
+      else process.env['AGENT_INBOX_MACHINE'] = savedMachine
+    })
 
     it('a checkout, or a bundle packaged from one, answers with its own package version; the runtime question does not apply', async () => {
       const missing = join(scratchDir('view-version-'), 'setup-info.json')
       const res = await createViewer(db, { ...NO_AGENTS, setupInfoPath: missing }).request('/api/version')
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+      expect(await res.json()).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED, machine: 'testbox' })
       const devBundle = createViewer(db, { ...NO_AGENTS, setupInfoPath: setupInfo({ repoRoot: '/checkout', nodeBin: '/node' }) })
-      expect(await read(devBundle)).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+      expect(await read(devBundle)).toEqual({ current: PKG.version, mode: 'dev', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED, machine: 'testbox' })
     })
 
     it('a release answers with its baked version and whether that exact runtime is installed for this host', async () => {
       const release = releaseRuntime('2.0.0')
       const app = createViewer(db, release.viewer)
       // not installed, and Setup can install it: its source payload verifies
-      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: false, updatable: true, hosts: UNREGISTERED })
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: false, updatable: true, hosts: UNREGISTERED, machine: 'testbox' })
       // a Setup install is noticed on the very next read, memo or not
       release.install()
-      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: true, hosts: UNREGISTERED })
+      expect(await read(app)).toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: true, hosts: UNREGISTERED, machine: 'testbox' })
     })
 
     // Live may point at Setup's update only when Setup would actually offer it,
@@ -198,22 +205,22 @@ describe('viewer api', () => {
       release.install()
       writeFileSync(join(release.payloadDir, 'dist', 'mcp-server.js'), '// tampered after install\n')
       expect(await read(createViewer(db, release.viewer)))
-        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: false, hosts: UNREGISTERED })
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: true, updatable: false, hosts: UNREGISTERED, machine: 'testbox' })
     })
 
     it('answers null for the runtime when Setup could not install it here, so no advice is offered', async () => {
       const noHostPayload = releaseRuntime('2.0.0', { hostPayload: false })
       expect(await read(createViewer(db, noHostPayload.viewer)))
-        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED, machine: 'testbox' })
       const unverifiable = releaseRuntime('2.0.0')
       writeFileSync(join(unverifiable.payloadDir, 'dist', 'mcp-server.js'), '// tampered source\n')
       expect(await read(createViewer(db, unverifiable.viewer)))
-        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+        .toEqual({ current: '2.0.0', mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED, machine: 'testbox' })
     })
 
     it('a release with no baked version answers null rather than guessing', async () => {
       const app = createViewer(db, { ...NO_AGENTS, setupInfoPath: setupInfo({ schema: 2, runtimePayloads: {} }) })
-      expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED })
+      expect(await read(app)).toEqual({ current: null, mode: 'release', runtimeInstalled: null, updatable: false, hosts: UNREGISTERED, machine: 'testbox' })
     })
 
     // Part 2: a restart loads whatever THAT host is registered to run, so Live
@@ -233,6 +240,7 @@ describe('viewer api', () => {
         runtimeInstalled: true,
         updatable: true,
         hosts: { claude: { kind: 'runtime', version: '1.2.8' }, copilot: { kind: 'runtime', version: '2.0.0' } },
+        machine: 'testbox',
       })
       expect(JSON.stringify(body)).not.toContain(release.home)
 

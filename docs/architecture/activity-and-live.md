@@ -3,9 +3,11 @@ paths:
   - "src/mcp.ts"
   - "src/version.ts"
   - "src/server-source.ts"
+  - "src/session-place.ts"
   - "public/livebar.js"
+  - "public/place.js"
   - "test/live-tick.test.ts"
-applyTo: "src/mcp.ts,src/version.ts,src/server-source.ts,public/livebar.js,test/live-tick.test.ts"
+applyTo: "src/mcp.ts,src/version.ts,src/server-source.ts,src/session-place.ts,public/livebar.js,public/place.js,test/live-tick.test.ts"
 ---
 
 # Activity, presence and the Agents home
@@ -76,6 +78,84 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `<launch id>:<driver pid>:<nonce>`; a Claude hook's `host:` lease never reads as
   driven, and a `driven:` lease never as `wakes`. The composer says "Arrives now:
   Agent Inbox runs this session."
+- **Where a session runs** *(#617, PR 1)* is four nullable `activity` columns, each served by
+  `listActivity` (and so `/api/activity`) only while set and matching its pattern, and shown by the
+  card, the Quiet row and the session panel (`public/place.js`, `viewer-dashboard-and-shell.md`).
+  Presence, never liveness, work or attention: no write of them moves `updated_at` or
+  `last_call_at`, and none counts as a call.
+  - `machine`: `AGENT_INBOX_MACHINE`, else the host name up to its first dot. A bad override is
+    dropped, not replaced by the host name. `/api/version` carries the viewer's own `machine` by
+    the same rule, read once when the viewer starts (as each session's server reads it once at its
+    start), for a later connecting app. **The two can still differ.** An `AGENT_INBOX_MACHINE` set
+    only in a shell profile reaches the servers a terminal starts but not an app started from
+    Finder, and a host name that changes (a network switch) changes only processes that start
+    later. A later PR must not treat a mismatch between `/api/version`'s `machine` and a session's
+    as proof of a different machine without saying so.
+  - `pane`: `TMUX_PANE`.
+  - `desk`: the tmux session name, from `tmux display-message -p -t <pane> '#{session_name}'`,
+    run with `execFile` (an argument list, never a shell) with a 1 second timeout and a 1 KiB
+    buffer, only when `TMUX` is set and the pane is valid.
+  - `remote_session`: `bridgeSessionId` in the host's `~/.claude/sessions/<host pid>.json`, read
+    for a Claude Code host only. The file is opened with `O_NOFOLLOW`, which refuses a symbolic link
+    as the file itself but covers only the last path component: a symlinked `sessions` folder is
+    followed, and the checks that still hold are the regular-file, owner (this user's) and size
+    (at most 16 KiB) checks and that the file's own `pid` is the host's.
+  - **A reading is a value, null (absent) or undefined (failed).** Absent means the thing is
+    cleanly not there, so a stored value is stale and is cleared. Failed means the read itself did
+    not work, so nothing is known and the stored value stays.
+    - `desk` is absent when there is no `TMUX` or the pane is bad, when `tmux` is not installed,
+      when `tmux` ran and says there is no such pane, session or server (a non-zero exit whose
+      message says so), and when the name fails its pattern (the session's real name is then one we
+      will not store). It is failed for a timeout or a signal, more than 1 KiB of output, any other
+      exit and any other error.
+    - `remote_session` is absent for no file or folder, a symbolic link as the file, a file that is
+      not regular, not ours or over 16 KiB, JSON that is complete but not an object, another pid's
+      file, no `bridgeSessionId`, or one that fails its pattern. It is failed for text that does not
+      parse (an empty or partial file, as Claude Code leaves it while it rewrites) and any other
+      error opening or reading.
+  - **The patterns are the safety, checked at three points.** `machine` and `desk`:
+    `/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/` (so none starts with `-` or `.`). `pane`:
+    `/^%[0-9]{1,6}$/`. `remote_session`: `/^session_[A-Za-z0-9]{1,64}$/`. The product's writer
+    (`src/session-place.ts`) stores only a value that matches, `listActivity` leaves out a stored
+    value that does not (as if it were null), and the page checks again before it builds a link or
+    a command. The store checks nothing on write. A value that fails is never trimmed or cut to fit.
+  - **Why the Remote Control id is read from the live file, not the environment.** The server
+    starts before its session registers for Remote Control, so `CLAUDE_CODE_BRIDGE_SESSION_ID` is
+    mostly absent when the server starts, while the host's live file carries `bridgeSessionId` once
+    it has registered. `src/session-place.ts` therefore reads that file, by `process.ppid`, and
+    cannot reuse `parseClaudeLiveFile`: `src/chat-parse.ts` and `src/chat-index.ts` are viewer-only
+    and must stay out of the stdio server's import graph (`test/prstate.test.ts`).
+  - **Two columns ride the upsert, two do not.** `machine` and `pane` never change while the
+    server runs, so every presence write carries them (`place()` beside `host()` in `buildMcpServer`)
+    and `upsertActivityTxn` keeps each with `COALESCE`, like the build. `desk` and `remote_session`
+    can change or go away (a tmux session is renamed or closed, Remote Control registers late), so
+    the upsert never names them: only `setActivityPlace` writes them, as one `UPDATE` of the given
+    values, nulls included, with no `COALESCE`, naming no other column. A field that is undefined (a
+    failed read) is left as stored. The `UPDATE` matches a live row only where a given value differs
+    (`IS NOT`), so an unchanged reading writes nothing, and a row the day-old sweep deleted and the
+    next `status` or `register` call recreated with nulls gets its place back at the next reading.
+  - **A renamed or closed tmux session can leave its old name for up to five minutes.** The reading
+    is taken every five minutes, so until the next one a stored desk may be stale, and the command
+    `tmux attach -t '=<desk>'` would match any tmux session that now has that exact name, including
+    a new one made after the old one closed. A later "open desk" must say so or re-check first.
+  - **A timer of its own, not the liveness tick.** The tick must stay one call
+    (`livenessTick`; `test/live-tick.test.ts`), so `startPlaceRefresh` (`src/session-place.ts`)
+    runs on its own `unref()`ed timer: once at start, again 30 seconds later (Remote Control may
+    register just after the server starts), then every five minutes. It remembers nothing about what
+    was written: every reading goes to `setActivityPlace`. The latest reading is written again when
+    the server registers (`registerPresence` flushes it), so a reading taken before the row existed
+    lands once it does; the first registration of a Claude Code client also reads once at once,
+    because the agent is known only after the handshake.
+  - **Driven sessions do not inherit the launcher's tmux.** `childEnv` (`src/driver-policy.ts`) and
+    `launchEnv` (`electron/launch-controller.cjs`) remove `TMUX` and `TMUX_PANE`: an app started from
+    a terminal inside tmux would otherwise give a session it launches the pane and desk of that tmux.
+  - **Tests never start the developer's tmux or open its home.** `buildMcpServer(db, cwd, { place })`
+    takes its readers as an option (the real tmux and home by default); every in-process test passes
+    `quietPlace` (`test/quiet-place.ts`), and `test/place-presence.test.ts` fails for a call that does
+    not. `test/env-setup.ts` removes `TMUX` and `TMUX_PANE` from every test's environment, so a server
+    a test spawns starts no tmux either.
+  - An older server's statements never name the columns, so its rows have none, and a page that
+    finds none draws exactly what it drew before.
 
 ## Invariants in detail
 

@@ -116,7 +116,8 @@ describe('off means off (design §2.5, §3.3)', () => {
   it('without opts.mesh the routes touch nothing and answer off', async () => {
     const { plain } = setup(unslopAt(1))
     expect(await (await plain.request('/api/mesh/agents')).json()).toEqual({ on: false, agents: [] })
-    expect(Object.keys(await (await plain.request('/api/version')).json())).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
+    // `machine` (#617) is this host's own name, so the list must not depend on it; test/session-place.test.ts pins it
+    expect(Object.keys(await (await plain.request('/api/version')).json()).filter((key) => key !== 'machine')).toEqual(['current', 'mode', 'runtimeInstalled', 'updatable', 'hosts'])
   })
 
   it('an endpoint that fails its rule is shown as invalid, counted, and never fetched', async () => {

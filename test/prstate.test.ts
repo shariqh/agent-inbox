@@ -650,7 +650,7 @@ describe('the poller runs in the viewer process only', () => {
     'src/mcp.ts', 'src/mcp-server.ts', 'src/store.ts', 'src/scope.ts', 'src/infer.ts', 'src/group.ts',
     'src/hook.ts', 'src/hook-cli.ts', 'src/shape.ts', 'src/watch.ts', 'src/watch-cli.ts', 'src/version.ts',
     'src/server-source.ts', 'src/channel.ts', 'src/issue-graph.ts', 'public/issue-key.js', 'public/source.js', 'public/esc.js',
-    'public/reserved-projects.js',
+    'public/reserved-projects.js', 'src/session-place.ts', 'public/place.js',
   ]
   // Every relative module a file names, in either quote style: static
   // (`from '…'`), side-effect (`import '…'`), dynamic `import('…')` and
@@ -689,6 +689,18 @@ describe('the poller runs in the viewer process only', () => {
       // the list is the graph: every relative import of a listed file is listed too
       for (const target of reached) expect(STDIO_GRAPH, `${file} imports ${target}`).toContain(target)
     }
+  })
+
+  // #617: the stdio server reads where its session runs (a tmux name, a live file) in this one module
+  it('src/session-place.ts is in the stdio graph on Node core and the pure public/place.js alone: no network module', () => {
+    expect(STDIO_GRAPH).toEqual(expect.arrayContaining(['src/session-place.ts', 'public/place.js']))
+    const code = read('src/session-place.ts')
+    expect(specifiers(code)).toEqual(['../public/place.js'])
+    const imports = [...code.matchAll(/^import .* from '([^']+)'$/gm)].map((m) => m[1])
+    expect(imports.sort()).toEqual(['../public/place.js', 'node:child_process', 'node:fs', 'node:os', 'node:path'])
+    // the page's module has no import at all, no DOM and no network
+    expect(read('public/place.js')).not.toMatch(/^import |\bdocument\b|\bwindow\b|\bfetch\(|node:/m)
+    expect(code).not.toMatch(/\bfetch\(|node:(?:https?|net|tls|dgram|dns)\b|from 'undici'|\bWebSocket\b|new Socket/)
   })
 
   it('src/prstate.ts and src/issue-poller.ts open with a header saying so', () => {

@@ -349,7 +349,7 @@ function rig(over: Json = {}) {
     },
     captureEnv: async (cwd: string) => {
       calls.push(`captureEnv ${cwd}`)
-      return { ok: true, env: { PATH: '/opt/bin:/usr/bin', SECRET: 's', ELECTRON_RUN_AS_NODE: '1', AGENT_INBOX_DB: '/x', NODE_OPTIONS: '--x', COPILOT_ALLOW_ALL: '1', COPILOT_HOME: '/c' } }
+      return { ok: true, env: { PATH: '/opt/bin:/usr/bin', SECRET: 's', ELECTRON_RUN_AS_NODE: '1', AGENT_INBOX_DB: '/x', NODE_OPTIONS: '--x', COPILOT_ALLOW_ALL: '1', COPILOT_HOME: '/c', TMUX: '/tmp/tmux-test/default,1,0', TMUX_PANE: '%3' } }
     },
     confirm: async (text: Json) => { calls.push('confirm'); spawned.push({ confirmation: text }); return state.confirm },
     chooseFolder: async () => { calls.push('chooseFolder'); return '/picked/beta' },
@@ -1571,7 +1571,7 @@ function chatRig(over: Json = {}) {
     lookup: { chat: chatEntry(), launch: null } as unknown,
     list: { chats: [chatEntry()] } as unknown,
     launches: [] as unknown,
-    env: { ok: true, env: { PATH: '/opt/bin:/usr/bin', HOME, SECRET: 's', ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--x', COPILOT_ALLOW_ALL: '1' } } as Json,
+    env: { ok: true, env: { PATH: '/opt/bin:/usr/bin', HOME, SECRET: 's', ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--x', COPILOT_ALLOW_ALL: '1', TMUX: '/tmp/tmux-test/default,1,0', TMUX_PANE: '%3' } } as Json,
     repository: true,
   }
   const r: ReturnType<typeof rig> = rig({

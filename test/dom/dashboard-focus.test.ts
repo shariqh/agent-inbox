@@ -7,7 +7,7 @@
 // None of it reaches attention: PR and CI chips in the panel included.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { endActivity, insertItem, recordActivityCall, resolveItem, upsertActivity, upsertBoard, upsertSourceLink } from '../../src/store.js'
+import { endActivity, insertItem, recordActivityCall, resolveItem, setActivityPlace, upsertActivity, upsertBoard, upsertSourceLink } from '../../src/store.js'
 import {
   advanceClock, attachStylesheet, badgeCount, bootApp, click, freshDb, pollTick, row, searchFor, setViewport, settle, tabCount, type,
   useDomTest,
@@ -735,5 +735,133 @@ describe('⌘K actions (#307)', () => {
     expect(panel()?.closest('[hidden]')).toBeNull()
     expect(panel()?.dataset.session).toBe('theirs')
     expect(document.activeElement).toBe(panel()?.querySelector('#dashFocusTitle'))
+  })
+})
+
+// #617 PR 1: where a session runs, in the session panel. The head's meta line says it; two controls
+// act on it: "Open in claude.ai", an ordinary link built from a pattern-checked id only, and
+// "Copy attach command". A row an older server wrote has none of the fields and the panel is as it was.
+describe('where a session runs, in the session panel (#617)', () => {
+  const placed = (d: Database.Database, session = 'mine') => {
+    work(d, session, 'Painting the panel', { machine: 'hub', pane: '%3' })
+    setActivityPlace(d, session, { desk: 'api', remote_session: 'session_abc123' })
+  }
+  const place = () => panel()!.querySelector<HTMLElement>('.sp-place')!
+  const meta = () => panel()!.querySelector('.dash-focus-meta')?.textContent ?? ''
+  const writeText = () => {
+    const fn = vi.fn(async (_text: string) => undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: fn } })
+    return fn
+  }
+  afterEach(() => { Reflect.deleteProperty(navigator, 'clipboard') })
+
+  it('says "machine · desk" in the head’s meta line, and shows the two controls', async () => {
+    const d = open()
+    placed(d)
+    await bootApp(d)
+    openCard('mine')
+    expect(meta()).toContain('Copilot · terminal · hub · api')
+    expect(place().hidden).toBe(false)
+    const link = place().querySelector<HTMLAnchorElement>('a')!
+    expect(link.textContent).toBe('Open in claude.ai')
+    expect(link.getAttribute('href')).toBe('https://claude.ai/code/session_abc123')
+    // an ordinary link: it leaves through the window's one link path, never a script or a bridge of its own
+    expect([link.target, link.rel, link.dataset.linkKind]).toEqual(['_blank', 'noopener noreferrer', 'web'])
+    expect([...place().querySelectorAll('button')].map((el) => el.textContent)).toEqual(['Copy attach command'])
+  })
+
+  it('Copy attach command copies exactly tmux attach -t \'=<desk>\' through the page’s one clipboard path', async () => {
+    const d = open()
+    placed(d)
+    const copy = writeText()
+    await bootApp(d)
+    openCard('mine')
+    click(place().querySelector('button'))
+    await settle()
+    expect(copy).toHaveBeenCalledTimes(1)
+    expect(copy).toHaveBeenCalledWith("tmux attach -t '=api'")
+    expect(place().querySelector('button')?.textContent).toBe('Copied ✓')
+    // the label goes back by itself
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(place().querySelector('button')?.textContent).toBe('Copy attach command')
+  })
+
+  it('says "Copy failed" when the clipboard refuses and the fallback copy fails too, then goes back', async () => {
+    const d = open()
+    placed(d)
+    const refused = vi.fn(async (_text: string) => { throw new Error('denied') })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: refused } })
+    // jsdom has no document.execCommand, so the selection-based fallback fails as it would on a page that forbids it
+    expect((document as unknown as { execCommand?: unknown }).execCommand).toBeUndefined()
+    await bootApp(d)
+    openCard('mine')
+    click(place().querySelector('button'))
+    await settle()
+    expect(refused).toHaveBeenCalledWith("tmux attach -t '=api'")
+    expect(place().querySelector('button')?.textContent).toBe('Copy failed')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(place().querySelector('button')?.textContent).toBe('Copy attach command')
+  })
+
+  it('a row with none of the fields is the panel it was: the same meta line, no controls, nothing drawn', async () => {
+    const d = open()
+    work(d, 'mine', 'Painting the panel')
+    work(d, 'twin', 'Painting the panel', { machine: 'hub' })
+    setActivityPlace(d, 'twin', { desk: 'api', remote_session: 'session_abc123' })
+    await bootApp(d)
+    openCard('twin')
+    const withPlace = meta()
+    expect(withPlace).toContain('hub · api')
+    openCard('mine')
+    expect(panel()!.dataset.session).toBe('mine')
+    expect(meta()).toBe(withPlace.replace(' · hub · api', ''))
+    expect(place().hidden).toBe(true)
+    expect(place().querySelector('a, button')).toBeNull()
+    expect(place().textContent).toBe('')
+  })
+
+  it('shows only the machine, and no control, for a session with no tmux and no Remote Control', async () => {
+    const d = open()
+    work(d, 'mine', 'Painting the panel', { machine: 'hub' })
+    await bootApp(d)
+    openCard('mine')
+    expect(meta()).toMatch(/^Copilot · terminal · hub · last call /)
+    expect(place().hidden).toBe(true)
+  })
+
+  it('draws a control only for a value that passes its pattern, and never builds a link or command from text', async () => {
+    const d = open()
+    placed(d)
+    const raw = d.prepare(`UPDATE activity SET desk = ?, remote_session = ? WHERE session = ?`)
+    raw.run("api'; touch /tmp/x; '", 'javascript:alert(1)', 'mine')
+    const copy = writeText()
+    await bootApp(d)
+    openCard('mine')
+    expect(meta()).not.toContain('touch')
+    expect(place().hidden).toBe(true)
+    expect(place().querySelector('a, button')).toBeNull()
+    expect(panel()!.querySelector('a[href^="javascript"]')).toBeNull()
+    raw.run('api', 'https://evil.example/session_abc', 'mine')
+    await pollTick()
+    await settle()
+    expect(place().querySelector('a')).toBeNull()
+    expect([...place().querySelectorAll('button')].map((el) => el.textContent)).toEqual(['Copy attach command'])
+    click(place().querySelector('button'))
+    await settle()
+    expect(copy).toHaveBeenCalledWith("tmux attach -t '=api'")
+  })
+
+  it('follows the session: a desk that goes away takes its control with it at the next poll', async () => {
+    const d = open()
+    placed(d)
+    await bootApp(d)
+    openCard('mine')
+    expect(place().querySelector('button')).not.toBeNull()
+    setActivityPlace(d, 'mine', { desk: null, remote_session: 'session_abc123' })
+    await pollTick()
+    await settle()
+    expect(place().querySelector('button')).toBeNull()
+    expect(place().querySelector('a')?.getAttribute('href')).toBe('https://claude.ai/code/session_abc123')
+    expect(meta()).not.toContain('hub · api')
   })
 })

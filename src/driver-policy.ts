@@ -250,7 +250,7 @@ const KEPT_COPILOT = new Set(['COPILOT_HOME', 'COPILOT_GITHUB_TOKEN'])
 
 /**
  * The terminal's environment through the denylist: no ELECTRON_*, no
- * AGENT_INBOX_*, no NODE_OPTIONS, no COPILOT_* but COPILOT_HOME and
+ * AGENT_INBOX_*, no NODE_OPTIONS, no TMUX or TMUX_PANE, no COPILOT_* but COPILOT_HOME and
  * COPILOT_GITHUB_TOKEN (so not COPILOT_ALLOW_ALL, nor a parent Copilot session's
  * ids). Then AGENT_INBOX_HOOKS=0, COPILOT_AUTO_UPDATE=false, and the driver's own
  * hub when it is not the default, because the session's agent-inbox server
@@ -260,7 +260,8 @@ export function childEnv(env: NodeJS.ProcessEnv, hub: { path: string; isDefault:
   const out: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue
-    if (key.startsWith('ELECTRON_') || key.startsWith('AGENT_INBOX_') || key === 'NODE_OPTIONS') continue
+    // TMUX and TMUX_PANE name the tmux session the app was started from, not this session's (#617)
+    if (key.startsWith('ELECTRON_') || key.startsWith('AGENT_INBOX_') || key === 'NODE_OPTIONS' || key === 'TMUX' || key === 'TMUX_PANE') continue
     if (key.startsWith('COPILOT_') && !KEPT_COPILOT.has(key)) continue
     out[key] = value
   }

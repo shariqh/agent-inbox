@@ -556,3 +556,147 @@ if (updatesAvailable) {
     },
   })
 }
+
+// ── #617 PR 2d: Settings → Other devices (sharing this Inbox with your other Macs) ──
+// Main owns the hub's remote-entry controller; the page names a device id, a digest it was shown
+// or a boolean, nothing else. Every answer is rebuilt here field by field, and an answer with a
+// field of the wrong shape is refused whole: a login, a secret hash, the owner token or a code's
+// id never reaches the page, whatever main sends. The pairing code does: the owner reads it off
+// the screen.
+const REMOTE_WORD = /^[a-z_]{1,40}(:[a-z_]{1,40})?$/
+const REMOTE_HOST = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/
+const REMOTE_DEVICE_ID = /^[0-9a-f]{16}$/
+const REMOTE_DIGEST = /^[0-9a-f]{64}$/
+const REMOTE_CODE = /^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/
+const REMOTE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/
+const REMOTE_REMOVAL_HINT = 'tailscale serve --https=443 off'
+const REMOTE_UNAVAILABLE = new Set(['unsupported', 'unowned'])
+const REMOTE_STEPS = new Set(['file', 'self', 'serve'])
+const REMOTE_COUNTS = ['devicesRemoved', 'droppedEntries', 'removed']
+const isRemoteWord = (value) => typeof value === 'string' && REMOTE_WORD.test(value)
+const isRemoteCount = (value) => Number.isSafeInteger(value) && value >= 0
+const isRemotePort = (value) => Number.isInteger(value) && value >= 1024 && value <= 65535
+const isRemoteTime = (value) => typeof value === 'string' && REMOTE_TIME.test(value) && !Number.isNaN(Date.parse(value))
+const remoteOr = (value, check) => (value === null ? true : check(value))
+
+function remoteUnavailable(value) {
+  return REMOTE_UNAVAILABLE.has(value.reason) ? { available: false, reason: value.reason } : { available: false }
+}
+
+function remoteDevice(value) {
+  if (!isPlainObject(value) || typeof value.id !== 'string' || !REMOTE_DEVICE_ID.test(value.id)) return null
+  const length = typeof value.label === 'string' ? Array.from(value.label).length : 0
+  if (length < 1 || length > 40 || !remoteOr(value.pairedAt, isRemoteTime)) return null
+  return { id: value.id, label: value.label, pairedAt: value.pairedAt }
+}
+
+function remoteView(value) {
+  if (!isPlainObject(value)) return null
+  if (value.available === false) return remoteUnavailable(value)
+  if (value.available !== true) return null
+  const { enabled, host, port, devices, unreadableDevices, problem, flag, digest, wanted, stopped, resume, needsOwner, stateSaved, serve, removalHint, command, loginItem } = value
+  if (typeof enabled !== 'boolean' || typeof flag !== 'boolean' || typeof wanted !== 'boolean') return null
+  if (!remoteOr(host, (h) => typeof h === 'string' && h.length <= 253 && REMOTE_HOST.test(h)) || !isRemotePort(port)) return null
+  if (!Array.isArray(devices) || devices.length > 16 || !isRemoteCount(unreadableDevices) || unreadableDevices > 16) return null
+  const listed = devices.map(remoteDevice)
+  if (listed.includes(null)) return null
+  if (!remoteOr(problem, isRemoteWord) || !remoteOr(digest, (d) => typeof d === 'string' && REMOTE_DIGEST.test(d))) return null
+  if (!remoteOr(stopped, (s) => isPlainObject(s) && isRemoteWord(s.reason) && typeof s.willResume === 'boolean')) return null
+  if (!remoteOr(resume, (r) => isPlainObject(r) && isRemoteWord(r.waiting) && remoteOr(r.nextAt, Number.isSafeInteger))) return null
+  if (!remoteOr(needsOwner, (n) => n === 'identity_changed') || !remoteOr(stateSaved, (s) => typeof s === 'boolean')) return null
+  if (!remoteOr(serve, (s) => isPlainObject(s) && (s.ok === true || (s.ok === false && remoteOr(s.reason, isRemoteWord))))) return null
+  if (!remoteOr(removalHint, (h) => h === REMOTE_REMOVAL_HINT) || command !== `tailscale serve --bg ${port}`) return null
+  if (!isPlainObject(loginItem) || typeof loginItem.available !== 'boolean' || typeof loginItem.openAtLogin !== 'boolean') return null
+  return {
+    available: true, enabled, host, port, devices: listed, unreadableDevices, problem, flag, digest, wanted,
+    stopped: stopped && { reason: stopped.reason, willResume: stopped.willResume },
+    resume: resume && { waiting: resume.waiting, nextAt: resume.nextAt },
+    needsOwner, stateSaved,
+    serve: serve && (serve.ok ? { ok: true } : { ok: false, reason: serve.reason }),
+    removalHint, command,
+    loginItem: { available: loginItem.available, openAtLogin: loginItem.openAtLogin },
+  }
+}
+
+const remoteFailed = () => ({ ok: false, reason: 'failed' })
+
+function remoteResult(value) {
+  if (!isPlainObject(value)) return remoteFailed()
+  if (value.available === false) return remoteUnavailable(value)
+  if (typeof value.ok !== 'boolean') return remoteFailed()
+  if (!value.ok) {
+    if (!isRemoteWord(value.reason)) return remoteFailed()
+    const out = { ok: false, reason: value.reason }
+    if (REMOTE_STEPS.has(value.step)) out.step = value.step
+    if ('rose' in value && remoteOr(value.rose, isRemoteWord)) out.rose = value.rose
+    return out
+  }
+  const out = { ok: true }
+  if (typeof value.voidedCode === 'boolean') out.voidedCode = value.voidedCode
+  for (const field of REMOTE_COUNTS) if (isRemoteCount(value[field])) out[field] = value[field]
+  if (typeof value.openAtLogin === 'boolean') out.openAtLogin = value.openAtLogin
+  if ('code' in value || 'expiresAt' in value) {
+    if (typeof value.code !== 'string' || !REMOTE_CODE.test(value.code) || !isRemoteTime(value.expiresAt)) return remoteFailed()
+    out.code = value.code
+    out.expiresAt = value.expiresAt
+  }
+  return out
+}
+
+const remoteInvalid = () => Promise.resolve({ ok: false, reason: 'invalid' })
+const remoteCall = (channel, ...args) => ipcRenderer.invoke(channel, ...args).then(remoteResult, remoteFailed)
+let remoteChange = null
+
+contextBridge.exposeInMainWorld('agentInboxRemoteEntry', {
+  get(...args) {
+    if (args.length !== 0) return Promise.resolve({ available: false, reason: 'invalid' })
+    return ipcRenderer.invoke('agent-inbox:remote-entry').then(
+      (value) => remoteView(value) ?? { available: false, reason: 'failed' },
+      () => ({ available: false, reason: 'failed' }),
+    )
+  },
+  turnOn(...args) {
+    return args.length === 0 ? remoteCall('agent-inbox:remote-entry-turn-on') : remoteInvalid()
+  },
+  turnOff(...args) {
+    return args.length === 0 ? remoteCall('agent-inbox:remote-entry-turn-off') : remoteInvalid()
+  },
+  removeDevice(...args) {
+    if (args.length !== 1 || typeof args[0] !== 'string' || !REMOTE_DEVICE_ID.test(args[0])) return remoteInvalid()
+    return remoteCall('agent-inbox:remote-entry-remove-device', args[0])
+  },
+  clearUnreadable(...args) {
+    return args.length === 0 ? remoteCall('agent-inbox:remote-entry-clear-unreadable') : remoteInvalid()
+  },
+  repairPermissions(...args) {
+    return args.length === 0 ? remoteCall('agent-inbox:remote-entry-repair') : remoteInvalid()
+  },
+  // the digest get() answered with, for exactly what the page showed
+  acknowledge(...args) {
+    if (args.length !== 1 || typeof args[0] !== 'string' || !REMOTE_DIGEST.test(args[0])) return remoteInvalid()
+    return remoteCall('agent-inbox:remote-entry-acknowledge', args[0])
+  },
+  test(...args) {
+    return args.length === 0 ? remoteCall('agent-inbox:remote-entry-test') : remoteInvalid()
+  },
+  addDevice(...args) {
+    if (args.length !== 0) return remoteInvalid()
+    return remoteCall('agent-inbox:remote-entry-add-device').then((result) => (result.ok && !result.code ? remoteFailed() : result))
+  },
+  setOpenAtLogin(...args) {
+    if (args.length !== 1 || typeof args[0] !== 'boolean') return remoteInvalid()
+    return remoteCall('agent-inbox:remote-entry-open-at-login', args[0])
+  },
+  // one listener at a time, called with nothing; null removes it
+  onChange(...args) {
+    if (args.length !== 1 || (args[0] !== null && typeof args[0] !== 'function')) return false
+    if (remoteChange) ipcRenderer.removeListener('agent-inbox:remote-entry-changed', remoteChange)
+    remoteChange = null
+    const listener = args[0]
+    if (listener) {
+      remoteChange = () => listener()
+      ipcRenderer.on('agent-inbox:remote-entry-changed', remoteChange)
+    }
+    return true
+  },
+})

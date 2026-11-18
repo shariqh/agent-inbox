@@ -1560,6 +1560,29 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .link-add-type input { width: 110px; }
 .link-settings-message { margin: 8px 0 0; font-size: 12px; color: var(--app-danger); }
 .link-settings-message:empty { display: none; }
+/* #617 PR 2d: Settings → Other devices (public/remote-settings.js), in the tokens and the Links section's colours */
+.remote-settings { padding-bottom: var(--sp-4); border-bottom: 1px solid var(--app-border); }
+.remote-settings h4 { margin: var(--sp-3) 0 var(--sp-1); font-size: var(--fs-body); }
+.remote-settings p:not(.setup-hint) { margin: var(--sp-1) 0; font-size: var(--fs-body); }
+.remote-settings pre { margin: var(--sp-1) 0; }
+.remote-settings button:not(.copy-btn) { padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: var(--app-text); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.remote-settings button:disabled { opacity: .5; cursor: default; }
+.remote-flag { margin: var(--sp-2) 0 var(--sp-3); padding: var(--sp-3); border: 1px solid var(--app-danger); border-radius: 8px; }
+.remote-flag-title { font-weight: 650; color: var(--app-danger); }
+.remote-flag-message { color: var(--app-danger); }
+.remote-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); font-size: var(--fs-body); }
+.remote-switch-row { margin: var(--sp-2) 0; }
+.remote-status { font-weight: 650; overflow-wrap: anywhere; }
+.remote-instruction { margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3); border-left: 2px solid var(--app-warning); }
+.remote-device-list { display: grid; gap: var(--sp-2); margin: 0; padding: 0; list-style: none; }
+.remote-device { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); font-size: var(--fs-body); }
+.remote-device-label { overflow-wrap: anywhere; }
+.remote-device-when { color: var(--app-muted); font-size: var(--fs-meta); }
+.remote-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.remote-unreadable { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.remote-add, .remote-test, .remote-removal, .remote-login { margin: var(--sp-3) 0 0; }
+.remote-settings .remote-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--fs-lane); letter-spacing: .2em; }
+.remote-add-message, .remote-message { color: var(--app-text-soft); }
 .theme-picker fieldset {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

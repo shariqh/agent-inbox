@@ -83,7 +83,6 @@ const ENTRY_POINTS = new Map<string, string>([
 // a destructuring require, `const { … } = require('…')`, so the wiring must use that form, or the
 // stale-entry check never fires.
 const NOT_YET_WIRED = new Map<string, string>([
-  ['electron/remote-entry.cjs', 'the hub remote-entry controller (#617, PR 2c, logic and tests only); the next PR requires it from electron/main.cjs for IPC, notifications and Settings'],
   ['electron/remote-connect.cjs', 'connect mode on the connecting Mac (#617, PR 3a, logic and tests only); the next PR requires it from electron/main.cjs for the hub view, its header handler, the menu and Settings'],
 ])
 

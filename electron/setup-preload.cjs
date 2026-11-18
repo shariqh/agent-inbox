@@ -420,6 +420,102 @@ contextBridge.exposeInMainWorld('agentInboxChats', {
   },
 })
 
+// #617 PR 3b: the same `agentInboxDesk` the hub view has, answering for This Mac. No IPC: the
+// local page is This Mac, and the terminal action is a later PR.
+contextBridge.exposeInMainWorld('agentInboxDesk', {
+  available() {
+    return Promise.resolve({ open: false })
+  },
+  connection() {
+    return Promise.resolve({ mode: 'local' })
+  },
+  onConnection() {
+    return () => {}
+  },
+})
+
+// #617 PR 3b: another Mac's Inbox, for the Settings form a later PR adds. Main answers only the
+// viewer this app started and owns, and checks every argument again; each answer is rebuilt here
+// field by field. The connection's secret, its encrypted copy, the device id and the node id are
+// never in an answer.
+const CONNECT_STATES = new Set(['online', 'retrying', 'refused'])
+const CONNECT_WORD = /^[a-z_]{1,40}$/
+const HUB_ID_TEXT = /^[0-9a-f]{8}$/
+const connectOff = () => ({ available: false })
+const wordOf = (value) => (typeof value === 'string' && CONNECT_WORD.test(value) ? value : null)
+const hubIdOf = (value) => (typeof value === 'string' && HUB_ID_TEXT.test(value) ? value : null)
+const shortTextOf = (value, max) => (typeof value === 'string' && value.length >= 1 && value.length <= max ? value : null)
+
+function connectHub(value) {
+  if (!isPlainObject(value) || hubIdOf(value.id) === null || shortTextOf(value.label, 40) === null) return null
+  if (typeof value.origin !== 'string' || !value.origin.startsWith('https://') || value.origin.length > 300) return null
+  return {
+    id: value.id,
+    label: value.label,
+    origin: value.origin,
+    machine: shortTextOf(value.machine, 64),
+    state: CONNECT_STATES.has(value.state) ? value.state : null,
+    reason: wordOf(value.reason),
+  }
+}
+
+function connectView(value) {
+  if (!isPlainObject(value) || value.available !== true) return connectOff()
+  return { available: true, keychain: value.keychain === true, hub: connectHub(value.hub), problem: wordOf(value.problem), showing: hubIdOf(value.showing) }
+}
+
+function connectResult(value) {
+  if (!isPlainObject(value)) return { ok: false, reason: 'failed' }
+  if (value.ok === true) {
+    const out = { ok: true }
+    if (hubIdOf(value.id) !== null) out.id = value.id
+    if (shortTextOf(value.label, 40) !== null) out.label = value.label
+    if (CONNECT_STATES.has(value.state)) out.state = value.state
+    if ('reason' in value) out.reason = wordOf(value.reason)
+    if ('showing' in value) out.showing = hubIdOf(value.showing)
+    if (value.replacedHub === true) out.replacedHub = true
+    return out
+  }
+  if (value.ok === false) {
+    const out = { ok: false, reason: wordOf(value.reason) ?? 'failed' }
+    if (value.pairedOnHub === true) out.pairedOnHub = true
+    return out
+  }
+  return value.available === false ? connectOff() : { ok: false, reason: 'failed' }
+}
+
+const connectCall = (rebuild, channel, ...args) => ipcRenderer.invoke(channel, ...args).then(rebuild, () => rebuild(undefined))
+
+contextBridge.exposeInMainWorld('agentInboxConnect', {
+  view(...args) {
+    if (args.length !== 0) return Promise.resolve(connectOff())
+    return connectCall(connectView, 'agent-inbox:connect-view')
+  },
+  // { address, code, replace? }: a fresh object of exactly those, which main checks again
+  connect(...args) {
+    const given = args[0]
+    if (args.length !== 1 || !isPlainObject(given) || typeof given.address !== 'string' || typeof given.code !== 'string' ||
+        (given.replace !== undefined && typeof given.replace !== 'boolean')) return Promise.resolve(connectOff())
+    return connectCall(connectResult, 'agent-inbox:connect-connect', { address: given.address, code: given.code, replace: given.replace === true })
+  },
+  forget(...args) {
+    if (args.length !== 1 || typeof args[0] !== 'string' || args[0].length > 64) return Promise.resolve(connectOff())
+    return connectCall(connectResult, 'agent-inbox:connect-forget', args[0])
+  },
+  // which view is on top: a hub's id, or null for This Mac
+  show(...args) {
+    if (args.length !== 1 || (args[0] !== null && (typeof args[0] !== 'string' || args[0].length > 64))) return Promise.resolve(connectOff())
+    return connectCall(connectResult, 'agent-inbox:connect-show', args[0])
+  },
+  // the change message carries nothing: the page asks view() again
+  onChange(callback) {
+    if (typeof callback !== 'function') return () => {}
+    const listener = () => callback()
+    ipcRenderer.on('agent-inbox:connect-changed', listener)
+    return () => ipcRenderer.removeListener('agent-inbox:connect-changed', listener)
+  },
+})
+
 function isByteCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }

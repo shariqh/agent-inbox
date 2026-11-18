@@ -252,7 +252,7 @@ describe('where a session runs, on the card (#617)', () => {
     await settle()
     const place = card('session:p')!.querySelector<HTMLElement>('.sc-where .sc-place')!
     expect(place.textContent).toBe('hub · api')
-    expect(place.title).toBe('Where this session runs')
+    expect(place.title).toBe('hub · api')
     expect(where('session:p')!.hidden).toBe(false)
     expect(card('session:m')!.querySelector('.sc-where .sc-place')?.textContent).toBe('hub')
     // the card carries no link and no command: they are the panel's
@@ -291,6 +291,59 @@ describe('where a session runs, on the card (#617)', () => {
     for (const part of ['.sc-top', '.sc-doing', '.sc-foot']) {
       expect(p.querySelector(part)!.innerHTML.replaceAll('session:p', 'session:n'), part).toBe(n.querySelector(part)!.innerHTML)
     }
+  })
+
+  it('gives the place line its full text as its title, so a clipped one can still be read', async () => {
+    db = freshDb()
+    work(db, 'p', { machine: 'a-long-machine-name' })
+    setActivityPlace(db, 'p', { desk: 'a-long-desk-name', remote_session: null })
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    const place = card('session:p')!.querySelector<HTMLElement>('.sc-place')!
+    expect(place.textContent).toBe('a-long-machine-name · a-long-desk-name')
+    expect(place.title).toBe('a-long-machine-name · a-long-desk-name')
+  })
+
+  describe('on a Quiet row', () => {
+    const idle = (d: Database.Database, session: string, place: { machine?: string; pane?: string } = {}) => {
+      upsertActivity(d, { session, agent: 'claude-code', project: 'alpha', stream: 'main', doing: 'open', idle: true, claim: false, ...place })
+    }
+    const caption = (id: string) => card(id)!.querySelector<HTMLElement>('.qt-caption')!
+
+    it('shows the place in the caption cell, muted, and follows the session', async () => {
+      db = freshDb()
+      idle(db, 'q', { machine: 'hub' })
+      setActivityPlace(db, 'q', { desk: 'api', remote_session: null })
+      await bootApp(db)
+      await pollTick()
+      await settle()
+      expect(quietRows()).toContain('session:q')
+      const place = caption('session:q').querySelector<HTMLElement>('.sc-place')!
+      expect([place.textContent, place.title]).toEqual(['hub · api', 'hub · api'])
+      setActivityPlace(db, 'q', { desk: null, remote_session: null })
+      await pollTick()
+      await settle()
+      expect(caption('session:q').querySelector('.sc-place')?.textContent).toBe('hub')
+    })
+
+    it('a Quiet row with no place draws exactly what it drew before: no place node, the same caption cell', async () => {
+      db = freshDb()
+      idle(db, 'q', { machine: 'hub' })
+      idle(db, 'n')
+      setActivityPlace(db, 'q', { desk: 'api', remote_session: null })
+      await bootApp(db)
+      await pollTick()
+      await settle()
+      const n = caption('session:n')
+      expect(n.querySelector('.sc-place')).toBeNull()
+      expect([...n.children].map((el) => el.classList[0])).toEqual(['sc-asking', 'sc-doing'])
+      // the placed row is the plain one plus its place node
+      const q = caption('session:q')
+      q.querySelector('.sc-place')!.remove()
+      expect(q.innerHTML.replaceAll('session:q', 'session:n')).toBe(n.innerHTML)
+      expect(card('session:n')!.querySelector('.qt-session')!.innerHTML).toBe(card('session:q')!.querySelector('.qt-session')!.innerHTML)
+    })
   })
 
   it('draws a name only by textContent, and shows nothing for a value that fails its pattern', async () => {

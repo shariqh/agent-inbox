@@ -91,6 +91,27 @@ describe('the Dashboard region headers and gaps', () => {
   })
 })
 
+describe('where a session runs, on a card and a Quiet row (#617)', () => {
+  it('shrinks with an ellipsis instead of pushing the plan bar and the hint off the card, on tokens only', () => {
+    const place = ruleBody('.sc-place')
+    expect(place).toMatch(/flex:\s*0 1 auto;/)
+    expect(place).toMatch(/min-width:\s*0;/)
+    expect(place).toMatch(/overflow:\s*hidden;/)
+    expect(place).toMatch(/text-overflow:\s*ellipsis;/)
+    expect(place).not.toMatch(/\d+(\.\d+)?px/)
+    // the worktree beside it keeps its own rule, and the two no longer share one
+    expect(ruleBody('.sc-worktree')).toMatch(/flex:\s*none;/)
+    expect(css).not.toMatch(/\n\.sc-worktree,\s*\.sc-place\s*\{/)
+  })
+
+  it('is muted meta text in a Quiet row’s caption cell', () => {
+    const row = ruleBody('.qt-row .sc-place')
+    expect(row).toMatch(/color:\s*var\(--app-muted\);/)
+    expect(row).toMatch(/font-size:\s*var\(--fs-meta\);/)
+    expect(row).not.toMatch(/\d+(\.\d+)?px/)
+  })
+})
+
 describe('the desktop window default', () => {
   it('comes from the work-area helper, not a literal below the 1280px breakpoint', () => {
     expect(main).toContain("require('./window-size.cjs')")

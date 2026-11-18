@@ -786,6 +786,23 @@ describe('where a session runs, in the session panel (#617)', () => {
     expect(place().querySelector('button')?.textContent).toBe('Copy attach command')
   })
 
+  it('says "Copy failed" when the clipboard refuses and the fallback copy fails too, then goes back', async () => {
+    const d = open()
+    placed(d)
+    const refused = vi.fn(async (_text: string) => { throw new Error('denied') })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: refused } })
+    // jsdom has no document.execCommand, so the selection-based fallback fails as it would on a page that forbids it
+    expect((document as unknown as { execCommand?: unknown }).execCommand).toBeUndefined()
+    await bootApp(d)
+    openCard('mine')
+    click(place().querySelector('button'))
+    await settle()
+    expect(refused).toHaveBeenCalledWith("tmux attach -t '=api'")
+    expect(place().querySelector('button')?.textContent).toBe('Copy failed')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(place().querySelector('button')?.textContent).toBe('Copy attach command')
+  })
+
   it('a row with none of the fields is the panel it was: the same meta line, no controls, nothing drawn', async () => {
     const d = open()
     work(d, 'mine', 'Painting the panel')

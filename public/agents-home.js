@@ -416,7 +416,7 @@ export function installAgentsHome(deps) {
       const parts = []
       if (place) {
         const mark = make('span', 'sc-place', place)
-        mark.title = 'Where this session runs'
+        mark.title = place
         parts.push(mark)
       }
       if (card.worktree) parts.push(make('span', 'sc-worktree', card.worktree))
@@ -521,6 +521,19 @@ export function installAgentsHome(deps) {
       ...(card.branch ? partsOf([['sc-branch', card.branch, card.branch]]) : []),
       ...(card.worktree ? [make('span', 'sc-worktree', card.worktree)] : []),
     ])
+    // #617: where it runs, after the caption, muted; a row with none of the fields adds no node
+    const caption = el.querySelector('.qt-caption')
+    const place = placeLine(card.row)
+    const mark = caption.querySelector('.sc-place')
+    if (!place) mark?.remove()
+    else if (!mark) {
+      const added = make('span', 'sc-place', place)
+      added.title = place
+      caption.append(added)
+    } else {
+      setText(mark, place)
+      if (mark.title !== place) mark.title = place
+    }
     const hint = card.launch ? '' : messageHint(card.row)
     paintActions(el.querySelector('.sc-actions'), card, actionsOf(card, granted, { open: true, hint }))
   }

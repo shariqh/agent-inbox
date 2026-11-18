@@ -583,18 +583,45 @@ function remoteUnavailable(value) {
   return REMOTE_UNAVAILABLE.has(value.reason) ? { available: false, reason: value.reason } : { available: false }
 }
 
+const isRemoteLabel = (value) => typeof value === 'string' && Array.from(value).length >= 1 && Array.from(value).length <= 40
+
 function remoteDevice(value) {
-  if (!isPlainObject(value) || typeof value.id !== 'string' || !REMOTE_DEVICE_ID.test(value.id)) return null
-  const length = typeof value.label === 'string' ? Array.from(value.label).length : 0
-  if (length < 1 || length > 40 || !remoteOr(value.pairedAt, isRemoteTime)) return null
-  return { id: value.id, label: value.label, pairedAt: value.pairedAt }
+  if (!isPlainObject(value) || typeof value.id !== 'string' || !REMOTE_DEVICE_ID.test(value.id) || !isRemoteLabel(value.label)) return null
+  // a date that is not a real one is no date: one bad field of one Mac never costs the panel
+  return { id: value.id, label: value.label, pairedAt: isRemoteTime(value.pairedAt) ? value.pairedAt : null }
+}
+
+const isRemoteLabels = (value) => Array.isArray(value) && value.length <= 16 && value.every(isRemoteLabel)
+
+// what changed outside the app: labels, booleans and counts only
+function remoteChanges(value) {
+  if (!isPlainObject(value)) return null
+  const flags = ['unknown', 'missing', 'unreadable', 'address', 'account', 'port']
+  if (!flags.every((key) => typeof value[key] === 'boolean') || !remoteOr(value.switched, (w) => w === 'on' || w === 'off')) return null
+  if (![value.added, value.removed, value.keyChanged].every(isRemoteLabels)) return null
+  if (!isRemoteCount(value.unreadableAdded) || !isRemoteCount(value.unreadableRemoved)) return null
+  const out = { switched: value.switched }
+  for (const key of flags) out[key] = value[key]
+  return {
+    ...out, added: [...value.added], removed: [...value.removed], keyChanged: [...value.keyChanged],
+    unreadableAdded: value.unreadableAdded, unreadableRemoved: value.unreadableRemoved,
+  }
+}
+
+function remoteRefusal(value) {
+  if (!isPlainObject(value) || !isRemoteWord(value.reason) || !remoteOr(value.step, (s) => REMOTE_STEPS.has(s))) return null
+  if (!remoteOr(value.devices, isRemoteCount) || !Number.isSafeInteger(value.at)) return null
+  return { reason: value.reason, step: value.step, devices: value.devices, at: value.at }
 }
 
 function remoteView(value) {
   if (!isPlainObject(value)) return null
   if (value.available === false) return remoteUnavailable(value)
   if (value.available !== true) return null
-  const { enabled, host, port, devices, unreadableDevices, problem, flag, digest, wanted, stopped, resume, needsOwner, stateSaved, serve, removalHint, command, loginItem, listening } = value
+  const {
+    enabled, host, port, devices, unreadableDevices, problem, flag, digest, wanted, stopped, resume, needsOwner, stateSaved, serve, removalHint, command, loginItem,
+    listening, listenError, changes, refusal,
+  } = value
   if (typeof enabled !== 'boolean' || typeof flag !== 'boolean' || typeof wanted !== 'boolean' || typeof listening !== 'boolean') return null
   if (!remoteOr(host, (h) => typeof h === 'string' && h.length <= 253 && REMOTE_HOST.test(h)) || !isRemotePort(port)) return null
   if (!Array.isArray(devices) || devices.length > 16 || !isRemoteCount(unreadableDevices) || unreadableDevices > 16) return null
@@ -606,7 +633,11 @@ function remoteView(value) {
   if (!remoteOr(needsOwner, (n) => n === 'identity_changed') || !remoteOr(stateSaved, (s) => typeof s === 'boolean')) return null
   if (!remoteOr(serve, (s) => isPlainObject(s) && (s.ok === true || (s.ok === false && remoteOr(s.reason, isRemoteWord))))) return null
   if (!remoteOr(removalHint, (h) => h === REMOTE_REMOVAL_HINT) || command !== `tailscale serve --bg ${port}`) return null
-  if (!isPlainObject(loginItem) || typeof loginItem.available !== 'boolean' || typeof loginItem.openAtLogin !== 'boolean') return null
+  if (!isPlainObject(loginItem) || typeof loginItem.available !== 'boolean' || typeof loginItem.openAtLogin !== 'boolean' || typeof loginItem.needsApproval !== 'boolean') return null
+  if (!remoteOr(listenError, (w) => w === 'port_in_use' || w === 'cannot_listen')) return null
+  const changed = changes === null ? null : remoteChanges(changes)
+  const refused = refusal === null ? null : remoteRefusal(refusal)
+  if ((changes !== null && changed === null) || (refusal !== null && refused === null)) return null
   return {
     available: true, enabled, host, port, devices: listed, unreadableDevices, problem, flag, digest, wanted,
     stopped: stopped && { reason: stopped.reason, willResume: stopped.willResume },
@@ -614,8 +645,8 @@ function remoteView(value) {
     needsOwner, stateSaved,
     serve: serve && (serve.ok ? { ok: true } : { ok: false, reason: serve.reason }),
     removalHint, command,
-    loginItem: { available: loginItem.available, openAtLogin: loginItem.openAtLogin },
-    listening,
+    loginItem: { available: loginItem.available, openAtLogin: loginItem.openAtLogin, needsApproval: loginItem.needsApproval },
+    listening, listenError, changes: changed, refusal: refused,
   }
 }
 
@@ -630,6 +661,7 @@ function remoteResult(value) {
     const out = { ok: false, reason: value.reason }
     if (REMOTE_STEPS.has(value.step)) out.step = value.step
     if ('rose' in value && remoteOr(value.rose, isRemoteWord)) out.rose = value.rose
+    if (isRemoteCount(value.devices)) out.devices = value.devices
     return out
   }
   const out = { ok: true }
@@ -688,6 +720,14 @@ contextBridge.exposeInMainWorld('agentInboxRemoteEntry', {
   setOpenAtLogin(...args) {
     if (args.length !== 1 || typeof args[0] !== 'boolean') return remoteInvalid()
     return remoteCall('agent-inbox:remote-entry-open-at-login', args[0])
+  },
+  // switching on that removes the paired Macs, after the owner agreed on the page
+  turnOnRemovingDevices(...args) {
+    return args.length === 0 ? remoteCall('agent-inbox:remote-entry-turn-on-remove-devices') : remoteInvalid()
+  },
+  // Settings opened: main reads Serve again for the removal hint
+  recheck(...args) {
+    return args.length === 0 ? remoteCall('agent-inbox:remote-entry-recheck') : remoteInvalid()
   },
   // one listener at a time, called with nothing; null removes it
   onChange(...args) {

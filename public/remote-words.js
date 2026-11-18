@@ -1,63 +1,80 @@
 // The words for sharing this Inbox with the owner's other Macs (#617, PR 2d): one table from a
-// reason word the hub's controller gives (electron/remote-entry.d.cts) to the sentence a person
+// reason word the hub's controller gives (electron/remote-entry.d.cts) to the words a person
 // reads. Settings → Other devices (public/remote-settings.js) shows them, and Electron main imports
-// this file for the text of its notifications, so the panel and a notification never say two
-// things. test/remote-words.test.ts checks that every reason word in the .d.cts has words here.
+// this file for its notifications, so the panel and a notification never say two things.
+// test/remote-words.test.ts checks that every reason word in the .d.cts has words here.
 //
 // Plain words: "this Mac", "your other Macs", "paired Mac", "sharing". Tailscale and Tailscale
-// Serve are product names the owner uses.
+// Serve are product names the owner uses. One style: a status line's reason (`why`) is a clause
+// with no full stop; everything else is whole sentences; "can't" and "couldn't", never "could not".
 
 // What a family says: `why` for the status line ("Paused: <why>" / "Needs you: <why>"), `refused`
 // for what to do when switching on was refused or sharing stopped, `paused` for what to do while
-// it comes back by itself. `command`: the instruction ends with the Serve command and Copy;
-// `repair`: it offers the one repair.
-const BY_ITSELF = 'Sharing comes back by itself.'
-export const FAMILY_WORDS = Object.freeze({
+// it comes back by itself. `command`: the instruction ends with a command and Copy (true: this
+// build's `tailscale serve --bg <port>`; a string: that command). `repair`: it offers the one
+// repair. `{port}` is this build's port; `{macs}`, `{was}` and `{them}` follow the count.
+const THEN = 'Sharing then comes back by itself.'
+const FAMILY_WORDS = Object.freeze({
   serve_setup: {
     why: 'Tailscale Serve is not set up for Agent Inbox',
     refused: 'Run this once in Terminal on this Mac, then switch on again:',
     paused: 'Run this once in Terminal on this Mac, and sharing comes back by itself:',
     command: true,
   },
+  serve_replace: {
+    why: 'Tailscale Serve on this Mac forwards this address to something else',
+    refused: 'Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:',
+    command: true,
+  },
+  serve_unknown: {
+    why: 'Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise',
+    refused: 'Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise. Run this in Terminal to see it:',
+    command: 'tailscale serve status',
+  },
   serve_other: {
     why: 'Tailscale Serve on this Mac forwards other things too',
     refused: 'Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them, then switch on again.',
-    paused: `Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them. ${BY_ITSELF}`,
+    paused: `Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them. ${THEN}`,
   },
   funnel: {
     why: 'Tailscale Funnel is on for this Mac',
     refused: 'Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac, then switch on again.',
-    paused: `Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac. ${BY_ITSELF}`,
+    paused: `Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac. ${THEN}`,
   },
   serve_running: {
     why: 'another tailscale serve is running',
     refused: 'Another tailscale serve is running on this Mac. Stop it, then switch on again.',
-    paused: `Another tailscale serve is running on this Mac. Stop it. ${BY_ITSELF}`,
+    paused: `Another tailscale serve is running on this Mac. Stop it. ${THEN}`,
+  },
+  serve_service: {
+    why: 'a Tailscale Service is set up on this Mac',
+    refused: 'A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it, then switch on again.',
+    paused: `A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it. ${THEN}`,
   },
   no_tailscale: {
     why: 'Tailscale is not installed',
     refused: 'Install Tailscale on this Mac and sign in, then switch on again.',
-    paused: `Install Tailscale on this Mac and sign in. ${BY_ITSELF}`,
+    paused: `Install Tailscale on this Mac and sign in. ${THEN}`,
   },
   tailscale_off: {
     why: 'Tailscale is not running',
     refused: 'Open Tailscale on this Mac and connect, then switch on again.',
-    paused: `Open Tailscale on this Mac and connect. ${BY_ITSELF}`,
+    paused: `Open Tailscale on this Mac and connect. ${THEN}`,
   },
   tailscale_signin: {
     why: 'Tailscale is signed out',
     refused: 'Sign in to Tailscale on this Mac, then switch on again.',
-    paused: `Sign in to Tailscale on this Mac. ${BY_ITSELF}`,
+    paused: `Sign in to Tailscale on this Mac. ${THEN}`,
   },
   tailscale_name: {
     why: 'Tailscale gives this Mac no usable name',
     refused: 'Check that MagicDNS is on for your Tailscale network, then switch on again.',
-    paused: `Check that MagicDNS is on for your Tailscale network. ${BY_ITSELF}`,
+    paused: `Check that MagicDNS is on for your Tailscale network. ${THEN}`,
   },
   tailscale_unreadable: {
     why: 'Agent Inbox can’t read Tailscale',
     refused: 'Check that Tailscale is running on this Mac, then switch on again.',
-    paused: `Check that Tailscale is running on this Mac. ${BY_ITSELF}`,
+    paused: `Check that Tailscale is running on this Mac. ${THEN}`,
   },
   tagged: {
     why: 'this Mac uses a tagged Tailscale login',
@@ -66,6 +83,10 @@ export const FAMILY_WORDS = Object.freeze({
   identity: {
     why: 'this Mac’s Tailscale name or account changed',
     refused: 'This Mac’s Tailscale name or account changed. Switching on again removes the paired Macs.',
+  },
+  would_remove: {
+    why: 'this Mac’s Tailscale name or account changed',
+    refused: 'This Mac’s Tailscale name or account is not the one {these} paired under. Switching on removes {macs}; pair {them} again afterwards.',
   },
   switch_again: {
     why: 'sharing needs you to switch it on again',
@@ -77,8 +98,8 @@ export const FAMILY_WORDS = Object.freeze({
     paused: 'Agent Inbox is checking the changed settings.',
   },
   not_wanted: {
-    why: 'sharing was switched on outside Agent Inbox',
-    refused: 'Sharing was switched on outside Agent Inbox while it was off here, so Agent Inbox switched it off again. Switch on if you want it on.',
+    why: 'sharing was switched on outside Agent Inbox while it was switched off here, so Agent Inbox switched it off again',
+    refused: 'Sharing was switched on outside Agent Inbox while it was switched off here, so Agent Inbox switched it off again.',
   },
   other_build: {
     why: 'the other copy of Agent Inbox on this Mac is sharing',
@@ -110,6 +131,14 @@ export const FAMILY_WORDS = Object.freeze({
     why: 'sharing would use the Inbox’s own port',
     refused: 'Sharing can’t use the same port as the Inbox itself. Choose another AGENT_INBOX_REMOTE_PORT.',
   },
+  port_in_use: {
+    why: 'another program on this Mac is using port {port}',
+    refused: 'Quit that program, or switch sharing off. Until then Tailscale forwards your other Macs to it.',
+  },
+  cannot_listen: {
+    why: 'Agent Inbox can’t listen on port {port}',
+    refused: 'Switch sharing off and on again. If that doesn’t help, restart this Mac.',
+  },
   failed: {
     why: 'something went wrong',
     refused: 'Something went wrong. Try again.',
@@ -120,10 +149,11 @@ const SELF_FAMILY = {
   no_cli: 'no_tailscale', failed: 'tailscale_unreadable', not_json: 'tailscale_unreadable', not_running: 'tailscale_off',
   no_dns_name: 'tailscale_name', bad_host: 'tailscale_name', tagged: 'tagged', no_login: 'tailscale_signin',
 }
+// as electron/remote-tailscale.cjs reads each: what running `tailscale serve --bg` would and would not fix
 const SERVE_FAMILY = {
-  unreadable: 'tailscale_unreadable', bad_request: 'tailscale_unreadable', unknown_shape: 'serve_other', foreground: 'serve_running',
-  services: 'serve_running', funnel: 'funnel', tcp_forward: 'serve_other', other_proxy: 'serve_other', duplicate_host: 'serve_other',
-  no_handler: 'serve_setup', other_path: 'serve_other', handler_fields: 'serve_setup', wrong_target: 'serve_setup', not_https: 'serve_setup',
+  unreadable: 'tailscale_unreadable', bad_request: 'tailscale_unreadable', unknown_shape: 'serve_unknown', foreground: 'serve_running',
+  services: 'serve_service', funnel: 'funnel', tcp_forward: 'serve_other', other_proxy: 'serve_other', duplicate_host: 'serve_other',
+  no_handler: 'serve_setup', other_path: 'serve_other', handler_fields: 'serve_replace', wrong_target: 'serve_replace', not_https: 'serve_unknown',
 }
 const PROBLEM_FAMILY = {
   unsupported: 'file_damaged', unreadable: 'file_damaged', not_regular: 'file_damaged', not_owner: 'file_damaged',
@@ -134,57 +164,67 @@ const PROBLEM_FAMILY = {
 const WRITE_FAMILY = {
   ...PROBLEM_FAMILY, missing: 'file_damaged', bad_id: 'failed', bad_file: 'file_damaged', too_large_to_write: 'file_damaged',
   not_serialisable: 'file_damaged', port_clash: 'port_clash', write_failed: 'write_failed', not_needed: 'failed', failed: 'failed',
+  would_remove_devices: 'would_remove',
 }
 const WAITING_FAMILY = {
   tailscale_not_running: 'tailscale_off', tailscale_unreadable: 'tailscale_unreadable', flagged: 'changed', changed_outside: 'changed',
   needs_owner: 'switch_again', write_failed: 'write_failed',
 }
 const STOP_FAMILY = { ...SELF_FAMILY, ...SERVE_FAMILY, identity_changed: 'identity', not_wanted: 'not_wanted' }
+const LISTEN_FAMILY = { port_in_use: 'port_in_use', cannot_listen: 'cannot_listen' }
 
 const own = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : null)
+const after = (word, prefix) => (typeof word === 'string' && word.startsWith(prefix) ? word.slice(prefix.length) : null)
 
 /**
  * The family of a reason word: `kind` is `stop` (onStopped, state().stopped), `turnOn` (with its
- * `step`: `self`, `serve` or `file`), `waiting` (state().resume.waiting) or `problem` (the file's).
- * A word this build does not know is `failed`, never nothing.
+ * `step`: `self`, `serve` or `file`), `waiting` (state().resume.waiting, which main refines to
+ * `self_not_ok:<reason>` when that is what Tailscale said), `problem` (the file's) or `listen` (the
+ * viewer's bind failure). A word this build does not know is `failed`, never nothing.
  */
 export function reasonFamily(kind, reason, step) {
   let family = null
   if (kind === 'stop') family = own(STOP_FAMILY, reason)
   else if (kind === 'turnOn') family = own(step === 'self' ? SELF_FAMILY : step === 'serve' ? SERVE_FAMILY : WRITE_FAMILY, reason)
   else if (kind === 'waiting') {
-    family = typeof reason === 'string' && reason.startsWith('serve_not_ok:') ? own(SERVE_FAMILY, reason.slice('serve_not_ok:'.length)) : own(WAITING_FAMILY, reason)
+    const serve = after(reason, 'serve_not_ok:')
+    const self = after(reason, 'self_not_ok:')
+    family = serve !== null ? own(SERVE_FAMILY, serve) : self !== null ? own(SELF_FAMILY, self) : own(WAITING_FAMILY, reason)
   } else if (kind === 'problem') family = own(PROBLEM_FAMILY, reason)
+  else if (kind === 'listen') family = own(LISTEN_FAMILY, reason)
   return family ?? 'failed'
 }
 
-// A notification after sharing stopped and will not come back by itself: one sentence per family.
-const NOTICES = {
-  serve: 'Tailscale Serve is not set up as expected.',
-  identity: 'This Mac’s Tailscale name or account changed.',
-  tailscale: 'Tailscale is not running, or Agent Inbox can’t read it.',
-  not_wanted: 'Sharing is switched off, and the settings file said on.',
-}
-const NOTICE_OF = {
-  serve_setup: 'serve', serve_other: 'serve', funnel: 'serve', serve_running: 'serve',
-  identity: 'identity', tagged: 'identity', not_wanted: 'not_wanted',
-}
-
-/** The one sentence a stop that will not come back by itself is announced with, on screen too. */
-export function stopNotice(reason) {
-  return NOTICES[NOTICE_OF[reasonFamily('stop', reason)] ?? 'tailscale']
+/** A family's words with this build's port and the count of paired Macs filled in. */
+export function familyWords(family, { port = 0, count = 0 } = {}) {
+  const entry = own(FAMILY_WORDS, family) ?? FAMILY_WORDS.failed
+  const one = count === 1
+  const fill = (text) => text
+    .replaceAll('{port}', String(port))
+    .replaceAll('{these}', one ? 'this Mac was' : 'these Macs were')
+    .replaceAll('{macs}', one ? 'the paired Mac' : `the ${count} paired Macs`)
+    .replaceAll('{them}', one ? 'it' : 'them')
+  const out = { why: fill(entry.why), refused: fill(entry.refused) }
+  if (entry.paused) out.paused = fill(entry.paused)
+  if (entry.command) out.command = entry.command
+  if (entry.repair) out.repair = true
+  return out
 }
 
 /** What Test found, in words. */
-export function testWords(result, host) {
+export function testWords(result, host, port) {
   if (result && result.ok === true) return 'Working: Tailscale reaches this Inbox, and it asks for a paired Mac.'
   const reason = result?.reason
   const address = `https://${host}`
   if (reason === 'off') return 'Sharing is off, so there is nothing to test.'
   // the viewer had not opened the listener within 6 seconds
   if (reason === 'not_listening') return 'Sharing is still starting. Try again in a moment.'
+  if (reason === 'port_in_use' || reason === 'cannot_listen') {
+    const words = familyWords(reason, { port })
+    return `${words.why[0].toUpperCase()}${words.why.slice(1)}. ${words.refused}`
+  }
   // Serve answered 502, 503 or 504: it forwards, but nothing answers behind it
-  if (reason === 'no_backend') return 'Tailscale is forwarding, but this Inbox isn’t answering yet. Switch sharing off and on again.'
+  if (reason === 'no_backend') return 'Tailscale is forwarding, but this Inbox isn’t answering.'
   if (reason === 'no_status') return 'Agent Inbox couldn’t read its own sharing status. Try again.'
   if (reason === 'unreachable') return `This Mac couldn’t reach ${address} through Tailscale. Check Tailscale Serve.`
   if (reason === 'not_refused') return `${address} answered without asking for a paired Mac. Check Tailscale Serve.`

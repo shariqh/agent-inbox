@@ -24,6 +24,12 @@ const CODE = '7K3QX-9M2PD'
 
 type Json = Record<string, unknown>
 
+// what review() says changed: labels and booleans only (review round 1, item 7)
+const CHANGES = {
+  unknown: false, missing: false, unreadable: false, switched: 'on', address: false, account: true, port: false,
+  added: ['desk'], removed: [], keyChanged: ['laptop'], unreadableAdded: 0, unreadableRemoved: 1,
+}
+
 /** A controller stub whose every answer also carries what must never reach a page. */
 function controllerStub(over: Json = {}) {
   const leak = { logins: [LOGIN], login: LOGIN, secretSha256: HASH, ownerToken: TOKEN, codeId: CODE_ID }
@@ -36,14 +42,15 @@ function controllerStub(over: Json = {}) {
     view, serve: { answer: { ok: false, reason: 'no_handler', present: true, login: LOGIN }, at: 5 },
     self: { ok: true, host: HOST, loginAllowed: true, at: 5, login: LOGIN }, flag: false, flagDigest: 'b'.repeat(64),
     stopped: { reason: 'funnel', at: 100, off: true, willResume: false, login: LOGIN }, removalHint: 'tailscale serve --https=443 off',
-    wanted: true, stateSaved: false, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200, codeId: CODE_ID }, needsOwner: null, listening: true, ...leak,
+    wanted: true, stateSaved: false, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200, codeId: CODE_ID }, needsOwner: null, listening: true,
+    listenError: null, ...leak,
   }
   const c = {
     port: 4320,
     calls,
     raw: state,
-    review: vi.fn(async () => { calls.push('review'); return { view, digest: DIGEST, flag: true, ...leak } }),
-    turnOn: vi.fn(async () => { calls.push('turnOn'); return { ok: true, view, voidedCode: true, devicesRemoved: 2, droppedEntries: 1, listening: false, ...leak } }),
+    review: vi.fn(async () => { calls.push('review'); return { view, digest: state.reviewDigest ?? DIGEST, flag: true, changes: { ...CHANGES, ...leak }, ...leak } }),
+    turnOn: vi.fn(async (options?: unknown) => { calls.push(options ? `turnOn ${JSON.stringify(options)}` : 'turnOn'); return { ok: true, view, voidedCode: true, devicesRemoved: 2, droppedEntries: 1, listening: false, ...leak } }),
     // #617 PR 2d: get() reads the viewer's status first, so `listening` is fresh; never handed on
     entryStatus: vi.fn(async () => { calls.push('entryStatus'); return { ok: true, status: { on: true, listening: true, port: 4320, paired: [{ device: A, codeId: CODE_ID }] }, ...leak } }),
     turnOff: vi.fn(async () => { calls.push('turnOff'); return { ok: true, view, voidedCode: false, ...leak } }),
@@ -53,6 +60,7 @@ function controllerStub(over: Json = {}) {
     acknowledge: vi.fn(async (digest: unknown) => { calls.push(`acknowledge ${String(digest)}`); return { ok: false, reason: 'changed', ...leak } }),
     selfTest: vi.fn(async () => { calls.push('selfTest'); return { ok: false, reason: 'no_device_count', rose: 'login', ...leak } }),
     requestCode: vi.fn(async () => { calls.push('requestCode'); return { ok: true, code: CODE, expiresAt: '2026-11-20T09:10:00.000Z', ...leak } }),
+    recheckHint: vi.fn(async () => { calls.push('recheckHint') }),
     stop: vi.fn(() => { calls.push('stop') }),
     settled: vi.fn(async () => { calls.push('settled') }),
     ...over,
@@ -62,7 +70,7 @@ function controllerStub(over: Json = {}) {
 }
 
 const loginItem = (available: boolean, openAtLogin = false) => ({
-  read: vi.fn(() => ({ available, openAtLogin })),
+  read: vi.fn(() => ({ available, openAtLogin, needsApproval: false })),
   set: vi.fn((value: boolean) => (available ? { ok: true, openAtLogin: value } : { ok: false, reason: 'unavailable' })),
 })
 
@@ -89,8 +97,47 @@ describe('what get() hands the panel', () => {
       devices: [{ id: A, label: 'laptop', pairedAt: '2026-11-20T09:00:00.000Z' }], unreadableDevices: 1, problem: null,
       flag: true, digest: DIGEST, wanted: true, stopped: { reason: 'funnel', willResume: false }, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200 },
       needsOwner: null, stateSaved: false, serve: { ok: false, reason: 'no_handler' }, removalHint: 'tailscale serve --https=443 off',
-      command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true }, listening: true,
+      command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true, needsApproval: false }, listening: true,
+      listenError: null, changes: CHANGES, refusal: null,
     })
+  })
+
+  // review round 1, item 12: unknown reads as not listening
+  it('is not listening, and names no bind failure, when the status read fails, whatever the controller kept', async () => {
+    const c = controllerStub({ entryStatus: vi.fn(async () => ({ ok: false, reason: 'unreachable' })) })
+    ;(c.raw as Json).listenError = 'port_in_use'
+    const { panel } = panelOf(c)
+    expect(await panel.get()).toMatchObject({ listening: false, listenError: null })
+  })
+
+  it('passes the viewer\'s bind failure as its word, and nothing else', async () => {
+    const c = controllerStub()
+    const { panel } = panelOf(c)
+    for (const [value, expected] of [['port_in_use', 'port_in_use'], ['cannot_listen', 'cannot_listen'], ['EADDRINUSE', null], [null, null]] as const) {
+      ;(c.raw as Json).listenError = value
+      expect((await panel.get()).listenError, String(value)).toBe(expected)
+    }
+  })
+
+  // review round 1, item 11: signed out and not installed are not "check that Tailscale is running"
+  it('names what Tailscale said while a pause waits on a reading of it', async () => {
+    const c = controllerStub()
+    const raw = c.raw as Json
+    raw.resume = { waiting: 'tailscale_unreadable', nextAt: 1 }
+    raw.self = { ok: false, reason: 'no_login', at: 1 }
+    const { panel } = panelOf(c)
+    expect((await panel.get()).resume).toEqual({ waiting: 'self_not_ok:no_login', nextAt: 1 })
+    raw.self = { ok: true, host: HOST, loginAllowed: true, at: 1 }
+    expect((await panel.get()).resume).toEqual({ waiting: 'tailscale_unreadable', nextAt: 1 })
+    raw.resume = { waiting: 'tailscale_not_running', nextAt: 1 }
+    raw.self = { ok: false, reason: 'no_login', at: 1 }
+    expect((await panel.get()).resume).toEqual({ waiting: 'tailscale_not_running', nextAt: 1 })
+  })
+
+  it('no changes while nothing is flagged', async () => {
+    const c = controllerStub({ review: vi.fn(async () => ({ view: { ...(c.raw as Json).view as Json }, digest: DIGEST, flag: false, changes: null })) })
+    const { panel } = panelOf(c)
+    expect((await panel.get()).changes).toBeNull()
   })
 
   it('says listening only when the last status read said so', async () => {
@@ -151,6 +198,63 @@ describe('what get() hands the panel', () => {
     const { panel } = panelOf(c)
     expect(await panel.turnOn()).toEqual({ ok: false, reason: 'no_handler', step: 'serve' })
   })
+
+  // review round 1, item 4: the page keeps no refusal of its own; get() carries the last one
+  it('get() carries the last refused switch-on until a later operation works or the state changes', async () => {
+    const c = controllerStub({ turnOn: vi.fn(async () => ({ ok: false, reason: 'no_handler', step: 'serve' })) })
+    const raw = c.raw as Json
+    const { panel, clock } = panelOf(c)
+    expect((await panel.get()).refusal).toBeNull()
+    clock.now = 70
+    await panel.turnOn()
+    expect((await panel.get()).refusal).toEqual({ reason: 'no_handler', step: 'serve', devices: null, at: 70 })
+    expect((await panel.get()).refusal).toEqual({ reason: 'no_handler', step: 'serve', devices: null, at: 70 })
+    // a failed operation leaves it
+    await panel.acknowledge(DIGEST)
+    expect((await panel.get()).refusal).not.toBeNull()
+    // the file changed: gone
+    raw.reviewDigest = 'c'.repeat(64)
+    expect((await panel.get()).refusal).toBeNull()
+    await panel.turnOn()
+    expect((await panel.get()).refusal).not.toBeNull()
+    // a later operation that works: gone
+    await panel.removeDevice(A)
+    expect((await panel.get()).refusal).toBeNull()
+  })
+
+  it('a problem with the file that appears after a refusal clears it too', async () => {
+    const c = controllerStub({ turnOn: vi.fn(async () => ({ ok: false, reason: 'no_handler', step: 'serve' })) })
+    const { panel } = panelOf(c)
+    await panel.turnOn()
+    expect((await panel.get()).refusal).not.toBeNull()
+    ;((c.raw as Json).view as Json).problem = 'open_to_others'
+    expect((await panel.get()).refusal).toBeNull()
+  })
+
+  // review round 1, item 8
+  it('a refusal that would remove paired Macs says how many; switching on anyway asks the controller to remove them', async () => {
+    const c = controllerStub({
+      turnOn: vi.fn(async (options?: unknown) => {
+        c.calls.push(options ? `turnOn ${JSON.stringify(options)}` : 'turnOn')
+        return options ? { ok: true, voidedCode: false, devicesRemoved: 2, droppedEntries: 0, listening: true } : { ok: false, reason: 'would_remove_devices', step: 'file', devices: 2 }
+      }),
+    })
+    const { panel, clock } = panelOf(c)
+    clock.now = 90
+    expect(await panel.turnOn()).toEqual({ ok: false, reason: 'would_remove_devices', step: 'file', devices: 2 })
+    expect((await panel.get()).refusal).toEqual({ reason: 'would_remove_devices', step: 'file', devices: 2, at: 90 })
+    expect(await panel.turnOnRemovingDevices()).toEqual({ ok: true, voidedCode: false, devicesRemoved: 2, droppedEntries: 0, listening: true })
+    expect(c.calls).toContain('turnOn {"removeDevices":true}')
+    expect((await panel.get()).refusal).toBeNull()
+  })
+
+  // review round 1, item 6
+  it('recheck reads Serve again for the removal hint, and pings', async () => {
+    const { panel, c, changed } = panelOf()
+    expect(await panel.recheck()).toEqual({ ok: true })
+    expect(c.calls).toEqual(['recheckHint'])
+    expect(changed).toHaveBeenCalledOnce()
+  })
 })
 
 describe('the IPC channels', () => {
@@ -165,6 +269,8 @@ describe('the IPC channels', () => {
     ['agent-inbox:remote-entry-test', [], [['now']]],
     ['agent-inbox:remote-entry-add-device', [], [['laptop']]],
     ['agent-inbox:remote-entry-open-at-login', [true], [[], ['true'], [1], [true, false]]],
+    ['agent-inbox:remote-entry-turn-on-remove-devices', [], [[true]]],
+    ['agent-inbox:remote-entry-recheck', [], [['x']]],
   ]
 
   function world({ platform = 'darwin', trusted = true, owned = true, panel = true, settled = Promise.resolve() as Promise<unknown> } = {}) {
@@ -233,82 +339,133 @@ describe('the IPC channels', () => {
     for (const [channel, args] of CHANNELS) await w.call(channel, ...args)
     expect(w.p.c.calls).toEqual([
       'entryStatus', 'review', 'state', 'turnOn', 'turnOff', `removeDevice ${A}`, 'clearUnreadable', 'repairPermissions', `acknowledge ${DIGEST}`, 'selfTest', 'requestCode',
+      'turnOn {"removeDevices":true}', 'recheckHint',
     ])
   })
 })
 
 describe('notifications', () => {
-  function notifier(start = 1_000_000) {
+  function notifier({ start = 1_000_000, started = false } = {}) {
     const shown: Array<{ title: string; body: string }> = []
     const changed = vi.fn()
     const clock = { now: start }
-    const n = ipc.createRemoteNotifier({ show: (note: { title: string; body: string }) => { shown.push(note) }, now: () => clock.now, words, changed })
-    return { n, shown, changed, clock }
+    const timers: Array<{ fn: () => void; at: number; cleared: boolean }> = []
+    const n = ipc.createRemoteNotifier({
+      show: (note: { title: string; body: string }) => { shown.push(note) }, now: () => clock.now, words, changed,
+      setTimeout: (fn: () => void, ms: number) => { const timer = { fn, at: clock.now + ms, cleared: false }; timers.push(timer); return timer },
+      clearTimeout: (timer: unknown) => { (timer as { cleared: boolean }).cleared = true },
+    })
+    if (started) n.started()
+    /** moves the clock, firing the timers that come due */
+    const advance = async (ms: number) => {
+      clock.now += ms
+      for (const timer of timers) if (!timer.cleared && timer.at <= clock.now) { timer.cleared = true; timer.fn() }
+      await flush()
+    }
+    return { n, shown, changed, clock, advance }
   }
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-  it('says paused, stopped, resumed, paired and changed outside, as plain text', async () => {
+  it('says paused (with what to do), stopped, resumed, paired and changed outside, as plain text about your other Macs', async () => {
     const { n, shown, changed } = notifier()
-    n.onStopped('not_running', { off: true, willResume: true })
-    n.onStopped('funnel', { off: true, willResume: false })
+    n.onStopped('funnel', { off: true, willResume: true })
+    n.onStopped('identity_changed', { off: true, willResume: false })
     n.onResumed()
     n.onPaired('<b>laptop</b>')
     n.onOutsideChange()
     await flush()
     expect(shown).toEqual([
-      { title: 'Agent Inbox paused sharing with your other devices', body: 'It comes back by itself when Tailscale is ready.' },
-      { title: 'Agent Inbox stopped sharing with your other devices', body: 'Tailscale Serve is not set up as expected.' },
-      { title: 'Agent Inbox is sharing with your other devices again.', body: '' },
-      { title: '<b>laptop</b> can now use this Inbox.', body: '' },
-      { title: 'Agent Inbox’s sharing settings were changed outside the app', body: 'Open Settings to review.' },
+      { title: 'Agent Inbox paused sharing with your other Macs', body: 'Paused: Tailscale Funnel is on for this Mac. Open Settings → Other devices to see what to do.' },
+      { title: 'Agent Inbox stopped sharing with your other Macs', body: 'This Mac’s Tailscale name or account changed. Open Settings → Other devices to see what to do.' },
+      { title: 'Agent Inbox is sharing with your other Macs again', body: '' },
+      { title: 'A Mac was paired', body: '<b>laptop</b> can now use this Inbox.' },
+      { title: 'Agent Inbox’s sharing settings were changed outside the app', body: 'Open Settings → Other devices to review.' },
     ])
     expect(changed).toHaveBeenCalledTimes(5)
   })
 
-  it('has a sentence for every stop reason the controller can give, one per family', async () => {
+  // review round 1, item 1: the reason is the family's, as on the panel, for every reason word
+  it('words every pause and stop from the family the panel uses, never "when Tailscale is ready"', async () => {
     const types = read('electron/remote-entry.d.cts')
     const pick = (name: string) => {
       const at = types.indexOf(`export type ${name} =`)
       return [...types.slice(at, types.indexOf('\n\n', at)).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!)
     }
     const reasons = [...pick('SelfReason'), ...pick('ServeReason'), ...pick('StopReason')]
-    expect(reasons).toContain('identity_changed')
     expect(reasons).toContain('not_wanted')
-    const bodies = new Set<string>()
     for (const reason of reasons) {
-      const { n, shown } = notifier()
-      n.onStopped(reason, { off: true, willResume: false })
-      await flush()
-      expect(shown, reason).toHaveLength(1)
-      expect(shown[0]!.body, reason).toBe(words.stopNotice(reason))
-      bodies.add(shown[0]!.body)
+      for (const willResume of [true, false]) {
+        const { n, shown } = notifier()
+        n.onStopped(reason, { off: true, willResume })
+        await flush()
+        const why = words.familyWords(words.reasonFamily('stop', reason), { port: 4320 }).why
+        expect(shown, reason).toHaveLength(1)
+        expect(shown[0]!.body, reason).toBe(willResume
+          ? `Paused: ${why}. Open Settings → Other devices to see what to do.`
+          : `${why[0]!.toUpperCase()}${why.slice(1)}. Open Settings → Other devices to see what to do.`)
+        expect(shown[0]!.body).not.toMatch(/when Tailscale is ready|your other devices/)
+      }
     }
-    expect(bodies.size).toBe(4)
   })
 
-  it('shows at most one of each kind in 10 minutes; later ones only update the panel', async () => {
-    const { n, shown, changed, clock } = notifier()
+  // review round 1, item 2
+  it('quiets only a notice identical to the last one and under 10 minutes old; the opposite kind resets it', async () => {
+    const { n, shown, clock } = notifier()
+    n.onStopped('funnel', { off: true, willResume: true })
+    clock.now += 60_000
+    n.onResumed()
+    clock.now += 60_000
+    n.onStopped('funnel', { off: true, willResume: true })
+    n.onStopped('funnel', { off: true, willResume: true })
     n.onStopped('not_running', { off: true, willResume: true })
-    clock.now += 9 * 60_000
-    n.onStopped('not_running', { off: true, willResume: true })
+    n.onStopped('not_running', { off: true, willResume: false })
+    await flush()
+    expect(shown.map((note) => note.title)).toEqual([
+      'Agent Inbox paused sharing with your other Macs', 'Agent Inbox is sharing with your other Macs again',
+      'Agent Inbox paused sharing with your other Macs', 'Agent Inbox paused sharing with your other Macs', 'Agent Inbox stopped sharing with your other Macs',
+    ])
+    clock.now += 10 * 60_000
+    n.onStopped('not_running', { off: true, willResume: false })
+    await flush()
+    expect(shown).toHaveLength(6)
+  })
+
+  it('never quiets a pairing or an outside change', async () => {
+    const { n, shown, changed } = notifier()
     n.onPaired('laptop')
     n.onPaired('desk')
     n.onOutsideChange()
     n.onOutsideChange()
-    n.onResumed()
-    n.onResumed()
-    n.onStopped('funnel', { off: true, willResume: false })
-    n.onStopped('tagged', { off: true, willResume: false })
     await flush()
-    expect(shown.map((note) => note.title)).toEqual([
-      'Agent Inbox paused sharing with your other devices', 'laptop can now use this Inbox.', 'Agent Inbox’s sharing settings were changed outside the app',
-      'Agent Inbox is sharing with your other devices again.', 'Agent Inbox stopped sharing with your other devices',
-    ])
-    expect(changed).toHaveBeenCalledTimes(10)
-    clock.now += 60_000
+    expect(shown.map((note) => note.body)).toEqual(['laptop can now use this Inbox.', 'desk can now use this Inbox.', 'Open Settings → Other devices to review.', 'Open Settings → Other devices to review.'])
+    expect(changed).toHaveBeenCalledTimes(4)
+  })
+
+  it('at app start, a pause that resumes within 2 minutes notifies nothing at all', async () => {
+    const { n, shown, advance } = notifier({ started: true })
     n.onStopped('not_running', { off: true, willResume: true })
+    await advance(90_000)
+    n.onResumed()
+    await advance(120_000)
+    expect(shown).toEqual([])
+  })
+
+  it('at app start, a pause still standing after 2 minutes is then notified; a stop at once', async () => {
+    const { n, shown, advance } = notifier({ started: true })
+    n.onStopped('not_running', { off: true, willResume: true })
+    await advance(119_000)
+    expect(shown).toEqual([])
+    await advance(1_000)
+    expect(shown.map((note) => note.body)).toEqual(['Paused: Tailscale is not running. Open Settings → Other devices to see what to do.'])
+    const later = notifier({ started: true })
+    later.n.onStopped('identity_changed', { off: true, willResume: false })
     await flush()
-    expect(shown).toHaveLength(6)
+    expect(later.shown).toHaveLength(1)
+    // after the first 2 minutes, a pause is notified at once
+    await later.advance(121_000)
+    later.n.onStopped('funnel', { off: true, willResume: true })
+    await flush()
+    expect(later.shown).toHaveLength(2)
   })
 
   it('a notice that throws, or words that never load, stop nothing', async () => {
@@ -325,7 +482,7 @@ describe('Open Agent Inbox at login', () => {
   it('a checkout build answers unavailable and never reads or sets the login item', () => {
     const app = { isPackaged: false, getLoginItemSettings: vi.fn(() => ({ openAtLogin: true })), setLoginItemSettings: vi.fn() }
     const item = ipc.loginItemFor({ app, platform: 'darwin' })
-    expect(item.read()).toEqual({ available: false, openAtLogin: false })
+    expect(item.read()).toEqual({ available: false, openAtLogin: false, needsApproval: false })
     expect(item.set(true)).toEqual({ ok: false, reason: 'unavailable' })
     expect(app.setLoginItemSettings).not.toHaveBeenCalled()
     expect(app.getLoginItemSettings).not.toHaveBeenCalled()
@@ -342,13 +499,21 @@ describe('Open Agent Inbox at login', () => {
       setLoginItemSettings: vi.fn((settings: { openAtLogin: boolean }) => { on = settings.openAtLogin }),
     }
     const item = ipc.loginItemFor({ app, platform: 'darwin' })
-    expect(item.read()).toEqual({ available: true, openAtLogin: false })
+    expect(item.read()).toEqual({ available: true, openAtLogin: false, needsApproval: false })
     expect(item.set(true)).toEqual({ ok: true, openAtLogin: true })
     expect(app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true })
     expect(item.set('yes' as unknown as boolean)).toEqual({ ok: false, reason: 'unavailable' })
     expect(app.setLoginItemSettings).toHaveBeenCalledOnce()
     app.setLoginItemSettings.mockImplementation(() => { throw new Error('denied') })
     expect(item.set(false)).toEqual({ ok: false, reason: 'failed' })
+  })
+
+  // review round 1, item 12
+  it('says when macOS wants the login item approved', () => {
+    const app = { isPackaged: true, getLoginItemSettings: vi.fn(() => ({ openAtLogin: true, status: 'requires-approval' })), setLoginItemSettings: vi.fn() }
+    expect(ipc.loginItemFor({ app, platform: 'darwin' }).read()).toEqual({ available: true, openAtLogin: true, needsApproval: true })
+    app.getLoginItemSettings.mockReturnValue({ openAtLogin: true, status: 'enabled' })
+    expect(ipc.loginItemFor({ app, platform: 'darwin' }).read()).toEqual({ available: true, openAtLogin: true, needsApproval: false })
   })
 })
 
@@ -387,6 +552,21 @@ describe('the watch\'s pings', () => {
     expect(changed).toHaveBeenCalledTimes(1)
     watch.stop()
   })
+
+  // review round 1, item 12: a pause's next try moves every 5 seconds; the page shows it to the minute
+  it('does not ping for a next try that moved within the same minute', async () => {
+    const ticks: Array<() => void> = []
+    const at = Date.parse('2026-11-20T09:00:00.000Z')
+    const views = [at + 5_000, at + 10_000, at + 30_000, at + 65_000].map((nextAt) => ({ resume: { waiting: 'tailscale_not_running', nextAt } }))
+    const panel = { get: vi.fn(async () => views.shift()) }
+    const changed = vi.fn()
+    ipc.watchRemoteEntry({ panel, changed, setInterval: (fn: () => void) => { ticks.push(fn); return 1 }, clearInterval: vi.fn() })
+    for (let i = 0; i < 4; i += 1) {
+      ticks[0]!()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    expect(changed).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ── main.cjs's block, run against fakes ─────────────────────────────────────
@@ -409,7 +589,11 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
       './remote-entry-state.cjs': { createRemoteEntryState: (options: Json) => ({ store: options }) },
       './remote-entry-ipc.cjs': { ...ipc, registerRemoteEntryIpc: (options: Json) => { handlers.set('options', options) }, watchRemoteEntry: () => ({ stop: vi.fn() }) },
     }
-    const linkWindow = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send: (channel: string) => { sent.push(channel) } } }
+    const windowEvents = new Map<string, () => void>()
+    const linkWindow = {
+      isDestroyed: () => false, on: (event: string, fn: () => void) => { windowEvents.set(event, fn) },
+      webContents: { isDestroyed: () => false, send: (channel: string) => { sent.push(channel) } },
+    }
     const scope = new Function(
       'require', 'process', 'app', 'ipcMain', 'Notification', 'notificationRetainer', 'linkSender', 'linkFilesPermitted', 'installBinding', 'OWNER_TOKEN',
       'REPO_ROOT', 'path', 'pathToFileURL', 'linkWindow', 'viewerOwnedNow',
@@ -419,7 +603,7 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
       { platform }, app, { handle: () => {} }, Object.assign(function Notification() {}, { isSupported: () => false }), { show: () => {} },
       () => true, () => true, { settled: async () => {} }, TOKEN, REPO, { join }, (p: string) => new URL(`file://${p}`), linkWindow, owned,
     ) as { startRemoteEntry(): void; quitRemoteEntry(event: { preventDefault(): void }): boolean; remoteEntryChanged(): void }
-    return { scope, made, controller, handlers, app, sent }
+    return { scope, made, controller, handlers, app, sent, windowEvents }
   }
 
   it('makes one controller with the owner token, a state store and the four callbacks, and starts it', () => {
@@ -431,6 +615,8 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
     expect(Object.keys(options).sort()).toEqual(['isPackaged', 'onOutsideChange', 'onPaired', 'onResumed', 'onStopped', 'ownerToken', 'stateStore'])
     expect(options).toMatchObject({ isPackaged: true, ownerToken: TOKEN, stateStore: { store: { app: w.app } } })
     expect(w.controller.calls).toEqual(['start'])
+    // review round 1, item 12: a panel drawn as unowned during start asks again
+    expect(w.sent).toEqual(['agent-inbox:remote-entry-changed'])
     const registered = w.handlers.get('options') as Json
     expect(registered.platform).toBe('darwin')
     expect((registered.panel as () => unknown)()).not.toBeNull()
@@ -454,6 +640,16 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
     await vi.waitFor(() => expect(w.app.quit).toHaveBeenCalledOnce())
     expect(w.controller.calls).toEqual(['start', 'stop', 'settled'])
     expect(w.scope.quitRemoteEntry(event)).toBe(false)
+  })
+
+  // review round 1, item 6: the removal hint is read again when the window regains focus
+  it('reads Serve again for the removal hint when the window regains focus, then pings', async () => {
+    const w = world()
+    w.scope.startRemoteEntry()
+    w.sent.length = 0
+    w.windowEvents.get('focus')!()
+    await vi.waitFor(() => expect(w.sent).toEqual(['agent-inbox:remote-entry-changed']))
+    expect(w.controller.calls).toContain('recheckHint')
   })
 
   it('pings the window it owns with a bare change', () => {
@@ -504,14 +700,16 @@ const GOOD = {
   devices: [{ id: A, label: 'laptop', pairedAt: '2026-11-20T09:00:00.000Z' }], unreadableDevices: 1, problem: null,
   flag: true, digest: DIGEST, wanted: true, stopped: { reason: 'funnel', willResume: false }, resume: { waiting: 'serve_not_ok:funnel', nextAt: 200 },
   needsOwner: null, stateSaved: false, serve: { ok: false, reason: 'no_handler' }, removalHint: 'tailscale serve --https=443 off',
-  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true }, listening: true,
+  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: true, needsApproval: false }, listening: true,
+  listenError: null, changes: CHANGES, refusal: null,
 }
 
 describe('the agentInboxRemoteEntry bridge', () => {
   it('has exactly its members, each sending its channel and checked arguments only', async () => {
     const { bridge, invoke } = loadPreload(() => ({ ok: true }))
     expect(Object.keys(bridge).sort()).toEqual([
-      'acknowledge', 'addDevice', 'clearUnreadable', 'get', 'onChange', 'removeDevice', 'repairPermissions', 'setOpenAtLogin', 'test', 'turnOff', 'turnOn',
+      'acknowledge', 'addDevice', 'clearUnreadable', 'get', 'onChange', 'recheck', 'removeDevice', 'repairPermissions', 'setOpenAtLogin', 'test', 'turnOff', 'turnOn',
+      'turnOnRemovingDevices',
     ])
     await bridge.get!()
     await bridge.turnOn!()
@@ -523,17 +721,20 @@ describe('the agentInboxRemoteEntry bridge', () => {
     await bridge.test!()
     await bridge.addDevice!()
     await bridge.setOpenAtLogin!(true)
+    await bridge.turnOnRemovingDevices!()
+    await bridge.recheck!()
     expect(invoke.mock.calls).toEqual([
       ['agent-inbox:remote-entry'], ['agent-inbox:remote-entry-turn-on'], ['agent-inbox:remote-entry-turn-off'], ['agent-inbox:remote-entry-remove-device', A],
       ['agent-inbox:remote-entry-clear-unreadable'], ['agent-inbox:remote-entry-repair'], ['agent-inbox:remote-entry-acknowledge', DIGEST],
       ['agent-inbox:remote-entry-test'], ['agent-inbox:remote-entry-add-device'], ['agent-inbox:remote-entry-open-at-login', true],
+      ['agent-inbox:remote-entry-turn-on-remove-devices'], ['agent-inbox:remote-entry-recheck'],
     ])
   })
 
   it.each([
     ['get', ['x']], ['turnOn', [true]], ['turnOff', [1]], ['removeDevice', []], ['removeDevice', ['laptop']], ['removeDevice', [A, 'x']],
     ['clearUnreadable', [1]], ['repairPermissions', ['x']], ['acknowledge', ['abc']], ['acknowledge', []], ['test', [1]], ['addDevice', ['laptop']],
-    ['setOpenAtLogin', ['yes']], ['setOpenAtLogin', []],
+    ['setOpenAtLogin', ['yes']], ['setOpenAtLogin', []], ['turnOnRemovingDevices', [true]], ['recheck', ['x']],
   ] as const)('refuses %s(%j) without asking main', async (method, args) => {
     const { bridge, invoke } = loadPreload(() => GOOD)
     await expect(bridge[method]!(...args)).resolves.toEqual(method === 'get' ? { available: false, reason: 'invalid' } : { ok: false, reason: 'invalid' })
@@ -546,11 +747,43 @@ describe('the agentInboxRemoteEntry bridge', () => {
       devices: [{ ...GOOD.devices[0], secretSha256: HASH, codeId: CODE_ID }],
       stopped: { ...GOOD.stopped, login: LOGIN }, resume: { ...GOOD.resume, codeId: CODE_ID }, serve: { ...GOOD.serve, present: true, login: LOGIN },
       loginItem: { ...GOOD.loginItem, path: '/Applications/x.app' },
+      changes: { ...CHANGES, login: LOGIN, secretSha256: HASH },
+      refusal: { reason: 'no_handler', step: 'serve', devices: null, at: 70, login: LOGIN },
     }
     const { bridge } = loadPreload(() => hostile)
     const answer = await bridge.get!()
-    expect(answer).toEqual(GOOD)
+    expect(answer).toEqual({ ...GOOD, refusal: { reason: 'no_handler', step: 'serve', devices: null, at: 70 } })
     expect(secrets(answer)).toEqual([])
+  })
+
+  // review round 1, item 9: one bad date never costs the panel
+  it('a pairedAt that is not a real date becomes no date, and the rest of the view stays', async () => {
+    for (const pairedAt of ['2026-13-01T00:00:00Z', '2026-12-01T23:60:00Z', '2026-99-99T00:00:00.000Z', 7, '']) {
+      const { bridge } = loadPreload(() => ({ ...GOOD, devices: [{ ...GOOD.devices[0], pairedAt }] }))
+      const answer = await bridge.get!()
+      expect(answer, String(pairedAt)).toMatchObject({ available: true, devices: [{ id: A, label: 'laptop', pairedAt: null }] })
+    }
+  })
+
+  it('rebuilds the facts of a change: labels, booleans and counts of the right shape only', async () => {
+    const bad: unknown[] = [
+      { ...CHANGES, switched: 'sideways' }, { ...CHANGES, added: ['x'.repeat(41)] }, { ...CHANGES, added: [7] }, { ...CHANGES, account: 'yes' },
+      { ...CHANGES, unreadableAdded: -1 }, { ...CHANGES, keyChanged: Array(17).fill('a') }, 'changed',
+    ]
+    for (const changes of bad) {
+      const { bridge } = loadPreload(() => ({ ...GOOD, changes }))
+      await expect(bridge.get!(), JSON.stringify(changes)).resolves.toEqual({ available: false, reason: 'failed' })
+    }
+    for (const refusal of [{ reason: '<b>', step: 'serve', devices: null, at: 1 }, { reason: 'x', step: 'shell', devices: null, at: 1 }, { reason: 'x', step: null, devices: -2, at: 1 }, { reason: 'x', step: null, devices: null, at: 'now' }]) {
+      const { bridge } = loadPreload(() => ({ ...GOOD, refusal }))
+      await expect(bridge.get!(), JSON.stringify(refusal)).resolves.toEqual({ available: false, reason: 'failed' })
+    }
+    for (const listenError of ['EADDRINUSE', 7]) {
+      const { bridge } = loadPreload(() => ({ ...GOOD, listenError }))
+      await expect(bridge.get!(), String(listenError)).resolves.toEqual({ available: false, reason: 'failed' })
+    }
+    const { bridge } = loadPreload(() => ({ ...GOOD, listenError: 'port_in_use', loginItem: { available: true, openAtLogin: false, needsApproval: true } }))
+    await expect(bridge.get!()).resolves.toMatchObject({ listenError: 'port_in_use', loginItem: { available: true, openAtLogin: false, needsApproval: true } })
   })
 
   it('refuses an answer whose fields are the wrong shape', async () => {
@@ -586,6 +819,10 @@ describe('the agentInboxRemoteEntry bridge', () => {
       ['turnOn', [], { ok: true, listening: 'yes' }, { ok: true }],
       ['test', [], { ok: false, reason: 'no_backend', rose: null }, { ok: false, reason: 'no_backend', rose: null }],
       ['test', [], { ok: false, reason: 'not_listening', rose: null }, { ok: false, reason: 'not_listening', rose: null }],
+      // review round 1, item 12: a rose that is not a word does not cross
+      ['test', [], { ok: false, reason: 'no_device_count', rose: '<b>x</b>' }, { ok: false, reason: 'no_device_count' }],
+      ['turnOn', [], { ok: false, reason: 'would_remove_devices', step: 'file', devices: 3 }, { ok: false, reason: 'would_remove_devices', step: 'file', devices: 3 }],
+      ['turnOn', [], { ok: false, reason: 'would_remove_devices', step: 'file', devices: -3 }, { ok: false, reason: 'would_remove_devices', step: 'file' }],
       ['turnOn', [], { ok: false, reason: 'no_handler', step: 'serve', login: LOGIN }, { ok: false, reason: 'no_handler', step: 'serve' }],
       ['turnOn', [], { ok: false, reason: 'no handler', step: 'shell' }, { ok: false, reason: 'failed' }],
       ['addDevice', [], { ok: true, code: CODE, expiresAt: '2026-11-20T09:10:00.000Z', codeId: CODE_ID }, { ok: true, code: CODE, expiresAt: '2026-11-20T09:10:00.000Z' }],

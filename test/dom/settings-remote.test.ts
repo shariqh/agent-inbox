@@ -20,10 +20,15 @@ type View = Record<string, unknown>
 const OFF: View = {
   available: true, enabled: false, host: null, port: 4320, devices: [], unreadableDevices: 0, problem: null, flag: false, digest: D1,
   wanted: false, stopped: null, resume: null, needsOwner: null, stateSaved: true, serve: null, removalHint: null,
-  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: false }, listening: false,
+  command: 'tailscale serve --bg 4320', loginItem: { available: true, openAtLogin: false, needsApproval: false }, listening: false,
+  listenError: null, changes: null, refusal: null,
 }
 const ON: View = { ...OFF, enabled: true, host: HOST, wanted: true, serve: { ok: true }, listening: true }
 const LAPTOP = { id: A, label: 'laptop', pairedAt: '2026-07-19T09:00:00.000Z' }
+const NONE_CHANGES = {
+  unknown: false, missing: false, unreadable: false, switched: null, address: false, account: false, port: false,
+  added: [], removed: [], keyChanged: [], unreadableAdded: 0, unreadableRemoved: 0,
+}
 
 let db: Database.Database | null = null
 afterEach(() => {
@@ -52,9 +57,14 @@ function bridge(start: View = OFF) {
     test: vi.fn(async (): Promise<View> => ({ ok: true })),
     addDevice: vi.fn(async (): Promise<View> => ({ ok: true, code: CODE, expiresAt: new Date(Date.now() + 600_000).toISOString() })),
     setOpenAtLogin: vi.fn(async (value: boolean): Promise<View> => {
-      view = { ...view, loginItem: { available: true, openAtLogin: value } }
+      view = { ...view, loginItem: { available: true, openAtLogin: value, needsApproval: false } }
       return { ok: true, openAtLogin: value }
     }),
+    turnOnRemovingDevices: vi.fn(async (): Promise<View> => {
+      view = { ...view, ...ON, devices: [], refusal: null }
+      return { ok: true, voidedCode: false, devicesRemoved: 2, droppedEntries: 0 }
+    }),
+    recheck: vi.fn(async (): Promise<View> => ({ ok: true })),
     onChange: vi.fn((fn: (() => void) | null) => { listener = fn; return true }),
   }
   Object.defineProperty(window, 'agentInboxRemoteEntry', { configurable: true, value: api })
@@ -86,6 +96,14 @@ const toggle = (el: HTMLInputElement | null) => {
   el.click()
 }
 const instruction = () => text('.remote-instruction p')
+
+/** main refusing the next switch-on, as it does: the refusal comes back in get() (review round 1, item 4) */
+function refuse(api: ReturnType<typeof bridge>, reason: string, step: string, devices: number | null = null) {
+  api.turnOn.mockImplementationOnce(async () => {
+    api.set({ ...api.current(), refusal: { reason, step, devices, at: Date.now() } })
+    return devices === null ? { ok: false, reason, step } : { ok: false, reason, step, devices }
+  })
+}
 
 describe('Settings → Other devices: what it shows', () => {
   it('off: the switch, the status, the risk sentence, Add a Mac disabled, open at login; nothing else', async () => {
@@ -138,11 +156,17 @@ describe('Settings → Other devices: what it shows', () => {
   })
 
   it.each([
-    ['tailscale_not_running', 'Tailscale is not running', 'Open Tailscale on this Mac and connect. Sharing comes back by itself.'],
-    ['tailscale_unreadable', 'Agent Inbox can’t read Tailscale', 'Check that Tailscale is running on this Mac. Sharing comes back by itself.'],
-    ['serve_not_ok:foreground', 'another tailscale serve is running', 'Another tailscale serve is running on this Mac. Stop it. Sharing comes back by itself.'],
+    ['tailscale_not_running', 'Tailscale is not running', 'Open Tailscale on this Mac and connect. Sharing then comes back by itself.'],
+    ['tailscale_unreadable', 'Agent Inbox can’t read Tailscale', 'Check that Tailscale is running on this Mac. Sharing then comes back by itself.'],
+    // review round 1, item 11: what Tailscale said, when main knows it
+    ['self_not_ok:no_login', 'Tailscale is signed out', 'Sign in to Tailscale on this Mac. Sharing then comes back by itself.'],
+    ['self_not_ok:no_cli', 'Tailscale is not installed', 'Install Tailscale on this Mac and sign in. Sharing then comes back by itself.'],
+    ['serve_not_ok:foreground', 'another tailscale serve is running', 'Another tailscale serve is running on this Mac. Stop it. Sharing then comes back by itself.'],
+    ['serve_not_ok:services', 'a Tailscale Service is set up on this Mac', 'A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it. Sharing then comes back by itself.'],
     ['serve_not_ok:no_handler', 'Tailscale Serve is not set up for Agent Inbox', 'Run this once in Terminal on this Mac, and sharing comes back by itself:'],
-    ['serve_not_ok:funnel', 'Tailscale Funnel is on for this Mac', 'Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac. Sharing comes back by itself.'],
+    ['serve_not_ok:wrong_target', 'Tailscale Serve on this Mac forwards this address to something else', 'Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:'],
+    ['serve_not_ok:unknown_shape', 'Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise', 'Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise. Run this in Terminal to see it:'],
+    ['serve_not_ok:funnel', 'Tailscale Funnel is on for this Mac', 'Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac. Sharing then comes back by itself.'],
     ['write_failed', 'Agent Inbox couldn’t save the sharing settings', 'Agent Inbox couldn’t save its sharing settings file. It tries again by itself.'],
     ['changed_outside', 'the sharing settings were changed outside Agent Inbox', 'Agent Inbox is checking the changed settings.'],
   ])('paused (%s): why, the next try, and what to do', async (waiting, why, what) => {
@@ -153,7 +177,8 @@ describe('Settings → Other devices: what it shows', () => {
     expect(status()).toBe(`Paused: ${why}, next try at ${at}`)
     expect(sw()?.checked).toBe(true)
     expect(instruction()).toBe(what)
-    expect(text('.remote-instruction pre')).toBe(waiting === 'serve_not_ok:no_handler' ? 'tailscale serve --bg 4320' : null)
+    const command = { 'serve_not_ok:no_handler': 'tailscale serve --bg 4320', 'serve_not_ok:wrong_target': 'tailscale serve --bg 4320', 'serve_not_ok:unknown_shape': 'tailscale serve status' }
+    expect(text('.remote-instruction pre')).toBe(command[waiting as keyof typeof command] ?? null)
   })
 
   it('paused with no next try says only why', async () => {
@@ -162,10 +187,10 @@ describe('Settings → Other devices: what it shows', () => {
     expect(status()).toBe('Paused: Tailscale is not running')
   })
 
-  it('needs you: a stop that will not come back by itself, in the notification\'s words, with what to do', async () => {
+  it('needs you: a stop that will not come back by itself, with its reason and what to do', async () => {
     bridge({ ...OFF, host: HOST, stopped: { reason: 'funnel', willResume: false } })
     await draw()
-    expect(status()).toBe('Needs you: Tailscale Serve is not set up as expected.')
+    expect(status()).toBe('Needs you: Tailscale Funnel is on for this Mac')
     expect(sw()?.checked).toBe(false)
     expect(instruction()).toBe('Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac, then switch on again.')
   })
@@ -173,12 +198,20 @@ describe('Settings → Other devices: what it shows', () => {
   it('needs you: this Mac\'s name or account changed', async () => {
     bridge({ ...OFF, host: HOST, needsOwner: 'identity_changed', stopped: { reason: 'identity_changed', willResume: false } })
     await draw()
-    expect(status()).toBe('Needs you: This Mac’s Tailscale name or account changed.')
+    expect(status()).toBe('Needs you: this Mac’s Tailscale name or account changed')
     expect(instruction()).toBe('This Mac’s Tailscale name or account changed. Switching on again removes the paired Macs.')
     bridge({ ...OFF, host: HOST, needsOwner: 'identity_changed' })
     document.body.replaceChildren()
     await draw()
     expect(status()).toBe('Needs you: this Mac’s Tailscale name or account changed')
+  })
+
+  // review round 1, item 11
+  it('a stop that will not resume while sharing is still wanted shows its real reason', async () => {
+    bridge({ ...OFF, host: HOST, wanted: true, resume: { waiting: 'needs_owner', nextAt: null }, stopped: { reason: 'funnel', willResume: false } })
+    await draw()
+    expect(status()).toBe('Needs you: Tailscale Funnel is on for this Mac')
+    expect(instruction()).toBe('Tailscale Funnel would put this Inbox on the internet. Turn Funnel off for this Mac, then switch on again.')
   })
 
   it('a stop Agent Inbox made to keep sharing off is only Off: the flag says the rest', async () => {
@@ -190,9 +223,10 @@ describe('Settings → Other devices: what it shows', () => {
 
   it.each([
     ['serve', 'no_handler', 'Run this once in Terminal on this Mac, then switch on again:', true],
-    ['serve', 'wrong_target', 'Run this once in Terminal on this Mac, then switch on again:', true],
+    ['serve', 'wrong_target', 'Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:', true],
+    ['serve', 'handler_fields', 'Tailscale Serve on this Mac is forwarding this address to something else. This replaces it:', true],
     ['serve', 'foreground', 'Another tailscale serve is running on this Mac. Stop it, then switch on again.', false],
-    ['serve', 'services', 'Another tailscale serve is running on this Mac. Stop it, then switch on again.', false],
+    ['serve', 'services', 'A Tailscale Service is set up on this Mac, and Agent Inbox can’t check what it forwards. Remove it, then switch on again.', false],
     ['serve', 'other_path', 'Tailscale Serve on this Mac has other settings that could reach this Inbox. Remove them, then switch on again.', false],
     ['self', 'no_cli', 'Install Tailscale on this Mac and sign in, then switch on again.', false],
     ['self', 'not_running', 'Open Tailscale on this Mac and connect, then switch on again.', false],
@@ -202,7 +236,7 @@ describe('Settings → Other devices: what it shows', () => {
     ['file', 'newer_schema', 'A newer version of Agent Inbox saved these settings. Update Agent Inbox to change them.', false],
   ])('switching on refused at %s (%s): one instruction', async (step, reason, what, command) => {
     const api = bridge(OFF)
-    api.turnOn.mockResolvedValueOnce({ ok: false, reason, step })
+    refuse(api, reason, step)
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     await draw()
@@ -226,6 +260,16 @@ describe('Settings → Other devices: what it shows', () => {
     expect($('.remote-instruction')).toBeNull()
   })
 
+  it('a command to look at Serve, not to change it, for a shape it doesn\'t recognise', async () => {
+    const api = bridge(OFF)
+    refuse(api, 'not_https', 'serve')
+    await draw()
+    toggle(sw())
+    await settle()
+    expect(instruction()).toBe('Tailscale Serve on this Mac is set up in a way Agent Inbox doesn’t recognise. Run this in Terminal to see it:')
+    expect(text('.remote-instruction pre')).toBe('tailscale serve status')
+  })
+
   it('a file other accounts can read: says so and offers to make it private', async () => {
     const api = bridge({ ...OFF, problem: 'open_to_others' })
     await draw()
@@ -238,13 +282,81 @@ describe('Settings → Other devices: what it shows', () => {
     expect(text('.remote-message')).toBe('The sharing settings file is private again. Sharing is off, and 1 paired Mac was removed.')
   })
 
-  it('switching on after a changed identity says how many paired Macs it removed', async () => {
-    const api = bridge(OFF)
-    api.turnOn.mockImplementationOnce(async () => { api.set(ON); return { ok: true, voidedCode: false, devicesRemoved: 2, droppedEntries: 0 } })
+  // review round 1, item 8
+  it('asks before switching on removes the paired Macs, and removes them only when told to', async () => {
+    const api = bridge({ ...OFF, devices: [LAPTOP, { id: B, label: 'desk', pairedAt: null }] })
+    refuse(api, 'would_remove_devices', 'file', 2)
     await draw()
     toggle(sw())
     await settle()
-    expect(text('.remote-message')).toBe('Switching on removed 2 paired Macs, because this Mac’s Tailscale name or account changed.')
+    expect(sw()?.checked).toBe(false)
+    expect(status()).toBe('Needs you: this Mac’s Tailscale name or account changed')
+    expect(instruction()).toBe('This Mac’s Tailscale name or account is not the one these Macs were paired under. Switching on removes the 2 paired Macs; pair them again afterwards.')
+    click(button('Switch on and remove them'))
+    await settle()
+    expect(api.turnOnRemovingDevices).toHaveBeenCalledOnce()
+    expect(status()).toBe(`On, at https://${HOST}`)
+    expect(text('.remote-message')).toBe('Switching on removed 2 paired Macs. Pair them again with Add a Mac.')
+  })
+
+  it('Cancel leaves sharing off and the paired Macs as they are', async () => {
+    const api = bridge({ ...OFF, devices: [LAPTOP] })
+    refuse(api, 'would_remove_devices', 'file', 1)
+    await draw()
+    toggle(sw())
+    await settle()
+    expect(instruction()).toBe('This Mac’s Tailscale name or account is not the one this Mac was paired under. Switching on removes the paired Mac; pair it again afterwards.')
+    click(button('Cancel'))
+    await settle()
+    expect(api.turnOnRemovingDevices).not.toHaveBeenCalled()
+    expect($('.remote-instruction')).toBeNull()
+    expect(status()).toBe('Off')
+    expect(text('.remote-device-label')).toBe('laptop')
+  })
+
+  // review round 1, item 4: what is drawn comes from get() alone
+  it('a refusal goes when main says so: after making the file private, one sentence and no second button', async () => {
+    const api = bridge({ ...OFF, problem: 'open_to_others' })
+    refuse(api, 'open_to_others', 'file')
+    api.repairPermissions.mockImplementationOnce(async () => { api.set({ ...OFF }); return { ok: true, voidedCode: false, devicesRemoved: 1 } })
+    await draw()
+    toggle(sw())
+    await settle()
+    click(button('Make it private'))
+    await settle()
+    expect(status()).toBe('Off')
+    expect(button('Make it private')).toBeNull()
+    expect($('.remote-instruction')).toBeNull()
+    expect(text('.remote-message')).toBe('The sharing settings file is private again. Sharing is off, and 1 paired Mac was removed.')
+  })
+
+  it('a refusal main dropped because the file changed is not drawn: the newer problem is', async () => {
+    const api = bridge(OFF)
+    refuse(api, 'no_handler', 'serve')
+    await draw()
+    toggle(sw())
+    await settle()
+    expect(instruction()).toBe('Run this once in Terminal on this Mac, then switch on again:')
+    api.set({ ...OFF, problem: 'open_to_others' })
+    api.ping()
+    await settle()
+    expect(status()).toBe('Needs you: other accounts on this Mac can read the sharing settings')
+    expect(instruction()).toMatch(/^Other accounts on this Mac can read/)
+    expect(document.querySelectorAll('#remote-settings .remote-instruction')).toHaveLength(1)
+  })
+
+  // review round 1, item 3
+  it('a port another program holds: needs you, what to do, and Test says the same', async () => {
+    const api = bridge({ ...ON, listening: false, listenError: 'port_in_use' })
+    api.test.mockResolvedValueOnce({ ok: false, reason: 'port_in_use', rose: null })
+    await draw()
+    expect(status()).toBe('Needs you: another program on this Mac is using port 4320')
+    expect(sw()?.checked).toBe(true)
+    expect(instruction()).toBe('Quit that program, or switch sharing off. Until then Tailscale forwards your other Macs to it.')
+    expect(button('Add a Mac')?.disabled).toBe(true)
+    click(button('Test'))
+    await settle()
+    expect(text('.remote-test-result')).toBe('Another program on this Mac is using port 4320. Quit that program, or switch sharing off. Until then Tailscale forwards your other Macs to it.')
   })
 })
 
@@ -272,7 +384,7 @@ describe('while the Inbox is starting to answer', () => {
     api.test.mockResolvedValueOnce({ ok: false, reason: 'no_backend', rose: null })
     click(button('Test'))
     await settle()
-    expect(text('.remote-test-result')).toBe('Tailscale is forwarding, but this Inbox isn’t answering yet. Switch sharing off and on again.')
+    expect(text('.remote-test-result')).toBe('Tailscale is forwarding, but this Inbox isn’t answering.')
     let finish!: (value: View) => void
     api.test.mockImplementationOnce(() => new Promise<View>((resolve) => { finish = resolve }))
     click(button('Test'))
@@ -357,7 +469,7 @@ describe('paired Macs', () => {
   it('counts the entries that can\'t be read, and Clear drops them', async () => {
     const api = bridge({ ...ON, devices: [LAPTOP], unreadableDevices: 2 })
     await draw()
-    expect(text('.remote-unreadable span')).toBe('2 entries that can’t be read')
+    expect(text('.remote-unreadable span')).toBe('2 paired Macs that can’t be read (they can no longer connect)')
     click(button('Clear'))
     await settle()
     expect(api.clearUnreadable).toHaveBeenCalledOnce()
@@ -365,7 +477,7 @@ describe('paired Macs', () => {
     api.set({ ...ON, unreadableDevices: 1 })
     api.ping()
     await settle()
-    expect(text('.remote-unreadable span')).toBe('1 entry that can’t be read')
+    expect(text('.remote-unreadable span')).toBe('1 paired Mac that can’t be read (it can no longer connect)')
   })
 })
 
@@ -445,18 +557,29 @@ describe('Add a Mac', () => {
 })
 
 describe('changed outside Agent Inbox', () => {
-  const FLAGGED: View = { ...ON, flag: true, digest: D1, devices: [LAPTOP, { id: B, label: 'stranger', pairedAt: null }] }
+  const NONE = {
+    unknown: false, missing: false, unreadable: false, switched: null, address: false, account: false, port: false,
+    added: [], removed: [], keyChanged: [], unreadableAdded: 0, unreadableRemoved: 0,
+  }
+  const FLAGGED: View = {
+    ...ON, flag: true, digest: D1, devices: [LAPTOP, { id: B, label: 'stranger', pairedAt: null }], changes: { ...NONE, added: ['stranger'] },
+  }
+  const lines = () => [...$('.remote-flag')!.querySelectorAll('p, li')].map((el) => el.textContent)
+  const END = 'If you didn’t make this change, switch sharing off and remove the paired Macs.'
 
-  it('is at the very top, says what the settings are now, and Looks right accepts exactly what is shown', async () => {
+  it('is at the very top, says what changed and how it is now, and Looks right accepts exactly what is shown', async () => {
     const api = bridge(FLAGGED)
     await draw()
     const section = document.getElementById('remote-settings')!
     expect(section.children[1]?.classList.contains('remote-flag')).toBe(true)
     expect($('.remote-flag')?.getAttribute('role')).toBe('alert')
-    expect([...$('.remote-flag')!.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
+    expect(lines()).toEqual([
       'The sharing settings were changed outside Agent Inbox.',
-      `Sharing is now on, at https://${HOST}.`,
+      'Mac added: stranger.',
+      'This is how the settings are now:',
+      `Sharing is on, at https://${HOST}.`,
       'Paired Macs: laptop, stranger.',
+      END,
     ])
     click(button('Looks right'))
     await settle()
@@ -464,18 +587,62 @@ describe('changed outside Agent Inbox', () => {
     expect($('.remote-flag')).toBeNull()
   })
 
-  it('off with no paired Macs, and entries that can\'t be read', async () => {
-    bridge({ ...OFF, flag: true, unreadableDevices: 3 })
+  // review round 1, item 7: a change the old box could not show
+  it('names every kind of change, with labels only', async () => {
+    bridge({
+      ...FLAGGED,
+      changes: {
+        ...NONE, switched: 'on', address: true, account: true, port: true, added: ['desk'], removed: ['old'], keyChanged: ['laptop'], unreadableAdded: 2, unreadableRemoved: 1,
+      },
+    })
     await draw()
-    expect([...$('.remote-flag')!.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
-      'The sharing settings were changed outside Agent Inbox.', 'Sharing is now off.', 'No paired Macs.', '3 entries that can’t be read.',
+    expect([...$('.remote-flag ul')!.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
+      'Sharing was switched on.', 'The address changed.', 'The allowed Tailscale account changed.', 'The port changed.',
+      'Mac added: desk.', 'Mac removed: old.', 'The key of laptop changed.',
+      '2 paired Macs that can’t be read were added.', '1 paired Mac that can’t be read was removed.',
+    ])
+  })
+
+  it('when it can\'t tell what changed (the app was closed), says so and shows how it is now', async () => {
+    bridge({ ...OFF, flag: true, unreadableDevices: 3, changes: { ...NONE, unknown: true } })
+    await draw()
+    expect(lines()).toEqual([
+      'The sharing settings were changed outside Agent Inbox.',
+      'Agent Inbox can’t tell what changed, because it happened while the app was closed. This is how the settings are now:',
+      'Sharing is off.', 'No paired Macs.', '3 paired Macs that can’t be read (they can no longer connect).', END,
+    ])
+    expect(button('Looks right')).not.toBeNull()
+  })
+
+  it('a file it can\'t read: says so, offers no Looks right, and never says "No paired Macs."', async () => {
+    for (const view of [{ ...OFF, flag: true, problem: 'not_json', changes: { ...NONE, unreadable: true } }, { ...OFF, flag: true, problem: 'bad_devices', changes: { ...NONE } }]) {
+      document.body.replaceChildren()
+      bridge(view)
+      await draw()
+      expect(lines()).toEqual([
+        'The sharing settings were changed outside Agent Inbox.',
+        'Agent Inbox can’t read the sharing settings file, so it can’t show what is in it.', END,
+      ])
+      expect(button('Looks right')).toBeNull()
+    }
+  })
+
+  it('a file that was removed', async () => {
+    bridge({ ...OFF, flag: true, changes: { ...NONE, missing: true } })
+    await draw()
+    expect(lines()).toEqual([
+      'The sharing settings were changed outside Agent Inbox.', 'The sharing settings file was removed.',
+      'This is how the settings are now:', 'Sharing is off.', 'No paired Macs.', END,
     ])
   })
 
   it('when it changed again, redraws and says so, and the next Looks right sends the new digest', async () => {
     const api = bridge(FLAGGED)
     api.acknowledge.mockImplementationOnce(async () => {
-      api.set({ ...FLAGGED, digest: D2, devices: [LAPTOP, { id: B, label: 'stranger', pairedAt: null }, { id: 'cccccccccccccccc', label: 'third', pairedAt: null }] })
+      api.set({
+        ...FLAGGED, digest: D2, devices: [LAPTOP, { id: B, label: 'stranger', pairedAt: null }, { id: 'cccccccccccccccc', label: 'third', pairedAt: null }],
+        changes: { ...NONE, added: ['stranger', 'third'] },
+      })
       return { ok: false, reason: 'changed' }
     })
     await draw()
@@ -483,22 +650,159 @@ describe('changed outside Agent Inbox', () => {
     await settle()
     expect(api.acknowledge).toHaveBeenLastCalledWith(D1)
     expect(text('.remote-flag-message')).toBe('It changed again; check the list.')
-    expect(text('.remote-flag p:nth-of-type(3)')).toBe('Paired Macs: laptop, stranger, third.')
+    expect(lines()).toContain('Paired Macs: laptop, stranger, third.')
     click(button('Looks right'))
     await settle()
     expect(api.acknowledge).toHaveBeenLastCalledWith(D2)
   })
 
+  it('"It changed again" goes once the flag goes', async () => {
+    const api = bridge(FLAGGED)
+    api.acknowledge.mockImplementationOnce(async () => { api.set({ ...FLAGGED, digest: D2 }); return { ok: false, reason: 'changed' } })
+    await draw()
+    click(button('Looks right'))
+    await settle()
+    expect(text('.remote-flag-message')).toBe('It changed again; check the list.')
+    api.set({ ...FLAGGED, digest: D2, flag: false, changes: null })
+    api.ping()
+    await settle()
+    api.set({ ...FLAGGED, digest: D2 })
+    api.ping()
+    await settle()
+    expect($('.remote-flag-message')).toBeNull()
+  })
+
   it('a ping between drawing and pressing redraws first: what is acknowledged is what is on screen', async () => {
     const api = bridge(FLAGGED)
     await draw()
-    api.set({ ...FLAGGED, digest: D2, devices: [LAPTOP] })
+    api.set({ ...FLAGGED, digest: D2, devices: [LAPTOP], changes: { ...NONE, keyChanged: ['laptop'] } })
     api.ping()
     await settle()
-    expect(text('.remote-flag p:nth-of-type(3)')).toBe('Paired Macs: laptop.')
+    expect(lines()).toContain('Paired Macs: laptop.')
     click(button('Looks right'))
     await settle()
     expect(api.acknowledge).toHaveBeenCalledWith(D2)
+  })
+})
+
+// review round 1, item 5
+describe('while an operation runs', () => {
+  const controls = () => [...document.querySelectorAll<HTMLButtonElement | HTMLInputElement>('#remote-settings button, #remote-settings input')]
+
+  it.each([
+    ['turnOn', OFF, () => toggle(sw()), 'Switching on…'],
+    ['turnOff', ON, () => toggle(sw()), 'Switching off…'],
+    ['test', ON, () => click(button('Test')), 'Testing…'],
+    ['addDevice', ON, () => click(button('Add a Mac')), 'Making a code…'],
+  ] as const)('%s: every control is disabled and the status says so; the switch shows what the file says', async (op, start, act, words) => {
+    const api = bridge(start)
+    let finish!: (value: View) => void
+    ;(api[op] as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<View>((resolve) => { finish = resolve }))
+    await draw()
+    act()
+    await settle()
+    expect(status()).toBe(words)
+    expect(sw()?.checked).toBe(start.enabled)
+    expect(controls().length).toBeGreaterThan(2)
+    for (const el of controls()) expect(el.disabled, el.textContent || el.id).toBe(true)
+    // a click on the switch now changes nothing
+    toggle(sw())
+    await settle()
+    expect(api.turnOn.mock.calls.length + api.turnOff.mock.calls.length).toBe(op === 'turnOn' || op === 'turnOff' ? 1 : 0)
+    finish(op === 'addDevice' ? { ok: false, reason: 'failed' } : { ok: true })
+    await settle()
+    expect(controls().some((el) => !el.disabled)).toBe(true)
+  })
+
+  it('Removing… while a paired Mac is removed', async () => {
+    const api = bridge({ ...ON, devices: [LAPTOP] })
+    let finish!: (value: View) => void
+    api.removeDevice.mockImplementationOnce(() => new Promise<View>((resolve) => { finish = resolve }))
+    await draw()
+    click($('button[aria-label="Remove laptop"]'))
+    await settle()
+    click(button('Remove', $('.remote-confirm')!))
+    await settle()
+    expect(status()).toBe('Removing…')
+    finish({ ok: true })
+    await settle()
+  })
+
+  it('switching off while switching on is still running: the click is not taken, and the switch shows the file', async () => {
+    const api = bridge(OFF)
+    let finish!: () => void
+    api.turnOn.mockImplementationOnce(() => new Promise<View>((resolve) => { finish = () => { api.set(ON); resolve({ ok: true }) } }))
+    await draw()
+    toggle(sw())
+    await settle()
+    expect(sw()?.checked).toBe(false)
+    toggle(sw())
+    await settle()
+    expect(api.turnOff).not.toHaveBeenCalled()
+    finish()
+    await settle()
+    expect(status()).toBe(`On, at https://${HOST}`)
+    expect(sw()?.checked).toBe(true)
+    expect(sw()?.disabled).toBe(false)
+  })
+})
+
+// review round 1, item 10
+describe('messages last only as long as what they speak of', () => {
+  it('"<label> can now use this Inbox." goes when that Mac is removed', async () => {
+    const api = bridge(ON)
+    await draw()
+    click(button('Add a Mac'))
+    await settle()
+    api.set({ ...ON, devices: [LAPTOP], digest: D2 })
+    api.ping()
+    await settle()
+    expect(text('.remote-add-message')).toBe('laptop can now use this Inbox.')
+    click($('button[aria-label="Remove laptop"]'))
+    await settle()
+    click(button('Remove', $('.remote-confirm')!))
+    await settle()
+    expect($('.remote-add-message')).toBeNull()
+  })
+
+  it('and when sharing goes off', async () => {
+    const api = bridge(ON)
+    await draw()
+    click(button('Add a Mac'))
+    await settle()
+    api.set({ ...ON, devices: [LAPTOP], digest: D2 })
+    api.ping()
+    await settle()
+    toggle(sw())
+    await settle()
+    expect(status()).toBe('Off')
+    expect($('.remote-add-message')).toBeNull()
+  })
+
+  it('and after 2 minutes at the latest, as any other message', async () => {
+    const api = bridge({ ...OFF, problem: 'open_to_others' })
+    await draw()
+    click(button('Make it private'))
+    await settle()
+    expect($('.remote-message')).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(119_000)
+    expect($('.remote-message')).not.toBeNull()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect($('.remote-message')).toBeNull()
+    void api
+  })
+
+  it('a failure line goes at the next change', async () => {
+    const api = bridge(ON)
+    api.turnOff.mockResolvedValueOnce({ ok: false, reason: 'write_failed' })
+    await draw()
+    toggle(sw())
+    await settle()
+    expect(text('.remote-message')).toBe('Agent Inbox couldn’t save its sharing settings file. Try again.')
+    api.set({ ...ON, digest: D2 })
+    api.ping()
+    await settle()
+    expect($('.remote-message')).toBeNull()
   })
 })
 
@@ -539,7 +843,7 @@ describe('Test, the removal command, open at login and the saved record', () => 
     expect(api.setOpenAtLogin).toHaveBeenCalledWith(true)
     expect($<HTMLInputElement>('#remote-login')?.checked).toBe(true)
     document.body.replaceChildren()
-    bridge({ ...OFF, loginItem: { available: false, openAtLogin: false } })
+    bridge({ ...OFF, loginItem: { available: false, openAtLogin: false, needsApproval: false } })
     await draw()
     expect($('#remote-login')).toBeNull()
     expect($('.remote-login-hint')).toBeNull()
@@ -548,7 +852,18 @@ describe('Test, the removal command, open at login and the saved record', () => 
   it('says when its record of these settings could not be saved', async () => {
     bridge({ ...ON, stateSaved: false })
     await draw()
-    expect(text('.remote-not-saved')).toBe('Agent Inbox could not save its record of these settings; the next start will ask you to review them.')
+    expect(text('.remote-not-saved')).toBe('Agent Inbox couldn’t save its record of these settings; the next start will ask you to review them.')
+  })
+
+  // review round 1, item 12
+  it('says when macOS wants the login item allowed', async () => {
+    bridge({ ...OFF, loginItem: { available: true, openAtLogin: true, needsApproval: true } })
+    await draw()
+    expect(text('.remote-login-approval')).toBe('Allow Agent Inbox in System Settings → General → Login Items.')
+    document.body.replaceChildren()
+    bridge({ ...OFF, loginItem: { available: true, openAtLogin: true, needsApproval: false } })
+    await draw()
+    expect($('.remote-login-approval')).toBeNull()
   })
 })
 
@@ -557,7 +872,7 @@ describe('when it is not available', () => {
     const api = bridge(OFF)
     api.get.mockResolvedValue({ available: false, reason: 'unowned' })
     await draw()
-    expect(text('.remote-unavailable')).toBe('Quit and reopen Agent Inbox to change this.')
+    expect(text('.remote-unavailable')).toBe('Another Agent Inbox viewer is running on this Mac, so this window can’t change sharing. Quit it, then reopen Agent Inbox.')
     expect(sw()).toBeNull()
     expect($('.remote-risk')).toBeNull()
   })
@@ -579,16 +894,20 @@ describe('when it is not available', () => {
 
 describe('safety and keyboard', () => {
   it('every string is text: a label holding markup stays text', async () => {
-    bridge({ ...ON, flag: true, devices: [{ id: A, label: '<img src=x onerror=alert(1)>', pairedAt: null }] })
+    const label = '<img src=x onerror=alert(1)>'
+    bridge({ ...ON, flag: true, devices: [{ id: A, label, pairedAt: null }], changes: { ...NONE_CHANGES, added: [label], keyChanged: [label] } })
     await draw()
     expect(document.querySelector('#remote-settings img')).toBeNull()
-    expect(text('.remote-device-label')).toBe('<img src=x onerror=alert(1)>')
-    expect(text('.remote-flag p:nth-of-type(3)')).toBe('Paired Macs: <img src=x onerror=alert(1)>.')
+    expect(text('.remote-device-label')).toBe(label)
+    const flagText = [...$('.remote-flag')!.querySelectorAll('p, li')].map((el) => el.textContent)
+    expect(flagText).toContain(`Paired Macs: ${label}.`)
+    expect(flagText).toContain(`Mac added: ${label}.`)
+    expect(flagText).toContain(`The key of ${label} changed.`)
     expect($('button[aria-label="Remove <img src=x onerror=alert(1)>"]')).not.toBeNull()
   })
 
   it('every control is a real button or checkbox with a name, in reading order', async () => {
-    bridge({ ...ON, flag: true, devices: [LAPTOP], unreadableDevices: 1, removalHint: null, problem: null })
+    bridge({ ...ON, flag: true, devices: [LAPTOP], unreadableDevices: 1, removalHint: null, problem: null, changes: { ...NONE_CHANGES, unknown: true } })
     await draw()
     const controls = [...document.querySelectorAll<HTMLElement>('#remote-settings button, #remote-settings input, #remote-settings [tabindex]')]
     const name = (el: HTMLElement) => el.getAttribute('aria-label') ?? (el instanceof HTMLInputElement ? document.querySelector(`label[for="${el.id}"]`)?.textContent : el.textContent)
@@ -635,6 +954,8 @@ describe('in the app', () => {
     click(document.getElementById('gear'))
     await settle()
     expect(api.get.mock.calls.length).toBeGreaterThan(calls)
+    // review round 1, item 6: and main reads Serve again for the removal hint
+    expect(api.recheck).toHaveBeenCalled()
   })
 
   it('is not drawn in a browser', async () => {

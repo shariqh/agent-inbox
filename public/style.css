@@ -1583,6 +1583,8 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .remote-add, .remote-test, .remote-removal, .remote-login { margin: var(--sp-3) 0 0; }
 .remote-settings .remote-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--fs-lane); letter-spacing: .2em; }
 .remote-add-message, .remote-message { color: var(--app-text-soft); }
+.remote-flag-facts { margin: var(--sp-1) 0; padding-left: var(--sp-4); font-size: var(--fs-body); }
+.remote-login-approval { color: var(--app-warning); }
 .theme-picker fieldset {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -13,8 +13,9 @@
 //   a code's id or a raw Tailscale answer: the controller's `view.logins` and `state().self` stay
 //   here. The pairing code itself does cross, because the owner must read it off the screen; it is
 //   never logged or kept.
-// - createRemoteNotifier: the native notifications, at most one of each kind in 10 minutes; the
-//   words come from public/remote-words.js, the table the panel uses.
+// - createRemoteNotifier: the native notifications, worded from public/remote-words.js, the table
+//   the panel uses; an identical one is quieted for 10 minutes, and a pause at app start is held for
+//   2 minutes.
 // - loginItemFor: Open Agent Inbox at login, the packaged app on macOS only. A checkout build never
 //   reads or sets it: a development binary must never become a login item.
 // - stopRemoteEntry: stop() then settled(), waited for at most 5 seconds, on quit.
@@ -32,6 +33,10 @@ const CHANNELS = Object.freeze({
   test: 'agent-inbox:remote-entry-test',
   addDevice: 'agent-inbox:remote-entry-add-device',
   setOpenAtLogin: 'agent-inbox:remote-entry-open-at-login',
+  // review round 1, item 8: switching on that removes the paired Macs, after the owner agreed
+  turnOnRemovingDevices: 'agent-inbox:remote-entry-turn-on-remove-devices',
+  // review round 1, item 6: Settings opened, so the removal hint is read again
+  recheck: 'agent-inbox:remote-entry-recheck',
 })
 // main → page: a bare ping, after which the page asks get() again
 const CHANGED = 'agent-inbox:remote-entry-changed'
@@ -39,6 +44,8 @@ const CHANGED = 'agent-inbox:remote-entry-changed'
 const DEVICE_ID = /^[0-9a-f]{16}$/
 const DIGEST = /^[0-9a-f]{64}$/
 const QUIET_MS = 10 * 60_000
+// at app start, a pause is held this long: one that resumes within it notifies nothing
+const START_GRACE_MS = 2 * 60_000
 const QUIT_WAIT_MS = 5_000
 const WATCH_EVERY_MS = 5_000
 
@@ -50,7 +57,7 @@ const isObject = (value) => value !== null && typeof value === 'object' && !Arra
 // each channel's arguments, checked again here whatever the preload sent
 const ARGUMENTS = Object.freeze({
   get: [], turnOn: [], turnOff: [], removeDevice: [isDeviceId], clearUnreadable: [], repairPermissions: [],
-  acknowledge: [isDigest], test: [], addDevice: [], setOpenAtLogin: [isBoolean],
+  acknowledge: [isDigest], test: [], addDevice: [], setOpenAtLogin: [isBoolean], turnOnRemovingDevices: [], recheck: [],
 })
 
 const UNAVAILABLE = Object.freeze({ available: false })
@@ -80,6 +87,29 @@ function registerRemoteEntryIpc({ ipcMain, platform, panel, settled, isTrusted, 
 // ── what the panel draws ───────────────────────────────────────────────────
 
 const word = (value) => (typeof value === 'string' ? value : null)
+const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null)
+const LISTEN_ERRORS = new Set(['port_in_use', 'cannot_listen'])
+const labels = (value) => (Array.isArray(value) ? value.filter((label) => typeof label === 'string') : [])
+
+/** review()'s facts, rebuilt: labels, booleans and counts only. */
+function changesOf(value) {
+  if (!isObject(value)) return null
+  return {
+    unknown: value.unknown === true, missing: value.missing === true, unreadable: value.unreadable === true,
+    switched: value.switched === 'on' || value.switched === 'off' ? value.switched : null,
+    address: value.address === true, account: value.account === true, port: value.port === true,
+    added: labels(value.added), removed: labels(value.removed), keyChanged: labels(value.keyChanged),
+    unreadableAdded: count(value.unreadableAdded) ?? 0, unreadableRemoved: count(value.unreadableRemoved) ?? 0,
+  }
+}
+
+/** The pause's word, refined to what Tailscale said when that is what it waits on (signed out, not installed). */
+function waitingOf(resume, self) {
+  if (resume.waiting === 'tailscale_unreadable' && isObject(self) && self.ok === false && typeof self.reason === 'string') {
+    return `self_not_ok:${self.reason}`
+  }
+  return resume.waiting
+}
 
 /** The controller's answer to an operation, cut to `ok`, a reason word and the named fields. */
 function answer(result, fields = []) {
@@ -88,6 +118,7 @@ function answer(result, fields = []) {
     const out = { ok: false, reason: word(result.reason) ?? 'failed' }
     if (typeof result.step === 'string') out.step = result.step
     if ('rose' in result) out.rose = word(result.rose)
+    if (count(result.devices) !== null) out.devices = result.devices
     return out
   }
   const out = { ok: true }
@@ -98,6 +129,9 @@ function answer(result, fields = []) {
 function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now = Date.now }) {
   // when the owner last switched sharing on or off here: a stop before it is history, not news
   let switchedAt = -Infinity
+  // the last refused switch-on (review round 1, item 4): kept here, not on the page, and gone once
+  // a later operation works or what get() shows changes; `key` is that state, from the next get()
+  let refusal = null
   const ping = () => {
     try {
       changed()
@@ -105,28 +139,37 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
       // a page that is gone changes nothing
     }
   }
-  const run = async (call, fields, { owner = false } = {}) => {
+  const run = async (call, fields, { owner = false, switchOn = false } = {}) => {
     if (owner) switchedAt = now()
+    let result
     try {
-      return answer(await call(), fields)
+      result = answer(await call(), fields)
     } catch {
-      return { ok: false, reason: 'failed' }
-    } finally {
-      ping()
+      result = { ok: false, reason: 'failed' }
     }
+    if (result.ok) refusal = null
+    else if (switchOn) refusal = { reason: result.reason, step: result.step ?? null, devices: result.devices ?? null, at: now(), key: null }
+    ping()
+    return result
   }
 
   async function get() {
     // one status read first, so `listening` is fresh (and the viewer reconciles its listener now);
     // only the boolean the controller keeps from it is used
+    let read = false
     try {
-      await controller.entryStatus()
+      read = (await controller.entryStatus())?.ok === true
     } catch {
-      // the controller keeps not listening
+      // unknown reads as not listening
     }
     const review = await controller.review()
     const state = await controller.state()
     const view = review.view
+    const key = `${review.digest}|${view.problem}|${view.enabled === true}`
+    if (refusal !== null) {
+      if (refusal.key === null) refusal.key = key
+      else if (refusal.key !== key) refusal = null
+    }
     const stopped = isObject(state.stopped) && state.stopped.at > switchedAt ? state.stopped : null
     const serve = isObject(state.serve) && isObject(state.serve.answer) ? state.serve.answer : null
     return {
@@ -141,20 +184,33 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
       digest: word(review.digest),
       wanted: state.wanted === true,
       stopped: stopped && { reason: stopped.reason, willResume: stopped.willResume === true },
-      resume: isObject(state.resume) ? { waiting: state.resume.waiting, nextAt: state.resume.nextAt } : null,
+      resume: isObject(state.resume) ? { waiting: waitingOf(state.resume, state.self), nextAt: state.resume.nextAt } : null,
       needsOwner: state.needsOwner === 'identity_changed' ? 'identity_changed' : null,
       stateSaved: typeof state.stateSaved === 'boolean' ? state.stateSaved : null,
       serve: serve && (serve.ok === true ? { ok: true } : { ok: false, reason: word(serve.reason) }),
       removalHint: word(state.removalHint),
       command: `tailscale serve --bg ${controller.port}`,
       loginItem: loginItem.read(),
-      listening: state.listening === true,
+      listening: read && state.listening === true,
+      listenError: read && LISTEN_ERRORS.has(state.listenError) ? state.listenError : null,
+      changes: review.flag === true ? changesOf(review.changes) : null,
+      refusal: refusal && { reason: refusal.reason, step: refusal.step, devices: refusal.devices, at: refusal.at },
     }
   }
 
   return Object.freeze({
     get,
-    turnOn: () => run(() => controller.turnOn(), ['voidedCode', 'devicesRemoved', 'droppedEntries', 'listening'], { owner: true }),
+    turnOn: () => run(() => controller.turnOn(), ['voidedCode', 'devicesRemoved', 'droppedEntries', 'listening'], { owner: true, switchOn: true }),
+    turnOnRemovingDevices: () => run(() => controller.turnOn({ removeDevices: true }), ['voidedCode', 'devicesRemoved', 'droppedEntries', 'listening'], { owner: true, switchOn: true }),
+    async recheck() {
+      try {
+        await controller.recheckHint()
+      } catch {
+        // the hint stays as it was read
+      }
+      ping()
+      return { ok: true }
+    },
     turnOff: () => run(() => controller.turnOff(), ['voidedCode'], { owner: true }),
     removeDevice: (id) => run(() => controller.removeDevice(id), ['voidedCode']),
     clearUnreadable: () => run(() => controller.clearUnreadable(), ['voidedCode', 'removed']),
@@ -169,50 +225,102 @@ function createRemoteEntryPanel({ controller, loginItem, changed = () => {}, now
 // ── notifications ──────────────────────────────────────────────────────────
 
 const TITLES = Object.freeze({
-  paused: 'Agent Inbox paused sharing with your other devices',
-  stopped: 'Agent Inbox stopped sharing with your other devices',
-  resumed: 'Agent Inbox is sharing with your other devices again.',
+  paused: 'Agent Inbox paused sharing with your other Macs',
+  stopped: 'Agent Inbox stopped sharing with your other Macs',
+  resumed: 'Agent Inbox is sharing with your other Macs again',
+  paired: 'A Mac was paired',
   outside: 'Agent Inbox’s sharing settings were changed outside the app',
 })
+const SEE = 'Open Settings → Other devices to see what to do.'
 
 /**
- * The controller's four callbacks as notifications. `show({ title, body })` puts one up (as plain
- * text: a label is text a device chose); `words` is public/remote-words.js, or a promise of it.
- * Each kind shows at most once in 10 minutes; every call, shown or not, pings the panel.
+ * The controller's four callbacks as notifications (review round 1, items 1, 2 and 13). `show({
+ * title, body })` puts one up as plain text (a label is text a device chose); `words` is
+ * public/remote-words.js, or a promise of it: a pause or a stop is worded from the same family the
+ * panel shows. Every call pings the panel. A pause, a stop or a resume is quieted only when it is
+ * the same kind and reason as the last one shown, under 10 minutes ago; a pairing and an outside
+ * change never are (the controller calls onOutsideChange once per flagged state). For 2 minutes
+ * after started(), a pause is held: one that resumes within 2 minutes notifies nothing, and one
+ * still standing then is notified.
  */
-function createRemoteNotifier({ show, words, changed = () => {}, now = Date.now }) {
-  const last = new Map()
-  const notify = (kind, text) => {
+function createRemoteNotifier({
+  show, words, changed = () => {}, now = Date.now, setTimeout: setTimeoutFn = setTimeout, clearTimeout: clearTimeoutFn = clearTimeout,
+}) {
+  let last = null
+  let startedAt = null
+  let held = null
+  const ping = () => {
     try {
       changed()
     } catch {
       // nothing to update
     }
-    const t = now()
-    const at = last.get(kind)
-    if (at !== undefined && t >= at && t - at < QUIET_MS) return
-    last.set(kind, t)
+  }
+  const put = (text) => {
     Promise.resolve(words).then((loaded) => {
       const { title, body } = text(loaded)
       show({ title, body })
     }).catch(() => {})
   }
+  const release = () => {
+    if (held === null) return
+    try {
+      clearTimeoutFn(held)
+    } catch {
+      // the timer fires into nothing
+    }
+    held = null
+  }
+  // the family's reason, as the panel's status line has it
+  const whyOf = (loaded, reason) => loaded.familyWords(loaded.reasonFamily('stop', reason)).why
+  const sharing = (kind, reason, text) => {
+    const t = now()
+    if (last && last.kind === kind && last.reason === reason && t >= last.at && t - last.at < QUIET_MS) return
+    last = { kind, reason, at: t }
+    put(text)
+  }
+  const paused = (reason) => sharing('paused', reason, (loaded) => ({ title: TITLES.paused, body: `Paused: ${whyOf(loaded, reason)}. ${SEE}` }))
   return Object.freeze({
+    /** The app started: pauses in the next 2 minutes are held. */
+    started() {
+      startedAt = now()
+    },
     onStopped(reason, detail) {
+      ping()
+      release()
       if (detail?.willResume === true) {
-        notify('paused', () => ({ title: TITLES.paused, body: 'It comes back by itself when Tailscale is ready.' }))
-      } else {
-        notify('stopped', (loaded) => ({ title: TITLES.stopped, body: loaded.stopNotice(reason) }))
+        if (startedAt !== null && now() - startedAt < START_GRACE_MS) {
+          held = setTimeoutFn(() => {
+            held = null
+            paused(reason)
+          }, START_GRACE_MS)
+          held?.unref?.()
+          return
+        }
+        paused(reason)
+        return
       }
+      sharing('stopped', reason, (loaded) => {
+        const why = whyOf(loaded, reason)
+        return { title: TITLES.stopped, body: `${why[0].toUpperCase()}${why.slice(1)}. ${SEE}` }
+      })
     },
     onResumed() {
-      notify('resumed', () => ({ title: TITLES.resumed, body: '' }))
+      ping()
+      // a pause at start that came back on its own: nothing at all
+      if (held !== null) {
+        release()
+        return
+      }
+      sharing('resumed', null, () => ({ title: TITLES.resumed, body: '' }))
     },
     onPaired(label) {
-      notify('paired', () => ({ title: `${String(label)} can now use this Inbox.`, body: '' }))
+      ping()
+      put(() => ({ title: TITLES.paired, body: `${String(label)} can now use this Inbox.` }))
     },
     onOutsideChange() {
-      notify('outside', () => ({ title: TITLES.outside, body: 'Open Settings to review.' }))
+      ping()
+      put(() => ({ title: TITLES.outside, body: 'Open Settings → Other devices to review.' }))
     },
   })
 }
@@ -222,11 +330,13 @@ function createRemoteNotifier({ show, words, changed = () => {}, now = Date.now 
 function loginItemFor({ app, platform }) {
   const available = platform === 'darwin' && app.isPackaged === true
   const read = () => {
-    if (!available) return { available: false, openAtLogin: false }
+    if (!available) return { available: false, openAtLogin: false, needsApproval: false }
     try {
-      return { available: true, openAtLogin: app.getLoginItemSettings().openAtLogin === true }
+      const settings = app.getLoginItemSettings()
+      // macOS 13 and later: the item is there, but the person must allow it in System Settings
+      return { available: true, openAtLogin: settings.openAtLogin === true, needsApproval: settings.status === 'requires-approval' }
     } catch {
-      return { available: true, openAtLogin: false }
+      return { available: true, openAtLogin: false, needsApproval: false }
     }
   }
   return Object.freeze({
@@ -268,7 +378,8 @@ function watchRemoteEntry({ panel, changed, setInterval: setIntervalFn = setInte
     if (busy) return
     busy = true
     Promise.resolve().then(() => panel.get()).then((view) => {
-      const text = JSON.stringify(view)
+      // a pause's next try moves every few seconds; the page shows it to the minute
+      const text = JSON.stringify(view, (key, value) => (key === 'nextAt' && typeof value === 'number' ? Math.floor(value / 60_000) : value))
       if (last !== null && text !== last) changed()
       last = text
     }).catch(() => {}).finally(() => {

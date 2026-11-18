@@ -761,8 +761,16 @@ function startRemoteEntry() {
     onOutsideChange: remoteNotifier.onOutsideChange,
   })
   remotePanel = createRemoteEntryPanel({ controller: remoteEntry, loginItem: loginItemFor({ app, platform: process.platform }), changed: remoteEntryChanged })
+  remoteNotifier.started()
   remoteEntry.start()
   remoteWatch = watchRemoteEntry({ panel: remotePanel, changed: remoteEntryChanged })
+  // the removal hint is read again when the window regains focus (Settings opening asks too)
+  const controller = remoteEntry
+  linkWindow?.on('focus', () => {
+    controller.recheckHint().then(remoteEntryChanged, () => {})
+  })
+  // a panel drawn as unowned while the controller was not made yet asks again
+  remoteEntryChanged()
 }
 
 // For before-quit: true when it held this quit to stop the controller first; app.quit() follows.

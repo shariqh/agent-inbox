@@ -69,6 +69,10 @@ const CODE_WAIT_MS = 6_000
 const CODE_WINDOW_MS = 11 * 60_000
 const CODE_LIFE_MS = 10 * 60_000
 const CODES_KEPT = 4
+// #617 PR 2d: after turnOn's write, and before the self test, the viewer's status is read this
+// often, for at most this long, until it listens on this port
+const LISTEN_EVERY_MS = 250
+const LISTEN_WAIT_MS = 6_000
 // resuming: every 5 seconds for 2 minutes after start() or the watch's own stop, then every minute
 const RESUME_FAST_MS = 5_000
 const RESUME_FAST_FOR_MS = 2 * 60_000
@@ -407,6 +411,8 @@ function createRemoteEntry(options = {}) {
   let flaps = 0
   let waiting = null
   let needsOwner = null
+  // whether the viewer's last status said it listens on this port (#617, PR 2d); null before any read
+  let listening = null
   const NO_STATUS = Object.freeze({ ok: false, reason: 'unreachable' })
   const FALLBACK_VIEW = Object.freeze({
     available: false, enabled: false, host: null, port, viewerPort, logins: [], devices: [], unreadableDevices: 0, problem: 'unreadable',
@@ -788,7 +794,9 @@ function createRemoteEntry(options = {}) {
     clearResume()
     setWanted(true, true)
     await queueSave('real', { allowRaise: true })
-    return { ok: true, view: result.view, voidedCode: result.voidedCode, devicesRemoved: removed, droppedEntries: dropped }
+    // answered once the Inbox is really answering on the port, or after 6 seconds: the file is on either way
+    const up = await waitListening()
+    return { ok: true, view: result.view, voidedCode: result.voidedCode, devicesRemoved: removed, droppedEntries: dropped, listening: up }
   }
 
   /** What an owner's operation forgets: any resume in progress, and why it waited. */
@@ -800,12 +808,14 @@ function createRemoteEntry(options = {}) {
   }
 
   /** `enabled: false` and nothing else. Never waits on the state store. */
-  function writeOff() {
-    return write((current) => {
+  async function writeOff() {
+    const result = await write((current) => {
       if (current.state === 'missing') return {}
       if (current.state === 'refused') return { refuse: current.reason }
       return { doc: { ...current.doc, enabled: false }, fallback: knownFields(current.doc) }
     }, { off: true })
+    if (result.ok) nudgeViewer()
+    return result
   }
 
   /** The owner's switch: off, and not wanted, so nothing turns it back on by itself. Never waits on the state store. */
@@ -871,6 +881,7 @@ function createRemoteEntry(options = {}) {
       removed = Array.isArray(again.doc.devices) ? again.doc.devices.length : 0
       return { doc: { ...again.doc, enabled: false, devices: [] } }
     }, { off: true })
+    if (result.ok) nudgeViewer()
     return result.ok ? { ...result, devicesRemoved: removed } : result
   }
 
@@ -940,7 +951,38 @@ function createRemoteEntry(options = {}) {
       return { ok: false, reason: 'bad_shape' }
     }
     const status = checkStatus(body)
+    listening = status !== null && status.on && status.listening && status.port === port
     return status ? { ok: true, status } : { ok: false, reason: 'bad_shape' }
+  }
+
+  /** One status read, recording whether the viewer listens on this port; any failure is not listening. */
+  async function readListening() {
+    try {
+      const status = await entryStatus()
+      if (!status.ok) listening = false
+    } catch {
+      listening = false
+    }
+    return listening === true
+  }
+
+  /** Reads the status every LISTEN_EVERY_MS until the viewer listens, for at most LISTEN_WAIT_MS. Never under the lock. */
+  async function waitListening() {
+    const started = now()
+    // bounded by the count of reads too, so a clock that stands still cannot keep it waiting
+    for (let read = 0; ; read += 1) {
+      if (await readListening()) return true
+      if (read >= LISTEN_WAIT_MS / LISTEN_EVERY_MS || now() - started >= LISTEN_WAIT_MS) return false
+      await sleep(LISTEN_EVERY_MS)
+    }
+  }
+
+  /**
+   * One status read after a write, not waited for: the viewer reconciles its listener when its
+   * status is read (src/viewer-remote.ts), so it opens or closes now instead of at its next poll.
+   */
+  function nudgeViewer() {
+    readListening().catch(() => {})
   }
 
   // Settled on 2026-11-17 (Tailscale 1.102.4, macOS; design §9 item 3): a request the hub makes to
@@ -949,6 +991,8 @@ function createRemoteEntry(options = {}) {
   async function selfTest() {
     const current = await view()
     if (!current.enabled || !current.host) return { ok: false, reason: 'off', rose: null }
+    // Serve answers 502 while nothing listens behind it: that is not a Serve that skips the gate
+    if (!(await waitListening())) return { ok: false, reason: 'not_listening', rose: null }
     const before = await entryStatus()
     if (!before.ok) return { ok: false, reason: 'no_status', rose: null }
     let status = null
@@ -965,6 +1009,7 @@ function createRemoteEntry(options = {}) {
     if (!after.ok) return { ok: false, reason: 'no_status', rose: null }
     const rose = COUNTERS.find((key) => after.status.refused[key] > before.status.refused[key]) ?? null
     if (status === 403 && after.status.refused.device - before.status.refused.device === 1) return { ok: true }
+    if (status === 502 || status === 503 || status === 504) return { ok: false, reason: 'no_backend', rose }
     return { ok: false, reason: status === null ? 'unreachable' : status !== 403 ? 'not_refused' : 'no_device_count', rose }
   }
 
@@ -1069,6 +1114,7 @@ function createRemoteEntry(options = {}) {
     // the owner switched off while it was written: their switch wins, and no resume is announced
     if (intent !== epoch) return 'changed_outside'
     resumedAt = now()
+    nudgeViewer()
     // a new episode, watched at once: the next tick checks Serve and the identity again
     stopped = null
     pendingStop = null
@@ -1215,6 +1261,7 @@ function createRemoteEntry(options = {}) {
       flagDigest: flag ? flagDigest : null,
       stopped: stopped && { ...stopped },
       removalHint: !current.enabled && present ? REMOVAL_HINT : null,
+      listening,
       ...keptFields(current.enabled),
     }
   }
@@ -1296,7 +1343,7 @@ function createRemoteEntry(options = {}) {
       await checkServe(true).catch(() => {})
     }, undefined),
     state: safe(state, () => ({
-      view: { ...FALLBACK_VIEW }, serve: null, self: null, flag, flagDigest: flag ? flagDigest : null, stopped: stopped && { ...stopped }, removalHint: null,
+      view: { ...FALLBACK_VIEW }, serve: null, self: null, flag, flagDigest: flag ? flagDigest : null, stopped: stopped && { ...stopped }, removalHint: null, listening,
       ...keptFields(false),
     })),
     acknowledge: safe(acknowledge, failed),

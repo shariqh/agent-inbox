@@ -65,7 +65,8 @@ export type RemoveResult = { ok: true; view: RemoteView; voidedCode: boolean; dr
 /** clearUnreadable (#617, PR 2d): `removed` is how many entries the reader drops were dropped. */
 export type ClearResult = { ok: true; view: RemoteView; voidedCode: boolean; removed: number } | { ok: false; reason: WriteReason }
 export type TurnOnResult =
-  | { ok: true; view: RemoteView; voidedCode: boolean; devicesRemoved: number; droppedEntries: number }
+  /** `listening` (#617, PR 2d): the viewer said it listens on this port within 6 seconds of the write */
+  | { ok: true; view: RemoteView; voidedCode: boolean; devicesRemoved: number; droppedEntries: number; listening: boolean }
   | { ok: false; reason: WriteReason | SelfReason | ServeReason; step: 'file' | 'self' | 'serve' }
 
 export interface EntryStatus {
@@ -86,7 +87,7 @@ export type CodeResult =
 
 export type SelfTestResult =
   | { ok: true }
-  | { ok: false; reason: 'off' | 'no_status' | 'unreachable' | 'not_refused' | 'no_device_count'; rose: string | null }
+  | { ok: false; reason: 'off' | 'not_listening' | 'no_status' | 'unreachable' | 'no_backend' | 'not_refused' | 'no_device_count'; rose: string | null }
 
 export interface RemoteWatchState {
   view: RemoteView
@@ -98,6 +99,8 @@ export interface RemoteWatchState {
   flagDigest: string | null
   stopped: { reason: StopReason; at: number; off: boolean; willResume: boolean } | null
   removalHint: string | null
+  /** whether the viewer's last status said it listens on this port (#617, PR 2d); null before any read */
+  listening: boolean | null
   /** the owner's intent, kept across restarts (always false with no state store) */
   wanted: boolean
   /** whether the last write to the state store landed; null with no state store */

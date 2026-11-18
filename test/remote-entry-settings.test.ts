@@ -65,11 +65,16 @@ function viewerStub(viewerPort = 4319) {
     codes: [] as Array<() => Response>,
     version: (() => new Response('Forbidden', { status: 403 })) as () => Response,
     calls: [] as Array<{ url: string; init: Record<string, unknown> }>,
+    // #617 PR 2d: holds the status route's answer until it resolves
+    gate: null as Promise<void> | null,
   }
   const fetch = async (url: string, init: Record<string, unknown>): Promise<Response> => {
     v.calls.push({ url, init })
     if (url === `http://127.0.0.1:${viewerPort}/api/remote-entry/code`) return (v.codes.shift() ?? (() => new Response('', { status: 500 })))()
-    if (url === `http://127.0.0.1:${viewerPort}/api/remote-entry`) return Response.json(v.status)
+    if (url === `http://127.0.0.1:${viewerPort}/api/remote-entry`) {
+      if (v.gate) await v.gate
+      return Response.json(v.status)
+    }
     if (url === `https://${HOST}/api/version`) return v.version()
     throw new TypeError('fetch failed')
   }
@@ -659,8 +664,10 @@ describe('requestCode(): a pairing code from the app\'s own viewer', () => {
     expect(await off.c.requestCode()).toEqual({ ok: false, reason: 'off' })
     expect(off.v.calls).toEqual([])
     const noToken = await enabled({ ownerToken: undefined })
+    // turnOn itself read the status (#617, PR 2d); requestCode adds nothing
+    const before = noToken.v.calls.length
     expect(await noToken.c.requestCode()).toEqual({ ok: false, reason: 'no_owner_token' })
-    expect(noToken.v.calls).toEqual([])
+    expect(noToken.v.calls.length).toBe(before)
   })
 
   it('a write after a code says the code was voided', async () => {
@@ -833,6 +840,8 @@ describe('the watch: Serve\'s shape and this node\'s identity while the entry is
       isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') },
       execFile: fakeTailscale({ self: selfStatus(), serve: () => (bad ? {} : goodServe(4320)) }), exists: cliExists,
       now: () => h.clock.now, setInterval: () => 0, clearInterval: () => {}, fetch: async () => new Response('', { status: 500 }),
+      // turnOn waits for a listener this stub never reports (#617, PR 2d): on the test's clock
+      sleep: async (ms: number) => { h.clock.now += ms },
       onStopped: (reason: string) => { h.events.stopped.push(reason) },
     })
     writeSetting(h.dir, setting(4320, []))
@@ -1112,6 +1121,125 @@ describe('selfTest(): a request from the hub to its own Serve address, with no d
     const h = hub()
     expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'off', rose: null })
     expect(h.v.calls).toEqual([])
+  })
+
+  // #617 PR 2d: a Test pressed before the viewer opened the listener met nothing at all
+  it('first waits up to 6 seconds for the viewer to listen, and says so when it does not', async () => {
+    const h = await enabled()
+    ;(h.v.status as ReturnType<typeof statusBody>).listening = false
+    const started = h.clock.now
+    expect(await h.c.selfTest()).toEqual({ ok: false, reason: 'not_listening', rose: null })
+    expect(h.clock.now - started).toBeGreaterThanOrEqual(6_000)
+    expect(h.clock.now - started).toBeLessThan(6_500)
+    expect(h.v.calls.some((call) => call.url.startsWith('https://'))).toBe(false)
+  })
+
+  it('a 502, 503 or 504 means Tailscale reached nothing behind it', async () => {
+    const h = await enabled()
+    for (const status of [502, 503, 504]) {
+      h.v.version = () => new Response('', { status })
+      expect(await h.c.selfTest(), String(status)).toEqual({ ok: false, reason: 'no_backend', rose: null })
+    }
+    for (const status of [200, 401, 500]) {
+      h.v.version = () => new Response('', { status })
+      expect(await h.c.selfTest(), String(status)).toEqual({ ok: false, reason: 'not_refused', rose: null })
+    }
+  })
+})
+
+describe('the controller answers once the Inbox is really answering (#617, PR 2d)', () => {
+  const statusCalls = (h: ReturnType<typeof hub>) => h.v.calls.filter((call) => call.url === 'http://127.0.0.1:4319/api/remote-entry').length
+
+  it('turnOn reads the viewer\'s status every 250 ms until it listens on this port, then says listening', async () => {
+    const h = hub()
+    const body = h.v.status as ReturnType<typeof statusBody>
+    body.listening = false
+    let reads = 0
+    const original = h.v.status
+    h.v.status = new Proxy(original as object, {
+      get(target, key) {
+        if (key === 'listening') {
+          reads += 1
+          return reads >= 4
+        }
+        return Reflect.get(target, key)
+      },
+    })
+    const started = h.clock.now
+    const result = await h.c.turnOn()
+    expect(result).toMatchObject({ ok: true, listening: true })
+    expect(statusCalls(h)).toBe(4)
+    expect(h.clock.now - started).toBe(750)
+    expect((await h.c.state()).listening).toBe(true)
+  })
+
+  it('a listener on another port, or the entry not on, is not listening', async () => {
+    for (const change of [{ port: 4999 }, { on: false }]) {
+      const h = hub()
+      Object.assign(h.v.status as ReturnType<typeof statusBody>, change)
+      const result = await h.c.turnOn()
+      expect(result, JSON.stringify(change)).toMatchObject({ ok: true, listening: false })
+    }
+  })
+
+  it('turnOn gives up after 6 seconds: still ok, since the file is on, but not listening', async () => {
+    const h = hub()
+    ;(h.v.status as ReturnType<typeof statusBody>).listening = false
+    const started = h.clock.now
+    const result = await h.c.turnOn()
+    expect(result).toMatchObject({ ok: true, listening: false })
+    expect(fileJson(h.file).enabled).toBe(true)
+    expect(h.clock.now - started).toBeGreaterThanOrEqual(6_000)
+    expect(h.clock.now - started).toBeLessThan(6_500)
+    expect(statusCalls(h)).toBeLessThanOrEqual(26)
+    expect((await h.c.state()).listening).toBe(false)
+  })
+
+  it('the wait is bounded by its count of reads too: a clock that stands still never keeps turnOn waiting', async () => {
+    const h = hub()
+    ;(h.v.status as ReturnType<typeof statusBody>).listening = false
+    const frozen = createRemoteEntry({
+      isPackaged: true, env: { AGENT_INBOX_DB: join(h.dir, 'inbox.db') }, ownerToken: TOKEN,
+      execFile: fakeTailscale({ self: selfStatus(), serve: goodServe(4320) }), exists: cliExists,
+      fetch: (url: string, init: Record<string, unknown>) => viewerStub().fetch(url, init).then(async (response) => (
+        url.endsWith('/api/remote-entry') ? Response.json({ ...statusBody(), listening: false }) : response)),
+      now: () => START, sleep: async () => {}, setInterval: () => 0, clearInterval: () => {},
+    })
+    const result = await frozen.turnOn()
+    expect(result).toMatchObject({ ok: true, listening: false })
+  })
+
+  it('turnOff reads the status once after its write, so the listener closes now, and does not wait for it', async () => {
+    const h = hub()
+    expect((await h.c.turnOn()).ok).toBe(true)
+    const before = statusCalls(h)
+    let release!: () => void
+    h.v.gate = new Promise<void>((resolve) => { release = resolve })
+    const result = await h.c.turnOff()
+    expect(result.ok).toBe(true)
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect(statusCalls(h)).toBe(before + 1)
+    release()
+  })
+
+  it('the watch\'s own stop reads the status once after its write, without waiting for it', async () => {
+    let bad = false
+    const h = hub({ serve: () => (bad ? { ...goodServe(4320), AllowFunnel: { [`${HOST}:443`]: true } } : goodServe(4320)) })
+    expect((await h.c.turnOn()).ok).toBe(true)
+    h.c.start()
+    await h.c.tick()
+    const before = statusCalls(h)
+    let release!: () => void
+    h.v.gate = new Promise<void>((resolve) => { release = resolve })
+    bad = true
+    h.clock.now += 60_000
+    await h.c.tick()
+    expect(fileJson(h.file).enabled).toBe(false)
+    expect(h.events.stopped).toEqual(['funnel'])
+    // the tick finished while the status read is still held
+    expect(statusCalls(h)).toBe(before + 1)
+    release()
+    h.c.stop()
   })
 })
 

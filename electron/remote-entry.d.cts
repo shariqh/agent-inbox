@@ -98,8 +98,8 @@ export interface RemoteWatchState {
   wanted: boolean
   /** whether the last write to the state store landed; null with no state store */
   stateSaved: boolean | null
-  /** why the watch has not switched the entry back on yet; null when it is not waiting */
-  resume: { waiting: ResumeWaiting } | null
+  /** why the watch has not switched the entry back on yet, and when it tries next (ms); null when it is not waiting */
+  resume: { waiting: ResumeWaiting; nextAt: number | null } | null
   /** set when only the owner's switch can turn the entry on again */
   needsOwner: 'identity_changed' | null
 }
@@ -130,6 +130,10 @@ export interface RemoteEntryController {
   state(): Promise<RemoteWatchState>
   /** accepts the flagged state only when the file still has this digest */
   acknowledge(digest: unknown): Promise<{ ok: true } | { ok: false; reason: 'bad_digest' | 'changed' | 'failed' }>
+  /** one read: the view and the digest of that same file, for the panel's Review (pass `digest` to acknowledge) */
+  review(): Promise<{ view: RemoteView; digest: string | null; flag: boolean }>
+  /** resolves once the state store has every write queued so far (each waited for at most 5 seconds); call it before quitting */
+  settled(): Promise<void>
 }
 
 export function createRemoteEntry(options: {

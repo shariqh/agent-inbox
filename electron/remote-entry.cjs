@@ -22,16 +22,24 @@
 // login) and `entryStatus()` are results for main only and must never be handed to a page. The
 // identity comparison ignores case, as the viewer's gate does.
 //
-// Across restarts (PR 2e), through `options.stateStore` (./remote-entry-state.cjs):
-// - The digest of the state main last wrote or the owner accepted is kept, so a change made while
-//   the app was closed is flagged at the next start. With none kept (first run, or the state file
-//   lost), a file that is on or holds any device entry is flagged. A process that can write
-//   remote.json can write the state file too: this is a tripwire against a silent change, not a
-//   boundary against a local process.
+// Across restarts (PR 2e), through `options.stateStore` (./remote-entry-state.cjs), named for this
+// remote.json and this viewer (the checkout build and the installed app share userData):
+// - The digest of the state main last wrote or the owner accepted is kept: the watched fields
+//   (`enabled`, `host`, `port`, `viewerPort`, `logins`, and each device's id, hash and whether the
+//   reader keeps it; not a label that stays readable, `pairedAt` or an unknown field). A change made
+//   while the app was closed is flagged at the next start. While a change is flagged, and around
+//   every write main makes, the kept digest is PENDING, which no file has, so any start before the
+//   review flags again, even when remote.json alone was put back to an earlier state main wrote.
+//   A process that can write both files defeats this: it is a tripwire against a silent change,
+//   not a boundary against a local process.
 // - `wanted`, the owner's intent, is kept, so an entry the watch switched off comes back by itself
-//   (design §3.5), but only on exactly the file main itself switched off, with no flag, the same
-//   host and login as stored, and Serve ok, all read just then; it writes `enabled: true` and
-//   nothing else, and never takes turnOn's identity-change path.
+//   (design §3.5), but only when the file's watched fields are exactly those main wrote when it
+//   switched off, with no flag, the same host and login as stored, and Serve ok, all read just
+//   then; it writes `enabled: true` and nothing else, and never takes turnOn's identity-change path.
+//   A stop for this node's identity never comes back by itself; one for Serve's shape does (see
+//   stopEntry). A stop soon after a resume backs off, up to 30 minutes.
+// - The owner's turnOff, the watch's stop and the repair never wait on the state store, and no call
+//   to it is waited for longer than STATE_TIMEOUT_MS.
 // Without a state store, none of this happens: the first read after start() is the baseline, and
 // an entry the watch switched off stays off until the owner switches it on.
 const fsp = require('node:fs/promises')
@@ -41,7 +49,7 @@ const os = require('node:os')
 const crypto = require('node:crypto')
 const { createLockedFile } = require('./update-preferences.cjs')
 const { viewerPort: viewerPortFor } = require('./reuse.cjs')
-const { storedState } = require('./remote-entry-state.cjs')
+const { PENDING, fileId, storedState } = require('./remote-entry-state.cjs')
 const {
   REMOVAL_HINT, TAILSCALE_ARGS, TAILSCALE_PATHS, isObject, parseServeStatus, parseTailnetSelf, plainText, runTailscale, tailscaleCli, validHost,
 } = require('./remote-tailscale.cjs')
@@ -62,6 +70,11 @@ const CODES_KEPT = 4
 const RESUME_FAST_MS = 5_000
 const RESUME_FAST_FOR_MS = 2 * 60_000
 const RESUME_SLOW_MS = 60_000
+// a stop within 10 minutes of a resume doubles the wait before the next: 1, 2, 4, 8, 16, then 30 minutes
+const FLAP_WINDOW_MS = 10 * 60_000
+const BACKOFF_MAX_MS = 30 * 60_000
+// the longest any call to the state store is waited for
+const STATE_TIMEOUT_MS = 5_000
 const PACKAGED_PORT = 4320
 const CHECKOUT_PORT = 4393
 
@@ -353,18 +366,26 @@ function createRemoteEntry(options = {}) {
   let ticking = null
   // kept across restarts through the state store (PR 2e); none of it is used without one
   const stateStore = options.stateStore ?? null
-  let loaded = null
-  let keptDigest = null // the digest the store holds, or is about to
+  // what the kept state is for: this remote.json and this viewer (the other build shares userData)
+  const stateFor = { file: fileId(file), viewerPort }
+  let loading = null // the first read of the store: never rejects, settles within STATE_TIMEOUT_MS
+  let loadDone = false
+  let firstSeen = null // the file as first seen, when main wrote before the kept state was read
+  let keptDigest = null // the digest of the state main last wrote or accepted
   let wanted = false // the owner's intent
-  let stateSaved = stateStore ? true : null
+  let ownerSetWanted = false
+  let stateSaved = null
   let stateDirty = false
   let saving = Promise.resolve()
   // rises with each of the owner's own operations, so a resume checked before one never writes after it
   let intent = 0
+  // rises with each start() and stop(), so a resume checked in one run of the watch never writes in another
+  let runs = 0
   let startedAt = null
   let resumeAt = null
   let fastUntil = 0
   let resumedAt = null
+  let flaps = 0
   let waiting = null
   let needsOwner = null
   const NO_STATUS = Object.freeze({ ok: false, reason: 'unreachable' })
@@ -418,57 +439,96 @@ function createRemoteEntry(options = {}) {
     recorded = { state, digest: digestOf(state) }
   }
 
-  /** Reads the kept state once; a store that fails to read, or answers anything else, is none kept. */
-  function loadState() {
-    if (loaded === null) {
-      loaded = (async () => {
-        if (!stateStore) return
-        let stored = null
+  /** A store call, never longer than STATE_TIMEOUT_MS: a call that takes longer counts as failed. */
+  function bounded(callStore) {
+    return new Promise((resolve, reject) => {
+      let guard = null
+      const done = (settle) => (value) => {
         try {
-          stored = storedState(await stateStore.read())
+          if (guard !== null) deps.clearTimeout(guard)
         } catch {
-          stored = null
+          // the guard fires into a settled promise, which changes nothing
         }
-        if (stored) {
-          keptDigest = stored.digest
-          wanted = stored.wanted
-        }
-      })()
-    }
-    return loaded
+        settle(value)
+      }
+      try {
+        guard = deps.setTimeout(() => reject(new Error('state store timed out')), STATE_TIMEOUT_MS)
+        guard?.unref?.()
+      } catch {
+        guard = null
+      }
+      Promise.resolve().then(callStore).then(done(resolve), done(reject))
+    })
   }
 
   /**
-   * Writes the kept state when it changed. A store that fails never fails the operation that
-   * triggered it: state() says `stateSaved: false`, and the next start asks for a review.
+   * Reads the kept state once. A store that fails to read, times out or answers anything else, and a
+   * state kept for another remote.json or viewer, is none kept.
    */
-  async function saveState() {
-    if (!stateStore) return
-    if (stateDirty) {
-      stateDirty = false
-      const next = { digest: keptDigest, wanted }
-      saving = saving.then(async () => {
+  function loadState() {
+    if (loading === null) {
+      if (!stateStore) {
+        loadDone = true
+        loading = Promise.resolve()
+        return loading
+      }
+      loading = (async () => {
+        let stored = null
         try {
-          await stateStore.write(next)
+          stored = storedState(await bounded(() => stateStore.read()))
           stateSaved = true
         } catch {
           stateSaved = false
         }
-      })
+        if (stored && (stored.file !== stateFor.file || stored.viewerPort !== stateFor.viewerPort)) stored = null
+        keptDigest = stored ? stored.digest : null
+        if (stored && !ownerSetWanted) wanted = stored.wanted
+        loadDone = true
+        if (firstSeen !== null) judgeFirstSeen()
+      })()
     }
-    await saving
+    return loading
   }
 
-  /** A state main wrote or accepted becomes the kept baseline, unless a change is flagged: that stays until acknowledged. */
+  /**
+   * Queues one write of the kept state, after the read. While a change is flagged, while no digest
+   * is kept, and for `kind: 'pending'` (before main writes remote.json), it writes PENDING, which no
+   * file has: any start before the review, a crash mid-write or a failed later save, flags. `wanted`
+   * is the owner's intent, or what an operation will leave; only the owner's turnOn may raise it
+   * (`allowRaise`), and a store that refuses to raise it is followed. A store that fails or takes
+   * longer than STATE_TIMEOUT_MS never fails the operation: `stateSaved` says so.
+   */
+  function queueSave(kind = 'real', { allowRaise = false, leaving } = {}) {
+    if (!stateStore) return Promise.resolve()
+    stateDirty = false
+    saving = saving.then(async () => {
+      await loadState()
+      const real = kind === 'real' && !flag && recorded !== null && keptDigest !== null && keptDigest !== PENDING
+      const next = { digest: real ? keptDigest : PENDING, wanted: leaving ?? wanted, ...stateFor }
+      try {
+        const answer = await bounded(() => stateStore.write(next, { allowRaise }))
+        stateSaved = true
+        // another copy switched it off since: follow the store, never the stale copy
+        if (next.wanted && isObject(answer) && answer.wanted === false) wanted = false
+      } catch {
+        stateSaved = false
+      }
+    })
+    return saving
+  }
+
+  /** Main wrote or accepted this state: it is the kept baseline, and while a change is flagged, the one Review accepts. */
   function keep(digest) {
-    if (!stateStore || flag) return
+    if (flag) flagDigest = digest
+    if (!stateStore) return
     keptDigest = digest
     stateDirty = true
   }
 
-  function setWanted(value) {
+  function setWanted(value, byOwner = false) {
     if (!stateStore) return
     wanted = value
+    if (byOwner) ownerSetWanted = true
     stateDirty = true
   }
 
@@ -480,11 +540,20 @@ function createRemoteEntry(options = {}) {
     return enabled !== true && (devices === undefined || (Array.isArray(devices) && devices.length === 0))
   }
 
+  const quietFirst = (current, digest) => digest === keptDigest || (keptDigest === null && quietWithoutState(current))
+
   /** The first look after this controller was made: compared with the kept digest when there is a store. */
   function firstLook(current, state, digest) {
-    if (!stateStore || digest === keptDigest || (keptDigest === null && quietWithoutState(current))) {
+    if (!stateStore || (loadDone && quietFirst(current, digest))) {
       recorded = { state, digest }
       keep(digest)
+      return
+    }
+    if (!loadDone) {
+      // the owner's switch-off, or the watch's stop, ran before the kept state was read: the file
+      // as it was is judged once it is
+      firstSeen = { current, digest }
+      recorded = { state, digest }
       return
     }
     // changed while the app was closed (or no state kept, and the file is on or holds devices):
@@ -493,9 +562,23 @@ function createRemoteEntry(options = {}) {
     flagOutside(digest)
   }
 
+  function judgeFirstSeen() {
+    const seen = firstSeen
+    firstSeen = null
+    if (!quietFirst(seen.current, seen.digest)) {
+      flagOutside(seen.digest)
+      // main wrote since: Review accepts the file as it now is
+      if (recorded.digest !== seen.digest) flagDigest = recorded.digest
+    }
+    keptDigest = recorded.digest
+    stateDirty = true
+  }
+
   function flagOutside(digest) {
     flag = true
     flagDigest = digest
+    // saved at once: a review is due whatever the file holds at the next start
+    stateDirty = true
     if (notified.has(digest)) return
     notified.add(digest)
     call(options.onOutsideChange)
@@ -559,13 +642,15 @@ function createRemoteEntry(options = {}) {
 
   /** The watch's file check: the status first, then the file, then observe; skipped when main wrote meanwhile. */
   async function checkFile() {
+    // the first look needs the kept digest: waited for at most STATE_TIMEOUT_MS
     await loadState()
     const status = await statusIfNeeded()
     const before = writes
     const current = await read()
     if (writes !== before) return
     observe(current, status)
-    await saveState()
+    // saved without waiting here: the tick waits once Serve was checked
+    if (stateDirty) queueSave()
   }
 
   /**
@@ -573,13 +658,21 @@ function createRemoteEntry(options = {}) {
    * for nothing to do. The file as read under the lock is observed first, so a change made
    * outside the app is flagged and never hidden by main's own write.
    */
-  async function write(change) {
+  async function write(change, { off = false, allowRaise = false, leaving } = {}) {
     // Nothing that waits on a process or the network runs under the lock: the viewer's pairing write
     // waits at most about 5 seconds for it. So the viewer's status is read first, and only when a
     // code main asked for could explain a change; under the lock it is only compared, synchronously.
     // A pairing that lands after that read is flagged.
-    await loadState()
+    //
+    // `off`: the owner's switch-off, the watch's stop and the repair never wait on the state store;
+    // they write the file and leave the state to follow.
+    const loaded = loadState()
+    if (!off) await loaded
     const status = await statusIfNeeded()
+    // before remote.json changes, the kept state says a review is due, with the `wanted` the
+    // operation will leave; the real digest follows the write
+    const before = queueSave('pending', { allowRaise, leaving })
+    if (!off) await before
     let outcome
     try {
       outcome = await locked.mutate(async () => {
@@ -612,7 +705,8 @@ function createRemoteEntry(options = {}) {
       outcome = { ok: false, reason: 'write_failed' }
     }
     // after the lock: the state store has its own
-    await saveState()
+    const after = queueSave('real', { allowRaise })
+    if (!off) await after
     if (!outcome.ok) return outcome
     const result = { ok: true, view: await view(), voidedCode: outcome.voidedCode === true }
     return outcome.unknownFieldsDropped ? { ...result, unknownFieldsDropped: true } : result
@@ -649,14 +743,14 @@ function createRemoteEntry(options = {}) {
       // never a file the viewer's reader would refuse
       if (!parseSetting(next).ok) return { refuse: 'bad_file' }
       return { doc: next }
-    })
+    }, { allowRaise: true, leaving: true })
     if (!result.ok) return { ...result, step: 'file' }
     // a new episode: the last stop is history, and the owner wants the entry on
     stopped = null
     pendingStop = null
     clearResume()
-    setWanted(true)
-    await saveState()
+    setWanted(true, true)
+    await queueSave('real', { allowRaise: true })
     return { ok: true, view: result.view, voidedCode: result.voidedCode, devicesRemoved: removed, droppedEntries: dropped }
   }
 
@@ -665,26 +759,24 @@ function createRemoteEntry(options = {}) {
     needsOwner = null
     waiting = null
     resumedAt = null
+    flaps = 0
   }
 
-  /** `enabled: false` and nothing else: the watch's own stop, which leaves `wanted` as it is. */
+  /** `enabled: false` and nothing else. Never waits on the state store. */
   function writeOff() {
     return write((current) => {
       if (current.state === 'missing') return {}
       if (current.state === 'refused') return { refuse: current.reason }
       return { doc: { ...current.doc, enabled: false }, fallback: knownFields(current.doc) }
-    })
+    }, { off: true })
   }
 
-  /** The owner's switch: off, and not wanted, so nothing turns it back on by itself. */
+  /** The owner's switch: off, and not wanted, so nothing turns it back on by itself. Never waits on the state store. */
   async function turnOff() {
     intent += 1
-    await loadState()
     clearResume()
-    setWanted(false)
-    const result = await writeOff()
-    await saveState()
-    return result
+    setWanted(false, true)
+    return writeOff()
   }
 
   /** Removes the device with this id (never by label: labels are not unique). An unknown id changes nothing. */
@@ -710,11 +802,9 @@ function createRemoteEntry(options = {}) {
    */
   async function repairPermissions() {
     intent += 1
-    await loadState()
     // whatever the repair finds, the entry stays off until the owner switches it on
     clearResume()
-    setWanted(false)
-    await saveState()
+    setWanted(false, true)
     let removed = 0
     const result = await write(async (current) => {
       if (current.state !== 'refused' || current.reason !== 'open_to_others') return { refuse: 'not_needed' }
@@ -722,7 +812,7 @@ function createRemoteEntry(options = {}) {
       if (again.state !== 'document') return { refuse: again.state === 'missing' ? 'missing' : again.reason }
       removed = Array.isArray(again.doc.devices) ? again.doc.devices.length : 0
       return { doc: { ...again.doc, enabled: false, devices: [] } }
-    })
+    }, { off: true })
     return result.ok ? { ...result, devicesRemoved: removed } : result
   }
 
@@ -825,31 +915,46 @@ function createRemoteEntry(options = {}) {
   /** A setting a resume may switch back on: this viewer's, this build's port, and one login (as turnOn writes). */
   const resumableFile = (setting) => setting !== null && setting.viewerPort === viewerPort && setting.port === port && setting.logins.length === 1
 
+  /** Only the owner's switch turns the entry on again: not wanted (kept across restarts), and needsOwner says why. */
+  function identityChanged() {
+    if (!stateStore) return
+    needsOwner = 'identity_changed'
+    setWanted(false)
+  }
+
+  /**
+   * The watch's stop. It never waits on the state store. A stop for this node's identity (another
+   * host or login, or a tagged node) clears `wanted`: turnOn would remove every device, so only the
+   * owner's switch turns it on again, across restarts too. A stop for Serve's shape (Funnel, another
+   * path, a TCP forward, a foreground session) or a Tailscale that is not up does not: the resume
+   * switches the entry on only when the shape is again exactly the one the owner switched on under,
+   * and the owner is usually not at this Mac, so an ad-hoc `tailscale serve` run in a terminal must
+   * not cost them the Inbox until they are back at the keyboard.
+   */
   async function stopEntry(reason, setting) {
+    if (IDENTITY_STOPS.has(reason)) identityChanged()
     const result = await writeOff()
     const t = now()
-    // another host or login: only the owner's switch turns it on again (turnOn removes the devices)
-    if (stateStore && IDENTITY_STOPS.has(reason)) needsOwner = 'identity_changed'
     const willResume = stateStore !== null && startedAt !== null && wanted && !flag && needsOwner === null && resumableFile(setting)
     stopped = { reason, at: t, off: result.ok, willResume }
     // a turn-off that did not land is tried again at every tick (checkServe), never left for the
     // next check, and without calling this again: so each stop is announced once. An entry switched
     // back on (by turnOn or by hand) that fails again is a new stop, announced again.
     pendingStop = result.ok ? null : reason
-    // tried again every 5 seconds for 2 minutes; but a stop within a minute of a resume (60 seconds
-    // included) waits a minute, so a stop and a resume never alternate faster than once a minute
-    fastUntil = t + RESUME_FAST_FOR_MS
-    resumeAt = t + (resumedAt !== null && t - resumedAt <= RESUME_SLOW_MS ? RESUME_SLOW_MS : RESUME_FAST_MS)
-    if (stateStore) waiting = waitingFor(reason)
+    // Tried again 5 seconds later, then every 5 seconds for 2 minutes. A stop within 10 minutes of a
+    // resume backs off instead: 1 minute, then 2, 4, 8, 16 and at most 30 minutes, and then every
+    // minute; the wait is back to normal once the entry stayed on for 10 minutes. No lockout.
+    flaps = resumedAt !== null && t - resumedAt <= FLAP_WINDOW_MS ? flaps + 1 : 0
+    resumeAt = t + (flaps > 0 ? Math.min(RESUME_SLOW_MS * 2 ** (flaps - 1), BACKOFF_MAX_MS) : RESUME_FAST_MS)
+    fastUntil = flaps > 0 ? t : t + RESUME_FAST_FOR_MS
+    // never a Tailscale wait for a stop that will not resume
+    if (stateStore) waiting = willResume ? waitingFor(reason) : flag ? 'flagged' : 'needs_owner'
     call(options.onStopped, reason, { off: result.ok, willResume })
   }
 
   /** The resume, when it is due (see the cadence in stopEntry); true when the entry is on again. */
   async function maybeResume(t) {
-    if (!stateStore || startedAt === null || !wanted) {
-      waiting = null
-      return false
-    }
+    if (!stateStore || startedAt === null || !wanted || !loadDone) return false
     if (resumeAt !== null && t < resumeAt) return false
     resumeAt = t + (t < fastUntil ? RESUME_FAST_MS : RESUME_SLOW_MS)
     waiting = await tryResume()
@@ -858,16 +963,20 @@ function createRemoteEntry(options = {}) {
 
   /**
    * Switches the entry back on, only when all of this holds now: no flag and no identity change
-   * seen; the file passes the reader, is for this viewer and port, is off, and is exactly the state
-   * main last wrote and kept (so a file switched off or edited by anything else is never resumed);
-   * this node reads the stored host and the one stored login (ignoring case); and Serve is ok for
-   * them. It writes `enabled: true` and nothing else, after reading the file again under the lock
-   * and finding it equal to the one checked. Never turnOn's path: no device is ever removed.
+   * seen; the file passes the reader, is for this viewer and port, holds one login and is off; its
+   * watched fields are exactly those main last wrote and kept (`enabled`, `host`, `port`,
+   * `viewerPort`, `logins`, and each device's id, hash and whether the reader keeps it; not a label
+   * that stays readable, `pairedAt` or an unknown field), so a file switched off or edited by
+   * anything else is never resumed; this node reads the stored host and the one stored login
+   * (ignoring case); and Serve is ok for them. It writes `enabled: true` and nothing else, under the
+   * lock, after reading the file again and finding it equal to the one checked, while the watch is
+   * still started and no owner operation ran. Never turnOn's path: no device is ever removed.
    */
   async function tryResume() {
     if (flag) return 'flagged'
     if (needsOwner !== null) return 'needs_owner'
     const epoch = intent
+    const run = runs
     const before = writes
     const checked = await read()
     // the state main last wrote and kept (with no flag, main's in-memory baseline is the same digest)
@@ -878,13 +987,13 @@ function createRemoteEntry(options = {}) {
     const at = now()
     if (!self.ok) {
       lastSelf = { ok: false, reason: self.reason, at }
-      if (self.reason === 'tagged') needsOwner = 'identity_changed'
+      if (self.reason === 'tagged') identityChanged()
       return waitingFor(self.reason)
     }
     const sameLogin = setting.logins[0] === self.login.toLowerCase()
     lastSelf = { ok: true, host: self.host, loginAllowed: setting.logins.includes(self.login.toLowerCase()), at }
     if (self.host !== setting.host || !sameLogin) {
-      needsOwner = 'identity_changed'
+      identityChanged()
       return 'needs_owner'
     }
     const answer = await serveState(setting.host, setting.port)
@@ -893,12 +1002,14 @@ function createRemoteEntry(options = {}) {
     if (!answer.ok) return `serve_not_ok:${answer.reason}`
     const text = serialise(checked.doc)
     const result = await write((current) => {
-      if (intent !== epoch || writes !== before || !wanted || flag || needsOwner !== null) return { refuse: 'changed_outside' }
+      if (intent !== epoch || runs !== run || writes !== before || !wanted || flag || needsOwner !== null) return { refuse: 'changed_outside' }
       // the file as read under the lock, value for value and key for key the one checked, at any depth
       if (current.state !== 'document' || text === null || serialise(current.doc) !== text) return { refuse: 'changed_outside' }
       return { doc: { ...current.doc, enabled: true } }
     })
     if (!result.ok) return result.reason === 'changed_outside' ? 'changed_outside' : 'write_failed'
+    // the owner switched off while it was written: their switch wins, and no resume is announced
+    if (intent !== epoch) return 'changed_outside'
     resumedAt = now()
     // a new episode, watched at once: the next tick checks Serve and the identity again
     stopped = null
@@ -911,7 +1022,6 @@ function createRemoteEntry(options = {}) {
 
   /** Serve's shape and this node's identity while the entry is on; one reading for the removal hint while it is off. */
   async function checkServe(force) {
-    await loadState()
     const current = await read()
     const setting = current.state === 'document' ? current.setting : null
     const active = setting !== null && setting.enabled && setting.viewerPort === viewerPort
@@ -1011,16 +1121,26 @@ function createRemoteEntry(options = {}) {
       waiting = null
       setWanted(false)
     }
-    await saveState()
+    await queueSave()
     return { ok: true }
+  }
+
+  /**
+   * One read for the panel's review: the view, and the digest of that same file, which is what its
+   * Review button passes to acknowledge(); so what the owner accepts is what they were shown.
+   */
+  async function review() {
+    await locked.settled()
+    const current = await read()
+    return { view: viewOf(current), digest: digestOf(watchedState(current)), flag }
   }
 
   /** state()'s fields for the state kept across restarts. */
   const keptFields = (enabled) => ({
     wanted,
     stateSaved,
-    // why the entry is not back yet, while the watch is waiting to resume it
-    resume: stateStore && wanted && !enabled && waiting !== null ? { waiting } : null,
+    // why the entry is not back yet, and when the next try is due, while the watch waits to resume it
+    resume: stateStore && startedAt !== null && wanted && !enabled && waiting !== null ? { waiting, nextAt: resumeAt } : null,
     needsOwner,
   })
 
@@ -1054,6 +1174,9 @@ function createRemoteEntry(options = {}) {
       } catch {
         // the next tick tries again
       }
+      // the state store last, after the stop: never longer than STATE_TIMEOUT_MS a write
+      if (stateDirty) queueSave()
+      await saving
     })().finally(() => {
       ticking = null
     })
@@ -1078,6 +1201,8 @@ function createRemoteEntry(options = {}) {
     selfTest: safe(selfTest, { ok: false, reason: 'failed', rose: null }),
     start() {
       if (timer !== null) return
+      runs += 1
+      loadState()
       try {
         // resuming is tried at once, then every 5 seconds for 2 minutes, then every minute
         startedAt = now()
@@ -1102,6 +1227,8 @@ function createRemoteEntry(options = {}) {
       }
       timer = null
       startedAt = null
+      // a resume checked before this never writes after it
+      runs += 1
     },
     tick: safe(tick, undefined),
     refresh: safe(async () => {
@@ -1114,6 +1241,9 @@ function createRemoteEntry(options = {}) {
       ...keptFields(false),
     })),
     acknowledge: safe(acknowledge, failed),
+    review: safe(review, () => ({ view: { ...FALLBACK_VIEW }, digest: null, flag })),
+    /** Resolves once the state store has every write queued so far (each waited for at most STATE_TIMEOUT_MS). */
+    settled: safe(() => saving, undefined),
   })
 }
 

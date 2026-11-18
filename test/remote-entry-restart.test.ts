@@ -9,7 +9,9 @@
 //
 // Every file lives in a scratch folder; Tailscale is the fixtures' fake. No test runs the real
 // `tailscale`. Values are synthetic: `hub.example.ts.net`, `owner@example.com`, `laptop`.
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import fsPromises from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
@@ -17,11 +19,12 @@ import remoteEntry from '../electron/remote-entry.cjs'
 import remoteEntryState from '../electron/remote-entry-state.cjs'
 import type { RemoteEntryStateStore, RemoteEntryStoredState } from '../electron/remote-entry-state.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+import { waitUntil } from './wait.js'
 import { device, newSecret, setting, writeSetting } from './remote-fixtures.js'
 import { ALLOWED_ARGS, HOST, LOGIN, USER_ID, cliExists, fakeTailscale, goodServe, selfStatus, taggedStatus, tailscaleCalls } from './remote-entry-fixtures.js'
 
 const { createRemoteEntry } = remoteEntry
-const { createRemoteEntryState } = remoteEntryState
+const { PENDING, createRemoteEntryState } = remoteEntryState
 
 const START = Date.parse('2026-11-20T09:00:00.000Z')
 const TOKEN = 'owner-token-for-the-test-0123456789'
@@ -66,10 +69,14 @@ function place() {
   }
 }
 type Place = ReturnType<typeof place>
+/** What the state names for this place's remote.json. */
+const fileIdOf = (p: Place) => createHash('sha256').update(p.file).digest('hex')
 
 /** One run of the app on `p`: a new controller, as after a restart. `store: null` gives none. */
 function open(p: Place, opts: {
   store?: RemoteEntryStateStore | null; onBeforeServe?: () => void; serveGate?: () => Promise<void>; beforeOpen?: () => void
+  isPackaged?: boolean; viewerPort?: number; fs?: Partial<typeof fsPromises>
+  setTimeout?: (fn: () => void, ms: number) => unknown; clearTimeout?: (handle: unknown) => void
 } = {}) {
   const events = {
     stopped: [] as Array<{ reason: string; off: boolean; willResume: boolean }>,
@@ -105,7 +112,9 @@ function open(p: Place, opts: {
   }
   const store = opts.store === undefined ? createRemoteEntryState({ filePath: p.stateFile }) : opts.store
   const c = createRemoteEntry({
-    isPackaged: true,
+    isPackaged: opts.isPackaged ?? true,
+    ...(opts.viewerPort !== undefined ? { viewerPort: opts.viewerPort } : {}),
+    ...(opts.setTimeout ? { setTimeout: opts.setTimeout, clearTimeout: opts.clearTimeout ?? (() => {}) } : {}),
     env: { AGENT_INBOX_DB: join(p.dir, 'inbox.db') },
     ownerToken: TOKEN,
     execFile,
@@ -117,13 +126,14 @@ function open(p: Place, opts: {
     clearInterval: () => {},
     ...(store ? { stateStore: store } : {}),
     // every open of remote.json can run a step of the test first
-    ...(opts.beforeOpen ? {
+    ...(opts.beforeOpen || opts.fs ? {
       fsImpl: {
         ...fsPromises,
         open: async (...args: Parameters<typeof fsPromises.open>) => {
           if (args[0] === p.file) opts.beforeOpen?.()
           return fsPromises.open(...args)
         },
+        ...opts.fs,
       } as never,
     } : {}),
     onStopped: (reason: string, info: { off: boolean; willResume: boolean }) => { events.stopped.push({ reason, off: info.off, willResume: info.willResume }) },
@@ -163,6 +173,11 @@ async function paused(p: Place, opts: Parameters<typeof open>[1] = {}) {
   return s
 }
 
+/** What state().resume waits for, or null. */
+async function waitingOf(s: ReturnType<typeof open>) {
+  return (await s.c.state()).resume?.waiting ?? null
+}
+
 /** Advance the clock by `ms` and tick. */
 async function after(p: Place, s: ReturnType<typeof open>, ms: number) {
   p.clock.now += ms
@@ -200,64 +215,114 @@ function memoryStore(initial: RemoteEntryStoredState | null = null) {
 // ── the state file ─────────────────────────────────────────────────────────
 
 describe('createRemoteEntryState: userData remote-entry-state.json', () => {
-  it('writes { schema: 1, digest, wanted } 0600 under userData, and reads it back', async () => {
+  // what a state names it is for: one remote.json and one viewer
+  const ID = { file: 'f'.repeat(64), viewerPort: 4319 }
+  const stored = (digest: string | null, wanted: boolean) => ({ digest, wanted, ...ID })
+
+  it('writes { schema: 1, digest, wanted, file, viewerPort } 0600 under userData, and reads it back', async () => {
     const dir = scratchDir('remote-restart-')
     const store = createRemoteEntryState({ app: { getPath: () => dir } })
     expect(await store.read()).toBe(null)
-    await store.write({ digest: 'a'.repeat(64), wanted: true })
+    await store.write(stored('a'.repeat(64), true), { allowRaise: true })
     const file = join(dir, 'remote-entry-state.json')
-    expect(fileJson(file)).toEqual({ schema: 1, digest: 'a'.repeat(64), wanted: true })
+    expect(fileJson(file)).toEqual({ schema: 1, ...stored('a'.repeat(64), true) })
     expect(statSync(file).mode & 0o777).toBe(0o600)
-    expect(await store.read()).toEqual({ digest: 'a'.repeat(64), wanted: true })
-    await store.write({ digest: null, wanted: false })
-    expect(await store.read()).toEqual({ digest: null, wanted: false })
+    expect(await store.read()).toEqual(stored('a'.repeat(64), true))
+    await store.write(stored(null, false))
+    expect(await store.read()).toEqual(stored(null, false))
+    await store.write(stored(PENDING, false))
+    expect(await store.read()).toEqual(stored(PENDING, false))
   })
 
   it('keeps unknown fields', async () => {
     const dir = scratchDir('remote-restart-')
     const file = join(dir, 'state.json')
-    writeFileSync(file, JSON.stringify({ schema: 1, digest: null, wanted: false, later: { x: 1 } }))
+    writeFileSync(file, JSON.stringify({ schema: 1, ...stored(null, false), later: { x: 1 } }), { mode: 0o600 })
     const store = createRemoteEntryState({ filePath: file })
-    await store.write({ digest: 'b'.repeat(64), wanted: true })
-    expect(fileJson(file)).toEqual({ schema: 1, digest: 'b'.repeat(64), wanted: true, later: { x: 1 } })
+    await store.write(stored('b'.repeat(64), true), { allowRaise: true })
+    expect(fileJson(file)).toEqual({ schema: 1, ...stored('b'.repeat(64), true), later: { x: 1 } })
   })
 
   it('reads a newer schema as no state and never overwrites it', async () => {
     const dir = scratchDir('remote-restart-')
     const file = join(dir, 'state.json')
-    const text = JSON.stringify({ schema: 2, digest: 'c'.repeat(64), wanted: true })
-    writeFileSync(file, text)
+    const text = JSON.stringify({ schema: 2, ...stored('c'.repeat(64), true) })
+    writeFileSync(file, text, { mode: 0o600 })
     const store = createRemoteEntryState({ filePath: file })
     expect(await store.read()).toBe(null)
-    await expect(store.write({ digest: 'd'.repeat(64), wanted: false })).rejects.toThrow()
+    await expect(store.write(stored('d'.repeat(64), false))).rejects.toThrow()
     expect(readFileSync(file, 'utf8')).toBe(text)
   })
 
   it.each([
     ['not JSON', '{"schema":1,'],
     ['an array', '[]'],
-    ['no schema', JSON.stringify({ digest: null, wanted: true })],
-    ['schema 0', JSON.stringify({ schema: 0, digest: null, wanted: true })],
-    ['a digest that is not 64 hex', JSON.stringify({ schema: 1, digest: 'abc', wanted: true })],
-    ['a digest in capitals', JSON.stringify({ schema: 1, digest: 'A'.repeat(64), wanted: true })],
-    ['wanted not a boolean', JSON.stringify({ schema: 1, digest: null, wanted: 'yes' })],
-    ['no wanted', JSON.stringify({ schema: 1, digest: null })],
+    ['no schema', JSON.stringify({ ...stored(null, true) })],
+    ['schema 0', JSON.stringify({ schema: 0, ...stored(null, true) })],
+    ['a digest that is not 64 hex', JSON.stringify({ schema: 1, ...stored('abc', true) })],
+    ['a digest in capitals', JSON.stringify({ schema: 1, ...stored('A'.repeat(64), true) })],
+    ['wanted not a boolean', JSON.stringify({ schema: 1, ...stored(null, true), wanted: 'yes' })],
+    ['no wanted', JSON.stringify({ schema: 1, digest: null, ...ID })],
+    ['no file', JSON.stringify({ schema: 1, digest: null, wanted: true, viewerPort: 4319 })],
+    ['no viewerPort', JSON.stringify({ schema: 1, digest: null, wanted: true, file: ID.file })],
+    ['a viewerPort that is not a port', JSON.stringify({ schema: 1, ...stored(null, true), viewerPort: 70_000 })],
   ])('reads %s as no state, and a write replaces it', async (_name, text) => {
     const dir = scratchDir('remote-restart-')
     const file = join(dir, 'state.json')
-    writeFileSync(file, text)
+    writeFileSync(file, text, { mode: 0o600 })
     const store = createRemoteEntryState({ filePath: file })
     expect(await store.read()).toBe(null)
-    await store.write({ digest: null, wanted: false })
-    expect(await store.read()).toEqual({ digest: null, wanted: false })
+    await store.write(stored(null, false))
+    expect(await store.read()).toEqual(stored(null, false))
   })
 
   it('refuses to write a state that is not one', async () => {
     const dir = scratchDir('remote-restart-')
     const store = createRemoteEntryState({ filePath: join(dir, 'state.json') })
-    await expect(store.write({ digest: 'x', wanted: true })).rejects.toThrow()
-    await expect(store.write({ digest: null, wanted: 'yes' as never })).rejects.toThrow()
+    await expect(store.write(stored('x', true))).rejects.toThrow()
+    await expect(store.write({ ...stored(null, true), wanted: 'yes' as never })).rejects.toThrow()
+    await expect(store.write({ digest: null, wanted: false } as never)).rejects.toThrow()
     expect(existsSync(join(dir, 'state.json'))).toBe(false)
+  })
+
+  it('reads a symlink, a FIFO, a folder or another user\'s file as no state, without blocking, and writes over it', async () => {
+    const dir = scratchDir('remote-restart-')
+    const file = join(dir, 'state.json')
+    writeFileSync(join(dir, 'real.json'), JSON.stringify({ schema: 1, ...stored('a'.repeat(64), true) }), { mode: 0o600 })
+    symlinkSync(join(dir, 'real.json'), file)
+    const store = createRemoteEntryState({ filePath: file })
+    expect(await store.read()).toBe(null)
+    await store.write(stored(null, false))
+    expect(lstatSync(file).isFile()).toBe(true)
+    // the link's target is untouched
+    expect(fileJson(join(dir, 'real.json')).wanted).toBe(true)
+    unlinkSync(file)
+    execFileSync('/usr/bin/mkfifo', [file])
+    expect(await store.read()).toBe(null)
+    unlinkSync(file)
+    mkdirSync(file)
+    expect(await store.read()).toBe(null)
+    const other = join(dir, 'other.json')
+    writeFileSync(other, JSON.stringify({ schema: 1, ...stored('a'.repeat(64), true) }), { mode: 0o600 })
+    expect(await createRemoteEntryState({ filePath: other, uid: (process.getuid?.() ?? 0) + 1 }).read()).toBe(null)
+    expect(await createRemoteEntryState({ filePath: other }).read()).toEqual(stored('a'.repeat(64), true))
+  })
+
+  it('never raises wanted from false to true unless the write says the owner switched it on', async () => {
+    const dir = scratchDir('remote-restart-')
+    const store = createRemoteEntryState({ filePath: join(dir, 'state.json') })
+    // nothing stored: false
+    expect(await store.write(stored('a'.repeat(64), true))).toEqual({ wanted: false })
+    expect(await store.read()).toEqual(stored('a'.repeat(64), false))
+    expect(await store.write(stored('a'.repeat(64), true), { allowRaise: true })).toEqual({ wanted: true })
+    // stored true for the same remote.json and viewer: kept
+    expect(await store.write(stored('b'.repeat(64), true))).toEqual({ wanted: true })
+    // lowering is always allowed
+    expect(await store.write(stored('b'.repeat(64), false))).toEqual({ wanted: false })
+    expect(await store.write(stored('b'.repeat(64), true))).toEqual({ wanted: false })
+    // stored true for another viewer: counts as false here
+    await store.write({ ...stored('b'.repeat(64), true), viewerPort: 4392 }, { allowRaise: true })
+    expect(await store.write(stored('b'.repeat(64), true))).toEqual({ wanted: false })
   })
 })
 
@@ -418,7 +483,7 @@ describe('a change made while the app was closed is flagged at the next start', 
   it('a state store that fails to read counts as none kept', async () => {
     const p = place()
     writeSetting(p.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
-    const { m, store } = memoryStore({ digest: 'a'.repeat(64), wanted: true })
+    const { m, store } = memoryStore({ digest: 'a'.repeat(64), wanted: true, file: fileIdOf(p), viewerPort: 4319 })
     m.readFails = true
     const s = open(p, { store })
     s.c.start()
@@ -516,7 +581,7 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     await s.c.tick()
     expect(fileJson(p.file).enabled).toBe(false)
     expect(s.events.stopped).toEqual([{ reason: 'not_running', off: true, willResume: true }])
-    expect((await s.c.state()).resume).toEqual({ waiting: 'tailscale_not_running' })
+    expect(await waitingOf(s)).toBe('tailscale_not_running')
     p.ts.self = selfStatus()
     await after(p, s, 5_000)
     expect(fileJson(p.file)).toEqual(before)
@@ -541,7 +606,7 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
     expect(s.events.stopped).toEqual([{ reason: 'no_cli', off: true, willResume: true }])
-    expect((await s.c.state()).resume).toEqual({ waiting: 'tailscale_unreadable' })
+    expect(await waitingOf(s)).toBe('tailscale_unreadable')
     await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
     p.ts.cli = true
@@ -582,12 +647,14 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     expect(s.events.resumed).toBe(0)
     const state = await s.c.state()
     expect(state.needsOwner).toBe('identity_changed')
-    expect(state.resume).toEqual({ waiting: 'needs_owner' })
+    // only the owner's switch turns it on again: wanted is cleared, so nothing is waiting
+    expect(state.wanted).toBe(false)
+    expect(state.resume).toBe(null)
     // even when the identity comes back, only the owner's switch turns it on again
     p.ts.self = selfStatus()
     for (let i = 0; i < 15; i += 1) await after(p, s, 5_000)
     expect(readFileSync(p.file, 'utf8')).toBe(text)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'needs_owner' })
+    expect(await waitingOf(s)).toBe(null)
     // the owner's switch: devices kept, since the identity is the stored one
     expect(await s.c.turnOn()).toMatchObject({ ok: true, devicesRemoved: 0 })
     expect((await s.c.state()).needsOwner).toBe(null)
@@ -611,10 +678,10 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     p.ts.serve = {}
     await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'serve_not_ok:no_handler' })
+    expect(await waitingOf(s)).toBe('serve_not_ok:no_handler')
     p.ts.serve = { ...goodServe(4320), AllowFunnel: { [`${HOST}:443`]: true } }
     await after(p, s, 5_000)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'serve_not_ok:funnel' })
+    expect(await waitingOf(s)).toBe('serve_not_ok:funnel')
     expect(s.events.resumed).toBe(0)
     p.ts.serve = goodServe(4320)
     await after(p, s, 5_000)
@@ -635,7 +702,7 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     expect(readFileSync(p.file, 'utf8')).toBe(text)
     expect(s.events.resumed).toBe(0)
     expect(s.events.outside).toBe(1)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'flagged' })
+    expect(await waitingOf(s)).toBe('flagged')
   })
 
   it('a file switched off by hand while the app runs: flagged, never resumed, even after acknowledge', async () => {
@@ -649,7 +716,7 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     expect(s.events.outside).toBe(1)
     for (let i = 0; i < 5; i += 1) await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'flagged' })
+    expect(await waitingOf(s)).toBe('flagged')
     // the owner accepts the off file: it stays off, here and after a restart
     expect(await s.c.acknowledge((await s.c.state()).flagDigest)).toEqual({ ok: true })
     for (let i = 0; i < 30; i += 1) await after(p, s, 5_000)
@@ -724,6 +791,12 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     await s.c.tick()
     expect((await s.c.turnOff()).ok).toBe(true)
     expect((await s.c.state()).wanted).toBe(false)
+    // switched on again by hand (an outside change), then the watch stops it: a stop, not a pause
+    edit(p.file, (doc) => { doc.enabled = true })
+    p.ts.self = starting()
+    await after(p, s, 60_000)
+    expect(s.events.stopped).toEqual([{ reason: 'not_running', off: true, willResume: false }])
+    expect(await waitingOf(s)).toBe(null)
   })
 
   it('repairPermissions: never resumed', async () => {
@@ -773,7 +846,7 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     await after(p, s, 5_000)
     expect(fileJson(p.file)).toMatchObject({ enabled: false, note: 'late' })
     expect(s.events.resumed).toBe(0)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'changed_outside' })
+    expect(await waitingOf(s)).toBe('changed_outside')
     // a later attempt checks the file as it now is
     await after(p, s, 5_000)
     expect(fileJson(p.file)).toMatchObject({ enabled: true, note: 'late' })
@@ -820,7 +893,7 @@ describe('after a restart, an entry the watch switched off comes back by itself'
       if (s.selfCalls() > before) at.push(t / 1000)
     }
     expect(at).toEqual([...Array.from({ length: 25 }, (_, i) => i * 5), 180, 240, 300])
-    expect((await s.c.state()).resume).toEqual({ waiting: 'tailscale_not_running' })
+    expect(await waitingOf(s)).toBe('tailscale_not_running')
   })
 
   it('tries every 5 seconds for the first 2 minutes after its own stop, then every 60 seconds', async () => {
@@ -870,14 +943,13 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     expect(p.clock.now - resumedAt).toBeGreaterThanOrEqual(60_000)
   })
 
-  it('a stop more than 60 seconds after a resume: tried again 5 seconds later', async () => {
+  it('a stop more than 10 minutes after a resume: tried again 5 seconds later', async () => {
     const p = place()
     const s = await paused(p)
     p.ts.self = selfStatus()
     await after(p, s, 5_000)
     expect(s.events.resumed).toBe(1)
-    await after(p, s, 5_000)
-    await after(p, s, 60_000)
+    for (let i = 0; i < 10; i += 1) await after(p, s, 60_000)
     p.ts.serve = {}
     await after(p, s, 60_000)
     expect(s.events.stopped).toHaveLength(2)
@@ -920,6 +992,7 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     expect(fileJson(p.stateFile)).toMatchObject({ schema: 1, wanted: true })
     const s = open(p)
     expect((await s.c.turnOff()).ok).toBe(true)
+    await s.c.settled()
     expect((await open(p).c.state()).wanted).toBe(false)
   })
 
@@ -961,7 +1034,7 @@ describe('each condition of the resume, alone', () => {
     for (let i = 0; i < 5; i += 1) await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
     expect(s.events.resumed).toBe(0)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'flagged' })
+    expect(await waitingOf(s)).toBe('flagged')
   })
 
   it('under the lock: a flag raised during the checks, with the file put back before the write, still stops it', async () => {
@@ -1001,7 +1074,7 @@ describe('each condition of the resume, alone', () => {
     armed = false
     expect(opens).toBe(3)
     expect(s.selfCalls()).toBe(calls)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'changed_outside' })
+    expect(await waitingOf(s)).toBe('changed_outside')
     for (let i = 0; i < 5; i += 1) await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
     expect(s.events.outside).toBe(1)
@@ -1021,7 +1094,7 @@ describe('each condition of the resume, alone', () => {
     await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
     expect(s.events.resumed).toBe(0)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'changed_outside' })
+    expect(await waitingOf(s)).toBe('changed_outside')
     // the next attempt, checked after it, goes ahead
     await after(p, s, 5_000)
     expect(s.events.resumed).toBe(1)
@@ -1045,7 +1118,7 @@ describe('each condition of the resume, alone', () => {
     try {
       await after(p, s, 5_000)
       expect(fileJson(p.file).enabled).toBe(false)
-      expect((await s.c.state()).resume).toEqual({ waiting: 'write_failed' })
+      expect(await waitingOf(s)).toBe('write_failed')
     } finally {
       chmodSync(p.dir, 0o700)
     }
@@ -1089,7 +1162,7 @@ describe('each condition of the resume, alone', () => {
     for (let i = 0; i < 30; i += 1) await after(p, s, 5_000)
     expect(fileJson(p.file).enabled).toBe(false)
     expect(s.events.resumed).toBe(0)
-    expect((await s.c.state()).resume).toEqual({ waiting: 'needs_owner' })
+    expect(await waitingOf(s)).toBe('needs_owner')
   })
 
   it('two logins accepted: the stop is not a pause, and it is never resumed (turnOn would write one)', async () => {
@@ -1116,7 +1189,7 @@ describe('each condition of the resume, alone', () => {
     const text = readFileSync(p.file, 'utf8')
     p.ts.self = taggedStatus()
     await after(p, s, 5_000)
-    expect(await s.c.state()).toMatchObject({ needsOwner: 'identity_changed', resume: { waiting: 'needs_owner' } })
+    expect(await s.c.state()).toMatchObject({ needsOwner: 'identity_changed', wanted: false, resume: null })
     p.ts.self = selfStatus()
     for (let i = 0; i < 30; i += 1) await after(p, s, 5_000)
     expect(readFileSync(p.file, 'utf8')).toBe(text)
@@ -1192,12 +1265,14 @@ describe('each condition of the resume, alone', () => {
   it.each([
     ['a digest that is not hex', { digest: 'x'.repeat(64), wanted: true }],
     ['wanted not a boolean', { digest: null, wanted: 'yes' }],
+    ['a viewerPort that is not a port', { digest: null, wanted: true, viewerPort: 0 }],
     ['not an object', 'state'],
   ] as Array<[string, unknown]>)('a store that answers %s: none kept', async (_name, value) => {
     const p = place()
     writeSetting(p.dir, setting(4320, [device(newSecret(), A)], { enabled: false }))
     const { store } = memoryStore()
-    store.read = async () => value as never
+    // named for this remote.json and viewer, so only the shape check can refuse it
+    store.read = async () => (typeof value === 'object' ? { file: fileIdOf(p), viewerPort: 4319, ...value } : value) as never
     const s = open(p, { store })
     s.c.start()
     await s.c.tick()
@@ -1206,12 +1281,695 @@ describe('each condition of the resume, alone', () => {
   })
 })
 
+// ── review round 1 ─────────────────────────────────────────────────────────
+
+/** The kept state on disk. */
+const keptOnDisk = (p: Place) => fileJson(p.stateFile) as { digest: string | null; wanted: boolean; file: string; viewerPort: number }
+
+/** Timers the test fires by hand: only the state store's 5-second limit is held back. */
+function heldTimers() {
+  const held: Array<() => void> = []
+  return {
+    held,
+    setTimeout: (fn: () => void, ms: number) => {
+      if (ms === 5_000) {
+        held.push(fn)
+        return held.length
+      }
+      return setTimeout(fn, ms)
+    },
+    clearTimeout: (handle: unknown) => { if (typeof handle !== 'number' || handle > 1_000_000) clearTimeout(handle as NodeJS.Timeout) },
+    fire: () => { for (const fn of held.splice(0)) fn() },
+  }
+}
+
+describe('review round 1: a change while flagged, put back while closed, is still flagged', () => {
+  it('P2: paused, B planted and flagged, the owner removes A and B, remote.json alone put back: flagged, never resumed', async () => {
+    const p = place()
+    const s0 = await paused(p)
+    s0.c.stop()
+    const keptCopy = readFileSync(p.file, 'utf8')
+    const s1 = open(p)
+    s1.c.start()
+    await s1.c.tick()
+    appendDevice(p.file, B)
+    await after(p, s1, 5_000)
+    expect((await s1.c.state()).flag).toBe(true)
+    // the state says a review is due as soon as the flag is raised
+    expect(keptOnDisk(p).digest).toBe(PENDING)
+    expect((await s1.c.removeDevice(A)).ok).toBe(true)
+    expect((await s1.c.removeDevice(B)).ok).toBe(true)
+    expect(keptOnDisk(p).digest).toBe(PENDING)
+    s1.c.stop()
+    writeFileSync(p.file, keptCopy, { mode: 0o600 })
+    p.ts.self = selfStatus()
+    const s2 = open(p)
+    s2.c.start()
+    await s2.c.tick()
+    for (let i = 0; i < 30; i += 1) await after(p, s2, 5_000)
+    expect(s2.events.outside).toBe(1)
+    expect((await s2.c.state()).flag).toBe(true)
+    expect(s2.events.resumed).toBe(0)
+    expect(fileJson(p.file).enabled).toBe(false)
+  })
+
+  it('P12: on, B planted and flagged, the owner turns off and removes A, the old on file put back: flagged at start', async () => {
+    const p = place()
+    await seeded(p)
+    const kept = readFileSync(p.file, 'utf8')
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    appendDevice(p.file, B)
+    await after(p, s, 5_000)
+    expect((await s.c.turnOff()).ok).toBe(true)
+    expect((await s.c.removeDevice(A)).ok).toBe(true)
+    await s.c.settled()
+    s.c.stop()
+    writeFileSync(p.file, kept, { mode: 0o600 })
+    const s2 = open(p)
+    s2.c.start()
+    await s2.c.tick()
+    expect(s2.events.outside).toBe(1)
+    expect((await s2.c.state()).flag).toBe(true)
+    expect(s2.events.resumed).toBe(0)
+  })
+
+  it('P3: first run flagged, turnOn without a review, an off empty file written while closed: flagged, never resumed', async () => {
+    const p = place()
+    writeSetting(p.dir, setting(4320, [device(newSecret(), A)]))
+    const s1 = open(p)
+    s1.c.start()
+    await s1.c.tick()
+    expect((await s1.c.state()).flag).toBe(true)
+    expect((await s1.c.turnOn()).ok).toBe(true)
+    // never "no digest" together with wanted true
+    expect(keptOnDisk(p)).toMatchObject({ digest: PENDING, wanted: true })
+    s1.c.stop()
+    edit(p.file, (doc) => { doc.enabled = false; doc.devices = []; doc.note = 'written by someone else' })
+    const s2 = open(p)
+    s2.c.start()
+    for (let i = 0; i < 30; i += 1) await after(p, s2, 5_000)
+    expect(s2.events.outside).toBe(1)
+    expect(s2.events.resumed).toBe(0)
+    expect(fileJson(p.file).enabled).toBe(false)
+  })
+
+  it('a review clears what is pending: the kept digest is real again, and the next start is quiet', async () => {
+    const p = place()
+    await seeded(p)
+    appendDevice(p.file, B)
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect(keptOnDisk(p).digest).toBe(PENDING)
+    expect(await s.c.acknowledge((await s.c.state()).flagDigest)).toEqual({ ok: true })
+    expect(keptOnDisk(p).digest).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe('review round 1: a flag stays reviewable after main writes', () => {
+  it('P1: flagged at start, the watch stops it, then the flag can be acknowledged', async () => {
+    const p = place()
+    await seeded(p)
+    appendDevice(p.file, B)
+    p.ts.self = starting()
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    const flagged = await s.c.state()
+    expect(flagged.flag).toBe(true)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(await s.c.acknowledge(flagged.flagDigest)).toEqual({ ok: true })
+    expect((await s.c.state()).flag).toBe(false)
+  })
+
+  it('P16: a pairing seen across a viewer restart is flagged; the owner removes the device; the flag can be acknowledged', async () => {
+    const p = place()
+    await seeded(p)
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    s.viewer.codes.push(CODE_ID)
+    expect((await s.c.requestCode()).ok).toBe(true)
+    appendDevice(p.file, B)
+    s.viewer.status = statusBody([])
+    await after(p, s, 5_000)
+    expect((await s.c.state()).flag).toBe(true)
+    expect((await s.c.removeDevice(B)).ok).toBe(true)
+    expect(await s.c.acknowledge((await s.c.state()).flagDigest)).toEqual({ ok: true })
+    expect((await s.c.state()).flag).toBe(false)
+  })
+
+  it('without a state store too', async () => {
+    const p = place()
+    writeSetting(p.dir, setting(4320, [device(newSecret(), A)]))
+    const s = open(p, { store: null })
+    s.c.start()
+    await s.c.tick()
+    appendDevice(p.file, B)
+    await after(p, s, 5_000)
+    expect((await s.c.removeDevice(B)).ok).toBe(true)
+    expect(await s.c.acknowledge((await s.c.state()).flagDigest)).toEqual({ ok: true })
+  })
+})
+
+describe('review round 1: an identity stop needs the owner, across restarts too', () => {
+  it.each([
+    ['P6: another host', () => selfStatus({}, { DNSName: `${OTHER_HOST}.` })],
+    ['P6b: a tagged node', () => taggedStatus()],
+  ] as Array<[string, () => unknown]>)('%s, then a restart with the identity back: not resumed', async (_name, self) => {
+    const p = place()
+    await seeded(p)
+    p.ts.self = self()
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect(s.events.stopped[0]).toMatchObject({ off: true, willResume: false })
+    expect(await s.c.state()).toMatchObject({ needsOwner: 'identity_changed', wanted: false, resume: null })
+    await s.c.settled()
+    s.c.stop()
+    p.ts.self = selfStatus()
+    const s2 = open(p)
+    s2.c.start()
+    for (let i = 0; i < 30; i += 1) await after(p, s2, 5_000)
+    expect(s2.events.resumed).toBe(0)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect((await s2.c.state()).wanted).toBe(false)
+  })
+
+  it('an identity change seen by the resume, then a restart with it back: not resumed', async () => {
+    const p = place()
+    const s = await paused(p)
+    p.ts.self = selfStatus({}, { DNSName: `${OTHER_HOST}.` })
+    await after(p, s, 5_000)
+    await s.c.settled()
+    s.c.stop()
+    p.ts.self = selfStatus()
+    const s2 = open(p)
+    s2.c.start()
+    for (let i = 0; i < 30; i += 1) await after(p, s2, 5_000)
+    expect(s2.events.resumed).toBe(0)
+  })
+
+  it('turnOff clears needsOwner', async () => {
+    const p = place()
+    await seeded(p)
+    p.ts.self = selfStatus({}, { DNSName: `${OTHER_HOST}.` })
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect((await s.c.state()).needsOwner).toBe('identity_changed')
+    expect((await s.c.turnOff()).ok).toBe(true)
+    expect((await s.c.state()).needsOwner).toBe(null)
+  })
+})
+
+describe('review round 1: the state names its remote.json and viewer (two builds share userData)', () => {
+  /** The state on disk, rewritten as if kept for something else. */
+  function restamp(p: Place, change: Record<string, unknown>) {
+    writeFileSync(p.stateFile, JSON.stringify({ ...fileJson(p.stateFile), ...change }), { mode: 0o600 })
+  }
+
+  it.each([
+    ['another remote.json', { file: createHash('sha256').update('/elsewhere/remote.json').digest('hex') }],
+    ['another viewer port', { viewerPort: 4392 }],
+  ] as Array<[string, Record<string, unknown>]>)('a state kept for %s reads as none: flagged, not wanted', async (_name, change) => {
+    const p = place()
+    await seeded(p)
+    restamp(p, change)
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect(s.events.outside).toBe(1)
+    expect((await s.c.state()).wanted).toBe(false)
+  })
+
+  it('the state names this remote.json and viewer', async () => {
+    const p = place()
+    await seeded(p)
+    expect(keptOnDisk(p)).toMatchObject({ file: fileIdOf(p), viewerPort: 4319 })
+  })
+
+  it('P9: the packaged app switched off; the checkout build writes the file; the packaged app restarts: flagged, not resumed', async () => {
+    const p = place()
+    await seeded(p, { devices: [device(newSecret(), A), device(newSecret(), B)] })
+    const pk = open(p)
+    expect((await pk.c.turnOff()).ok).toBe(true)
+    await pk.c.settled()
+    pk.c.stop()
+    // as if the checkout build had saved wanted true earlier
+    restamp(p, { wanted: true, viewerPort: 4392 })
+    const co = open(p, { isPackaged: false })
+    await co.c.tick()
+    expect((await co.c.removeDevice(B)).ok).toBe(true)
+    await co.c.settled()
+    const pk2 = open(p)
+    pk2.c.start()
+    for (let i = 0; i < 30; i += 1) await after(p, pk2, 5_000)
+    expect(pk2.events.resumed).toBe(0)
+    expect(fileJson(p.file).enabled).toBe(false)
+  })
+
+  it('a stale copy never switches the owner\'s off back to on: wanted is not raised but by turnOn', async () => {
+    const p = place()
+    await seeded(p)
+    // two controllers for the same file and viewer: the second switches off
+    const x = open(p)
+    await x.c.tick()
+    expect((await x.c.state()).wanted).toBe(true)
+    const y = open(p)
+    expect((await y.c.turnOff()).ok).toBe(true)
+    await y.c.settled()
+    expect(keptOnDisk(p).wanted).toBe(false)
+    // x still holds wanted true in memory; its next save may not raise it
+    expect((await x.c.removeDevice(A)).ok).toBe(true)
+    expect(keptOnDisk(p).wanted).toBe(false)
+    expect((await x.c.state()).wanted).toBe(false)
+    // x's own turnOn does
+    expect((await x.c.turnOn()).ok).toBe(true)
+    expect(keptOnDisk(p).wanted).toBe(true)
+  })
+
+  it('the resume checks the file is this viewer\'s: a kept state that matches another viewer\'s off file never resumes it', async () => {
+    const p = place()
+    await seeded(p)
+    // the packaged app's watch paused it: off, for viewer 4319
+    p.ts.self = starting()
+    const pk = open(p)
+    pk.c.start()
+    await pk.c.tick()
+    pk.c.stop()
+    const digest = (await pk.c.review()).digest
+    // a second packaged instance with another viewer port, whose kept state names this very file state
+    const { store } = memoryStore({ digest, wanted: true, file: fileIdOf(p), viewerPort: 4329 })
+    p.ts.self = selfStatus()
+    const other = open(p, { store, viewerPort: 4329 })
+    other.c.start()
+    for (let i = 0; i < 30; i += 1) await after(p, other, 5_000)
+    expect(other.events.outside).toBe(0)
+    expect(other.events.resumed).toBe(0)
+    expect(fileJson(p.file)).toMatchObject({ enabled: false, viewerPort: 4319 })
+    expect(await waitingOf(other)).toBe('needs_owner')
+  })
+})
+
+describe('review round 1: races with stop() and the owner\'s turnOff', () => {
+  it('P4: stop() while a resume is in flight: nothing written', async () => {
+    const p = place()
+    let gate: (() => Promise<void>) | null = null
+    const s = await paused(p, { serveGate: async () => { const g = gate; gate = null; await g?.() } })
+    p.ts.self = selfStatus()
+    gate = async () => { s.c.stop() }
+    await after(p, s, 5_000)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(s.events.resumed).toBe(0)
+  })
+
+  it('P5: turnOff called while the resume holds the lock: off at the end, onResumed never called', async () => {
+    const p = place()
+    let armed = false
+    let off: Promise<unknown> | null = null
+    let opens = 0
+    let s: ReturnType<typeof open> | null = null
+    s = await paused(p, {
+      beforeOpen: () => {
+        if (!armed) return
+        opens += 1
+        // the fourth read of the tick: the resume's read under the lock
+        if (opens === 4 && off === null) off = s!.c.turnOff()
+      },
+    })
+    p.ts.self = selfStatus()
+    armed = true
+    await after(p, s, 5_000)
+    await off
+    expect(off).not.toBe(null)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(s.events.resumed).toBe(0)
+    expect((await s.c.state()).wanted).toBe(false)
+  })
+
+  it('P5b: turnOff called right after the resume wrote the file: onResumed never called', async () => {
+    const p = place()
+    let armed = false
+    let off: Promise<unknown> | null = null
+    let s: ReturnType<typeof open> | null = null
+    s = await paused(p, {
+      fs: {
+        rename: async (from: string, to: string) => {
+          await fsPromises.rename(from, to)
+          if (armed && to === p.file && off === null) {
+            armed = false
+            off = s!.c.turnOff()
+          }
+        },
+      } as never,
+    })
+    p.ts.self = selfStatus()
+    armed = true
+    await after(p, s, 5_000)
+    await off
+    expect(off).not.toBe(null)
+    expect(s.events.resumed).toBe(0)
+    expect(fileJson(p.file).enabled).toBe(false)
+  })
+
+  it('P11: after stop(), state() reports no wait, and refresh() resumes nothing', async () => {
+    const p = place()
+    const s = await paused(p)
+    expect(await waitingOf(s)).toBe('tailscale_not_running')
+    s.c.stop()
+    expect(await waitingOf(s)).toBe(null)
+    p.ts.self = selfStatus()
+    await s.c.refresh()
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(await waitingOf(s)).toBe(null)
+  })
+})
+
+describe('review round 1: flapping backs off', () => {
+  /** Serve answers as `serve` says (n counts Serve's reads), for two simulated hours: the resume times, in minutes since the start. */
+  async function flap(serve: (n: number, at: number) => unknown) {
+    const p = place()
+    let n = 0
+    let t0 = 0
+    const s = await paused(p, {
+      onBeforeServe: () => {
+        n += 1
+        if (t0 > 0) p.ts.serve = serve(n, p.clock.now - t0)
+      },
+    })
+    p.ts.self = selfStatus()
+    t0 = p.clock.now
+    const resumes: number[] = []
+    while (p.clock.now < t0 + 2 * 3_600_000) {
+      const before = s.events.resumed
+      await after(p, s, 5_000)
+      if (s.events.resumed > before) resumes.push((p.clock.now - t0) / 60_000)
+    }
+    return { p, s, resumes }
+  }
+  const gaps = (times: number[]) => times.slice(1).map((t, i) => t - times[i]!)
+
+  it('P7: Serve good and bad at alternate reads: the waits double to 30 minutes, and it keeps trying', async () => {
+    const { s, resumes } = await flap((n) => (n % 2 ? goodServe(4320) : {}))
+    expect(resumes.length).toBeGreaterThanOrEqual(6)
+    expect(resumes.length).toBeLessThanOrEqual(10)
+    expect(s.events.stopped.length - 1).toBe(resumes.length)
+    const g = gaps(resumes)
+    for (let i = 1; i < g.length; i += 1) expect(g[i]!).toBeGreaterThanOrEqual(Math.min(g[i - 1]!, 30))
+    expect(Math.max(...g)).toBeLessThanOrEqual(31.5)
+    expect(g.at(-1)!).toBeGreaterThanOrEqual(30)
+    const state = await s.c.state()
+    expect(state.resume?.nextAt).toBeGreaterThan(START)
+  })
+
+  it('P7b: Serve good for 62 seconds, bad for 8: a few resumes an hour, not fifty', async () => {
+    const { resumes } = await flap((_n, at) => (at % 70_000 < 62_000 ? goodServe(4320) : {}))
+    expect(resumes.length).toBeLessThanOrEqual(10)
+    expect(resumes.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('the waits: 60 seconds, then 2, 4, 8, 16 and 30 minutes at most; state().resume.nextAt says when', async () => {
+    const p = place()
+    const s = await paused(p)
+    p.ts.self = selfStatus()
+    const waits: number[] = []
+    for (let k = 0; k < 7; k += 1) {
+      // resume, then a stop at the next check
+      while (s.events.resumed === k) await after(p, s, 5_000)
+      p.ts.serve = {}
+      await after(p, s, 5_000)
+      const stoppedAt = p.clock.now
+      const nextAt = (await s.c.state()).resume?.nextAt ?? 0
+      waits.push((nextAt - stoppedAt) / 1000)
+      p.ts.serve = goodServe(4320)
+    }
+    expect(waits).toEqual([60, 120, 240, 480, 960, 1800, 1800])
+  })
+
+  it('after the entry stayed on for 10 minutes, the wait is back to 5 seconds', async () => {
+    const p = place()
+    const s = await paused(p)
+    p.ts.self = selfStatus()
+    for (let k = 0; k < 3; k += 1) {
+      while (s.events.resumed === k) await after(p, s, 5_000)
+      p.ts.serve = {}
+      await after(p, s, 5_000)
+      p.ts.serve = goodServe(4320)
+    }
+    while (s.events.resumed === 3) await after(p, s, 5_000)
+    for (let i = 0; i < 10; i += 1) await after(p, s, 60_000)
+    p.ts.serve = {}
+    await after(p, s, 60_000)
+    const stoppedAt = p.clock.now
+    expect((await s.c.state()).resume?.nextAt).toBe(stoppedAt + 5_000)
+  })
+})
+
+describe('review round 1: flapping, the edges', () => {
+  it('a stop 9 minutes after a resume still backs off; after the wait, a failed try is retried a minute later', async () => {
+    const p = place()
+    const s = await paused(p)
+    p.ts.self = selfStatus()
+    await after(p, s, 5_000)
+    expect(s.events.resumed).toBe(1)
+    const resumedAt = p.clock.now
+    while (p.clock.now < resumedAt + 9 * 60_000) await after(p, s, 60_000)
+    p.ts.serve = {}
+    await s.c.refresh()
+    expect(s.events.stopped).toHaveLength(2)
+    const stoppedAt = p.clock.now
+    expect((await s.c.state()).resume?.nextAt).toBe(stoppedAt + 60_000)
+    // the try at the end of the wait fails: the next is a minute later, not 5 seconds
+    p.clock.now = stoppedAt + 60_000
+    await s.c.tick()
+    expect((await s.c.state()).resume?.nextAt).toBe(stoppedAt + 120_000)
+  })
+})
+
+/** The real store for `p`, whose first read waits until `release()`. */
+function heldStore(p: Place) {
+  const real = createRemoteEntryState({ filePath: p.stateFile })
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  let first = true
+  const store: RemoteEntryStateStore = {
+    read: async () => {
+      if (first) {
+        first = false
+        await gate
+      }
+      return real.read()
+    },
+    write: (state, how) => real.write(state, how),
+  }
+  return { store, release }
+}
+
+describe('review round 1: an owner\'s turnOff before the kept state is read', () => {
+  it('a change made while closed is still flagged once the state is read', async () => {
+    const p = place()
+    await seeded(p)
+    appendDevice(p.file, B)
+    const { store, release } = heldStore(p)
+    const s = open(p, { store })
+    expect((await s.c.turnOff()).ok).toBe(true)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(s.events.outside).toBe(0)
+    release()
+    await s.c.settled()
+    expect(s.events.outside).toBe(1)
+    expect((await s.c.state()).flag).toBe(true)
+    // and Review accepts the file as main's switch-off left it
+    expect(await s.c.acknowledge((await s.c.state()).flagDigest)).toEqual({ ok: true })
+  })
+
+  it('an unchanged file: quiet, and the switch-off is kept for the next start', async () => {
+    const p = place()
+    await seeded(p)
+    const { store, release } = heldStore(p)
+    const s = open(p, { store })
+    expect((await s.c.turnOff()).ok).toBe(true)
+    release()
+    await s.c.settled()
+    expect(s.events.outside).toBe(0)
+    const next = open(p)
+    next.c.start()
+    await next.c.tick()
+    expect(next.events.outside).toBe(0)
+    expect((await next.c.state()).wanted).toBe(false)
+  })
+})
+
+describe('review round 1: the state says a review is due before main writes', () => {
+  it('a write: pending first, then the real digest', async () => {
+    const p = place()
+    const { m, store } = memoryStore()
+    const s = open(p, { store })
+    s.c.start()
+    await s.c.tick()
+    m.writes.length = 0
+    expect((await s.c.turnOn()).ok).toBe(true)
+    expect(m.writes[0]).toMatchObject({ digest: PENDING, wanted: true })
+    expect(m.writes.at(-1)).toMatchObject({ digest: expect.stringMatching(/^[0-9a-f]{64}$/), wanted: true })
+    m.writes.length = 0
+    expect((await s.c.removeDevice('0000000000000000')).ok).toBe(true)
+    expect(m.writes[0]!.digest).toBe(PENDING)
+    expect(m.writes.at(-1)!.digest).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('P15: the save after a turnOff failed, the old on file put back while closed: flagged at the next start', async () => {
+    const p = place()
+    const { m, store } = memoryStore()
+    const s0 = open(p, { store })
+    s0.c.start()
+    await s0.c.tick()
+    expect((await s0.c.turnOn()).ok).toBe(true)
+    const onCopy = readFileSync(p.file, 'utf8')
+    // the pending save lands; every later one fails
+    const write = store.write
+    let calls = 0
+    store.write = async (state, how) => {
+      calls += 1
+      if (calls > 1) throw new Error('write broke')
+      return write(state, how)
+    }
+    expect((await s0.c.turnOff()).ok).toBe(true)
+    await s0.c.settled()
+    expect((await s0.c.state()).stateSaved).toBe(false)
+    expect(m.value?.digest).toBe(PENDING)
+    s0.c.stop()
+    store.write = write
+    writeFileSync(p.file, onCopy, { mode: 0o600 })
+    const s1 = open(p, { store })
+    s1.c.start()
+    await s1.c.tick()
+    expect(s1.events.outside).toBe(1)
+  })
+
+  it('stateSaved: null with no store, false when the first read failed, true once a write lands', async () => {
+    const p = place()
+    expect((await open(p, { store: null }).c.state()).stateSaved).toBe(null)
+    const broken = open(p, { store: { read: async () => { throw new Error('read broke') }, write: async () => { throw new Error('write broke') } } })
+    expect((await broken.c.state()).stateSaved).toBe(false)
+    // a read that worked, before any write
+    expect((await open(p, { store: memoryStore().store }).c.state()).stateSaved).toBe(true)
+    const { m, store } = memoryStore()
+    m.readFails = true
+    const s = open(p, { store })
+    expect((await s.c.state()).stateSaved).toBe(false)
+    s.c.start()
+    // the quiet baseline is saved at the first look
+    await s.c.tick()
+    expect((await s.c.state()).stateSaved).toBe(true)
+  })
+})
+
+describe('review round 1: a state store that never answers', () => {
+  it('P13: the owner\'s turnOff and the watch\'s stop write the file without waiting; the watch waits at most 5 seconds', async () => {
+    const p = place()
+    writeSetting(p.dir, setting(4320, [device(newSecret(), A)]))
+    const timers = heldTimers()
+    const store = { read: () => new Promise<never>(() => {}), write: () => new Promise<never>(() => {}) }
+    const s = open(p, { store: store as never, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout })
+    p.ts.serve = {}
+    // the owner's switch: lands at once
+    const off = await Promise.race([s.c.turnOff().then(() => 'settled'), new Promise((r) => setTimeout(() => r('hung'), 1_000))])
+    expect(off).toBe('settled')
+    expect(fileJson(p.file).enabled).toBe(false)
+    // the watch: stops an entry switched on by hand, then gives up on the store after 5 seconds
+    edit(p.file, (doc) => { doc.enabled = true })
+    let done = false
+    const ticking = s.c.tick().then(() => { done = true })
+    await waitUntil(() => timers.held.length > 0, 'the state read to be waited on')
+    expect(done).toBe(false)
+    timers.fire()
+    await waitUntil(() => { timers.fire(); return done }, 'the tick to end')
+    await ticking
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect((await Promise.race([s.c.state(), new Promise((r) => setTimeout(() => r('hung'), 1_000))]))).not.toBe('hung')
+  })
+
+  it('P14: a FIFO at the state path: turnOff lands at once, and the state reads as none', async () => {
+    const p = place()
+    writeSetting(p.dir, setting(4320, [device(newSecret(), A)]))
+    mkdirSync(join(p.dir, 'userData'), { recursive: true })
+    execFileSync('/usr/bin/mkfifo', [p.stateFile])
+    const s = open(p)
+    const off = await Promise.race([s.c.turnOff().then(() => 'settled'), new Promise((r) => setTimeout(() => r('hung'), 2_000))])
+    expect(off).toBe('settled')
+    expect(fileJson(p.file).enabled).toBe(false)
+    await s.c.settled()
+    expect(lstatSync(p.stateFile).isFile()).toBe(true)
+  })
+})
+
+describe('review round 1: what a resume compares', () => {
+  it.each([
+    ['a relabel that stays readable', (doc: Record<string, unknown>) => { (doc.devices as Array<Record<string, unknown>>)[0]!.label = 'renamed' }, true],
+    ['pairedAt', (doc: Record<string, unknown>) => { (doc.devices as Array<Record<string, unknown>>)[0]!.pairedAt = '2020-01-01T00:00:00Z' }, true],
+    ['an unknown field in a device', (doc: Record<string, unknown>) => { (doc.devices as Array<Record<string, unknown>>)[0]!.extra = 'x' }, true],
+    ['the host in capitals', (doc: Record<string, unknown>) => { doc.host = String(doc.host).toUpperCase() }, false],
+    ['the login in capitals', (doc: Record<string, unknown>) => { doc.logins = [String((doc.logins as string[])[0]).toUpperCase()] }, false],
+  ] as Array<[string, (doc: Record<string, unknown>) => void, boolean]>)('P8: %s while paused', async (_name, change, resumes) => {
+    const p = place()
+    const s = await paused(p)
+    edit(p.file, change)
+    p.ts.self = selfStatus()
+    await after(p, s, 5_000)
+    await after(p, s, 5_000)
+    expect(s.events.resumed).toBe(resumes ? 1 : 0)
+    expect(s.events.outside).toBe(resumes ? 0 : 1)
+    expect(fileJson(p.file).enabled).toBe(resumes)
+  })
+})
+
+describe('review round 1: review() shows the state Review accepts', () => {
+  it('P10: one read gives the view and its digest; a file changed after it is not accepted', async () => {
+    const p = place()
+    await seeded(p)
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    appendDevice(p.file, B)
+    await after(p, s, 5_000)
+    const flagged = readFileSync(p.file, 'utf8')
+    // the file changes as the panel reads it
+    edit(p.file, (doc) => { (doc.devices as unknown[]).pop() })
+    const shown = await s.c.review()
+    expect(shown.flag).toBe(true)
+    expect(shown.view.devices.map((d) => d.id)).toEqual([A])
+    writeFileSync(p.file, flagged, { mode: 0o600 })
+    // what was shown is not what is there: refused
+    expect(await s.c.acknowledge(shown.digest)).toEqual({ ok: false, reason: 'changed' })
+    const again = await s.c.review()
+    expect(again.view.devices.map((d) => d.id)).toEqual([A, B])
+    expect(await s.c.acknowledge(again.digest)).toEqual({ ok: true })
+  })
+})
+
+describe('review round 1: state().resume', () => {
+  it('a stop with willResume false reports no Tailscale wait', async () => {
+    const p = place()
+    await seeded(p)
+    appendDevice(p.file, B)
+    p.ts.self = starting()
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect(s.events.stopped[0]).toMatchObject({ willResume: false })
+    expect(await waitingOf(s)).toBe('flagged')
+  })
+})
+
 describe('the state file is the userData one, never remote.json\'s folder', () => {
   it('createRemoteEntryState with app names userData/remote-entry-state.json', async () => {
     const dir = scratchDir('remote-restart-')
     mkdirSync(join(dir, 'ud'))
     const store = createRemoteEntryState({ app: { getPath: (name: string) => (name === 'userData' ? join(dir, 'ud') : '') } })
-    await store.write({ digest: null, wanted: false })
+    await store.write({ digest: null, wanted: false, file: 'f'.repeat(64), viewerPort: 4319 })
     expect(existsSync(join(dir, 'ud', 'remote-entry-state.json'))).toBe(true)
   })
 })

@@ -3305,6 +3305,8 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 .connect-hub-address { color: var(--app-muted); font-size: var(--fs-meta); overflow-wrap: anywhere; }
 .connect-hub-status, .connect-busy { font-size: var(--fs-body); overflow-wrap: anywhere; }
 .connect-message { margin: var(--sp-2) 0 0; color: var(--app-danger); font-size: var(--fs-meta); }
+/* a note (the replaced Mac still lists this one), not an error */
+.connect-message.connect-note { color: var(--app-text-soft); }
 .connect-confirm { margin-top: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-elevated); }
 .hub-strip {
   position: fixed;
@@ -3322,8 +3324,9 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
   color: var(--app-text);
   font-size: var(--fs-body);
 }
-.hub-strip-title { min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.hub-strip-state { color: var(--app-muted); white-space: nowrap; }
+/* in a narrow window the status word gives way first, then the name; This Mac never does */
+.hub-strip-title { flex-shrink: 1; min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.hub-strip-state { flex-shrink: 1000; min-width: 0; overflow: hidden; color: var(--app-muted); text-overflow: ellipsis; white-space: nowrap; }
 .hub-strip-back { margin-left: auto; flex: none; }
 .hub-strip-back:focus-visible, .connect-settings button:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
 .hub-reconnecting { color: var(--app-warning); font-size: var(--fs-body); font-weight: 600; }

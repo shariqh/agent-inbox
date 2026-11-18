@@ -51,15 +51,37 @@ const flush = async () => {
 const strip = () => document.getElementById('hubStrip')
 const back = () => strip()?.querySelector<HTMLButtonElement>('button') ?? null
 
-function install(api: ReturnType<typeof connectBridge> | null, desk: unknown = localDesk()) {
-  return installHubStrip({ connect: () => api as never, desk: () => desk as never, documentRef: document })
+let uninstall: (() => void) | null = null
+// the strip's own timers, run by hand: the back-off after a read that did not answer
+let timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
+const runTimers = async () => {
+  const due = timers.filter((t) => !t.cleared)
+  timers = []
+  for (const t of due) t.fn()
+  await flush()
 }
+function install(api: ReturnType<typeof connectBridge> | null, desk: unknown = localDesk()) {
+  const handle = installHubStrip({
+    connect: () => api as never,
+    desk: () => desk as never,
+    documentRef: document,
+    setTimeout: (fn: () => void, ms: number) => { const t = { fn, ms, cleared: false }; timers.push(t); return t },
+    clearTimeout: (t: unknown) => { if (t) (t as { cleared: boolean }).cleared = true },
+  })
+  uninstall = handle ? handle.stop : null
+  return handle
+}
+// what the preload answers for any failed call (electron/setup-preload.cjs, connectCall)
+const OFF = { available: false }
 
 describe('the strip that says whose Inbox is on screen', () => {
   beforeEach(() => {
-    document.body.innerHTML = '<main><p>This Mac’s page</p></main>'
+    document.body.innerHTML = '<main><p>This Mac’s page</p><button id="hidden-control">Resolve</button></main><aside id="already-inert" inert></aside>'
+    timers = []
   })
   afterEach(() => {
+    uninstall?.()
+    uninstall = null
     document.body.replaceChildren()
   })
 
@@ -104,12 +126,13 @@ describe('the strip that says whose Inbox is on screen', () => {
 
   it.each<[State, string | null, string]>([
     ['online', null, 'Online'],
-    ['retrying', 'connecting', 'Reconnecting…'],
+    // one word per state, the same in Settings and on the other Mac's page
+    ['retrying', 'connecting', 'Connecting…'],
     ['retrying', 'stopped', 'Reconnecting…'],
     ['retrying', null, 'Reconnecting…'],
-    ['retrying', 'unreachable', 'Can’t reach it'],
-    ['retrying', 'not_running', 'Can’t reach it'],
-    ['retrying', 'bad_certificate', 'Can’t reach it'],
+    ['retrying', 'unreachable', 'Reconnecting…'],
+    ['retrying', 'not_running', 'Reconnecting…'],
+    ['retrying', 'bad_certificate', 'Reconnecting…'],
     ['refused', 'refused', 'No longer paired'],
     ['refused', 'node_changed', 'No longer paired'],
     [null, null, 'Checking…'],
@@ -153,8 +176,8 @@ describe('the strip that says whose Inbox is on screen', () => {
     expect(api.show).toHaveBeenCalledTimes(2)
     expect(api.show).toHaveBeenNthCalledWith(1, null)
     expect(api.show).toHaveBeenNthCalledWith(2, null)
-    // a read that fails changes nothing about what is on top: the strip and its button stay
-    api.view.mockRejectedValue(new Error('gone'))
+    // a read that fails (the preload answers { available: false }) changes nothing: the strip and its button stay
+    api.view.mockResolvedValue(OFF as View)
     api.set(view(ID))
     await flush()
     expect(back()?.disabled).toBe(false)
@@ -168,14 +191,133 @@ describe('the strip that says whose Inbox is on screen', () => {
     expect(back()?.disabled).toBe(false)
   })
 
-  it('is the first thing on the page, so it is the first stop for the keyboard', async () => {
+  it('a read that does not answer changes nothing on screen, and the strip reads again, backing off, until one does', async () => {
+    const api = connectBridge(view(ID, hub('online')))
+    install(api)
+    await flush()
+    api.view.mockResolvedValue(OFF as View)
+    api.set(view(ID))
+    await flush()
+    expect(strip()?.querySelector('.hub-strip-state')?.textContent).toBe('Online')
+    const delays: number[] = []
+    for (let i = 0; i < 7; i += 1) {
+      expect(timers.filter((t) => !t.cleared)).toHaveLength(1)
+      delays.push(timers[0]!.ms)
+      await runTimers()
+      expect(strip()).not.toBeNull()
+    }
+    expect(delays).toEqual([1000, 2000, 4000, 8000, 15000, 30000, 30000])
+    // a rejected read is the same
+    api.view.mockRejectedValue(new Error('gone'))
+    await runTimers()
+    expect(strip()).not.toBeNull()
+    // a real answer paints, and the reading stops
+    api.view.mockResolvedValue(view(ID, hub('retrying', 'unreachable')))
+    await runTimers()
+    expect(strip()?.querySelector('.hub-strip-state')?.textContent).toBe('Reconnecting…')
+    expect(timers.filter((t) => !t.cleared)).toHaveLength(0)
+  })
+
+  it('paints the newest answer when two reads cross', async () => {
+    const api = connectBridge(view(null))
+    const answers: Array<(value: View) => void> = []
+    api.view.mockImplementation(() => new Promise((resolve) => answers.push(resolve)))
+    install(api)
+    await flush()
+    api.set(view(ID))
+    await flush()
+    expect(answers).toHaveLength(2)
+    answers[1]!(view(ID))
+    await flush()
+    answers[0]!(view(null))
+    await flush()
+    expect(strip()).not.toBeNull()
+  })
+
+  it('is the first thing on the page', async () => {
     install(connectBridge(view(ID)))
     await flush()
     expect(document.body.firstElementChild).toBe(strip())
-    const focusable = document.body.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
-    expect(focusable).toBe(back())
     back()!.focus()
     expect(document.activeElement).toBe(back())
+  })
+
+  // #617 PR 3c fix round: this Mac's page is hidden under the other Mac's view, and acts only through the strip
+  it('makes everything else on the page inert while it shows, and gives it back as it was when it goes', async () => {
+    const api = connectBridge(view(ID))
+    install(api)
+    await flush()
+    const others = [...document.body.children].filter((el) => el !== strip())
+    expect(others.length).toBe(2)
+    for (const el of others) expect(el.hasAttribute('inert'), el.outerHTML).toBe(true)
+    expect(strip()!.hasAttribute('inert')).toBe(false)
+    // a part of the page added while it shows is inert too
+    const late = document.createElement('div')
+    document.body.appendChild(late)
+    await flush()
+    expect(late.hasAttribute('inert')).toBe(true)
+    api.set(view(null))
+    await flush()
+    expect(document.querySelector('main')!.hasAttribute('inert')).toBe(false)
+    expect(late.hasAttribute('inert')).toBe(false)
+    // what was inert before stays inert
+    expect(document.getElementById('already-inert')!.hasAttribute('inert')).toBe(true)
+  })
+
+  it('stops every key aimed outside it before the page’s own handlers, and lets its own button have them', async () => {
+    const seen: string[] = []
+    const pageKeys = (event: KeyboardEvent) => seen.push(`${event.type} ${event.key}`)
+    document.addEventListener('keydown', pageKeys, true)
+    document.addEventListener('keydown', pageKeys)
+    try {
+      const api = connectBridge(view(ID))
+      install(api)
+      await flush()
+      for (const key of ['e', 'x', '1', 'j', 'Enter', ' ']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+        document.body.dispatchEvent(event)
+        expect(event.defaultPrevented, key).toBe(true)
+        document.getElementById('hidden-control')!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+      }
+      expect(seen).toEqual([])
+      // Tab from anywhere outside lands on This Mac, never on a hidden control
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      document.body.dispatchEvent(tab)
+      expect(tab.defaultPrevented).toBe(true)
+      expect(document.activeElement).toBe(back())
+      // the strip's own button gets its keys
+      const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      back()!.dispatchEvent(enter)
+      expect(enter.defaultPrevented).toBe(false)
+      expect(seen).toEqual(['keydown Enter', 'keydown Enter'])
+      seen.length = 0
+      // gone: the page has its keys again
+      api.set(view(null))
+      await flush()
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true, cancelable: true }))
+      expect(seen).toEqual(['keydown e', 'keydown e'])
+    } finally {
+      document.removeEventListener('keydown', pageKeys, true)
+      document.removeEventListener('keydown', pageKeys)
+    }
+  })
+
+  it('gives way with its status word, never the name, in a narrow window (style.css)', () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public', 'style.css'), 'utf8')
+    const rule = (selector: string) => {
+      const at = css.indexOf(`\n${selector} {`)
+      return at < 0 ? '' : css.slice(at, css.indexOf('}', at))
+    }
+    const title = rule('.hub-strip-title')
+    const word = rule('.hub-strip-state')
+    const shrink = (body: string) => Number(/flex-shrink: (\d+);/.exec(body)?.[1] ?? NaN)
+    expect(shrink(word)).toBeGreaterThan(shrink(title) * 100)
+    for (const body of [title, word]) {
+      expect(body).toMatch(/min-width: 0;/)
+      expect(body).toMatch(/overflow: hidden;/)
+      expect(body).toMatch(/text-overflow: ellipsis;/)
+    }
+    expect(rule('.hub-strip-back')).toMatch(/flex: none;/)
   })
 
   it('draws once however often main says something changed, and follows each change', async () => {

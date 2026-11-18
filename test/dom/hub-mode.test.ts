@@ -48,6 +48,10 @@ function hubDesk(label = 'MBP', state: DeskState = 'online') {
       current = { ...current, ...next }
       for (const listener of [...listeners]) listener({ ...current })
     },
+    /** a change message carrying anything at all */
+    emit(value: unknown) {
+      for (const listener of [...listeners]) listener(value as DeskAnswer)
+    },
   })
 }
 
@@ -91,11 +95,11 @@ async function walk() {
   await pollTick()
 }
 
-// The scratch database and home folders, the item ids and the checkout's commit (in Settings'
-// build line) differ from run to run.
+// The scratch database and home folders and the item ids differ from run to run, and Settings'
+// build line names the checkout's commit, or is not drawn at all in a copy with no .git: dropped.
 const steady = (html: string) => html
+  .replace(/<p class="setup-hint">Running from the checkout[^<]*<\/p>/g, '')
   .replace(/\/(?:private|var|tmp|Users)\/[^\s"<]*/g, '<path>')
-  .replace(/HEAD [0-9a-f]{7,40}\b/g, 'HEAD <commit>')
   .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<uuid>')
 
 describe('the page with no agentInboxDesk (a browser, an older app)', () => {
@@ -218,6 +222,46 @@ describe('the page shown from another Mac (hub mode)', () => {
     await walk()
     expect(requests.filter((request) => REFUSED.test(request.split(' ')[1]!))).toEqual([])
     expect(brandLine()).toBe('Another Mac’s Inbox')
+  })
+})
+
+describe('the sidebar line while the mode is not known yet', () => {
+  it('is blank until the desk answers, then names the other Mac’s Inbox', async () => {
+    const desk = hubDesk('MBP')
+    let answer!: (value: DeskAnswer) => void
+    desk.connection.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    await bootApp(seed())
+    expect(brandLine()).toBe('')
+    answer({ mode: 'hub', label: 'MBP', state: 'online', version: null })
+    await settle()
+    expect(brandLine()).toBe('MBP’s Inbox')
+  })
+
+  it('is blank until the desk answers, then “Local workspace” again in this app’s own window', async () => {
+    let answer!: (value: unknown) => void
+    Object.defineProperty(window, 'agentInboxDesk', {
+      configurable: true,
+      value: { connection: () => new Promise((resolve) => { answer = resolve }), onConnection: () => () => {} },
+    })
+    await bootApp(seed())
+    expect(brandLine()).toBe('')
+    answer({ mode: 'local' })
+    await settle()
+    expect(brandLine()).toBe('Local workspace')
+  })
+})
+
+describe('hub mode never turns back', () => {
+  it('a later { mode: "local" } changes nothing: the line stays and no refused route is called', async () => {
+    const desk = hubDesk('MBP')
+    const { requests, interceptFetch } = recorder()
+    await bootApp(seed(), { interceptFetch })
+    desk.emit({ mode: 'local' })
+    await settle()
+    expect(brandLine()).toBe('MBP’s Inbox')
+    await walk()
+    expect(requests.filter((request) => REFUSED.test(request.split(' ')[1]!))).toEqual([])
+    expect(document.getElementById('hub-settings-note')?.textContent).toBe('Settings for this Inbox are changed on MBP itself.')
   })
 })
 

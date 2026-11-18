@@ -9,4 +9,7 @@ export function installHubStrip(opts?: {
   connect?: () => ConnectBridge | null | undefined
   desk?: () => DeskBridge | null | undefined
   documentRef?: Document
-}): { refresh(): Promise<unknown> } | null
+  /** For the back-off after an answer that is not main's (tests run them by hand). */
+  setTimeout?: (fn: () => void, ms: number) => unknown
+  clearTimeout?: (handle: unknown) => void
+}): { refresh(): Promise<unknown>; stop(): void } | null

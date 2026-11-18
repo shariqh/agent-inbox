@@ -32,7 +32,6 @@ export function installHubMode({ desk = () => globalThis.agentInboxDesk, documen
 
   function paint() {
     if (mode !== 'hub') return
-    const brand = documentRef.querySelector('.brand-copy small')
     if (brand) brand.textContent = label !== '' ? `${label}’s Inbox` : 'Another Mac’s Inbox'
     if (note) note.textContent = `Settings for this Inbox are changed on ${name()} itself.`
     const retrying = state === 'retrying'
@@ -51,12 +50,20 @@ export function installHubMode({ desk = () => globalThis.agentInboxDesk, documen
     documentRef.body?.classList.toggle('hub-reconnecting', retrying)
   }
 
+  // the sidebar line says nothing until the mode is known: neither "Local workspace" nor a label
+  const brand = documentRef.querySelector('.brand-copy small')
+  const localLine = brand?.textContent ?? ''
+  if (present && brand) brand.textContent = ''
+
   function apply(answer) {
     if (mode === 'pending' && answer !== null && typeof answer === 'object' && answer.mode === 'local') {
       mode = 'local'
+      if (brand) brand.textContent = localLine
       return
     }
     if (mode === 'local') return
+    // hub mode never turns back, and an answer that is not a hub's changes nothing in it
+    if (mode === 'hub' && (answer === null || typeof answer !== 'object' || answer.mode !== 'hub')) return
     mode = 'hub'
     label = answer !== null && typeof answer === 'object' && typeof answer.label === 'string' ? answer.label : ''
     state = answer !== null && typeof answer === 'object' && typeof answer.state === 'string' ? answer.state : null

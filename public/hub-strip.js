@@ -8,33 +8,83 @@
 //
 // Drawn only on this Mac's own page (agentInboxConnect exists and agentInboxDesk says `local`), and
 // only while `agentInboxConnect.view().showing` names the stored Mac. With nothing shown it is not
-// in the document at all. It is the first element of the body, so it is the first stop for the
-// keyboard. This Mac is never disabled: it asks main, over this Mac's own IPC, which works whether
-// or not the other Mac can be reached. The label is set with textContent.
+// in the document at all. Main shows the hub only while this page is the one the app owns
+// (hub-view.cjs, mayShow), the only page that hears agentInboxConnect.
+//
+// While it shows, this Mac's page is hidden under the other Mac's view, so it acts only through the
+// strip: everything else on the page is `inert`, and every key aimed outside the strip is stopped
+// before any of the page's own handlers (Tab moves to This Mac). Both end the moment it goes.
+//
+// An answer that is not `available: true` (the preload turns every failed call into one) says
+// nothing about what is on top: the strip stays as it is and reads again, backing off, until main
+// answers. This Mac is never disabled: it asks main, over this Mac's own IPC, which works whether or
+// not the other Mac can be reached. The label is set with textContent.
+import { stateWord } from '/connect-settings.js'
 
 /** CSS pixels; electron/hub-view.cjs's HUB_STRIP_HEIGHT, pinned equal by test/dom/hub-strip.test.ts. */
 export const HUB_STRIP_HEIGHT = 36
 
-// a word for the strip; Settings → Use another Mac's Inbox says the reason in full
-function stateWord(hub) {
-  if (hub.state === 'online') return 'Online'
-  if (hub.state === 'refused') return 'No longer paired'
-  if (hub.state === 'retrying') return hub.reason === null || hub.reason === 'connecting' || hub.reason === 'stopped' ? 'Reconnecting…' : 'Can’t reach it'
-  return 'Checking…'
-}
+// the waits before reading again after an answer that did not answer, in milliseconds
+const BACK_OFF = [1000, 2000, 4000, 8000, 15000, 30000]
+const KEY_EVENTS = ['keydown', 'keypress', 'keyup']
 
 export function installHubStrip({
   connect = () => globalThis.agentInboxConnect,
   desk = () => globalThis.agentInboxDesk,
   documentRef = globalThis.document,
+  setTimeout: later = (fn, ms) => globalThis.setTimeout(fn, ms),
+  clearTimeout: cancel = (handle) => globalThis.clearTimeout(handle),
 } = {}) {
   const api = connect()
   if (!api || typeof api.view !== 'function' || typeof api.show !== 'function') return null
+  const win = documentRef.defaultView
   let strip = null
   let title = null
   let word = null
+  let back = null
   let reads = 0
+  let retry = null
+  let misses = 0
+  let stopped = false
+  // the elements this strip made inert, and only those, so what was inert before stays inert
+  const madeInert = new Set()
+  let watcher = null
 
+  const shown = () => strip !== null && strip.isConnected
+
+  // ── this Mac's hidden page acts only through the strip ─────────────────
+  function guardKey(event) {
+    if (!shown() || strip.contains(event.target)) return
+    event.stopImmediatePropagation()
+    event.preventDefault()
+    if (event.type === 'keydown' && event.key === 'Tab') back.focus({ preventScroll: true })
+  }
+
+  function makeInert(element) {
+    if (element === strip || element.nodeType !== 1 || element.hasAttribute('inert')) return
+    element.setAttribute('inert', '')
+    madeInert.add(element)
+  }
+
+  function cover() {
+    for (const child of [...documentRef.body.children]) makeInert(child)
+    if (watcher === null && typeof win?.MutationObserver === 'function') {
+      watcher = new win.MutationObserver((records) => {
+        if (!shown()) return
+        for (const record of records) for (const node of record.addedNodes) makeInert(node)
+      })
+      watcher.observe(documentRef.body, { childList: true })
+    }
+  }
+
+  function uncover() {
+    watcher?.disconnect()
+    watcher = null
+    for (const element of madeInert) element.removeAttribute('inert')
+    madeInert.clear()
+  }
+
+  // ── the strip ──────────────────────────────────────────────────────────
   function build() {
     strip = documentRef.createElement('div')
     strip.id = 'hubStrip'
@@ -46,7 +96,7 @@ export function installHubStrip({
     title.className = 'hub-strip-title'
     word = documentRef.createElement('span')
     word.className = 'hub-strip-state'
-    const back = documentRef.createElement('button')
+    back = documentRef.createElement('button')
     back.type = 'button'
     back.className = 'hub-strip-back'
     back.textContent = 'This Mac'
@@ -60,28 +110,59 @@ export function installHubStrip({
   }
 
   function paint(view) {
-    const hub = view !== null && typeof view === 'object' && view.available === true ? view.hub : null
+    const hub = view.hub
     const showing = hub && typeof view.showing === 'string' && view.showing === hub.id ? hub : null
     if (showing === null) {
-      strip?.remove()
+      if (strip !== null) strip.remove()
+      uncover()
       return
     }
     if (strip === null) build()
     title.textContent = `Showing ${showing.label}’s Inbox`
     word.textContent = stateWord(showing)
     if (documentRef.body.firstElementChild !== strip) documentRef.body.prepend(strip)
+    cover()
+  }
+
+  function readAgain() {
+    if (retry !== null || stopped) return
+    const wait = BACK_OFF[Math.min(misses, BACK_OFF.length - 1)]
+    misses += 1
+    retry = later(() => {
+      retry = null
+      void refresh()
+    }, wait)
   }
 
   async function refresh() {
     const mine = ++reads
-    let view
+    let view = null
     try {
       view = await api.view()
     } catch {
-      // a failed read says nothing about what is on top: the strip stays as it was
+      view = null
+    }
+    if (mine !== reads || stopped) return
+    // not main's answer: nothing on screen changes, and the strip asks again
+    if (view === null || typeof view !== 'object' || view.available !== true) {
+      readAgain()
       return
     }
-    if (mine === reads) paint(view)
+    misses = 0
+    if (retry !== null) {
+      cancel(retry)
+      retry = null
+    }
+    paint(view)
+  }
+
+  function stop() {
+    stopped = true
+    for (const type of KEY_EVENTS) win?.removeEventListener(type, guardKey, true)
+    if (retry !== null) cancel(retry)
+    retry = null
+    uncover()
+    strip?.remove()
   }
 
   void (async () => {
@@ -93,9 +174,11 @@ export function installHubStrip({
     } catch {
       local = false
     }
-    if (!local) return
+    if (!local || stopped) return
+    // on the window, in the capture phase: before every handler the page has on its document
+    for (const type of KEY_EVENTS) win?.addEventListener(type, guardKey, true)
     if (typeof api.onChange === 'function') api.onChange(() => { void refresh() })
     await refresh()
   })()
-  return { refresh }
+  return { refresh, stop }
 }

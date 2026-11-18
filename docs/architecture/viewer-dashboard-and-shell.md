@@ -281,6 +281,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   could add more, until the human's first trusted click or key press on the
   Dashboard that is not reading it (a press on the line, ⌘/Ctrl shortcuts, keys
   with the line selected).
+- Where a session runs (#617, PR 1; `activity-and-live.md` has the fields and their patterns): a card's
+  second line (`.sc-where`) starts with "machine · desk" (`.sc-place`, from `placeLine` in the pure
+  `public/place.js`), and the session panel's meta line says it too. The panel adds a section
+  (`.sp-place`) with "Open in claude.ai", an ordinary `target="_blank"` link made by `textLinkHtml`
+  from `claudeSessionUrl`, and "Copy attach command", which copies `tmux attach -t '=<desk>'` through
+  `writeClipboard`. Each control exists only for a value that passes its pattern again on the page; a
+  row an older server wrote has none of the fields and draws exactly what it drew before.
 - Command-center polish (#307) adds no read and no answer surface. The keyboard help's "Dashboard" group is
   help-only (`legacy`) entries in `public/keys.js`; keep them legacy. The session
   panel (`.dash-focus`, from a card or ⌘K; since #454 mounted in the Dashboard grid

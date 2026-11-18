@@ -9,7 +9,8 @@ paths:
   - "electron/remote-*.cjs"
   - "test/serve-state.test.ts"
   - "test/remote-entry-settings.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts"
+  - "test/remote-connect.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-connect.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -23,7 +24,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c)
+## What is built (PR 2a, PR 2b, PR 2c, PR 3a)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -36,6 +37,11 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   settings store, the code and status requests to the app's own viewer, the self test and the
   watch. Its read-only Tailscale half is `electron/remote-tailscale.cjs`. Logic and tests only:
   nothing requires it yet (below).
+- `electron/remote-connect.cjs` (PR 3a): the other side, for main on the connecting Mac: the
+  address check, the hub among this Mac's Tailscale peers, pairing, the encrypted secret, the
+  probe, the device header and the connection state. Its pure rules are in
+  `electron/remote-connect-rules.cjs`. Logic and tests only: nothing requires it yet
+  ("Connecting from another Mac", below).
 
 ## What is not built yet
 
@@ -44,7 +50,10 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   **Test**, the removal command) and Open at login (the next PR). Until then nothing in the app
   writes `remote.json` or asks for a code. Any local process on the hub can still make one: the
   owner token is not a secret from local processes (below).
-- Connect mode in the desktop app (PR 3), and Open desk and notifications against a hub (PR 4).
+- The rest of connect mode (the next PR): the hub's page in its own view with its own partition
+  and preload, the header handler, navigation, download and permission handlers, the menu items,
+  the offline page, `powerMonitor` and the Settings form. Open desk and notifications against a hub
+  are PR 4.
 
 So the entry is still off for everyone until the owner writes `remote.json`. With no device in it,
 every request but pairing is refused.
@@ -310,7 +319,8 @@ directly. Every run is `execFile` with an argument array, no shell, a 5-second t
   about 5.5 KB.
 - `serve status --json` for Serve's shape (1 MiB cap).
 - `status --json` for the full peer list (16 MiB cap), for the connecting Mac to find the hub
-  among its peers in the next PR. Nothing here parses it yet.
+  among its peers. `electron/remote-connect-rules.cjs` parses it (PR 3a, below); nothing in the
+  hub controller does.
 
 Nothing here changes Tailscale's configuration. A source test pins the three lists and the one
 `execFile` call, and checks that `remote-entry.cjs` itself runs nothing.
@@ -431,6 +441,160 @@ timeout and redirects refused, and reads `entryStatus()` before and after. It pa
 the `device` count up by exactly one; otherwise it names the counter that rose. A request from the
 hub to its own Serve address carries its user's login (below), so that is the right pass. Nothing
 else depends on the self test.
+
+## Connecting from another Mac (PR 3a)
+
+`electron/remote-connect.cjs` is what main on the connecting Mac (say a laptop) uses to reach a
+hub. Its pure rules are in `electron/remote-connect-rules.cjs`, split for size only. Logic and
+tests only: nothing requires it yet. There is no view, no form, no menu item, no offline page and
+no IPC; the next PR adds them. `createRemoteConnect(options)` returns one object. Every dependency
+is an option (`fsImpl`, `execFile`, `exists`, `fetch`, `safeStorage`, `hostname`, `now`,
+`randomBytes`, `setInterval`, `clearInterval`, `onReload`), so the tests run no command, open no
+socket, touch no Keychain and never sleep. It logs nothing. No public operation rejects: a throw
+anywhere answers `{ ok: false, reason }`.
+
+The device secret is a credential for the whole hub: agents there may run commands without asking,
+and a message to a session is as good as running commands. This module is the only thing on the
+laptop that holds it in plain text, and only in memory.
+
+**The store.** userData `remote-connect.json`, written only through `createLockedFile` (temp file
+and rename under the lock, mode `0600`): `{ schema: 1, active: <id> | null, hubs: { <id>: {
+origin, label, node, machine, device, secret } } }`, `id` 8 random hex characters. One hub at most
+for now, but every hub value sits under its `id`. There is no terminal command or SSH host yet
+(PR 4). Unknown fields are kept, at the top level and in an entry. A file that cannot be read, is
+over 64 KiB, is not JSON, has no valid schema, has a newer schema, or holds an entry that fails any
+rule reads as no hub, with a fixed `problem`: `unreadable`, `too_large`, `not_json`, `bad_schema`,
+`newer_schema` or `bad_entry`. Such a file is written only by `forget` (when it parses) or by a
+`connect` with `replace: true`, after the owner confirms. A newer schema is never written.
+
+**The address.** `parseHubOrigin(text)` takes `https://<host>` or a bare host, to which it adds
+`https://`. It refuses, as `bad_address`: any other scheme (`http:` included), user info (even
+empty), a port (even `:443`), a path other than `/`, a query or fragment (even empty), a space,
+tab, newline, control character, backslash or `%` anywhere, and a host that fails the reader's host
+rule (so an IP address, a trailing dot, an underscore or a non-ASCII name). The host is lowercased;
+the answer is `https://<host>` with no trailing slash. Each rule is checked on the text as written,
+because the URL parser drops an empty user, `:443`, an empty query and tabs without a trace.
+
+**The hub must be one of the owner's own untagged devices.** `findHub(host)` runs `tailscale status
+--json` (the full peer list, 16 MiB cap) through `electron/remote-tailscale.cjs`, and answers `{
+ok: true, node }` only when: the backend is `Running`; this node has no tags and its `UserID`
+names a user that is not Tailscale's placeholder for tagged devices; `host` is one label in front of
+the tailnet's MagicDNS suffix; and exactly one peer has that `DNSName` (lowercased, trailing dot
+dropped), with no tags (`null` and `[]` count as none), the same `UserID` as this node, and a
+string `ID`. That `ID` is the node: Tailscale's stable node id, which the real output carries as
+`ID` (there is no `StableID` key). `UserID` is read from the JSON text, so ids past 2^53 are
+compared by their digits, never as floats. Otherwise a fixed word: `no_cli`, `failed`,
+`not_running`, `tagged_self`, `not_in_tailnet`, `not_found`, `duplicate_name`, `not_your_device`,
+`tagged_device`. The document is parsed inside the call and only the node leaves it. The hub's own
+name is never in `Peer`, so a copy of the app on the hub cannot connect to the hub's own address
+(`not_found`).
+
+The tailnet rules are mirrored from meshctl (`inTailnet` in `src/mesh-config.ts`, `suffixFrom` in
+`src/meshctl.ts`), not loaded from `dist/`, so the module stays synchronous and works without a
+build; the code rule (`normaliseCode`) and the label rule (`isDeviceLabel`) are mirrored from
+`src/remote-pair.ts`. Tests compare each copy with the TypeScript one over many inputs.
+
+**Connect.** `connect({ address, code, replace })`, in this order:
+
+1. Refused off macOS (`unsupported`) and without `safeStorage.isEncryptionAvailable()`
+   (`no_keychain`): there is no plain-text fallback.
+2. `parseHubOrigin`, then the code, normalised the hub's way (case, spaces and dashes ignored, `I`
+   and `L` read as `1`, `O` as `0`, then exactly 10 Crockford characters). A malformed code is
+   refused here (`bad_code`), because on the hub it would use up one of the code's five tries.
+3. The file: a newer schema (`newer_schema`), a bad file without `replace` (`bad_file`), or a hub
+   already stored without `replace` (`hub_exists`) is refused before the code is spent.
+4. `findHub`.
+5. `POST <origin>/api/remote/pair` with exactly `Origin: <origin>` and `Content-Type:
+   application/json`, the body `{ code, label }`, `redirect: 'error'` and a 5-second timeout. No
+   device header, no cookie. The answer must be a 200 with `x-agent-inbox-remote-boundary:
+   tailnet-v1` and a JSON body of at most 1 KiB with `ok === true`, a 16-hex `device` and a
+   43-character base64url `secret`. Otherwise: `unreachable` (a network error or timeout, a
+   redirect, plain HTTP on port 443), `bad_certificate`, `not_agent_inbox` (a 200 without the
+   marker, any status but 403, a body of the wrong shape), or `refused` (a 403). The hub answers
+   the same bare 403 for a wrong, expired or used-up code and for a login it does not allow, so
+   `refused` cannot say which.
+6. The secret is encrypted with `safeStorage.encryptString` and stored as base64, with `node`,
+   `device`, `origin` and a provisional label, under a new `id`, made `active`. When this step
+   fails after the hub has paired (the Keychain refuses, the write fails), the answer carries
+   `pairedOnHub: true`: the hub lists a device this Mac cannot use, to be removed there.
+7. `probeHub`. When it is online, `machine` and the final label are stored. When it is not, the
+   pairing is kept and the answer says the state: `{ ok: true, id, label, state, reason }`.
+
+This Mac's name on the hub (the `label` sent with the code) is its own short host name: the part
+before the first dot, without characters the label rule refuses, at most 40 characters, else `Mac`.
+The hub's name on this Mac is the `machine` it reports in `/api/version` (cut to 40 characters),
+else the first label of its address. The form asks only for the address and the code.
+
+A certificate error is recognised the way Node's `fetch` reports one: a `TypeError` "fetch failed"
+whose `cause` (or a deeper cause) carries OpenSSL's verify code, such as
+`DEPTH_ZERO_SELF_SIGNED_CERT`, `CERT_HAS_EXPIRED`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` or
+`ERR_TLS_CERT_ALTNAME_INVALID`. Those two shapes were seen on Node 24 against a local server with a
+self-signed certificate and with one issued to another name.
+
+**The secret in use.** It is decrypted once per connection state and kept only in this module's
+memory. A JavaScript string cannot be wiped, so "cleared" means the module drops its only
+reference: on `forget`, on `stop`, on a new pairing or a new stored hub, and whenever the node
+check is refused.
+
+- `deviceHeaderFor(url)` is synchronous and cheap, for the next PR's `onBeforeSendHeaders`. It
+  answers the secret only when a hub is active, the node check has passed in this connection state,
+  `url` parses as `https:` with no user info (even empty), and its origin equals the hub's
+  `https://<host>`, compared as parsed origins, never as string prefixes. The default port and a
+  host written in another case are the same origin; another port, a sub-domain, a look-alike that
+  starts or ends with the hub's name, and a trailing dot are not.
+- `hubFetch()` returns a `fetch`-shaped function for main's own requests to the hub. It rejects
+  (before calling `fetch`) any input that is not a string or `URL` on the hub's origin, sets the
+  header (replacing one the caller set), forces `redirect: 'error'` and a 5-second timeout joined
+  to the caller's signal, and rejects a 3xx response a `fetch` handed back anyway. Its errors carry
+  a fixed message and code, never the secret.
+
+**The node check.** Before the first probe after `start()`, after each `kick()`, and before the
+first probe after any probe that was not online, `findHub(host)` runs again. When the node differs
+from the stored one, or the hub is no longer this person's untagged device, nothing is sent, the
+secret is dropped from memory, and the state is `refused` with `node_changed` (or the `findHub`
+word). It is checked again every 60 seconds; only the stored node passes, so it stays refused until
+the name is back on that node or the owner pairs again. When Tailscale cannot be read (`no_cli`,
+`failed`, `not_running`), nothing is sent and the state is `retrying`: the secret is never sent on a
+guess. A stored secret that cannot be decrypted is `refused` (`secret_unreadable`); a Keychain that
+is not available is `retrying` (`no_keychain`).
+
+**The probe.** `probeHub()` sends `GET <origin>/api/version` through `hubFetch` and answers `{ ok:
+true, state, version, machine }`: `online` only for a 200 with the marker and a JSON body (at most
+64 KiB) whose `current` is a string of 1 to 64 characters with no control character, with
+`machine` kept only when it passes the place-name rule; `refused` for a 403 (this Mac is no longer
+paired, or its login is no longer allowed); `unreachable` for a network error, a timeout, a
+certificate error or a redirect; `not_agent_inbox` for anything else. When the node check holds the
+request back, it answers `{ ok: false, reason }` with the check's word and sends nothing.
+
+**The connection state.** `start()` sets a 1-second timer that calls `tick()`; tests call `tick()`
+themselves. `connection()` answers `{ mode: 'local' }` with no active hub, else `{ mode: 'hub', id,
+label, state, reason, version }`, `state` one of `online`, `retrying` or `refused`. Before the first
+probe it is `retrying` with the reason `connecting`. `onConnection(callback)` returns an unsubscribe
+function and calls back only when the answer changes; a callback that throws stops nothing.
+
+- Online: probed every 60 seconds, with no node check in between.
+- Retrying: from 2 seconds, doubling to 60 (2, 4, 8, 16, 32, 60, 60, ...), with the node check
+  before each try.
+- Refused: tried every 60 seconds.
+- `kick()` (the next PR calls it on wake, unlock and when the network comes back) holds the header
+  back at once, resets the backoff, and checks the node and probes straight away.
+- When `version` differs from the last online probe's, `onReload()` is called once. The first online
+  probe after start does not call it.
+- Probes never overlap: connect, forget and every probe run one at a time.
+- `stop()` clears the timer, drops the secret and any probe in flight, and nothing more is sent.
+
+**`view()`**, for the Settings form: `{ available, keychain, hub: { id, label, origin, machine,
+state, reason } | null, problem }`. It never holds the secret, the encrypted blob, the device id or
+the node id. `available` is false off macOS.
+
+**`forget(id)`** removes the hub's entry, clears `active`, drops the secret and stops the retries at
+once, even when the file cannot be written. The hub still lists the device until it is removed
+there, in the hub's Settings.
+
+**What it never does.** It runs no Tailscale command but `status --json`, and never changes
+Tailscale. It never sends the secret to any origin but the active hub's, never follows a redirect,
+sends no cookie, never stores the secret unencrypted, never returns, logs or throws the secret or
+the code, and never sends the pairing request with a device header.
 
 ## Checked against real Tailscale Serve
 

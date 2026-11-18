@@ -9,8 +9,9 @@ paths:
   - "electron/remote-*.cjs"
   - "test/serve-state.test.ts"
   - "test/remote-entry-settings.test.ts"
+  - "test/remote-entry-restart.test.ts"
   - "test/remote-connect.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-connect.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -24,7 +25,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 3a)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2e, PR 3a)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -37,6 +38,8 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   settings store, the code and status requests to the app's own viewer, the self test and the
   watch. Its read-only Tailscale half is `electron/remote-tailscale.cjs`. Logic and tests only:
   nothing requires it yet (below).
+- `electron/remote-entry-state.cjs` (PR 2e): what the controller keeps across restarts, in userData
+  `remote-entry-state.json`. Only `remote-entry.cjs` requires it.
 - `electron/remote-connect.cjs` (PR 3a): the other side, for main on the connecting Mac: the
   address check, the hub among this Mac's Tailscale peers, pairing, the encrypted secret, the
   probe, the device header and the connection state. Its pure rules are in
@@ -391,7 +394,8 @@ owner token is never returned or logged.
 - While the entry is on: at start and every 60 seconds, `tailnetSelf()` and `serveState()`. A read
   that failed, or a check that threw, is tried once more 5 seconds later before it counts. When the
   shape is not ok, or this node no longer has the stored host and an allowed login (ignoring case),
-  the watch calls `turnOff()` and then `onStopped(reason, { off })`, once per stop. When that
+  the watch writes `enabled: false` and then calls `onStopped(reason, { off, willResume })`, once
+  per stop (`willResume`: below, "Across restarts"). When that
   turn-off did not land (`off: false`), each later tick tries it again until it does, without a new
   notice. An entry switched back on (by `turnOn()` or by hand) that fails again is a new stop,
   announced again. While the entry is off,
@@ -423,18 +427,112 @@ owner token is never returned or logged.
   output. No callback and no `state()` carries a login, a hash, the owner token or a code;
   `view().logins` holds the file's logins for the panel.
 
-**Known limits and gaps.**
+**Across restarts (PR 2e).** With the `stateStore` option, the controller keeps a small state in
+userData `remote-entry-state.json` (`electron/remote-entry-state.cjs`): `{ schema: 1, digest,
+wanted, file, viewerPort }`, written through `createLockedFile` (mode `0600`), unknown fields kept.
+`file` is the SHA-256 of `remote.json`'s absolute path and `viewerPort` the viewer it is for: the
+checkout build and the installed app share one userData folder, and a state kept for another file
+or viewer reads as none. The file is read as `remote.json` is: opened without following a symlink
+and without blocking, a regular file this user owns, at most 64 KiB; anything else, a bad file and a
+newer schema read as no state, and a newer schema is never written over. Every call to the store is
+waited for at most 5 seconds; a call that takes longer counts as failed. A read that fails counts as
+no state. Without a state store the controller behaves as it did in PR 2c: the first read is the
+baseline, and nothing comes back by itself.
 
-- A change made to `remote.json` while the app is closed takes effect at the next start with no
-  notification, because the first read after `start()` is the baseline; the device list is the
-  only record. The next PR closes this with a baseline main keeps across restarts.
-- When Tailscale is not running or cannot be read at the first check after the app starts (a
-  restart where the app opens before Tailscale is up), the entry is switched off and stays off
-  until the owner switches it on again. This is a gap against design §3.5 ("coming back by
-  itself"), closed by the next PR.
+- `digest` is the digest of the state main last wrote, recorded as an expected pairing, or the owner
+  acknowledged, or `pending`, which no file has. It is `pending` while a change is flagged (saved as
+  soon as the flag is raised), whenever no digest is kept, and before every write main makes to
+  `remote.json`: main saves `pending` (with the `wanted` the operation will leave), writes the file,
+  then saves the real digest. So any start before the owner's review flags again, whatever
+  `remote.json` holds, including a file put back to an earlier state main wrote; and so does a start
+  after a crash between the two saves, or after the second save failed. `state().stateSaved` is
+  null until the first read, false when that read or the last write failed, true otherwise. If
+  every write fails (the first too), the store still holds the state before the operation, and the
+  next start compares with that.
+- At the first look after a start, a file whose digest differs from the kept one is an outside change:
+  `onOutsideChange()` once and the flag. With no digest kept (a first run, or the state file lost or
+  unreadable), a file that is on or holds any device entry, readable or not, is flagged the same way,
+  and so is a file the reader refuses (it cannot tell); an absent file, or one that is off with no
+  device entry, becomes the baseline silently. Nothing is reverted. When main writes while a change
+  is flagged (the owner presses Remove, or the watch stops the entry), the flag stays and its digest
+  becomes that of the file main wrote, so Review accepts the file as it now is.
+- `review()` reads the file once and returns `{ view, digest, flag }`: the panel shows that view, and
+  its Review button passes that `digest` to `acknowledge()`, which accepts it only if the file still
+  has it. So the owner never accepts a state they were not shown.
+- `wanted` is the owner's intent. `turnOn()` sets it; `turnOff()` and `repairPermissions()` clear
+  it; the watch's own stop leaves it, except a stop for this node's identity (below). Acknowledging a
+  state that is not on for this viewer also clears it: a file switched off or edited by anything else
+  is never switched back on by itself. The store never raises `wanted` from false to true unless the
+  owner's own `turnOn()` asks it to, after reading the stored state again under its lock: another
+  copy of the controller holding a stale `wanted` can lower it, never raise it, and follows the store.
+- While `wanted` is true and the file is off, the watch tries to resume: at once and then every 5
+  seconds for 2 minutes after `start()` or after its own stop, then every 60 seconds. A stop within
+  10 minutes of a resume backs off: the next try waits 60 seconds, then 2, 4, 8 and 16 minutes, then
+  30 minutes at most, and later tries come every 60 seconds; once the entry stayed on for 10 minutes,
+  the next stop waits 5 seconds again. It always tries again. `state().resume` is `{ waiting, nextAt }`.
+- A resume writes only when all of this holds at that moment: no flag; no identity change seen; the
+  file passes the reader, is for this viewer and port, holds one login and is off; its watched fields
+  are exactly those main last wrote and kept (`enabled`, `host`, `port`, `viewerPort`, `logins`, and
+  each device's id, hash and whether the reader keeps it; not a label that stays readable,
+  `pairedAt` or an unknown field); `tailnetSelf()` is ok with the stored host and login (case
+  ignored); and `serveState(host, port)` is ok. It then writes `enabled: true` and nothing else,
+  under the lock, after reading the file again and finding it equal, key for key and value for value,
+  to the one checked, and after checking that the watch is still started, no owner operation ran and
+  main wrote nothing meanwhile. If the owner switched it off while it wrote, no resume is announced.
+  Otherwise it calls `onResumed()`, and the watch checks Serve and the identity again at the next tick.
+- A stop for Serve's shape (Funnel, another path, a TCP forward, a foreground session, a service)
+  or for a Tailscale that is not up resumes once the shape is again exactly the one the owner
+  switched on under. The owner is usually not at this Mac: an ad-hoc `tailscale serve` run in a
+  terminal must not cost them the Inbox until they are back at the keyboard.
+- A stop for this node's identity never resumes. When the host or login differ from the stored ones,
+  or the node is tagged (at a check while on, or when a resume reads it), nothing is written, no
+  device is removed, `wanted` is cleared and saved, and `state().needsOwner` is `identity_changed`:
+  only the owner's switch turns it on again (which removes the devices if the identity still
+  differs), across restarts too, even when the identity comes back.
+- Off means off. When the state read for this `remote.json` and viewer says `wanted: false` (the
+  owner switched sharing off) and the file is on for this viewer anyway, put back or edited behind
+  the app's back, the watch switches it off again at the first look after `start()` and at every
+  later file check: `enabled: false` and nothing else, the same write as its own stop, before any
+  Tailscale read and without waiting for one. It calls `onStopped('not_wanted', { off, willResume:
+  false })` once per occurrence, `state().stopped` says so, the change is flagged as any other
+  (Review accepts the file as main left it), and a write that does not land is retried at every
+  tick. It never writes `enabled: true`, never removes a device and is never a resume. Only an
+  explicit `wanted: false` read for this file and viewer counts: with no state, a state for another
+  file or viewer, a read that failed or timed out, or no state store, the change is only flagged,
+  because an unknown is not the owner's Off.
+- The owner's `turnOff()`, the watch's own stop and `repairPermissions()` never wait on the state
+  store: they write `remote.json` first and the state follows. The watch's file check waits for the
+  first read of the state (at most 5 seconds), because the first look needs the kept digest; a
+  switch-off made before that read is judged once it is done. `settled()` resolves once every queued
+  state write is done; main should call it before quitting.
+- `onStopped(reason, { off, willResume })`: `willResume` is true when the watch will try to switch
+  it back on (a pause, not a stop). `state()` adds `wanted`, `stateSaved`, `needsOwner`, and
+  `resume: { waiting, nextAt }` while it waits, `waiting` being one of `tailscale_not_running`,
+  `tailscale_unreadable`, `serve_not_ok:<reason>`, `flagged`, `changed_outside`, `needs_owner` or
+  `write_failed`. After a stop that will not resume, `waiting` is never a Tailscale word, and after
+  `stop()` `resume` is null.
+- The state file is a tripwire against a silent change, not a boundary. A process that can write both
+  files defeats it: it can set the digest to match its own edit, or set `wanted`. An edit to
+  `remote.json` alone is flagged at the next start, including a file put back to an earlier state
+  main wrote, unless the state could not be saved at all. Such a process can already switch the entry on by editing `remote.json`; the state file
+  gives it nothing more.
+- Every notice is raised on the hub: a pause, a stop, a resume and an outside change are native
+  notifications on the hub Mac, where the owner usually is not. The next PRs must make a pause
+  visible from the connected Mac too.
+
+**Known limits.**
+
 - A hash swapped under a just-paired id before the next check is announced as the expected
   pairing, because the viewer's `paired` list carries no hash; the owner's device then fails to
   connect.
+- On the first run with a state store, a `remote.json` that already holds devices is flagged once,
+  and `wanted` starts false: until the owner switches the entry on once, a stop is not a pause.
+- For the owner's Off, the watch's own stop and the repair, the `pending` save is queued before the
+  file write but not awaited, so those operations never wait on the state store. A crash in that
+  window, followed by `remote.json` being put back, can start without a flag.
+- The checkout build and the installed app keep one state between them: when both run, each save
+  replaces the other's, and the other's next start reads no state (a file with devices is then
+  flagged, and `wanted` is false). Safe, but noisy.
 
 **`selfTest()`** fetches `https://<host>/api/version` from main with no device secret, a 5-second
 timeout and redirects refused, and reads `entryStatus()` before and after. It passes on a 403 with

@@ -50,6 +50,8 @@ import { installDashHead } from '/dash-head.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
+// #617 PR 2d: Settings → Other devices, sharing this Inbox with the owner's other Macs
+import { refreshRemoteSettings, renderRemoteSettings } from '/remote-settings.js'
 // #617 PR 3c: another Mac's Inbox — the page shown from it, and this Mac's own screens for it
 import { installHubMode } from '/hub-mode.js'
 import { refreshConnectSettings, renderConnectSettings } from '/connect-settings.js'
@@ -6384,6 +6386,7 @@ function showPanel(id) {
     refreshLinkPermission()
     refreshLinkSettings()
     refreshLaunchSettings()
+    refreshRemoteSettings()
     refreshConnectSettings()
   }
 }
@@ -11643,6 +11646,8 @@ async function renderSetup() {
   // #586: which terminal Open in Terminal and Take over use; the buttons' titles follow at once
   renderTerminalSettings(host, { onChange: () => launchUi?.refresh() })
   renderLaunchSettings(host, { onChange: (state) => launchUi?.setState(state) })
+  // #617 PR 2d: drawn only in the desktop app, after the sections above
+  renderRemoteSettings(host)
   // #617 PR 3c: Settings → Use another Mac's Inbox, on this Mac's own page only
   renderConnectSettings(host)
   try {

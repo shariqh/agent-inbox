@@ -1,7 +1,8 @@
 'use strict'
 // The hub's remote-entry controller (#617, PR 2c): what the desktop app's main process uses to
-// own `remote.json` and to check Tailscale. Logic only: no window, no IPC, no page (the next PR
-// wires it to IPC, a preload bridge, notifications and the Settings panel).
+// own `remote.json` and to check Tailscale. Logic only: no window, no IPC, no page. PR 2d wires it:
+// electron/main.cjs makes one per run, and ./remote-entry-ipc.cjs gives it its channels, its
+// notifications and what Settings → Other devices (public/remote-settings.js) draws.
 //
 // Design: docs/superpowers/specs/2026-11-17-remote-inbox-design.md §3.2 ("Writers", "Serve's
 // shape, checked by main", "Changes made behind the app's back", "The hub's Settings");
@@ -68,6 +69,16 @@ const CODE_WAIT_MS = 6_000
 const CODE_WINDOW_MS = 11 * 60_000
 const CODE_LIFE_MS = 10 * 60_000
 const CODES_KEPT = 4
+// #617 PR 2d: after turnOn's write, and before the self test, the viewer's status is read this
+// often, for at most this long, until it listens on this port
+const LISTEN_EVERY_MS = 250
+const LISTEN_WAIT_MS = 6_000
+// while sharing is off and Serve still names this address or port (the removal hint), Serve is read
+// again this often, and on recheckHint() at most this often (review round 1, item 6)
+const HINT_EVERY_MS = 60_000
+const HINT_RECHECK_MS = 5_000
+// the viewer's bind failure, as its status words it (src/viewer-remote.ts openServer)
+const BIND_FAILURE = /^could not listen on 127\.0\.0\.1:(\d+) \(([A-Za-z0-9_]+)\)$/
 // resuming: every 5 seconds for 2 minutes after start() or the watch's own stop, then every minute
 const RESUME_FAST_MS = 5_000
 const RESUME_FAST_FOR_MS = 2 * 60_000
@@ -79,6 +90,9 @@ const BACKOFF_MAX_MS = 30 * 60_000
 const STATE_TIMEOUT_MS = 5_000
 const PACKAGED_PORT = 4320
 const CHECKOUT_PORT = 4393
+// a checkout build only (#617, PR 2d), mirroring AGENT_INBOX_PORT: so the panel can be proven
+// against a Serve configuration that already forwards to another port. The packaged app ignores it.
+const REMOTE_PORT_ENV = 'AGENT_INBOX_REMOTE_PORT'
 
 // The viewer's reader rules (src/viewer-remote.ts readRemoteSetting), mirrored;
 // test/remote-entry-settings.test.ts compares the two over many files so they cannot drift.
@@ -106,12 +120,45 @@ function remoteFile(env = process.env, home = os.homedir()) {
   return path.join(db ? path.dirname(path.resolve(db)) : path.join(home, '.agent-inbox'), REMOTE_FILE)
 }
 
+/**
+ * The entry's loopback port: 4320 for the packaged app; 4393 for a checkout build, or
+ * AGENT_INBOX_REMOTE_PORT when that is written as a plain integer from 1024 to 65535.
+ */
+function entryPort({ isPackaged, env = process.env }) {
+  if (isPackaged === true) return PACKAGED_PORT
+  const text = env[REMOTE_PORT_ENV]
+  const value = typeof text === 'string' && /^[1-9]\d{3,4}$/.test(text) ? Number(text) : null
+  return value !== null && value >= 1024 && value <= 65535 ? value : CHECKOUT_PORT
+}
+
 // ── remote.json ────────────────────────────────────────────────────────────
 
 /** A device entry the viewer's reader keeps: a 16-hex id, a label by the label rule, a 64-hex hash. */
 function validDevice(entry) {
   return isObject(entry) && typeof entry.id === 'string' && DEVICE_ID.test(entry.id) && validLabel(entry.label)
     && typeof entry.secretSha256 === 'string' && SHA256_HEX.test(entry.secretSha256)
+}
+
+/**
+ * Which entries of a device list the reader keeps: each valid by validDevice, and the first entry
+ * with its id (#617, PR 2d review round 2). A later entry with an id already used is unreadable
+ * whatever it holds, so a second key under a paired Mac's id never opens the gate. The viewer's
+ * reader in src/viewer-remote.ts applies the same rule.
+ */
+function readableEntries(listed) {
+  const seen = new Set()
+  return listed.map((entry) => {
+    const id = isObject(entry) ? entry.id : undefined
+    const first = typeof id === 'string' && !seen.has(id)
+    if (typeof id === 'string') seen.add(id)
+    return first && validDevice(entry)
+  })
+}
+
+/** The entries the reader keeps, in order. */
+const readableOf = (listed) => {
+  const keep = readableEntries(listed)
+  return listed.filter((_, i) => keep[i])
 }
 
 /** The reader's field rules on a parsed document: the checked setting, or the fixed reason it is off. */
@@ -127,7 +174,7 @@ function parseSetting(doc) {
   const listed = doc.devices === undefined ? [] : doc.devices
   if (!Array.isArray(listed) || listed.length > 16) return { ok: false, reason: 'bad_devices' }
   // a malformed device is dropped, never turning the rest off, but still counted
-  const devices = listed.filter(validDevice).map(({ id, label, pairedAt }) => ({
+  const devices = readableOf(listed).map(({ id, label, pairedAt }) => ({
     id, label, pairedAt: typeof pairedAt === 'string' && PAIRED_AT.test(pairedAt) ? pairedAt : null,
   }))
   return {
@@ -228,14 +275,69 @@ function watchedState(read) {
     viewerPort: pick('viewerPort'),
     logins: pick('logins'),
     devices: Array.isArray(doc.devices)
-      ? doc.devices.map((entry) => (isObject(entry)
-        ? { id: entry.id ?? null, secretSha256: entry.secretSha256 ?? null, readable: validDevice(entry) }
-        : { entry, readable: false }))
+      ? ((keep) => doc.devices.map((entry, i) => (isObject(entry)
+        ? { id: entry.id ?? null, secretSha256: entry.secretSha256 ?? null, readable: keep[i] }
+        : { entry, readable: false })))(readableEntries(doc.devices))
       : pick('devices'),
   }
 }
 
 const digestOf = (state) => crypto.createHash('sha256').update(canonical(state)).digest('hex')
+
+/** Each readable device's label by id, from a document (never its hash). */
+function labelsOf(doc) {
+  const labels = new Map()
+  if (isObject(doc) && Array.isArray(doc.devices)) for (const entry of readableOf(doc.devices)) labels.set(entry.id, entry.label)
+  return labels
+}
+
+// what a missing file is compared as: no setting and no device
+const NO_FILE = Object.freeze({ file: 'document', enabled: null, host: null, port: null, viewerPort: null, logins: null, devices: [] })
+
+/**
+ * What changed between the state the owner last accepted (`base`, with its labels) and the file as
+ * read now, as facts with no values: no login, host, port or hash, only labels and counts (review
+ * round 1, item 7). `unknown` when there is nothing to compare with: the change was found at the
+ * first look after a start, so it was made while the app was closed.
+ */
+function changesOf(base, current) {
+  const facts = {
+    unknown: false, missing: false, unreadable: false, switched: null, address: false, account: false, port: false,
+    added: [], removed: [], keyChanged: [], unreadableAdded: 0, unreadableRemoved: 0,
+  }
+  if (current.state === 'missing') return { ...facts, missing: true }
+  if (current.state !== 'document') return { ...facts, unreadable: true }
+  if (base === null || (base.state.file !== 'document' && base.state.file !== 'missing')) return { ...facts, unknown: true }
+  const before = base.state.file === 'missing' ? NO_FILE : base.state
+  const after = watchedState(current)
+  const same = (key) => canonical(before[key]) === canonical(after[key])
+  if ((before.enabled === true) !== (after.enabled === true)) facts.switched = after.enabled === true ? 'on' : 'off'
+  facts.address = !same('host')
+  facts.account = !same('logins')
+  facts.port = !same('port') || !same('viewerPort')
+  const entries = (devices) => (Array.isArray(devices) ? devices : [])
+  const keys = (devices) => new Map(entries(devices).filter((entry) => entry.readable).map((entry) => [entry.id, entry.secretSha256]))
+  const was = keys(before.devices)
+  const now = keys(after.devices)
+  const labels = labelsOf(current.doc)
+  for (const [id, hash] of now) {
+    if (!was.has(id)) facts.added.push(labels.get(id))
+    else if (was.get(id) !== hash) facts.keyChanged.push(labels.get(id))
+  }
+  for (const id of was.keys()) if (!now.has(id)) facts.removed.push(base.labels.get(id) ?? 'a paired Mac')
+  const dormant = entries(after.devices).length - now.size - (entries(before.devices).length - was.size)
+  facts.unreadableAdded = Math.max(dormant, 0)
+  facts.unreadableRemoved = Math.max(-dormant, 0)
+  return facts
+}
+
+/** A bind failure in the viewer's status for this port, as a fixed word; null for anything else. */
+function listenFailure(status, port) {
+  if (!status.on || status.listening || typeof status.error !== 'string') return null
+  const match = status.error.match(BIND_FAILURE)
+  if (!match || Number(match[1]) !== port) return null
+  return match[2] === 'EADDRINUSE' ? 'port_in_use' : 'cannot_listen'
+}
 
 /** The devices added at the end of the list, when nothing else changed; else null. */
 function addedDevices(before, after) {
@@ -276,7 +378,7 @@ function knownFields(doc) {
   if (isPort(doc.viewerPort)) known.viewerPort = doc.viewerPort
   if (Array.isArray(doc.logins) && doc.logins.every((login) => typeof login === 'string')) known.logins = [...doc.logins]
   known.devices = Array.isArray(doc.devices)
-    ? doc.devices.filter(validDevice).map(({ id, label, secretSha256, pairedAt }) => (
+    ? readableOf(doc.devices).map(({ id, label, secretSha256, pairedAt }) => (
       typeof pairedAt === 'string' ? { id, label, secretSha256, pairedAt } : { id, label, secretSha256 }))
     : []
   return known
@@ -322,7 +424,7 @@ function createRemoteEntry(options = {}) {
   const env = options.env ?? process.env
   const file = remoteFile(env, options.home ?? os.homedir())
   const viewerPort = options.viewerPort ?? viewerPortFor({ isPackaged: options.isPackaged === true, env })
-  const port = options.port ?? (options.isPackaged === true ? PACKAGED_PORT : CHECKOUT_PORT)
+  const port = options.port ?? entryPort({ isPackaged: options.isPackaged === true, env })
   const fsImpl = options.fsImpl ?? fsp
   const uid = options.uid ?? process.getuid?.()
   const ownerToken = options.ownerToken
@@ -349,6 +451,10 @@ function createRemoteEntry(options = {}) {
 
   // the watch's memory
   let recorded = null // { state, digest } main last wrote or accepted
+  // what the owner last accepted, with its labels, for review()'s facts (review round 1, item 7):
+  // moves with main's own writes only while nothing is flagged, so the facts are always against the
+  // state before the change; null when there is nothing to compare with
+  let base = null
   let flag = false
   const notified = new Set()
   // the codes main's own requestCode() received, newest last: { codeId, at }; the code itself is never kept
@@ -392,6 +498,10 @@ function createRemoteEntry(options = {}) {
   let flaps = 0
   let waiting = null
   let needsOwner = null
+  // whether the viewer's last status said it listens on this port (#617, PR 2d); null before any read
+  let listening = null
+  // the viewer's bind failure for this port, as a fixed word, from the last status read
+  let listenError = null
   const NO_STATUS = Object.freeze({ ok: false, reason: 'unreachable' })
   const FALLBACK_VIEW = Object.freeze({
     available: false, enabled: false, host: null, port, viewerPort, logins: [], devices: [], unreadableDevices: 0, problem: 'unreadable',
@@ -439,8 +549,9 @@ function createRemoteEntry(options = {}) {
     return viewOf(await read())
   }
 
-  function record(state) {
+  function record(state, doc) {
     recorded = { state, digest: digestOf(state) }
+    if (!flag) base = { state, labels: labelsOf(doc) }
   }
 
   /** A store call, never longer than STATE_TIMEOUT_MS: a call that takes longer counts as failed. */
@@ -551,6 +662,7 @@ function createRemoteEntry(options = {}) {
   function firstLook(current, state, digest) {
     if (!stateStore || (loadDone && quietFirst(current, digest))) {
       recorded = { state, digest }
+      base = { state, labels: labelsOf(current.doc) }
       keep(digest)
       return
     }
@@ -559,11 +671,13 @@ function createRemoteEntry(options = {}) {
       // as it was is judged once it is
       firstSeen = { current, digest }
       recorded = { state, digest }
+      base = { state, labels: labelsOf(current.doc) }
       return
     }
     // changed while the app was closed (or no state kept, and the file is on or holds devices):
     // the baseline stays the kept digest until the owner acknowledges
     recorded = { state: null, digest: keptDigest }
+    base = null
     flagOutside(digest)
   }
 
@@ -571,6 +685,8 @@ function createRemoteEntry(options = {}) {
     const seen = firstSeen
     firstSeen = null
     if (!quietFirst(seen.current, seen.digest)) {
+      // what it was before the app started is not known
+      base = null
       flagOutside(seen.digest)
       // main wrote since: Review accepts the file as it now is
       if (recorded.digest !== seen.digest) flagDigest = recorded.digest
@@ -632,6 +748,7 @@ function createRemoteEntry(options = {}) {
         // each code pairs once: forget the ones used
         for (let i = codes.length - 1; i >= 0; i -= 1) if (used.has(codes[i].codeId)) codes.splice(i, 1)
         recorded = { state, digest }
+        if (!flag) base = { state, labels: labelsOf(current.doc) }
         keep(digest)
         for (const label of labels) call(options.onPaired, label)
         return
@@ -716,7 +833,7 @@ function createRemoteEntry(options = {}) {
         if (Buffer.byteLength(text) > FILE_MAX) return { ok: false, reason: 'too_large_to_write' }
         await locked.atomicWrite(doc)
         writes += 1
-        record(watchedState({ state: 'document', doc }))
+        record(watchedState({ state: 'document', doc }), doc)
         keep(recorded.digest)
         // any write voids a pending code (the viewer ties a code to the file it was made under)
         const voided = recentCodes(CODE_LIFE_MS).length > 0
@@ -734,7 +851,9 @@ function createRemoteEntry(options = {}) {
     return outcome.unknownFieldsDropped ? { ...result, unknownFieldsDropped: true } : result
   }
 
-  async function turnOn() {
+  /** `{ removeDevices: true }`: the owner agreed that a changed account or address removes the paired Macs. */
+  async function turnOn(options) {
+    const removeDevices = isObject(options) && options.removeDevices === true
     intent += 1
     await loadState()
     if (!isPort(viewerPort) || !isPort(port) || port < 1024 || port === viewerPort) return { ok: false, reason: 'port_clash', step: 'file' }
@@ -745,6 +864,7 @@ function createRemoteEntry(options = {}) {
     if (!serve.ok) return { ok: false, reason: serve.reason, step: 'serve' }
     let removed = 0
     let dropped = 0
+    let entries = 0
     const result = await write((current) => {
       if (current.state === 'refused') return { refuse: current.reason }
       const doc = current.state === 'missing' ? { schema: SCHEMA } : current.doc
@@ -756,8 +876,13 @@ function createRemoteEntry(options = {}) {
       const sameHost = typeof doc.host === 'string' && doc.host.toLowerCase() === self.host
       const sameLogins = Array.isArray(doc.logins) && doc.logins.length === 1 && typeof doc.logins[0] === 'string'
         && doc.logins[0].toLowerCase() === self.login.toLowerCase()
+      // never without the owner's word: the panel asks first (review round 1, item 8)
+      if (!(sameHost && sameLogins) && listed.length > 0 && !removeDevices) {
+        entries = listed.length
+        return { refuse: 'would_remove_devices' }
+      }
       // entries the reader would drop are dropped here, the one place main does not keep what it does not understand
-      const readable = listed.filter(validDevice)
+      const readable = readableOf(listed)
       const devices = sameHost && sameLogins ? readable : []
       dropped = listed.length - readable.length
       removed = readable.length - devices.length
@@ -766,14 +891,16 @@ function createRemoteEntry(options = {}) {
       if (!parseSetting(next).ok) return { refuse: 'bad_file' }
       return { doc: next }
     }, { allowRaise: true, leaving: true })
-    if (!result.ok) return { ...result, step: 'file' }
+    if (!result.ok) return result.reason === 'would_remove_devices' ? { ...result, step: 'file', devices: entries } : { ...result, step: 'file' }
     // a new episode: the last stop is history, and the owner wants the entry on
     stopped = null
     pendingStop = null
     clearResume()
     setWanted(true, true)
     await queueSave('real', { allowRaise: true })
-    return { ok: true, view: result.view, voidedCode: result.voidedCode, devicesRemoved: removed, droppedEntries: dropped }
+    // answered once the Inbox is really answering on the port, or after 6 seconds: the file is on either way
+    const up = await waitListening()
+    return { ok: true, view: result.view, voidedCode: result.voidedCode, devicesRemoved: removed, droppedEntries: dropped, listening: up }
   }
 
   /** What an owner's operation forgets: any resume in progress, and why it waited. */
@@ -785,12 +912,14 @@ function createRemoteEntry(options = {}) {
   }
 
   /** `enabled: false` and nothing else. Never waits on the state store. */
-  function writeOff() {
-    return write((current) => {
+  async function writeOff() {
+    const result = await write((current) => {
       if (current.state === 'missing') return {}
       if (current.state === 'refused') return { refuse: current.reason }
       return { doc: { ...current.doc, enabled: false }, fallback: knownFields(current.doc) }
     }, { off: true })
+    if (result.ok) nudgeViewer()
+    return result
   }
 
   /** The owner's switch: off, and not wanted, so nothing turns it back on by itself. Never waits on the state store. */
@@ -809,13 +938,34 @@ function createRemoteEntry(options = {}) {
       if (current.state === 'missing') return {}
       if (current.state === 'refused') return { refuse: current.reason }
       const listed = current.doc.devices
-      if (!Array.isArray(listed) || !listed.some((entry) => validDevice(entry) && entry.id === id)) return {}
+      if (!Array.isArray(listed) || !readableOf(listed).some((entry) => entry.id === id)) return {}
       // the write also drops every entry the reader would drop
-      const kept = listed.filter((entry) => validDevice(entry) && entry.id !== id)
+      const kept = readableOf(listed).filter((entry) => entry.id !== id)
       dropped = listed.length - 1 - kept.length
       return { doc: { ...current.doc, devices: kept } }
     })
     return result.ok ? { ...result, droppedEntries: dropped } : result
+  }
+
+  /**
+   * Drops the device entries the reader drops (#617, PR 2d: the panel's Clear), since they still
+   * count toward its limit of 16, and nothing else. Only on a file the reader reads: on one it
+   * refuses, dropping entries could make the rest readable, and so switch the entry on.
+   */
+  async function clearUnreadable() {
+    let removed = 0
+    const result = await write((current) => {
+      if (current.state === 'missing') return {}
+      if (current.state === 'refused') return { refuse: current.reason }
+      if (!current.setting) return { refuse: current.problem }
+      const listed = current.doc.devices
+      if (!Array.isArray(listed)) return {}
+      const kept = readableOf(listed)
+      if (kept.length === listed.length) return {}
+      removed = listed.length - kept.length
+      return { doc: { ...current.doc, devices: kept } }
+    })
+    return result.ok ? { ...result, removed } : result
   }
 
   /**
@@ -835,6 +985,7 @@ function createRemoteEntry(options = {}) {
       removed = Array.isArray(again.doc.devices) ? again.doc.devices.length : 0
       return { doc: { ...again.doc, enabled: false, devices: [] } }
     }, { off: true })
+    if (result.ok) nudgeViewer()
     return result.ok ? { ...result, devicesRemoved: removed } : result
   }
 
@@ -904,7 +1055,41 @@ function createRemoteEntry(options = {}) {
       return { ok: false, reason: 'bad_shape' }
     }
     const status = checkStatus(body)
+    listening = status !== null && status.on && status.listening && status.port === port
+    listenError = status === null ? listenError : listenFailure(status, port)
     return status ? { ok: true, status } : { ok: false, reason: 'bad_shape' }
+  }
+
+  /** One status read, recording whether the viewer listens on this port; any failure is not listening. */
+  async function readListening() {
+    try {
+      const status = await entryStatus()
+      if (!status.ok) listening = false
+    } catch {
+      listening = false
+    }
+    return listening === true
+  }
+
+  /** Reads the status every LISTEN_EVERY_MS until the viewer listens, for at most LISTEN_WAIT_MS. Never under the lock. */
+  async function waitListening() {
+    const started = now()
+    // bounded by the count of reads too, so a clock that stands still cannot keep it waiting
+    for (let read = 0; ; read += 1) {
+      if (await readListening()) return true
+      // a bind failure does not go away by waiting: another program holds the port
+      if (listenError !== null) return false
+      if (read >= LISTEN_WAIT_MS / LISTEN_EVERY_MS || now() - started >= LISTEN_WAIT_MS) return false
+      await sleep(LISTEN_EVERY_MS)
+    }
+  }
+
+  /**
+   * One status read after a write, not waited for: the viewer reconciles its listener when its
+   * status is read (src/viewer-remote.ts), so it opens or closes now instead of at its next poll.
+   */
+  function nudgeViewer() {
+    readListening().catch(() => {})
   }
 
   // Settled on 2026-11-17 (Tailscale 1.102.4, macOS; design §9 item 3): a request the hub makes to
@@ -913,6 +1098,8 @@ function createRemoteEntry(options = {}) {
   async function selfTest() {
     const current = await view()
     if (!current.enabled || !current.host) return { ok: false, reason: 'off', rose: null }
+    // Serve answers 502 while nothing listens behind it: that is not a Serve that skips the gate
+    if (!(await waitListening())) return { ok: false, reason: listenError ?? 'not_listening', rose: null }
     const before = await entryStatus()
     if (!before.ok) return { ok: false, reason: 'no_status', rose: null }
     let status = null
@@ -929,6 +1116,7 @@ function createRemoteEntry(options = {}) {
     if (!after.ok) return { ok: false, reason: 'no_status', rose: null }
     const rose = COUNTERS.find((key) => after.status.refused[key] > before.status.refused[key]) ?? null
     if (status === 403 && after.status.refused.device - before.status.refused.device === 1) return { ok: true }
+    if (status === 502 || status === 503 || status === 504) return { ok: false, reason: 'no_backend', rose }
     return { ok: false, reason: status === null ? 'unreachable' : status !== 403 ? 'not_refused' : 'no_device_count', rose }
   }
 
@@ -1033,6 +1221,7 @@ function createRemoteEntry(options = {}) {
     // the owner switched off while it was written: their switch wins, and no resume is announced
     if (intent !== epoch) return 'changed_outside'
     resumedAt = now()
+    nudgeViewer()
     // a new episode, watched at once: the next tick checks Serve and the identity again
     stopped = null
     pendingStop = null
@@ -1060,7 +1249,7 @@ function createRemoteEntry(options = {}) {
     if (!active) {
       retryAt = null
       if (await maybeResume(t)) return
-      if (setting && (force || !hintRead)) {
+      if (setting && (force || !hintRead || hintDue(t))) {
         hintRead = true
         lastServe = { answer: await serveState(setting.host, setting.port), at: now() }
       }
@@ -1110,6 +1299,18 @@ function createRemoteEntry(options = {}) {
     await stopEntry(reason, setting)
   }
 
+  /** The removal hint is shown (Serve still names this address or port) and was read a minute ago or more. */
+  function hintDue(t, every = HINT_EVERY_MS) {
+    return lastServe !== null && (lastServe.answer.ok || lastServe.answer.present === true) && t - lastServe.at >= every
+  }
+
+  /** While sharing is off and the hint is shown: Serve read now, at most every 5 seconds (the window regained focus, Settings opened). */
+  async function recheckHint() {
+    const current = await view()
+    if (current.enabled || !current.host || !hintDue(now(), HINT_RECHECK_MS)) return
+    lastServe = { answer: await serveState(current.host, current.port), at: now() }
+  }
+
   /** Wraps an operation so it never rejects: a throw answers `fallback`. */
   const safe = (operation, fallback) => async (...args) => {
     try {
@@ -1133,6 +1334,7 @@ function createRemoteEntry(options = {}) {
       return { ok: false, reason: 'changed' }
     }
     recorded = { state, digest: now_ }
+    base = { state, labels: labelsOf(current.state === 'document' ? current.doc : null) }
     flag = false
     flagDigest = null
     notified.clear()
@@ -1154,7 +1356,7 @@ function createRemoteEntry(options = {}) {
   async function review() {
     await locked.settled()
     const current = await read()
-    return { view: viewOf(current), digest: digestOf(watchedState(current)), flag }
+    return { view: viewOf(current), digest: digestOf(watchedState(current)), flag, changes: flag ? changesOf(base, current) : null }
   }
 
   /** state()'s fields for the state kept across restarts. */
@@ -1179,6 +1381,8 @@ function createRemoteEntry(options = {}) {
       flagDigest: flag ? flagDigest : null,
       stopped: stopped && { ...stopped },
       removalHint: !current.enabled && present ? REMOVAL_HINT : null,
+      listening,
+      listenError,
       ...keptFields(current.enabled),
     }
   }
@@ -1217,6 +1421,7 @@ function createRemoteEntry(options = {}) {
     turnOn: safe(turnOn, { ok: false, reason: 'failed', step: 'file' }),
     turnOff: safe(turnOff, failed),
     removeDevice: safe(removeDevice, failed),
+    clearUnreadable: safe(clearUnreadable, failed),
     repairPermissions: safe(repairPermissions, failed),
     requestCode: safe(requestCode, failed),
     entryStatus: safe(entryStatus, { ok: false, reason: 'unreachable' }),
@@ -1253,17 +1458,18 @@ function createRemoteEntry(options = {}) {
       runs += 1
     },
     tick: safe(tick, undefined),
+    recheckHint: safe(recheckHint, undefined),
     refresh: safe(async () => {
       await tick()
       await checkFile().catch(() => {})
       await checkServe(true).catch(() => {})
     }, undefined),
     state: safe(state, () => ({
-      view: { ...FALLBACK_VIEW }, serve: null, self: null, flag, flagDigest: flag ? flagDigest : null, stopped: stopped && { ...stopped }, removalHint: null,
+      view: { ...FALLBACK_VIEW }, serve: null, self: null, flag, flagDigest: flag ? flagDigest : null, stopped: stopped && { ...stopped }, removalHint: null, listening, listenError,
       ...keptFields(false),
     })),
     acknowledge: safe(acknowledge, failed),
-    review: safe(review, () => ({ view: { ...FALLBACK_VIEW }, digest: null, flag })),
+    review: safe(review, () => ({ view: { ...FALLBACK_VIEW }, digest: null, flag, changes: null })),
     /** Resolves once the state store has every write queued so far (each waited for at most STATE_TIMEOUT_MS). */
     settled: safe(() => saving, undefined),
   })
@@ -1274,6 +1480,7 @@ module.exports = {
   TAILSCALE_ARGS,
   TAILSCALE_PATHS,
   createRemoteEntry,
+  entryPort,
   parseServeStatus,
   parseTailnetSelf,
   remoteFile,

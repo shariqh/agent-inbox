@@ -634,6 +634,33 @@ as `.command`, `.pkg` or `.dmg`) can't have a rule at all. In the desktop app ev
 file chip also has **Reveal in Finder** and **Copy path**. Both, and Settings →
 Links itself, work only in the viewer the app started itself.
 
+## Using this Inbox from your other Macs (macOS, preview)
+
+On the Mac that runs your sessions, **Settings → Other devices** lets your other Macs use this
+Inbox through [Tailscale](https://tailscale.com). A paired Mac can read everything in this Inbox
+and send messages to your sessions, which may act without asking, so only pair Macs you own.
+
+1. Switch on **Let my other Macs use this Inbox**. If Tailscale Serve is not set up yet, the panel
+   shows one command, `tailscale serve --bg 4320`. Run it once in Terminal on this Mac, then switch
+   on again. Agent Inbox never changes Tailscale itself.
+2. Press **Test**. It says whether Tailscale reaches this Inbox and asks for a paired Mac. For a
+   moment after switching on the status says "On, starting…", and Test waits until it says On.
+3. Switch on **Open Agent Inbox at login**, so sharing comes back after this Mac restarts.
+4. Press **Add a Mac**. It shows a code that works once, for 10 minutes, and this Mac's address.
+   On the other Mac, enter them in Settings → Use another Mac's Inbox (next section).
+
+The status line beside the switch says Off, On, Paused (sharing comes back by itself once the cause
+is fixed, for example once Tailscale is running again) or Needs you, with one thing to do. If this
+Mac's Tailscale name or account changed, switching on asks first, because it removes the paired
+Macs. If the sharing settings were changed outside Agent Inbox, the panel says what changed at the
+top (or that it can't tell, when the app was closed) and how they are now; press **Looks right**
+once you have checked them, or switch sharing off and remove a Mac you don't know. **Remove** stops
+a paired Mac at its next request. When sharing is off and Tailscale still forwards to this Mac, the
+panel shows the command that stops it, `tailscale serve --https=443 off`.
+
+Sharing works only in the viewer the app started itself; in one it found already running, quit and
+reopen Agent Inbox to change it.
+
 ## Use another Mac's Inbox
 
 On macOS, the desktop app can show the Inbox of another Mac of yours, for example the

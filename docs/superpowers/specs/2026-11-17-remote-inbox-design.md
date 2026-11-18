@@ -420,6 +420,35 @@ built, read-only: see above); **Add a device** and the paired devices with Remov
 "changed outside the app" flag; **Test**; the removal command when it applies; and **Open Agent
 Inbox at login**, which is `app.setLoginItemSettings({ openAtLogin })` read back with
 `getLoginItemSettings()`, the app's own setting.
+**(As built in PR 2d:** the section is Settings → **Other devices**, and the switch reads **Let my
+other Macs use this Inbox**. Top to bottom, only the parts that apply: the "changed outside Agent
+Inbox" box (first, so it is the first thing the owner sees), whose **Looks right** is the Review
+above and accepts exactly the state shown; the switch, with one status line (Off; On, at the
+address, with Copy address; Paused: why, next try; Needs you: why); the risk sentence; one
+instruction chosen from the reason, which shows the command `tailscale serve --bg <port>` with Copy
+only when running it is the fix; **Paired Macs** with Remove (an inline confirm) and Clear for
+entries the reader drops; **Add a Mac**, not "Add a device", with the code, the address and a
+countdown; **Test** while on; the removal command while off; **Open Agent Inbox at login**, the
+packaged app only (a checkout build never touches the login item); and a line when the state store
+could not be saved. No allowed login is shown: it is never sent to the page. The command names this
+build's port: 4320 packaged, 4393 for a checkout build, or `AGENT_INBOX_REMOTE_PORT` there. A
+reused viewer, and every platform but macOS, gets `{ available: false, reason }` (`unowned` or
+`unsupported`), and the unowned panel says "Quit and reopen Agent Inbox to change this." The
+notifications are "Agent Inbox stopped sharing with your other devices" with one sentence per
+reason family (also when Tailscale is not running or can't be read, and when the settings file said
+on while the owner's switch was off), "Agent Inbox paused sharing with your other devices" for a
+stop that resumes, "<label> can now use this Inbox." for a pairing, and "Agent Inbox's sharing
+settings were changed outside the app", at most one of each kind in 10 minutes. The viewer also
+reconciles its listener when its status is read, and main reads it after each write, so the listener
+follows at once rather than at the 5-second poll; `turnOn()` answers once the viewer listens (up to 6
+seconds) and the panel says "On, starting…" until then; **Test** first waits for the listener
+(`not_listening`) and reads Serve's 502, 503 or 504 as `no_backend`, not as a Serve that skips the
+gate. After review round 1: the notifications say "your other Macs", give the same reason as the
+panel and what to do, and quiet only a repeat; switching on asks before removing the paired Macs
+(`would_remove_devices`); Review shows what changed as facts with no values, or that it can't tell;
+a port another program holds is named. After review round 2: a refused switch-on is a message, not
+the status line; the first entry with an id is the device in both readers. `docs/architecture/remote-inbox.md`,
+"The hub's Settings panel".)
 
 ### 3.3 Connect mode in the desktop app (PR 3)
 
@@ -725,7 +754,11 @@ sessions do not survive a restart. Keeping the hub awake is a system setting the
 1. Update the hub to the release, and install the same release on the laptop.
 2. On the hub: Settings → "Let my other devices use this Inbox" → on. Run the one command shown,
    once, in Terminal. Press **Test**. Switch on Open Agent Inbox at login.
-3. On the hub: **Add a device**. Leave the code on screen.
+   **(As built in PR 2d:** Settings → Other devices → **Let my other Macs use this Inbox**. The
+   command shows only when switching on was refused because Serve is not set up, so the order is:
+   switch on, run the command it shows, switch on again.)
+3. On the hub: **Add a device**. Leave the code on screen. **(As built:** **Add a Mac**; the code
+   works once, for 10 minutes, and the panel shows the address beside it.)
 4. On the laptop: Settings → "Use another Mac's Inbox". Enter `https://hub.example.ts.net`, a
    label and the code. **Connect**. Then set the SSH host and, if wanted, a template, and confirm
    the command in the dialog.

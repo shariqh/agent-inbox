@@ -187,6 +187,21 @@ describe('readRemoteSetting: the fields', () => {
     expect(read.ok).toBe(true)
   })
 
+  // #617 PR 2d review round 2, item 3: the first entry with an id is the device
+  it('a later entry with an id already used is dropped, whatever it holds; the first one is the device', () => {
+    const first = newSecret()
+    const second = newSecret()
+    const both = readValue(setting(4320, [device(first, 'aaaaaaaaaaaaaaaa', 'laptop'), device(second, 'aaaaaaaaaaaaaaaa', 'laptop'), device(newSecret(), 'bbbbbbbbbbbbbbbb')]))
+    expect(both.ok).toBe(true)
+    if (both.ok) {
+      expect(both.setting.devices.map((d) => d.id)).toEqual(['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb'])
+      expect(both.setting.devices[0]!.digest.toString('hex')).toBe(secretSha256(first))
+    }
+    // an earlier entry with that id that is itself unreadable still takes the id
+    const shadowed = readValue(setting(4320, [{ id: 'aaaaaaaaaaaaaaaa', label: '', secretSha256: secretSha256(first) }, device(second, 'aaaaaaaaaaaaaaaa')]))
+    expect(shadowed.ok && shadowed.setting.devices).toEqual([])
+  })
+
   it('drops a malformed device and keeps the rest', () => {
     const good = newSecret()
     const sha = secretSha256(newSecret())
@@ -372,6 +387,18 @@ describe('startRemoteEntry: the listener', () => {
     }
   })
 
+  it('the gate never takes the key of a second entry with an id already used', async () => {
+    const dir = scratchDir('remote-entry-')
+    const port = await freePort()
+    const first = newSecret()
+    const second = newSecret()
+    writeSetting(dir, setting(port, [device(first, 'aaaaaaaaaaaaaaaa'), device(second, 'aaaaaaaaaaaaaaaa')]))
+    const entry = await start(dir, { intervalMs: 3_600_000 })
+    await waitUntil(() => entry.status().listening, 'the entry to listen')
+    expect((await rawRequest(port, { target: '/api/items', headers: deviceHeaders(first) })).status).toBe(200)
+    expect((await rawRequest(port, { target: '/api/items', headers: deviceHeaders(second) })).status).toBe(403)
+  })
+
   it('the gate sees a removed device on the next request, without waiting for a poll', async () => {
     const dir = scratchDir('remote-entry-')
     const port = await freePort()
@@ -427,6 +454,31 @@ describe('startRemoteEntry: the listener', () => {
     await waitUntil(() => received.length > 0 || socket.destroyed, 'an answer or a close')
     expect(received).not.toContain('"ok":true')
     socket.destroy()
+  })
+
+  // #617 PR 2d: main reads the status right after it writes, so the listener follows within
+  // milliseconds instead of the next poll (Test right after switching on met nothing listening)
+  it('one status read after a change opens, then closes, the listener at once, with the poll far away', async () => {
+    const dir = scratchDir('remote-entry-')
+    const port = await freePort()
+    writeSetting(dir, setting(port, [], { enabled: false }))
+    const entry = await start(dir, { intervalMs: 3_600_000 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(entry.address()).toBeNull()
+    writeSetting(dir, setting(port, []))
+    // address() reads nothing, so only the one status() below can start the reconcile
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(entry.address()).toBeNull()
+    entry.status()
+    await waitUntil(() => entry.address(), 'the listener to open after one status read', 2_000)
+    expect(await refused(port)).toBe(false)
+
+    writeSetting(dir, setting(port, [], { enabled: false }))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(entry.address()).not.toBeNull()
+    entry.status()
+    await waitUntil(() => entry.address() === null, 'the listener to close after one status read', 2_000)
+    expect(await refused(port)).toBe(true)
   })
 
   it('a request still on the old port after the setting moved is refused', async () => {

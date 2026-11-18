@@ -341,13 +341,19 @@ yet been seen in real output.)
 `electron/remote-tailscale.cjs`; the notification and the panel are the next PR's. Stricter than
 above, because unknown is never ok: the handler entry may hold only `Proxy`, and only the
 `127.0.0.1` form, since nothing showed that Tailscale writes `localhost` for a bare port; the TCP
-entry for 443 must be exactly `{ "HTTPS": true }`; a TCP entry on any port, or another host's or
-port's handler, that names the port is refused; a non-empty `Foreground` or `Services`, and any
-top-level key but `TCP`, `Web`, `AllowFunnel`, `Foreground` and `Services`, is refused. The good
-shape and `{}` are from a real run (§9 item 4); every other configured shape in the tests is from
-documentation. The watch also turns the entry off when `tailscale status --json` no longer
-gives the stored host and an allowed login. `turnOn` reads Tailscale before it takes the file's
-lock, never under it.)
+entry for 443 must be exactly `{ "HTTPS": true }`; a `TCPForward` on any port, or another host's or
+port's handler `Proxy`, that reaches the port is refused, each read as host and port with the port
+as plain decimal digits compared as a number (`04320` is 4320; a service name is `unknown_shape`);
+a non-empty `Foreground` or `Services`, any key it does not know at the top level, in a TCP entry or
+in a handler, and anything nested deeper than 32 levels, is refused. So a foreground
+`tailscale serve` on any port, or any Tailscale Service, switches sharing off; the reason says
+which. The good shape and `{}` are from a real run (§9 item 4); every other configured shape in the
+tests is from documentation. This node is read with `tailscale status --json --peers=false` (the
+full list printed 822 KB for 531 peers; without peers, about 5.5 KB), and the watch also turns the
+entry off when it no longer gives the stored host and an allowed login (ignoring case). A check
+that throws counts as a failed read, and a turn-off that does not land is retried at every 5-second
+tick. `turnOn` reads Tailscale before it takes the file's lock, never under it. Three argument
+lists in all: those two and `status --json`, the full peer list for the connecting Mac (PR 3).)
 
 **Changes made behind the app's back.** An agent on the hub can edit `remote.json`. It already
 controls the hub, so the risk is that the exposure is silent. Main keeps the SHA-256 of the
@@ -360,14 +366,21 @@ with any other `codeId` is a change outside the app.) Any other difference
 gets a native notification ("Agent Inbox's sharing settings were changed outside the app") and a
 flag on the Settings panel until the owner presses **Review** and confirms or reverts.
 **(As built in PR 2c:** the digest also covers `viewerPort`, which decides which viewer opens the
-entry, and covers each device's `id` and `secretSha256` but not its label. A pairing is expected
-only when the viewer's `paired` list names the device with the `codeId` of a code main's own
-`requestCode()` received in the last 11 minutes, one code per device, because any local process
-can read the owner token and make a code. The viewer's list starts empty when it restarts, so a
-pairing seen across a restart is flagged. The first read after the watch starts is the baseline,
-so a change made while the app was closed is not flagged. The controller never reverts: "Review"
-records the current state as accepted (`acknowledge()`), and the owner reverts with the panel's own
-switch and Remove. Any write by main voids a pending code.)
+entry, and covers each device's `id`, `secretSha256` and whether the reader keeps it, but not the
+label itself: a label decides whether the reader keeps a device, so an edit that makes a dormant
+hash live is a change, while a rename that keeps it readable is not. A pairing is expected only
+when nothing else changed and the viewer's `paired` list names the device with the `codeId` of a
+code main's own `requestCode()` received in the last 11 minutes, one code per device, because any
+local process can read the owner token and make a code. The viewer's list starts empty when it
+restarts, so a pairing seen across a restart is flagged. The `paired` list carries no hash, so a
+hash swapped under a just-paired id before the next check is announced as the expected pairing; the
+owner's device then fails to connect. The controller never reverts: "Review" passes the flagged
+state's digest to `acknowledge(digest)`, which accepts it only if the file still has that digest
+(otherwise the flag stays and the new state is announced), and the owner reverts with the panel's
+own switch and Remove. Any write by main voids a pending code. **Known gap, closed by the next
+PR:** the first read after the watch starts is the baseline, so a change made to `remote.json`
+while the app is closed takes effect at the next start with no notification, and the device list is
+the only record; the next PR keeps a baseline in main across restarts.)
 
 **The hub's Settings** ("Let my other devices use this Inbox", macOS, owned viewer only) use a
 bridge, `agentInboxRemoteEntry` in `setup-preload.cjs`, gated like `handleLinkSettings`
@@ -380,8 +393,8 @@ this node's login, and a tagged hub cannot turn the entry on (`tailnetSelf()` an
 `UserID` still resolves to a placeholder user, whose login is never used). When the stored host or
 logins differ from this node's (the machine was renamed, or another account signed in), `turnOn`
 removes every device, since their secrets were issued under another identity. A file with group or
-other bits is rewritten `0600` only by an explicit repair, which also turns it off, since another
-user may have edited it.)
+other bits is rewritten `0600` only by an explicit repair, which also turns it off and removes every
+device, since another user may have edited it and added one.)
 `selfTest()` fetches `https://<host>/api/version` from main with no device secret. It passes when
 the answer is a 403 and `/api/remote-entry` shows the `device` count rose: that proves Serve, the
 `Host` and the login all reached the gate. A rise in `host` or `login` names the problem.
@@ -550,6 +563,10 @@ The hub app opens at login, and its viewer reads `remote.json` at start and reop
 entry. A `--bg` Serve configuration persists across a reboot and `tailscale down` and `up`. The
 laptop follows §3.3's retry rules, and its secret survives restarts in the Keychain-backed store.
 
+**Known gap after PR 2c, closed by the next PR:** when Tailscale is not running or cannot be read
+at the first check after the app starts (the app opens before Tailscale is up), the watch switches
+the entry off, and it stays off until the owner switches it on again.
+
 **Still needs a person:** after the hub restarts, its user must log in before the app or tmux
 runs, and with FileVault on macOS needs the password at boot. Agent sessions and their tmux
 sessions do not survive a restart. Keeping the hub awake is a system setting the app never touches.
@@ -678,6 +695,10 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    `{}` with nothing configured; Serve forwards `Host` as the bare tailnet name and the request
    target unchanged, sets one `Tailscale-User-Login` after removing the client's, and sends none
    from a tagged node (docs/architecture/remote-inbox.md, "Checked against real Tailscale Serve").
+   On a tailnet with 531 peers `tailscale status --json` was 822,251 bytes; with `--peers=false` it
+   was 5,566 bytes and still held `BackendState`, `Self` and this node's `User` entry, with `Peer`
+   empty. The app's own binary (`/Applications/Tailscale.app/Contents/MacOS/Tailscale`) answers
+   `status --json` correctly when run directly, on a Mac with no command-line install.
    Not observed: Funnel, a raw TCP forward, a second path or a services section in that output,
    a peer's `StableID` and `Tags`, and the exact removal command
    (`tailscale serve --https=443 off`, from Tailscale's documentation; `tailscale serve --help` on

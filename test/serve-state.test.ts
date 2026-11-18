@@ -164,7 +164,7 @@ describe('reading `tailscale serve status --json`', () => {
     expect(fake.calls).toEqual([{
       file: '/usr/local/bin/tailscale',
       args: ['serve', 'status', '--json'],
-      options: { timeout: 5000, maxBuffer: 1024 * 1024, encoding: 'utf8', shell: false, windowsHide: true },
+      options: { timeout: 5000, maxBuffer: 1024 * 1024, encoding: 'utf8', shell: false, windowsHide: true, env: { ...process.env, TAILSCALE_BE_CLI: '1' } },
     }])
   })
 
@@ -264,6 +264,37 @@ describe('the module never changes Tailscale', () => {
     }
   })
 
+  // Tailscale's app binary answers as a command line only when its environment looks like a
+  // terminal's; an app opened from Finder has none, and the binary then prints "The Tailscale GUI
+  // failed to start" and exits 0 (seen on a real Mac with no command-line install, 2026-11-18).
+  it('asks for the command line on every run, whatever this app was started from', async () => {
+    const kept = { ...process.env }
+    const seen: Array<Record<string, string | undefined>> = []
+    const fake = (_file: string, _args: readonly string[], options: { env: Record<string, string | undefined> }, callback: (error: Error | null, stdout: string) => void) => {
+      seen.push(options.env)
+      callback(null, '{}')
+    }
+    try {
+      // what an app opened from Finder has: none of the variables a terminal sets
+      for (const name of ['SHLVL', 'TERM', 'TERM_PROGRAM', 'PS1', 'TAILSCALE_BE_CLI']) delete process.env[name]
+      process.env.HOME = '/Users/someone'
+      for (const which of ['self', 'serve', 'peers'] as const) {
+        expect(await runTailscale(which, { execFile: fake, exists: cliExists })).toEqual({ ok: true, text: '{}' })
+      }
+      expect(seen).toHaveLength(3)
+      for (const env of seen) {
+        expect(env.TAILSCALE_BE_CLI).toBe('1')
+        // the rest is this app's own environment, unchanged, and the app's own is left as it was
+        expect({ ...env, TAILSCALE_BE_CLI: undefined }).toEqual({ ...process.env, TAILSCALE_BE_CLI: undefined })
+        expect(env.HOME).toBe('/Users/someone')
+      }
+      expect(process.env.TAILSCALE_BE_CLI).toBeUndefined()
+    } finally {
+      for (const name of Object.keys(process.env)) if (!Object.hasOwn(kept, name)) delete process.env[name]
+      Object.assign(process.env, kept)
+    }
+  })
+
   it('refuses peer output past 16 MiB and self output past 1 MiB, even when handed back', async () => {
     const big = (bytes: number) => (_file: string, _args: readonly string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) => callback(null, 'x'.repeat(bytes))
     expect(await runTailscale('peers', { execFile: big(16 * 1024 * 1024 + 1), exists: cliExists })).toEqual({ ok: false, reason: 'failed' })
@@ -292,7 +323,8 @@ describe('the module never changes Tailscale', () => {
     expect(code).toContain("serve: Object.freeze(['serve', 'status', '--json'])")
     expect(code).toContain("peers: Object.freeze(['status', '--json'])")
     expect(code).toContain('const args = Object.hasOwn(TAILSCALE_ARGS, which) ? TAILSCALE_ARGS[which] : null')
-    expect(code).toContain('execFile(cli, [...args], { ...RUN_OPTIONS, maxBuffer: cap },')
+    expect(code).toContain('execFile(cli, [...args], { ...RUN_OPTIONS, maxBuffer: cap, env: { ...process.env, ...CLI_ENV } },')
+    expect(code).toContain("const CLI_ENV = Object.freeze({ TAILSCALE_BE_CLI: '1' })")
     expect(code).not.toMatch(NO_OTHER_LIST)
     expect(code).not.toMatch(NO_FLAG)
     expect(code).not.toMatch(NO_OTHER_RUN)

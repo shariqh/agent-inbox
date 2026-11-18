@@ -341,9 +341,14 @@ readers and compares the answers.
 **Tailscale, read-only.** `tailscaleCli` takes the first of `/usr/local/bin/tailscale`,
 `/opt/homebrew/bin/tailscale` and `/Applications/Tailscale.app/Contents/MacOS/Tailscale` that
 exists; never a search, never a configured path. A Mac with the App Store or standalone app and no
-command-line install has only the third, and that binary answers `status --json` when run
-directly. Every run is `execFile` with an argument array, no shell, a 5-second timeout (and a
-6-second limit of its own, in case the command ignores the kill), and only three argument lists:
+command-line install has only the third. That binary is Tailscale's app and its command line in
+one file, and it picks between them from its environment (`SHLVL`, `TERM`, `TERM_PROGRAM`, `PS1`):
+run from a shell it answers `status --json`, but run by an app opened from Finder, which has none
+of those, it prints "The Tailscale GUI failed to start" and exits 0. So every run adds
+`TAILSCALE_BE_CLI=1` to this app's own environment, Tailscale's documented way to ask for the
+command line; a real command-line install ignores it. Every run is `execFile` with an argument
+array, no shell, a 5-second timeout (and a 6-second limit of its own, in case the command ignores
+the kill), and only three argument lists:
 
 - `status --json --peers=false` for this node (1 MiB cap). It leaves the peers out: this node, its
   user and its tags are all it needs, and the full list printed 822 KB for a tailnet with 531

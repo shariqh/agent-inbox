@@ -17,7 +17,13 @@ paths:
   - "test/remote-preload.test.ts"
   - "test/remote-offline.test.ts"
   - "test/main-ipc.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts"
+  - "public/connect-settings.js"
+  - "public/hub-strip.js"
+  - "public/hub-mode.js"
+  - "test/dom/settings-connect.test.ts"
+  - "test/dom/hub-strip.test.ts"
+  - "test/dom/hub-mode.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-mode.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -31,7 +37,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 2e, PR 3a, PR 3b)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2e, PR 3a, PR 3b, PR 3c)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -54,6 +60,10 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   preload `electron/remote-preload.cjs`, the offline page `electron/remote-offline.html` (with its
   `.js` and `.css`), the `agentInboxDesk` and `agentInboxConnect` bridges, the View menu items and
   the wiring in `electron/main.cjs` ("The hub view", below).
+- PR 3c: the connecting Mac's screens under `public/`: Settings → Use another Mac's Inbox
+  (`public/connect-settings.js`), the strip that says whose Inbox is on screen
+  (`public/hub-strip.js`) and the page's hub mode (`public/hub-mode.js`) ("The connecting Mac's
+  screens", below).
 
 ## What is not built yet
 
@@ -62,10 +72,8 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   **Test**, the removal command) and Open at login (the next PR). Until then nothing in the app
   writes `remote.json` or asks for a code. Any local process on the hub can still make one: the
   owner token is not a secret from local processes (below).
-- The rest of connect mode: the Settings form ("Use another Mac's Inbox") and the page's own
-  hub-mode changes under `public/` (the banner, the This Mac / hub control). Until then connect
-  mode is driven through `agentInboxConnect` from the local page. Open desk (the terminal action)
-  and notifications against a hub are PR 4.
+- The rest of connect mode: Open desk (the terminal action) and notifications against a hub
+  (PR 4).
 
 So the entry is still off for everyone until the owner writes `remote.json`. With no device in it,
 every request but pairing is refused.
@@ -762,8 +770,9 @@ privileges, and no page can read the device secret. The policy is `electron/hub-
 every Electron object injected, so `test/hub-view.test.ts` runs without Electron.
 `electron/main.cjs` only wires it.
 
-**The view.** One `WebContentsView` for the active hub, laid over the window's content area and
-following its resizes. The local page stays loaded underneath and is never unloaded. Its
+**The view.** One `WebContentsView` for the active hub, laid over the window's content area below
+a top inset of `HUB_STRIP_HEIGHT` (36 CSS pixels, since PR 3c), and following its resizes. The local
+page draws whose Inbox is on screen in that inset ("The connecting Mac's screens", below). The local page stays loaded underneath and is never unloaded. Its
 `webPreferences` are exactly `preload: electron/remote-preload.cjs`, `contextIsolation: true`,
 `sandbox: true`, `nodeIntegration: false`, `webSecurity: true`, `disableDialogs: true` (a macOS sheet
 shows no origin, so the page could put up a dialog that looks like the app's own) and `partition:
@@ -902,14 +911,112 @@ viewer's URL) exactly as a stranger, and call nothing. Its fake `BrowserWindow.f
 answers the window for the hub view too, so a handler that trusted "a page in my window" would be
 caught, and a source check finds no handler registered through `webContents.ipc` or a frame's `ipc`.
 
-**Not built yet.** The Settings form, the page's own hub-mode touches under `public/` (the banner,
-the This Mac / hub control), the terminal action (`available()` says `open: false`), notifications
-and the dock badge for the hub (PR 4), and keyboard shortcuts for the menu items.
+**Not built yet.** The terminal action (`available()` says `open: false`), notifications and the
+dock badge for the hub (PR 4), and keyboard shortcuts for the menu items. The Settings form, the
+strip and the page's hub mode are PR 3c, below.
 
-**For the next PR.** The hub's page controls every pixel of its view, so whatever says whose Inbox
-is on screen must be drawn by the app (the window title, the menu, or a strip the local page draws
-beside the view), never by the hub's page. The hub's label is the hub's own machine name (from its
-`/api/version`), so it is never proof of anything.
+## The connecting Mac's screens (PR 3c)
+
+The hub's page controls every pixel of its view, and its label is the hub's own machine name (from
+its `/api/version`). So what says whose Inbox is on screen is drawn by this app's own page, outside
+that view, and nothing is built on the label being true: it is display text, always set with
+`textContent`.
+
+**Settings → Use another Mac's Inbox** (`public/connect-settings.js`, `renderConnectSettings`,
+called from `renderSetup` after Agent sessions). Drawn only where `window.agentInboxConnect` exists
+and `agentInboxDesk.connection()` answers `{ mode: 'local' }`: a missing desk, one that answers null
+or throws, and the hub's page draw nothing and ask main nothing. One state at a time, from
+`agentInboxConnect.view()`, read again on every `onChange` and when Settings opens; a read that
+lands after a newer one is dropped.
+
+| State | What it shows |
+|---|---|
+| `available: false` | one sentence: macOS only (when `navigator.platform` is not a Mac), else "works only in Agent Inbox's own window, not in a viewer it found already running" (main answers both the same way) |
+| no hub, `keychain: false` | one sentence about the Keychain; no form |
+| no hub | **Address** (placeholder `mac-name.your-tailnet.ts.net`), **Code** and **Connect**, and one line of help naming Settings → Other devices → Add a Mac on the other Mac; a saved file's `problem` is said above it, and `newer_schema` hides the form, since that file is never written |
+| connecting or disconnecting | every input and button disabled, and "Connecting…" or "Disconnecting…"; main may store the hub before `connect()` answers, but the form stays until it does |
+| a refusal | one sentence per reason, with what to do next; the fields keep what was typed |
+| a hub | "<label>'s Inbox", the address's host, its status in words, **Show its Inbox** (`show(id)`) and **Disconnect** |
+
+- The code is checked here first with a copy of the hub's `normaliseCode` (case, spaces and dashes
+  ignored, `I` and `L` read as `1`, `O` as `0`, exactly 10 Crockford characters; the test compares
+  it with the controller's over thousands of inputs), and the normalised code is what is sent. A
+  malformed code and an empty address are never sent. The address is trimmed; the controller checks
+  the rest.
+- Every word `connect()` can answer (`ConnectReason`, `HubReason` and `forgotten`, `changed`,
+  `failed`, read by the test from `electron/remote-connect.d.cts`) has its own sentence; a word
+  added there fails the test until it has one. An unknown word gets "Agent Inbox couldn't connect.
+  Try again." An answer with `pairedOnHub` says the other Mac now lists this Mac and that it should
+  be removed there before trying again with a new code, whatever the reason.
+- `hub_exists` and `bad_file` offer **Replace it**, which asks inline ("This Mac stops using
+  <label>'s Inbox and uses the new one. <label> keeps this Mac in its list until you remove it
+  there.", or "This replaces the saved connection on this Mac.") with **Replace** and **Keep**.
+  Replace calls `connect` again with `replace: true` and the same address and code (both refusals
+  come before the code is spent); `replacedHub` then says the old Mac still lists this Mac. Keep
+  reads the view again.
+- The status comes from `hub.state` and `hub.reason`: Online; Connecting… (the first check);
+  Reconnecting… (no reason, `stopped`, or a reason it does not know); a sentence for each reason the
+  controller retries on (cannot reach, certificate, not sharing, Tailscale on this Mac missing,
+  unreadable or not running, the Keychain); "<label> no longer accepts this Mac: pair again." and
+  one sentence per refused reason, with "To pair again: press Disconnect, then connect with a new
+  code from <label>."; Checking… when the state is not known. `forget_not_saved` replaces the status
+  with "This Mac stopped using <label>'s Inbox, but couldn't save that. Press Disconnect to try
+  again." and hides Show its Inbox.
+- **Disconnect** asks inline ("This Mac stops using <label>'s Inbox. <label> keeps this Mac in its
+  list until you remove it there.", **Disconnect** and **Keep**, focus on Keep), then calls
+  `forget(id)`. A question about something no longer on screen is closed.
+- `show(id)` refusals: `busy` (the hub's page closed itself), `not_found`, else a plain retry line.
+
+**The strip** (`public/hub-strip.js`, `installHubStrip`, made at boot). Drawn by this Mac's own page
+under the same rule as the form, and only while `view().showing` is the stored hub's id: a `div`
+with `role="region"` named "Whose Inbox is on screen", fixed to the top of the window,
+`HUB_STRIP_HEIGHT` pixels tall, prepended to `body` so it is the first stop for the keyboard. It
+says "Showing <label>'s Inbox", the status in a word (Online; Reconnecting… for the first check,
+`stopped` or no reason; Can't reach it for any other retry reason; No longer paired; Checking… when
+unknown) and **This Mac**, which calls `show(null)` and reads the view again. This Mac is never
+disabled: it is this Mac's own IPC and works whether or not the hub answers, and a failed read
+leaves the strip as it was, since it says nothing about what is on top. With nothing shown the strip
+is not in the document. `HUB_STRIP_HEIGHT` is 36 in both `public/hub-strip.js` and
+`electron/hub-view.cjs`; `test/dom/hub-strip.test.ts` pins them equal, and the page sets the strip's
+height from its own constant.
+
+**Hub mode** (`public/hub-mode.js`, `installHubMode`, made before `renderSetup`). The same `public/`
+code runs in the hub view, where `agentInboxDesk.connection()` answers `{ mode: 'hub', label,
+state, version }` and no other bridge exists. The mode is read once at start and on `onConnection`,
+every member feature-detected: no `agentInboxDesk` (a browser, an older app) is local at once and
+the page is exactly as before; a present desk is local only when it answers `{ mode: 'local' }`, and
+any other answer, null or a throw is hub mode, which never turns back. In hub mode:
+
+- The sidebar's "Local workspace" reads "<label>'s Inbox" ("Another Mac's Inbox" for an empty
+  label).
+- Nothing calls a route the remote entry refuses. Of those, the page itself fetches only
+  `/api/setup` (Settings' Setup blocks, and `readSetup` behind the agents and runtimes blocks), which
+  `hubMode.local()` now guards; `/api/launches…`, `/api/launch-asks…` and `/api/launch-folders` are
+  read only while `agentInboxLaunch` says its switch is on, and the hub view has no such bridge; the
+  page never fetches `/api/owner` or `/api/chats/copilot/:id`. `test/dom/hub-mode.test.ts` boots the
+  whole page in hub mode, opens Settings and the Chats tab, polls, and checks every request against
+  `remoteRouteAllowed`.
+- Settings draws the page's own preferences (Appearance, sort, motion, Later, Plans, Copy) and, in
+  place of the rest, one line: "Settings for this Inbox are changed on <label> itself." Not drawn:
+  Links, Terminal, Agent sessions, Updates, Use another Mac's Inbox and every Setup block (the build
+  line, agents, runtimes, the setup menu, the manual commands, the database path). Those that need a
+  bridge drew nothing there already; Links and Setup did, and Setup called `/api/setup`. A block
+  added later after Agent sessions in `renderSetup` (such as Other devices) is not drawn there
+  either.
+- While `state` is `retrying`, `#hubReconnecting` in the top bar says "Reconnecting to <label>…",
+  and `body.hub-reconnecting` hides `#status`, whose "disconnected" would say the same thing again.
+  Online again, both go.
+
+**Requests that fail while reconnecting.** While `retrying` the controller withholds the device
+header, so the hub answers the page's requests with bare 403s (or the network fails). Found: the
+poll (`load()`) throws on the 403 of `/api/items`, logs it, sets `#status` to "disconnected" and
+keeps the last frame; the next poll that is answered paints and clears it, so the page leaves that
+state by itself within 3 seconds of the hub answering again. A write (`postJSON`) fails with "write
+failed (403)" and keeps the draft with its own error beside Send, which is what a person's action
+should show. The Chats tab keeps "Couldn't load chats" until Refresh or until the tab is opened
+again. Changed: only the hidden `#status` above; no request is retried by this PR. A reload the hub
+asks for while it cannot be reached fails to load, and the hub view then shows the offline page,
+which `electron/hub-view.cjs` replaces with the hub's page when the connection turns online again.
 
 ## Checked against real Tailscale Serve
 

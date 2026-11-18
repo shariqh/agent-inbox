@@ -50,6 +50,10 @@ import { installDashHead } from '/dash-head.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
+// #617 PR 3c: another Mac's Inbox — the page shown from it, and this Mac's own screens for it
+import { installHubMode } from '/hub-mode.js'
+import { refreshConnectSettings, renderConnectSettings } from '/connect-settings.js'
+import { installHubStrip } from '/hub-strip.js'
 import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
@@ -6380,6 +6384,7 @@ function showPanel(id) {
     refreshLinkPermission()
     refreshLinkSettings()
     refreshLaunchSettings()
+    refreshConnectSettings()
   }
 }
 
@@ -10731,6 +10736,8 @@ function agentsCommand(text, into = agentsBlock.actions, className = 'agents-hoo
 
 // /api/setup as JSON, or null when it cannot be read.
 function readSetup() {
+  // #617 PR 3c: the hub's remote entry refuses /api/setup
+  if (!hubMode.local()) return Promise.resolve(null)
   return fetch('/api/setup').then((r) => (r.ok ? r.json() : null)).catch(() => null)
 }
 
@@ -11624,10 +11631,20 @@ async function renderSetup() {
   renderLaterSettings(host)
   renderPlanSettings(host)
   renderCopySettings(host)
+  // #617 PR 3c: shown from another Mac, Settings ends here, with one line in place of the rest
+  if (!hubMode.local()) {
+    await hubMode.ready()
+    if (!hubMode.local()) {
+      hubMode.renderSettingsNote(host)
+      return
+    }
+  }
   renderLinkSettings(host)
   // #586: which terminal Open in Terminal and Take over use; the buttons' titles follow at once
   renderTerminalSettings(host, { onChange: () => launchUi?.refresh() })
   renderLaunchSettings(host, { onChange: (state) => launchUi?.setState(state) })
+  // #617 PR 3c: Settings → Use another Mac's Inbox, on this Mac's own page only
+  renderConnectSettings(host)
   try {
     const s = await (await fetch('/api/setup')).json()
     const block = (title, text, hint) => {
@@ -11698,6 +11715,13 @@ async function renderSetup() {
     host.appendChild(db)
   } catch { /* setup info unavailable — leave the section empty */ }
 }
+
+// ── #617 PR 3c: another Mac's Inbox ────────────────────────────────────────
+// The page the hub serves runs in the connecting Mac's hub view too; there it is in hub mode
+// (public/hub-mode.js) and calls no route the hub's remote entry refuses. Made before renderSetup.
+const hubMode = installHubMode()
+// This Mac's own page draws whose Inbox is on screen while another Mac's is shown over it.
+installHubStrip()
 
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the

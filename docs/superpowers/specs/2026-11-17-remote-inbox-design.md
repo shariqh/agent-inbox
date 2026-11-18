@@ -512,6 +512,16 @@ the window's content, with:
 The local page stays loaded underneath and keeps working. **This Mac** and **<label>** items in
 the View menu, plus a control the local page draws through `agentInboxConnect.show(id | null)`,
 switch which view is on top. `Settings…` always shows This Mac, where connect settings live.
+**(As built in PR 3c:** the control is a strip the local page draws above the hub's view, which is
+laid out 36 CSS pixels below the top of the content area (`HUB_STRIP_HEIGHT`, the same number in
+`electron/hub-view.cjs` and `public/hub-strip.js`, pinned by a test) instead of covering all of it.
+The strip shows only while the hub's view is on top: "Showing <label>'s Inbox", its status in a word
+and **This Mac**, which is never disabled. The hub's page controls every pixel of its own view and
+chooses its own label, so whose Inbox is on screen is said only outside it. The form, Settings →
+Use another Mac's Inbox, is drawn only on this Mac's own page (`agentInboxDesk` says `local`), takes
+the address and the code, checks the code here before sending it, and says each refusal in plain
+words with what to do next; `docs/architecture/remote-inbox.md`, "The connecting Mac's screens",
+has every state and sentence.)
 
 **(As built in PR 3b,** in `electron/hub-view.cjs`, wired by `electron/main.cjs`; the full
 behaviour is in `docs/architecture/remote-inbox.md`, "The hub view". Where it differs from the
@@ -569,6 +579,11 @@ through the checked channel. Every answer is rebuilt field by field in the prelo
   reach <label>", with **Retry**, which the bridge accepts only from that file's URL).
 - A hub page already loaded stays (my call), so drafts survive a short drop: main publishes
   `retrying`, the page shows a one-line banner, and its own poll recovers by itself.
+  **(As built in PR 3c:** the line is "Reconnecting to <label>…" in the page's top bar, and the
+  page's own "disconnected" status is hidden while it shows. In hub mode the page also names the
+  hub's Inbox in the sidebar, calls none of the routes the remote entry refuses, and replaces every
+  Settings block that needs this app or such a route with "Settings for this Inbox are changed on
+  <label> itself." The poll's failed reads during `retrying` clear at the next answered poll.)
 - Main retries `probeHub` with backoff (2 s, doubling to 60 s), and at once on `powerMonitor`
   `resume` and `unlock-screen` and when `net.isOnline()` turns true (main has no network-change
   event). When the hub answers, main loads the hub page if the offline file shows, and reloads
@@ -714,6 +729,10 @@ sessions do not survive a restart. Keeping the hub awake is a system setting the
 4. On the laptop: Settings → "Use another Mac's Inbox". Enter `https://hub.example.ts.net`, a
    label and the code. **Connect**. Then set the SSH host and, if wanted, a template, and confirm
    the command in the dialog.
+   **(As built in PR 3c:** the form asks only for the **Address** (`hub.example.ts.net`, with or
+   without `https://`) and the **Code**, which the hub shows under Settings → Other devices → Add a
+   Mac. After **Connect**, **Show its Inbox** puts the hub's Inbox on screen, with a strip above it
+   naming it and **This Mac** to come back. The SSH host and the template are PR 4.)
 5. Check `ssh -t <host> tmux ls` works from the laptop's Terminal. A non-interactive SSH shell
    often lacks Homebrew's `PATH`, so the template may need `/opt/homebrew/bin/tmux` or a shell
    function.

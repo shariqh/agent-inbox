@@ -1,0 +1,1433 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the page with no agentInboxDesk (a browser, an older app) > is exactly the page it was before #617 PR 3c > boot 1`] = `
+"
+  <div class="app-shell">
+    <aside class="sidebar-shell">
+      <div class="brand">
+        <img class="brand-mark" src="/favicon-32.png" alt="" aria-hidden="true" width="22" height="22">
+        <span class="brand-copy"><strong>Agent Inbox</strong><small>Local workspace</small></span>
+        <button id="sidebarCollapse" class="sidebar-collapse" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1.5" y="2" width="13" height="12" rx="2"></rect>
+            <path d="M5.5 2v12M11 5.5 8.5 8 11 10.5"></path>
+          </svg>
+        </button>
+      </div>
+      <div id="tabs" class="tabstrip" role="tablist" aria-label="Library" aria-orientation="vertical" data-tablist="1">
+        <button class="tab" type="button" role="tab" data-tab="dashboard" aria-selected="true" tabindex="0" data-shortcut="G D" data-shortcut-id="dashboard" aria-description="Keyboard shortcut: G, then D.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h5v5H2zM9 2h5v3H9zM9 7h5v7H9zM2 9h5v5H2z"></path></svg>
+          <span class="tab-name">Dashboard</span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="false" tabindex="-1" data-shortcut="G I" data-shortcut-id="needsYou" aria-description="Keyboard shortcut: G, then I.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path></svg>
+          <span class="tab-name">Inbox</span><span class="tab-count">1</span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false" tabindex="-1" data-shortcut="G P" data-shortcut-id="boards" aria-description="Keyboard shortcut: G, then P.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
+          <span class="tab-name">Plans</span><span class="tab-count" hidden=""></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false" tabindex="-1" data-shortcut="G N" data-shortcut-id="notes" aria-description="Keyboard shortcut: G, then N.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
+          <span class="tab-name">Notes</span><span class="tab-count" hidden=""></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false" tabindex="-1" data-shortcut="G H" data-shortcut-id="done" aria-description="Keyboard shortcut: G, then H.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 4.5V8l2.5 1.5"></path></svg>
+          <span class="tab-name">History</span><span class="tab-count" hidden=""></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="chats" aria-selected="false" tabindex="-1" data-shortcut="G C" data-shortcut-id="chats" aria-description="Keyboard shortcut: G, then C.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3h11v7.5H7L4 13v-2.5H2.5z"></path></svg>
+          <span class="tab-name">Chats</span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="agent" aria-selected="false" aria-controls="agentPage" tabindex="-1" hidden="">
+          <span class="ma-dot" aria-hidden="true"></span>
+          <span class="tab-name"></span>
+        </button>
+      </div>
+      <div class="sidebar-section-label" data-shortcut="G O" data-shortcut-id="projects" aria-description="Keyboard shortcut: G, then O.">Projects</div>
+      <div id="projectDisclosure" class="project-disclosure" data-open="false">
+        <button id="projectDisclosureToggle" class="project-disclosure-toggle" type="button" aria-expanded="false" aria-controls="rail" aria-label="Choose project, current All projects" data-shortcut="G O" data-shortcut-id="projects" aria-description="Keyboard shortcut: G, then O." data-project="__all__">
+          <span class="project-disclosure-kicker">Project</span>
+          <span id="projectDisclosureDot" class="rail-dot all" aria-hidden="true"></span>
+          <span id="projectDisclosureName" class="project-disclosure-name">All projects</span>
+          <span id="projectDisclosureCount" class="project-disclosure-count">1</span>
+          <svg class="project-disclosure-caret" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="m4 6 4 4 4-4"></path>
+          </svg>
+        </button>
+        <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects" data-sig="[[],false,[{&quot;key&quot;:&quot;__all__&quot;,&quot;label&quot;:&quot;All&quot;,&quot;total&quot;:1,&quot;escalated&quot;:0,&quot;unknown&quot;:false},{&quot;key&quot;:&quot;alpha&quot;,&quot;label&quot;:&quot;alpha&quot;,&quot;total&quot;:1,&quot;escalated&quot;:0,&quot;unknown&quot;:false}],null,&quot;dark&quot;,false,&quot;&quot;,&quot;wide&quot;,false,null,0,0]" data-tablist="1"><div class="rail-row"><button type="button" class="rail-tab" data-project="__all__" role="tab" aria-selected="true" title="All" aria-label="All" tabindex="0"><span class="rail-dot all"></span><span class="rail-name">All</span><span class="rail-badge" title="1 waiting on you">1</span></button></div><div class="rail-row"><button type="button" class="rail-tab" data-project="alpha" role="tab" aria-selected="false" title="alpha" aria-label="alpha" tabindex="-1"><span class="rail-dot" style="background: oklch(0.72 0.14 220);"></span><span class="rail-name">alpha</span><span class="rail-badge" title="1 waiting on you">1</span></button><button type="button" tabindex="-1" class="rail-close" aria-label="Archive project alpha" title="Archive alpha — it comes back the moment an agent flags into it"><span class="rail-action-glyph" aria-hidden="true">×</span><span class="rail-action-label">Archive</span></button></div></nav>
+      </div>
+      <label class="agent-pick"><span class="tab-label" data-shortcut="G A" data-shortcut-id="agents" aria-description="Keyboard shortcut: G, then A.">Agent</span>
+        <select id="agentSelect" aria-label="Filter by agent" data-sig="[[&quot;claude&quot;],null]"><option value="">All agents</option><option value="claude">claude</option></select>
+      </label>
+      <button id="sessionsIndicator" class="sessions-indicator" type="button" data-tone="idle" title="Sessions · No sessions" aria-label="Sessions · No sessions. Open the Dashboard’s sessions">
+        <span class="si-dot" aria-hidden="true"></span>
+        <span class="si-text"><span class="si-k" data-shortcut="G L" data-shortcut-id="sessions" aria-description="Keyboard shortcut: G, then L.">Sessions</span><span class="si-v">No sessions</span><span class="si-s"></span><span class="si-older" hidden=""></span></span>
+      </button>
+      <button id="gear" class="gear" type="button" title="Settings" aria-label="Settings" aria-pressed="false" data-shortcut="G S" data-shortcut-id="setup" aria-description="Keyboard shortcut: G, then S.">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2 4.25h6.5M11.5 4.25H14M2 11.75h2.5M7.5 11.75H14"></path>
+          <circle cx="10" cy="4.25" r="1.5"></circle>
+          <circle cx="6" cy="11.75" r="1.5"></circle>
+        </svg>
+        <span>Settings</span>
+      </button>
+      <div id="sidebarResize" class="pane-resizer sidebar-resizer" role="separator" aria-label="Resize project pane" aria-orientation="vertical" tabindex="0" aria-valuemin="180" aria-valuemax="320" aria-valuenow="220" title="Drag to resize; arrow keys adjust; double-click resets to 220px" aria-hidden="false"></div>
+    </aside>
+    <div class="workspace-shell content">
+      <header id="topbar">
+        <div class="page-heading">
+          <span class="page-kicker" id="pageKicker">Monitor</span>
+          <h1 id="pageTitle">Live Operations Desk</h1>
+        </div>
+        <div class="floating-search" role="search" aria-label="Workspace search">
+          <svg class="floating-search-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5"></circle>
+            <path d="m10.5 10.5 3 3"></path>
+          </svg>
+          <input id="search" class="search-box" type="search" placeholder="Search this workspace" role="combobox" aria-label="Search items and plans" aria-autocomplete="list" aria-controls="searchResults" aria-expanded="false" aria-keyshortcuts="Meta+K Control+K" autocomplete="off">
+          <kbd class="floating-search-key" aria-hidden="true">Ctrl K</kbd>
+          <div id="searchResults" class="search-results" role="listbox" aria-label="Workspace search results" hidden=""></div>
+          <span id="searchStatus" class="visually-hidden" role="status" aria-live="polite"></span>
+        </div>
+        <div id="keyboardTools" class="keyboard-tools">
+          <button id="keyboardHints" type="button" aria-pressed="false" data-key-hints-ignore="" title="Show keys for controls on this screen" data-shortcut="F" data-shortcut-id="hints" aria-description="Keyboard shortcut: F." aria-keyshortcuts="f">Show keys</button>
+          <button id="keyboardHelp" type="button" aria-haspopup="dialog" aria-controls="keyboardbox" title="Keyboard shortcuts" data-shortcut="?" data-shortcut-id="help" aria-description="Keyboard shortcut: ?." aria-keyshortcuts="Shift+/">Keyboard</button>
+        </div>
+        <div class="topbar-notices"><span id="status"></span><span id="pauseHint" role="status" hidden=""></span></div>
+      </header>
+      <main>
+        <section class="panel" id="dashboard" role="tabpanel"><div class="dashboard"><div class="dash-head"><div class="dash-chips" role="group" aria-label="Lanes"><button type="button" class="dash-chip att" data-dash-chip="needs" data-dashboard-focus-key="chip:needs" aria-label="Needs you: 1"><span class="dash-chip-label">Needs you</span><b class="dash-chip-count">1</b></button><button type="button" class="dash-chip" data-dash-chip="working" data-dashboard-focus-key="chip:working" aria-label="Working: 0"><span class="dash-chip-label">Working</span><b class="dash-chip-count">0</b></button><button type="button" class="dash-chip" data-dash-chip="quiet" data-dashboard-focus-key="chip:quiet" aria-label="Quiet: 0"><span class="dash-chip-label">Quiet</span><b class="dash-chip-count">0</b></button></div><div class="dash-head-actions"><button class="ah-new" type="button" data-dashboard-focus-key="ah:new" hidden="">＋ New session…</button></div></div><p class="ah-note" hidden=""></p><p class="dash-since" hidden="" title=""></p><section class="dashboard-card needs-you-lane" aria-labelledby="needsYouLaneTitle"><div class="dashboard-card-head ny-head"><h2 id="needsYouLaneTitle" tabindex="-1">Needs you</h2><button class="ny-later" type="button" hidden="" title="Open the Inbox’s Later section" data-dashboard-focus-key="ny:later"></button><button class="ny-review" type="button" data-shortcut-id="review" data-dashboard-focus-key="ny:review" data-shortcut="T" aria-description="Keyboard shortcut: T." aria-keyshortcuts="t">Review queue</button></div><div class="ny-cards" role="list" aria-label="Asks waiting on you"><article class="ny-card" data-ny-ask="<uuid>" data-dashboard-focus-key="ny:<uuid>" role="listitem" tabindex="0" style="--ny-project: oklch(0.72 0.14 220);" aria-label="Ship it? alpha · claude · main. asked just now. no session"><div class="ny-meta"><i class="ny-dot" aria-hidden="true"></i><span class="ny-project">alpha</span><span class="ny-agent">claude</span><span class="ny-branch">main</span><span class="ny-age">now</span><span class="ny-session">no session</span><b class="ny-kind" hidden="">Hand-off</b><b class="ny-draft" hidden="">Draft</b></div><div class="ny-title" title="Ship it?">Ship it?</div><div class="ny-next">One ask.</div><div class="ny-plan" hidden=""></div></article></div><p class="ny-empty" hidden="">Nothing in this view is waiting on you.</p></section><div class="dashboard-grid"><div class="dash-split"><div class="agents-home"><section class="dashboard-card ah-lane working-lane" data-ah-lane="working" aria-labelledby="workingLaneTitle"><div class="dashboard-card-head ah-lane-head"><h2 id="workingLaneTitle" tabindex="-1">Working</h2></div><p class="ah-outside" hidden=""><span class="ah-outside-text"></span> · <button class="ah-outside-all" type="button" data-dashboard-focus-key="ah:outside-all">Show all</button></p><div class="ah-groups"></div><div class="ah-empty"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg><p class="ah-empty-text">No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.</p></div><p class="ah-lane-empty" hidden="">No session in this view is working.</p></section><section class="dashboard-card ah-lane quiet-lane" data-ah-lane="quiet" aria-labelledby="quietLaneTitle"><div class="dashboard-card-head ah-lane-head"><h2 id="quietLaneTitle" tabindex="-1">Quiet</h2></div><div class="qt-rows" role="list" aria-label="Quiet sessions" hidden=""><div class="qt-head" aria-hidden="true"><span>State</span><span>Session</span><span>Branch</span><span>Last caption</span><span>Since</span><span></span></div></div><p class="ah-lane-empty">No session in this view is quiet.</p><div class="ah-mesh"></div><div class="ah-folds" hidden=""><details class="ah-fold ah-fold-ended" data-ah-fold="ended" hidden=""><summary data-dashboard-focus-key="ah:fold:ended" data-key="[[&quot;Ended (0)&quot;,true]]"><b>Ended (0)</b></summary><div class="ah-cards"></div><details class="ah-fold ah-fold-earlier" data-ah-fold="earlier" hidden=""><summary data-dashboard-focus-key="ah:fold:earlier" data-key="[[&quot;Earlier sessions (0)&quot;,true]]"><b>Earlier sessions (0)</b></summary><div class="ah-cards"></div></details></details><details class="ah-fold ah-fold-dormant" data-ah-fold="dormant" hidden=""><summary data-dashboard-focus-key="ah:fold:dormant" data-key="[[&quot;Dormant (0)&quot;,true],[&quot; · quiet 8 h or more&quot;,false]]"><b>Dormant (0)</b> · quiet 8 h or more</summary><div class="ah-cards"></div></details><details class="ah-fold ah-fold-closed" data-ah-fold="closed" hidden=""><summary data-dashboard-focus-key="ah:fold:closed" data-key="[[&quot;In closed projects (0)&quot;,true]]"><b>In closed projects (0)</b></summary><div class="ah-cards"></div></details><div class="ah-undelivered" data-key="[[],29742360]"></div></div></section></div><aside id="dashFocus" class="dash-focus" hidden="" aria-labelledby="dashFocusTitle">
+    <div class="sp-head">
+      <div class="dash-focus-head">
+        <span class="sp-state"></span>
+        <h2 id="dashFocusTitle" tabindex="-1"></h2>
+        <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">×</button>
+      </div>
+      <p class="dash-focus-meta"></p>
+      <p class="sp-chat" hidden=""></p>
+      <p class="sp-hint" hidden=""></p>
+    </div>
+    <div class="sp-actions" role="group" aria-label="Session actions" hidden=""></div>
+    <p class="sp-note" role="status" hidden=""></p>
+    <div class="sp-body">
+      <p class="dash-focus-doing"></p>
+      <p class="dash-focus-detail"></p>
+      <p class="dash-focus-gone" hidden="">This session is no longer listed, or is outside the current filters.</p>
+      <section class="dash-focus-part sp-place" aria-label="Where it runs" hidden=""><div class="dash-focus-place"></div></section>
+      <section class="dash-focus-part sp-approval" aria-label="Approval"><h3>Approval <span class="sp-approval-count"></span></h3><div class="dash-focus-approval"></div></section>
+      <section class="dash-focus-part sp-asks" aria-label="Asking you" hidden=""><h3>Asking you <span class="sp-asks-count"></span></h3><div class="dash-focus-asks" data-panel=""></div></section>
+      <section class="dash-focus-part sp-worktree" aria-label="Worktree" hidden=""><h3>Worktree</h3><dl class="sp-worktree-box"></dl></section>
+      <section class="dash-focus-part sp-transcript" aria-label="Transcript" hidden=""><h3>Transcript <small>newest at the bottom</small></h3>
+        <div class="sp-transcript-box"><p class="sp-transcript-status"></p><ol class="sp-transcript-lines" aria-live="polite"></ol></div></section>
+      <section class="dash-focus-part" aria-label="Subagents"><h3>Subagents</h3><div class="dash-focus-children"></div></section>
+      <section class="dash-focus-part" aria-label="Plan"><h3>Plan</h3><div class="dash-focus-planbox"></div></section>
+      <section class="dash-focus-part" aria-label="Recent outcomes"><h3>Recent outcomes</h3><div class="dash-focus-outcomes"></div></section>
+      <section class="dash-focus-part" aria-label="Pull request"><h3>Pull request</h3><div class="dash-focus-source"></div></section>
+      <section class="dash-focus-part" aria-label="Links"><div class="dash-focus-links"></div></section>
+    </div>
+    <section class="dash-focus-message" aria-label="Message" hidden=""><div class="dash-focus-composer"></div></section>
+    <section class="sp-resume" aria-label="Resume and send" hidden="">
+      <h3>Resume and send</h3><div class="sp-resume-slot"></div>
+      <div class="sp-resume-actions"><button type="button" class="launch-action primary" data-launch-action="resume">Resume and send</button></div>
+    </section></aside></div><section class="dashboard-card plans-lane" aria-labelledby="plansLaneTitle"><div class="dashboard-card-head"><h2 id="plansLaneTitle" tabindex="-1">Plans in progress</h2></div><div class="pl-rows" role="list" aria-label="Plans in progress"></div><p class="pl-empty">No plan in this view has open steps.</p><p class="pl-more" hidden=""><button class="pl-all" type="button" data-dashboard-focus-key="pl:all">All plans ›</button></p></section><section class="dashboard-card dashboard-outcomes"><div class="dashboard-card-head"><h2 id="dashLandedTitle" tabindex="-1">Just landed</h2></div><div class="dashboard-outcome-list"><div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div></div><p class="dash-landed-waiting" hidden=""></p></section><section class="dashboard-card dashboard-activity">
+    <div class="dashboard-card-head"><h2 class="dash-ribbon-title">Today</h2><select class="dashboard-range" data-dashboard-focus-key="activity-range" aria-label="Dashboard activity range"><option value="86400000">24 hours</option><option value="604800000">7 days</option><option value="2592000000">30 days</option></select></div>
+    <div class="dashboard-activity-total"><strong>0m</strong><span class="dash-ribbon-legend" aria-hidden="true"><span class="dash-ribbon-key now"></span>now <span class="dash-ribbon-key-ask">◆</span> asked you <span class="dash-ribbon-key-outcome">●</span> landed</span></div>
+    <div class="dash-ribbon"><div class="dash-ribbon-lane" data-ribbon-project="alpha" role="img" style="--lane-color: oklch(0.72 0.14 220);" aria-label="alpha: 0m of work, 1 ask (1 open)"><span class="dash-ribbon-name">alpha</span><span class="dash-ribbon-track" data-key="[[],[[&quot;ask&quot;,&quot;item:<uuid>&quot;,true]]]"><span class="dash-ribbon-mark ask open" style="left:100%" title="Asking you: Ship it? · 3:00 AM">◆</span></span></div></div>
+    <div class="dash-ribbon-axis"><span class="dash-ribbon-from" aria-hidden="true">24h ago</span><span class="dash-ribbon-note"></span><span aria-hidden="true">now</span></div>
+    <div class="dash-ribbon-more" hidden=""></div></section></div></div></section>
+        <section class="panel" id="needsYou" role="tabpanel" hidden="">
+          <div id="needsYouList" class="rows" role="list" aria-label="Items needing attention"><div class="tab-header"><div class="queue-filter-group"><button class="header-toggle active" data-action-filter="all">All</button><button class="header-toggle" data-action-filter="decision">Decisions</button><button class="header-toggle" data-action-filter="task">To do</button><button class="header-toggle" data-changed-filter="1" disabled="">Updates</button></div><div class="queue-tool-group"><label class="queue-sort"><span>Sort</span><select aria-label="Sort queue"><option value="priority">Priority</option><option value="newest">Newest</option><option value="oldest">Oldest</option></select></label><button class="relay-btn">Handoffs</button><button data-shortcut-id="review" class="triage-btn" data-shortcut="T" aria-description="Keyboard shortcut: T." aria-keyshortcuts="t">Review queue</button></div><div class="triage-hold"><span class="triage-hold-text" role="status"></span><button class="triage-hold-show" hidden="">Show them</button></div></div><div class="nrow nrow-item" data-card-id="<uuid>" data-key-hint-owner="item:<uuid>" data-key-hint-version="2026-07-20T10:00:00.000Z" role="listitem" aria-current="false" aria-expanded="false" tabindex="-1" aria-label="Ship it?. Decision. Queued moments." style="--wash: oklch(0.28 0.045 220);">
+    <div class="nrow-l1">
+      <div class="nrow-primary">
+        <span class="pdot" style="background:oklch(0.72 0.14 220)" title="alpha"></span>
+        <span class="nrow-proj" title="alpha">AL</span>
+        
+        <span class="nrow-title" title="Ship it?">Ship it?</span>
+      </div>
+      <div class="nrow-meta">
+        <span class="nrow-owner owner-decision">Decision</span>
+        
+        <time class="nrow-asked" datetime="2026-07-20T10:00:00.000Z" data-exact="Jul 20, 2026, 3:00:00 AM PDT" aria-label="Asked moments ago, Jul 20, 2026, 3:00:00 AM PDT" tabindex="0">Asked moments ago</time>
+        
+        <span class="chip chip-neutral"><span aria-hidden="true">◌</span> Queued moments</span>
+        <span class="nrow-src"></span>
+        <span class="nrow-star"></span>
+        
+        <button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss" data-shortcut-id="dismiss">✕</button>
+        <span class="nrow-caret">▸</span>
+      </div>
+    </div>
+    <div class="nrow-l2"><span class="nrow-sec">One ask.</span></div></div></div>
+          <aside class="inspector-empty" aria-hidden="true">
+            <span>Select an item</span>
+            <p>Choose something from the queue to review the context and respond.</p>
+          </aside>
+          <div id="inspectorResize" class="pane-resizer inspector-resizer" role="separator" aria-label="Resize item pane" aria-orientation="vertical" tabindex="0" aria-valuemin="360" aria-valuemax="688" aria-valuenow="520" title="Drag to resize; arrow keys adjust; double-click resets to 520px"></div>
+        </section>
+        <section class="panel" id="boards" role="tabpanel" hidden=""><div class="boards"><div class="tab-header"><label class="header-switch"><input type="checkbox" id="group-plans-switch" role="switch">Group by parent issue</label><button class="header-toggle active">Show completed rows</button></div><p class="empty">No plans yet.</p></div></section>
+        <section class="panel" id="notes" role="tabpanel" hidden=""><div class="groups"><p class="empty">Nothing here.</p></div></section>
+        <section class="panel" id="done" role="tabpanel" hidden=""><div class="items"><p class="empty">Nothing yet.</p></div></section>
+        <section class="panel" id="chats" role="tabpanel" hidden=""><div class="chats"></div></section>
+        <section class="panel" id="agentPage" role="tabpanel" aria-label="Mesh agent" hidden=""></section>
+        <section class="panel" id="setup" role="tabpanel" hidden=""><div class="setup-body"><section class="setup-block theme-picker"><h3>Appearance</h3><p class="setup-hint">Choose a theme for this browser or app profile.</p><fieldset aria-label="Appearance"><label class="theme-choice"><input type="radio" name="theme-preference" value="light"><span class="theme-choice-copy"><strong>Light</strong><small>Always use the light editorial palette.</small></span></label><label class="theme-choice"><input type="radio" name="theme-preference" value="dark"><span class="theme-choice-copy"><strong>Dark</strong><small>Always use the low-light editorial palette.</small></span></label><label class="theme-choice"><input type="radio" name="theme-preference" value="system"><span class="theme-choice-copy"><strong>System</strong><small>Follow this device and update automatically.</small></span></label></fieldset></section><section class="setup-block sort-settings"><h3>Default sort order</h3><p class="setup-hint" id="default-sort-hint">Used each time Agent Inbox opens in this browser or app profile. The Sort menu above the queue changes only the current view.</p><select aria-label="Default sort order" aria-describedby="default-sort-hint"><option value="priority">Priority</option><option value="newest">Newest</option><option value="oldest">Oldest</option></select></section><section class="setup-block motion-settings"><h3>Motion</h3><p class="setup-hint" id="motion-hint">Full shows live activity with gentle movement. Calm keeps everything still and only fades things in. Reduce motion in your system settings turns movement off either way.</p><select aria-label="Motion" aria-describedby="motion-hint"><option value="full">Full</option><option value="calm">Calm</option></select></section><section class="setup-block later-settings"><h3>Inbox</h3><label class="settings-toggle"><input type="checkbox" class="later-section-toggle" aria-describedby="later-section-detail later-section-hint"><span><strong>Later section</strong><small id="later-section-detail">Move pinned and snoozed asks to a Later section at the foot of the inbox. Used each time Agent Inbox opens in this browser or app profile.</small></span></label><p class="setup-hint later-section-hint" id="later-section-hint" hidden=""></p></section><section class="setup-block plan-settings"><h3>Plans</h3><label class="settings-toggle"><input type="checkbox" aria-describedby="group-plans-detail"><span><strong>Group plans by parent issue</strong><small id="group-plans-detail">Gathers the active plans of one project that share a GitHub parent issue under a heading for it. No plan is hidden. Used each time Agent Inbox opens; the switch above Plans changes only the current view.</small></span></label></section><section class="setup-block copy-settings"><h3>Copying</h3><label class="settings-toggle"><input type="checkbox" class="copy-on-select-toggle" aria-describedby="copy-on-select-detail"><span><strong>Copy text when selected</strong><small id="copy-on-select-detail">Copies text to the clipboard as soon as you finish selecting it. Text you select in a reply box or other field is never copied this way.</small></span></label></section><section class="setup-block link-settings" id="link-settings"><h3>Links</h3><p class="setup-hint" id="link-settings-hint">In the Agent Inbox app on macOS, you can choose which app opens web links and each type of file.</p><div class="link-rules"></div><p class="link-settings-message" role="status" aria-live="polite"></p></section><p class="setup-hint">Running from the checkout at <path> · HEAD 9d645df.</p><section class="setup-block agents-status"><h3>Agents</h3><ul class="agents-hosts"><li data-host="claude"><strong>Claude Code:</strong> not registered</li><li data-host="copilot"><strong>Copilot CLI:</strong> not registered</li><li data-host="hooks"><strong>Claude hooks:</strong> not installed</li></ul><div class="agents-cli"><p class="setup-hint"><strong>meshctl:</strong> not installed; Setup writes ~/.agent-inbox/bin/meshctl when it installs or updates the agents</p></div><div class="agents-actions"></div><pre class="agents-result" hidden=""></pre><div class="agents-restart" role="status" hidden=""></div></section><section class="setup-block runtimes-status" hidden=""><h3>Runtimes</h3><p class="setup-hint">Setup keeps a copy of Node for each Agent Inbox version it installed, in ~/.agent-inbox/runtime.</p><ul class="runtimes-list"></ul><div class="runtimes-actions"></div><pre class="runtimes-result" hidden=""></pre></section><div class="setup-menu"><h3>Set up MCP + agent instructions</h3><p class="setup-hint">Choose the hosts once, then install here or hand the exact command to an agent or terminal. Optional Claude wake hooks stay under Advanced setup.</p><select class="setup-target" aria-label="Agents to configure"><option value="all">Claude Code + Copilot CLI (recommended)</option><option value="claude">Claude Code only</option><option value="copilot">Copilot CLI only</option></select><p class="setup-hint setup-app-note">Open this panel in the Electron app for one-click installation.</p><pre class="setup-command-preview">cd '<path> &amp;&amp; npm run install:agents -- --apply</pre><div class="setup-menu-actions"><button class="setup-agent-btn">Copy prompt for agent</button><button class="setup-command-btn">Copy terminal command</button></div><pre class="setup-result" hidden=""></pre></div><div class="setup-block"><h3>Advanced · Manual MCP registration — Claude Code</h3><p class="setup-hint">Use the installer above unless you intentionally manage configuration by hand.</p><pre>claude mcp add --scope user agent-inbox -- <path> <path></pre><button class="copy-btn">Copy</button></div><div class="setup-block"><h3>Advanced · Manual Copilot MCP config</h3><pre>{
+  "mcpServers": {
+    "agent-inbox": {
+      "command": "<path>",
+      "args": [
+        "<path>"
+      ]
+    }
+  }
+}</pre><button class="copy-btn">Copy</button></div><div class="setup-block"><h3>Advanced · Manual shared instructions</h3><p class="setup-hint">This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards. Claude Code can instead import docs/reporting-snippet.md with an @path line, which stays current by itself — the installer detects that and skips its inlined copy. Copilot CLI cannot import, so it always gets the text.</p><pre># Agent Inbox — reporting instructions (paste into global agent instructions)
+
+You have an \`agent-inbox\` MCP server. Use it to surface things the human would
+otherwise miss in the terminal firehose, and to keep standing status they can
+watch live. For customer-facing drafts, also use it as the review-before-send
+source of truth. project/stream/agent are inferred automatically.
+
+## Flags (one-shot attention)
+
+Call \`flag\` when:
+- **One ask, one surface.** If an existing tracking-board row already represents the
+  dependency, set that row to \`blocked\` and do **not** create a question item for the same
+  ask. Use a question item only when no board row already owns it.
+- **\`kind: "question"\`** — you are about to pause and wait on the human: a decision,
+  a missing credential, an ambiguity you cannot resolve yourself. One flag per real
+  blocker; put the actual question in \`title\`, a one-sentence TL;DR in \`detail\`, the ONE
+  concrete action the human should take in \`next_step\`, why it matters in \`impact\`,
+  what happens after in \`next_after\`, and long background in \`context\`. Set
+  \`action_owner\` to \`decision\` (they choose), \`task\` (they do it), or \`approval\`
+  (they approve and you act). Start \`next_step\` with a verb and do not bundle multiple asks.
+  \`decision\`/\`approval\` requires 2-4 answers; \`task\` has no options. When sensible answers
+  exist, ALWAYS attach 2-4 \`options\` — your recommendation first with \`recommended: true\`,
+  each with a short \`label\` and a \`detail\` explaining the tradeoff. The human can pick
+  one, compare them, or answer in their own words. **Options now buy more than clarity:**
+  they become one-click buttons on the desktop notification itself, so the human can answer
+  without opening the app at all. A question with no options can only be answered by someone
+  who stops what they are doing and goes to the inbox — so write \`label\`s that stand alone
+  out of context, because that button may be the entire question they ever see. If a Copilot question flag returns a
+  \`watch\` object, **immediately launch \`watch.shell_command\` as a detached async background
+  command** using the returned \`mode\`, \`detach\`, \`shell_id\`, and \`timeout_seconds\`; do not
+  wait for it synchronously. The background completion notification wakes your session when
+  the answer lands. On that notification, call \`pending()\` immediately, act on the answer,
+  and resolve the question. A timeout is not an answer: relaunch the same command under a new
+  \`shell_id\` (append \`-2\`, \`-3\`, …), which waits longer each time the question is unanswered. If the watcher says the human asked
+  you to stop waiting, do not re-arm it; their answer still arrives through \`pending()\` or
+  chat. Clients without a returned watcher keep using their native wake
+  path. Also **poll \`pending()\`** between work steps: it returns \`{ items, rows, messages }\` — your open questions with \`reply\` once answered (an
+  option label or free text — follow it either way), plus optional \`reply_context\` when they
+  attach extra direction with their answer, **and \`rows\`: the human's per-row notes on your
+  boards** (see Boards below), and \`messages\`: the human's messages to your session (see
+  Messages from the human below). Act on items and rows: call \`resolve\` after handling a question item,
+  passing \`expected_response_revision\` from that item's \`response_revision\`,
+  and move a board row out of \`blocked\` after handling its response. \`pending()\` is the ONE poll —
+  everything they have said to you arrives through it. Do
+  not park forever waiting in the terminal. If you end a turn with a Copilot question still
+  open, the returned watcher must already be running unless the human asked you to stop
+  waiting; do not tell the human they need to message you again.
+  **One question, two channels.** A flagged question IS the question you are asking in
+  chat — never open a second, independent prompt for a decision you already flagged; point
+  at the flag instead. If they answer you in chat, call \`answer({ id, text, context? })\` so
+  the inbox stops showing it open and unread. If that comes back
+  \`{ ok:false, reason:"unread_inbox_answer" }\` they also answered in the inbox and you have
+  not read it — poll \`pending()\` and follow that one; the inbox wins.
+  A successful \`answer\` returns \`response_revision\`; use it when resolving that answer.
+  Once an item has response or annotation history, including a clear, \`resolve\` requires
+  the exact revision you handled. \`response_changed\` or \`response_revision_required\`
+  means re-read with \`pending({item_id: id})\`, handle the current response, and retry explicitly —
+  never borrow a sibling's newer revision to acknowledge an answer you did not handle.
+  Items with no response history can still be resolved without a revision.
+  \`pending()\` also delivers human annotations on open notes and milestones, including
+  a clear (empty \`annotation\` with \`annotated_at\`). This informational feedback normally
+  leaves the queue after pickup; use \`pending({item_id: id})\` to recover it afterward,
+  adding \`full: true\` for its background or \`project\` when needed.
+  \`annotation_seen_at\`/\`annotation_seen_by\` mean handed to a reader, not handled by the
+  intended session. Informational feedback creates no new human attention or automatic
+  host-wake guarantee. Do not resolve a note or milestone merely because you read its
+  feedback; close it only when the item itself is complete or moot.
+  Read \`reply_kind\`: \`clarify\` means resolve this wording and raise a corrected replacement
+  question; \`decline\` means stop/cancel the proposed path and resolve with an \`outcome\`.
+  \`snoozed_until\` means the human deferred the ask; do not nag or treat it as an answer.
+- **\`kind: "note"\`** — you made a notable **assumption**, took a **workaround**, hit a
+  **caveat**, or left **tech debt** the human should know about but that does NOT block
+  you. Do not flag routine progress or things visible in the diff.
+- **\`kind: "done"\`** — a completed **milestone** worth announcing (shipped, merged,
+  deployed). Use sparingly — it is NOT for routine progress. If \`next_step\` is a real
+  action for the human (review this, try that), the item is a **hand-off**: it goes to
+  their Needs you until they acknowledge it, so use it whenever you hand work back. The
+  server decides: a \`next_step\` that STARTS WITH "No action" (also "No further action",
+  "No-action"), or is "None", "N/A", "Nothing" or "FYI", is an announcement and stays a
+  milestone in History, so write exactly "No action" for one. A hand-off's result is
+  \`{ id, handoff: true }\`, and it stores no \`options\`. No agent is blocked on it, so do
+  not wait for it; there is no
+  answer to read, and Acknowledge resolves it with the outcome "Acknowledged".
+
+**Keep every item glanceable.** Every flag has distinct fields: \`title\` is the ask or finding
+itself in one line (aim under ~80 chars), \`detail\` is a one-sentence TL;DR of the current
+state, \`next_step\` is the ONE concrete action the human should take now, \`impact\` says why
+it matters, and \`next_after\` says what follows. Use
+\`next_step: "No action"\` for a pure FYI or milestone. If you catch yourself writing a
+paragraph into any of those fields, compress it and move the body into \`context\`.
+Agent-authored long-form text supports paragraphs, explicit line breaks, simple \`-\`/\`*\`
+bullets, \`1.\` numbered lists, safe \`http://\`/\`https://\` autolinks, and triple-backtick
+fenced code or command blocks with an optional short language label. Fenced blocks render
+inertly with a Copy control; they are never executed, validated, rewritten, or inferred
+from prose. It does not render other Markdown or raw HTML. Keep titles, TL;DRs, notes, and
+action fields short and action-first; use that small structure for the reasoning and
+history in collapsed \`context\`. Code- or markup-like fragments outside fences quarantine
+the remainder of their paragraph or list item from autolinking; put prose URLs that should
+be clickable in a separate paragraph or list item.
+GitHub references (\`#287\`, \`PR #284\`, \`owner/name#12\`) and local file paths become links
+too, and every link a card shows is also listed at the top of the card. **Write local files
+the human should open as absolute paths** (\`<path> or \`~/…/spec.md\`, with
+an optional \`:line\`), never repo-relative ones (\`docs/spec.md\`); a path containing a space
+does not link. Common documents (Markdown, text, JSON, YAML, CSV, PDF, images, HTML) open in
+their default app; any other file is only shown in its folder. A single-digit \`#N\` links
+only after \`issue\`, \`PR\` or a closing keyword such as \`Fixes\`, or in parentheses like
+\`(#7)\`, because on its own it reads as an ordinal.
+A bare \`#N\` on a plan row is read against the row's issue link, else the plan's pinned issue, else the
+project's repository, so write \`owner/name#N\` for any other repository.
+**Always provide \`context\`** — the background a human returning cold needs
+to act without asking you anything: what you were working on, why this came up, relevant
+files/PRs/links. They may read the item hours later with zero memory of the task; it
+renders as a collapsed dropdown, so length is fine. Do not flag more than the human
+needs — a noisy inbox gets ignored. One \`done\` flag per shipped thing: re-flagging an
+identical open milestone title (or hand-off title) is deduped, not stacked. If a question you raised
+resolves itself before they answer, call \`resolve\` with its id.
+
+**The end-of-turn rule — flag decisions, don't bury them.** The test is not "am I still
+chatting?" — it's **"am I about to stop and wait on the human?"** If your next move depends
+on their answer and you are ending your turn, that is a question — flag it, **even
+mid-conversation, even if you just answered something.** This catches the case agents miss
+most: you end on a **recommendation** to accept ("I'd do X"), a **next step awaiting
+go-ahead** ("want me to…?", "say the word", "should I…?"), or you hand back a **decision**.
+A recommendation in the last paragraph of a great analysis is invisible — no banner, no
+badge, no triage, and it will not wake you when they answer; flagging it (with \`options\`)
+does all three. Writing it in chat **and** flagging is right — the flag is what makes it
+survive, so don't choose between them. *Example: you conclude "I'd add the tour row and
+file the issue — go?" → \`flag(kind:"question", title:"Add the feature-tour gate row + file
+the --handbook issue?", options:[Do both (rec), Just the row, Just the issue, Not now])\`.*
+
+## Boards (standing status the human watches)
+
+For a **multi-item effort** where the human would otherwise have to ask "what's the
+status?" — a test-coverage matrix, a rollout/QA checklist, a migration's file list, a
+review's findings — keep a **board** (a titled table of rows) instead of burying it in
+prose. Do this **proactively**, without being asked:
+
+- **\`board_upsert({ title, rows })\`** — create or refresh the WHOLE table (idempotent by
+  title). Existing boards require \`board_version\`; re-send the full table whenever status
+  changes. Each row is
+  \`{ label, status, revision?, note?, next_step?, action_owner?, impact?, next_after?, options?, outcome?, context? }\`,
+  \`status ∈ done | partial | missing | tracked | na | blocked\`.
+  \`blocked\` means the row needs the HUMAN and nobody else — it escalates into their attention
+  banner. Every blocked row MUST have \`note\` as a one-sentence TL;DR and \`next_step\` as
+  the ONE concrete action the human can take now, plus \`action_owner\` and \`impact\`.
+  Start it with a verb; split multiple asks into separate rows. If the blocker is a
+  **decision/approval**, attach 2-4 \`options\` (recommendation first); if it is a **task**
+  the human must perform, omit options so
+  the viewer offers “I’ve done my part.” The blocked row is itself the ask:
+  **one ask, one surface** — never also create a question item for that dependency.
+  **Being stuck is not being blocked:** a failing
+  test, a build or release that does not exist yet, another PR — no person can unblock those, so
+  they are \`partial\` (or \`tracked\`) with the reason in \`note\`. Waiting on another GitHub issue
+  (GitHub's 'blocked by') or on another step (\`waits_on\`) is tracked or partial, never blocked.
+  \`pending()\` delivers their response kind too: \`answer\`, \`clarify\`, or \`decline\`.
+  A row comes back as an \`annotation\` (words/choice), or \`handled_at\` — **the human telling you THEY have gone and
+  DONE the thing** you blocked on. Both mean their part is finished; **flip the row's status
+  once you have acted and include \`outcome\` — that status change/result tells them you did.**
+  A clarification request is NOT a final answer: rewrite the same stable row with
+  \`board_advance({ board_version, expected_revision, ...fresh action fields })\`. If their answer creates
+  another human step, use \`board_advance\` again rather than stacking a second row. A decline
+  normally becomes \`na\` with an outcome saying what was cancelled. Until you acknowledge, they
+  see the row sitting there marked "delivered to you", which is exactly what it is — and
+  \`pending()\` keeps handing you the same note on every poll, so nothing is lost when a
+  sibling session polls first. \`annotation_seen_at\`/\`annotation_seen_by\` mean the note reached
+  **some** agent — often a sibling session sharing your name, not you — so a stamp is never a
+  reason to skip it. **If the row is still \`blocked\`, it is not done.** Act on it, then flip the
+  status and it stops coming back. Moving a row out of \`blocked\` and later back into it is a
+  NEW request and archives the previous step, so never do that just to nag about the same ask.
+  Keep \`label\` stable — rows are matched by label, and the human's notes stick to the label.
+  Every EXISTING row update must carry the current row \`revision\` from \`board_get\`/\`pending\`;
+  a mismatch is a stale sibling and the write is refused.
+  \`note\` is the TL;DR, \`next_step\` is the action, \`impact\` is why now, and \`next_after\`
+  is the immediate follow-up; put long-form backstory (reasoning, history, links) in
+  \`context\` — the human sees it as a collapsed dropdown, so the row stays scannable.
+  Example decision row: \`label: "#334 PR-X0 spec (#582)"\`,
+  \`note: "The spec is settled and every review gate is green."\`,
+  \`next_step: "Choose whether to merge PR #582."\`,
+  \`action_owner: "approval"\`, \`impact: "Unblocks PR-X"\`,
+  \`options: [Merge PR #582 (recommended), Hold]\`; the six review rounds belong in \`context\`.
+- **GitHub issue links.** \`board_upsert({ title, issue, rows })\` pins the plan to an issue (say an
+  umbrella issue, when you work from a child's branch), and \`rows[].issue\` or
+  \`board_row({ issue })\` links a row. Accepted forms: \`owner/name#123\`, \`#123\` or \`123\` (this
+  session's GitHub repository) and \`https://github.com/owner/name/issues/123\`; anything else is
+  refused. Omitting \`issue\` keeps the link, \`""\` clears it, and \`board_advance\` or a move into
+  \`blocked\` keeps it. A titled \`board_get\` echoes \`issue\` and, once the viewer has fetched it,
+  a short \`issue_rel\` (parent and child counts, never titles; once GitHub's dependencies are
+  known, also \`waits_on_issues\`, the open blockers' issue keys, and an \`unblocks\` count). Those
+  keys are read-only GitHub data, never labels for \`waits_on\`. Agent Inbox never edits GitHub
+  relationships: use \`gh issue edit --parent\` / \`--add-sub-issue\` / \`--add-blocked-by\`.
+- **Step dependencies.** \`rows[].waits_on\` (or \`board_row({ waits_on })\`) lists the labels of
+  other rows in the same plan that a row waits on: at most 20 entries as sent, and duplicates
+  collapse. Omitting it keeps the list, \`[]\` clears it, and \`board_advance\` or a move into
+  \`blocked\` keeps it. An unknown label, a row naming itself and a cycle are refused with the
+  reason; a label whose row you later remove is kept and draws nothing. It never makes a row
+  \`blocked\`: a row that only waits is \`tracked\` or \`partial\`, and \`blocked\` remains for a
+  separate human action.
+- **\`board_row({ title, label, expected_revision, status?, ..., outcome? })\`** — update one
+  existing row; when acknowledging the human, move it out of \`blocked\` and record the result.
+- **\`board_advance({ title, label, board_version, expected_revision, ...fresh action })\`** — atomically archive
+  the prior step and reuse the same row for the next human action.
+- **\`board_get({ title? })\`** — read a board back, **including the human's per-row notes**.
+  Call it when you (re)start work on a tracked effort, and before updating a board. You do
+  not need it to HEAR from them — \`pending()\` delivers their notes — so prefer the titled
+  form; the title-less one summarises every board in the project at once.
+  **Reads do not return \`context\`.** The human's \`annotation\` always comes back in full, but
+  the \`context\` YOU wrote comes back as \`context_chars\` (its size) — you wrote it, so you are
+  not charged to read it again. \`board_get({ title, full: true })\` returns the real text if you
+  genuinely need it; \`pending({ full: true })\` does the same for items. \`context_chars\` is not
+  proof you have the text, only that text exists. Row \`revision\` is the CAS token for writes;
+  \`action_version\` numbers chained steps; \`history_count\` says prior steps exist without shipping them.
+- **\`board_archive({ title })\`** — when the effort is finished.
+  Existing boards require the current \`board_version\`.
+
+Prefer updating an existing board (same title) over spawning new ones. One board per
+effort; let it track from start to done. A board is the durable, always-current answer —
+maintain it as the work moves, not just at the end.
+
+## Draft review / approval loop
+
+For customer-facing emails and other sendable copy, treat the board as the single
+source of truth before anything is sent.
+
+- Keep one stable board title for the active review queue, such as \`Email draft review\`.
+- Use one row per draft/thread. Keep the row label stable, and put the draft's
+  subject/customer/thread key in the label.
+- Put the draft body, relevant context, and any open questions in the row \`context\`;
+  use \`note\` for a one-sentence TL;DR and \`next_step\` for the exact approval/action needed.
+- Set \`status: tracked\` while drafting, \`blocked\` when you need the human to decide
+  something, and \`done\` once the final draft has been approved and sent.
+- If a draft row already represents a concrete blocker, set that row to \`blocked\` and
+  ask through the row only. If no board row owns the ask, raise a
+  \`flag({ kind: "question" })\` with 2-4 options when possible. Never create both for the
+  same dependency.
+- Treat that flag as the ONE question across both channels. Poll \`pending()\` for an
+  inbox answer; if the human answers in chat, record it with \`answer({ id, text })\`.
+- Before sending, call \`pending()\` and re-read the titled board for full draft context.
+  Do not rely on a separate chat thread or scattered notes as the approval record.
+
+## Session status (ephemeral presence)
+
+Your session appears as a card in the human's Agents view automatically (an idle
+presence card — no action needed from you). For **long-running work** — especially multi-agent fan-outs
+the human loses the mental model of — call \`status({ doing, detail?, children?, done? })\`
+at meaningful **phase changes only** (never on a timer, never per step): starting a long effort, entering a new
+phase, spawning or finishing subagents, wrapping up. \`children\` is a **full-replace**
+list of your currently-running subagents (\`{ name, doing, state? }\`) — resend the current
+set when it changes; the human sees them on your card. Only the top-level
+manager reports — subagents stay silent. Call \`status({ done: true })\` when the effort
+ends; if your process dies instead, its card drops out on its own within ~15 minutes, so
+a crash never leaves a ghost. This is ambient glass for the human, not tracking — boards
+remain the durable record.
+
+**A claim goes quiet after ~30 minutes with no MCP call of any kind**, and your card reverts
+to idle — otherwise a session that finished hours ago sits there advertising work it is no
+longer doing. Your card does NOT disappear; only the claim does. This is still not a reason
+to call \`status\` on a timer: any tool call keeps it fresh, so ordinary work holds it
+automatically. It only bites on a genuinely silent stretch — a long build, a deep fan-out
+where the children do the work — and the fix is a phase-change \`status({ doing })\` when you
+come back up for air, which you should be sending anyway. Re-asserting is instant.
+
+## Requests (what the human asked you)
+
+A request is one piece of work the human asked you to do. When they hand you some, you may
+declare it with \`request({ action: "open", title })\`; whatever you open you must close, with
+\`request({ action: "close", id, outcome })\` and a one-line outcome. Keep a one-line \`note\` with
+\`update\` at real progress. Set \`review: true\` with a \`next_step\` on \`close\` when they should look
+at the result: that is the hand-off, so do not also flag a milestone for it. \`pending()\` returns
+your open requests in \`requests\`. A subagent never opens, updates or closes a request.
+
+## Messages from the human
+
+The human can message your session directly from Agent Inbox. \`pending()\` returns them in
+\`messages\` (\`{ id, text, sent_at, delivered_at, project }\`), oldest first, for your session
+only, whatever project you are scoped to. Treat each as an instruction typed into your
+terminal: the same trust and the same rules. It changes no safety or approval rule, and it
+never comes from another agent. It must make sense on its own, since it may arrive after
+\`/clear\`. **If you are a subagent, do not act on or acknowledge messages: return them verbatim
+to your parent.** The top-level agent acts on each, then calls \`ack_message({ id, outcome })\`
+with one line: what you did, what you declined and why, or that you took it on and where you
+track it. Ack as soon as you have acted; until then it comes back on every \`pending()\`. If
+\`delivered_at\` predates this conversation, check whether it was already done before repeating
+side effects. \`ack_message\` returning \`not_open\` with \`status: "withdrawn"\` means the human
+took it back: stop if you have not finished. A message is not a question; do not \`flag\` it
+back unless acting on it needs a decision.
+
+## Subagents
+
+When you delegate work to subagents whose pauses/assumptions/tracked status the human
+would care about, pass these rules along in the subagent's instructions — subagents
+don't inherit this file automatically in all harnesses.
+</pre><button class="copy-btn">Copy</button></div><div class="setup-block"><h3>Advanced · Optional Claude backstop hooks</h3><p class="setup-hint">Optional. Merge into ~/.claude/settings.json, then restart Claude Code. Prefer \`npm run install:hooks\` from the repo — it proves the Node binary with a selftest before writing anything, backs the file up, and is a dry run by default. See docs/hooks.md.</p><pre>{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "notification"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "session-start"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "session-end"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "prompt-submit"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "activity"
+            ],
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "activity"
+            ],
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "stop"
+            ],
+            "timeout": 10,
+            "statusMessage": "Checking agent-inbox for answered questions…"
+          },
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "watch"
+            ],
+            "timeout": 86400,
+            "statusMessage": "Arming agent-inbox answer watcher…",
+            "asyncRewake": true,
+            "rewakeSummary": "Agent Inbox: your answer arrived"
+          }
+        ]
+      }
+    ]
+  }
+}</pre><button class="copy-btn">Copy</button></div><p class="setup-hint">Everything lands in <path> — any viewer (browser tab, app) reads the same file.</p></div></section>
+      </main>
+    </div>
+  </div>
+  <div id="lightbox" hidden="">
+    <div class="lb-backdrop"></div>
+    <div class="lb-panel" role="dialog" aria-modal="true" aria-label="Review queue" tabindex="-1">
+      <div class="lb-head">
+        <div class="lb-run">
+          <span class="lb-kicker">Review queue</span>
+          <span class="lb-count"></span>
+        </div>
+        <span class="lb-owner"></span>
+        <button class="lb-close" title="Close (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+      </div>
+      <div class="lb-progress" aria-hidden="true"><span class="lb-progress-fill"></span></div>
+      <div class="lb-mix"></div>
+      <div class="lb-card"></div>
+      <div class="lb-shortcuts"><kbd>1-4</kbd> choose · <kbd>J/K</kbd> or <kbd>←/→</kbd> move · <kbd>Esc</kbd> close</div>
+      <div class="lb-nav"><button class="lb-prev">← Back</button><button class="lb-next">Next →</button></div>
+    </div>
+  </div>
+  <div id="relaybox" hidden="">
+    <div class="relay-backdrop"></div>
+    <div class="relay-panel" role="dialog" aria-modal="true" aria-label="Handoffs" tabindex="-1">
+      <div class="relay-head">
+        <div>
+          <span class="relay-kicker">Handoffs</span>
+          <h2>From your response to the result</h2>
+        </div>
+        <span class="relay-summary"></span>
+        <button class="relay-close" title="Close (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+      </div>
+      <div class="relay-lanes">
+        <section class="relay-lane" data-relay-lane="human">
+          <header><span class="relay-dot human"></span><strong>Waiting on you</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+        <section class="relay-lane" data-relay-lane="agent">
+          <header><span class="relay-dot agent"></span><strong>With the agent</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+        <section class="relay-lane" data-relay-lane="outcome">
+          <header><span class="relay-dot outcome"></span><strong>Outcome</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+      </div>
+      <div class="relay-foot">Open any card to see its action, handoff, or recorded outcome.</div>
+    </div>
+  </div>
+  <div id="missionbox" hidden="">
+    <div class="mission-backdrop"></div>
+    <div class="mission-panel" role="dialog" aria-modal="true" aria-label="Plan flow" tabindex="-1">
+      <div class="mission-head">
+        <div>
+          <span class="mission-kicker">Plan flow</span>
+          <h2>Steps and outcomes</h2>
+          <p class="mission-subtitle"></p>
+        </div>
+        <button class="mission-close" title="Close (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+      </div>
+      <div class="mission-graph">
+        <div class="mission-root-column">
+          <div class="mission-root-card">
+            <span class="mission-root-project"></span>
+            <strong class="mission-root-title"></strong>
+            <span class="mission-root-progress"></span>
+          </div>
+        </div>
+        <div class="mission-paths"></div>
+      </div>
+      <div class="mission-foot">Connections follow recorded next steps and outcomes. “Waits on” and “Unblocks” follow recorded steps and GitHub dependencies, in the plan’s own order.</div>
+    </div>
+    <div class="mission-detail" hidden="">
+      <div class="mission-detail-backdrop"></div>
+      <section class="mission-detail-panel" role="dialog" aria-modal="true" aria-label="Plan step detail" tabindex="-1">
+        <div class="mission-detail-head">
+          <div>
+            <span class="mission-detail-meta"></span>
+            <h3 class="mission-detail-title"></h3>
+          </div>
+          <button class="mission-detail-close" title="Close detail (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+        </div>
+        <div class="mission-detail-body"></div>
+        <div class="mission-detail-actions">
+          <button class="mission-detail-board">Open in Plans</button>
+        </div>
+      </section>
+    </div>
+  </div>
+  <div id="keyboardbox" class="keyboard-box" hidden="">
+    <div class="keyboard-backdrop"></div>
+    <section class="keyboard-panel" role="dialog" aria-modal="true" aria-labelledby="keyboardTitle" aria-describedby="keyboardIntro" tabindex="-1">
+      <header class="keyboard-head">
+        <div>
+          <h2 id="keyboardTitle">Keyboard shortcuts</h2>
+          <p id="keyboardIntro">Start with <kbd>F</kbd>: type the keys shown beside a control to use it.</p>
+        </div>
+        <button class="keyboard-close" type="button" aria-label="Close keyboard shortcuts" title="Close keyboard shortcuts (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">×</button>
+      </header>
+      <div class="keyboard-groups"><section><h3>Start here</h3><dl><div><dt><kbd>F</kbd></dt><dd>Show keys for the controls on screen</dd></div><div><dt><kbd>?</kbd></dt><dd>Open keyboard shortcuts</dd></div><div><dt><kbd>Ctrl K</kbd></dt><dd>Search this workspace (or press /)</dd></div></dl></section><section><h3>Go to</h3><dl><div><dt><kbd>G D</kbd></dt><dd>Dashboard</dd></div><div><dt><kbd>G I</kbd></dt><dd>Inbox</dd></div><div><dt><kbd>G P</kbd></dt><dd>Plans</dd></div><div><dt><kbd>G N</kbd></dt><dd>Notes</dd></div><div><dt><kbd>G H</kbd></dt><dd>History</dd></div><div><dt><kbd>G C</kbd></dt><dd>Chats</dd></div><div><dt><kbd>G S</kbd></dt><dd>Settings</dd></div><div><dt><kbd>G A</kbd></dt><dd>Agent filter</dd></div><div><dt><kbd>G O</kbd></dt><dd>Project picker</dd></div><div><dt><kbd>G L</kbd></dt><dd>Sessions</dd></div></dl></section><section><h3>Work through items</h3><dl><div><dt><kbd>J / K</kbd></dt><dd>Move between items (arrow keys also work)</dd></div><div><dt><kbd>Enter</kbd></dt><dd>Open the selected item or focused control</dd></div><div><dt><kbd>R</kbd></dt><dd>Focus the open reply box</dd></div><div><dt><kbd>1-4</kbd></dt><dd>Choose an option in the active card</dd></div><div><dt><kbd>Ctrl Enter</kbd></dt><dd>Send a reply; plain Enter keeps a new line</dd></div><div><dt><kbd>E</kbd></dt><dd>Resolve the current item</dd></div><div><dt><kbd>X</kbd></dt><dd>Dismiss the current item with its undo window</dd></div><div><dt><kbd>T</kbd></dt><dd>Open the review queue</dd></div></dl></section><section><h3>Dashboard</h3><dl><div><dt><kbd>J / K</kbd></dt><dd>Move between the cards in a Dashboard lane (the arrows too)</dd></div><div><dt><kbd>Enter</kbd></dt><dd>Open a card: an ask in the Inbox, a session in its panel, a plan in Plans</dd></div><div><dt><kbd>1-4</kbd></dt><dd>Choose an option of the panel's ask</dd></div><div><dt><kbd>S</kbd></dt><dd>Snooze the panel's ask for 4 hours</dd></div><div><dt><kbd>P</kbd></dt><dd>Pin the panel's ask for later</dd></div><div><dt><kbd>R</kbd></dt><dd>Write an answer to the panel's ask</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the session panel, or an ask opened from the Dashboard, and return to its card</dd></div></dl></section><section><h3>Messages</h3><dl><div><dt><kbd>Ctrl Enter</kbd></dt><dd>Send a message from its composer</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the session panel from its composer: the text is kept</dd></div></dl></section><section><h3>Every control</h3><dl><div><dt><kbd>Tab / Shift Tab</kbd></dt><dd>Move through controls; use arrows for pickers and pane dividers</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Leave hints, cancel a shortcut, or close the current surface</dd></div></dl></section></div>
+      <footer class="keyboard-foot">
+        <p>Letters stay yours while typing. Go-to shortcuts use <kbd>G</kbd>, then the next key.
+          <kbd>Esc</kbd> cancels. Close a dialog before navigating elsewhere.</p>
+        <button id="keyboardHintsFromHelp" type="button">Show keys on this screen</button>
+      </footer>
+    </section>
+  </div>
+  <span id="keyboardStatus" class="keyboard-status" role="status" aria-live="polite"></span>
+  
+  
+<div id="structured-copy-announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div><div id="linkOpenStatus" class="link-open-status" role="status" aria-live="polite" aria-atomic="true"></div><div id="selectionCopyStatus" class="selection-copy-status" role="status" aria-live="polite" aria-atomic="true"></div>"
+`;
+
+exports[`the page with no agentInboxDesk (a browser, an older app) > is exactly the page it was before #617 PR 3c > requests 1`] = `
+[
+  "GET /api/activity",
+  "GET /api/activity/history",
+  "GET /api/boards",
+  "GET /api/boards/archived/summary",
+  "GET /api/issues",
+  "GET /api/items",
+  "GET /api/links",
+  "GET /api/messages",
+  "GET /api/projects/closed",
+  "GET /api/setup",
+  "GET /api/version",
+]
+`;
+
+exports[`the page with no agentInboxDesk (a browser, an older app) > is exactly the page it was before #617 PR 3c > settings 1`] = `
+"
+  <div class="app-shell">
+    <aside class="sidebar-shell">
+      <div class="brand">
+        <img class="brand-mark" src="/favicon-32.png" alt="" aria-hidden="true" width="22" height="22">
+        <span class="brand-copy"><strong>Agent Inbox</strong><small>Local workspace</small></span>
+        <button id="sidebarCollapse" class="sidebar-collapse" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1.5" y="2" width="13" height="12" rx="2"></rect>
+            <path d="M5.5 2v12M11 5.5 8.5 8 11 10.5"></path>
+          </svg>
+        </button>
+      </div>
+      <div id="tabs" class="tabstrip" role="tablist" aria-label="Library" aria-orientation="vertical" data-tablist="1">
+        <button class="tab" type="button" role="tab" data-tab="dashboard" aria-selected="false" tabindex="0" data-shortcut="G D" data-shortcut-id="dashboard" aria-description="Keyboard shortcut: G, then D.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h5v5H2zM9 2h5v3H9zM9 7h5v7H9zM2 9h5v5H2z"></path></svg>
+          <span class="tab-name">Dashboard</span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="needsYou" aria-selected="false" tabindex="-1" data-shortcut="G I" data-shortcut-id="needsYou" aria-description="Keyboard shortcut: G, then I.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM2 9h3l1.5 2h3L11 9h3"></path></svg>
+          <span class="tab-name">Inbox</span><span class="tab-count">1</span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="boards" aria-selected="false" tabindex="-1" data-shortcut="G P" data-shortcut-id="boards" aria-description="Keyboard shortcut: G, then P.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
+          <span class="tab-name">Plans</span><span class="tab-count" hidden=""></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false" tabindex="-1" data-shortcut="G N" data-shortcut-id="notes" aria-description="Keyboard shortcut: G, then N.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
+          <span class="tab-name">Notes</span><span class="tab-count" hidden=""></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false" tabindex="-1" data-shortcut="G H" data-shortcut-id="done" aria-description="Keyboard shortcut: G, then H.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 4.5V8l2.5 1.5"></path></svg>
+          <span class="tab-name">History</span><span class="tab-count" hidden=""></span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="chats" aria-selected="false" tabindex="-1" data-shortcut="G C" data-shortcut-id="chats" aria-description="Keyboard shortcut: G, then C.">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3h11v7.5H7L4 13v-2.5H2.5z"></path></svg>
+          <span class="tab-name">Chats</span>
+        </button>
+        <button class="tab" type="button" role="tab" data-tab="agent" aria-selected="false" aria-controls="agentPage" tabindex="-1" hidden="">
+          <span class="ma-dot" aria-hidden="true"></span>
+          <span class="tab-name"></span>
+        </button>
+      </div>
+      <div class="sidebar-section-label" data-shortcut="G O" data-shortcut-id="projects" aria-description="Keyboard shortcut: G, then O.">Projects</div>
+      <div id="projectDisclosure" class="project-disclosure" data-open="false">
+        <button id="projectDisclosureToggle" class="project-disclosure-toggle" type="button" aria-expanded="false" aria-controls="rail" aria-label="Choose project, current All projects" data-shortcut="G O" data-shortcut-id="projects" aria-description="Keyboard shortcut: G, then O." data-project="__all__">
+          <span class="project-disclosure-kicker">Project</span>
+          <span id="projectDisclosureDot" class="rail-dot all" aria-hidden="true"></span>
+          <span id="projectDisclosureName" class="project-disclosure-name">All projects</span>
+          <span id="projectDisclosureCount" class="project-disclosure-count">1</span>
+          <svg class="project-disclosure-caret" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="m4 6 4 4 4-4"></path>
+          </svg>
+        </button>
+        <nav id="rail" role="tablist" aria-orientation="vertical" aria-label="Projects" data-sig="[[],false,[{&quot;key&quot;:&quot;__all__&quot;,&quot;label&quot;:&quot;All&quot;,&quot;total&quot;:1,&quot;escalated&quot;:0,&quot;unknown&quot;:false},{&quot;key&quot;:&quot;alpha&quot;,&quot;label&quot;:&quot;alpha&quot;,&quot;total&quot;:1,&quot;escalated&quot;:0,&quot;unknown&quot;:false}],null,&quot;dark&quot;,false,&quot;&quot;,&quot;wide&quot;,false,null,0,0]" data-tablist="1"><div class="rail-row"><button type="button" class="rail-tab" data-project="__all__" role="tab" aria-selected="true" title="All" aria-label="All" tabindex="0"><span class="rail-dot all"></span><span class="rail-name">All</span><span class="rail-badge" title="1 waiting on you">1</span></button></div><div class="rail-row"><button type="button" class="rail-tab" data-project="alpha" role="tab" aria-selected="false" title="alpha" aria-label="alpha" tabindex="-1"><span class="rail-dot" style="background: oklch(0.72 0.14 220);"></span><span class="rail-name">alpha</span><span class="rail-badge" title="1 waiting on you">1</span></button><button type="button" tabindex="-1" class="rail-close" aria-label="Archive project alpha" title="Archive alpha — it comes back the moment an agent flags into it"><span class="rail-action-glyph" aria-hidden="true">×</span><span class="rail-action-label">Archive</span></button></div></nav>
+      </div>
+      <label class="agent-pick"><span class="tab-label" data-shortcut="G A" data-shortcut-id="agents" aria-description="Keyboard shortcut: G, then A.">Agent</span>
+        <select id="agentSelect" aria-label="Filter by agent" data-sig="[[&quot;claude&quot;],null]"><option value="">All agents</option><option value="claude">claude</option></select>
+      </label>
+      <button id="sessionsIndicator" class="sessions-indicator" type="button" data-tone="idle" title="Sessions · No sessions" aria-label="Sessions · No sessions. Open the Dashboard’s sessions">
+        <span class="si-dot" aria-hidden="true"></span>
+        <span class="si-text"><span class="si-k" data-shortcut="G L" data-shortcut-id="sessions" aria-description="Keyboard shortcut: G, then L.">Sessions</span><span class="si-v">No sessions</span><span class="si-s"></span><span class="si-older" hidden=""></span></span>
+      </button>
+      <button id="gear" class="gear active" type="button" title="Settings" aria-label="Settings" aria-pressed="true" data-shortcut="G S" data-shortcut-id="setup" aria-description="Keyboard shortcut: G, then S.">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2 4.25h6.5M11.5 4.25H14M2 11.75h2.5M7.5 11.75H14"></path>
+          <circle cx="10" cy="4.25" r="1.5"></circle>
+          <circle cx="6" cy="11.75" r="1.5"></circle>
+        </svg>
+        <span>Settings</span>
+      </button>
+      <div id="sidebarResize" class="pane-resizer sidebar-resizer" role="separator" aria-label="Resize project pane" aria-orientation="vertical" tabindex="0" aria-valuemin="180" aria-valuemax="320" aria-valuenow="220" title="Drag to resize; arrow keys adjust; double-click resets to 220px" aria-hidden="false"></div>
+    </aside>
+    <div class="workspace-shell content">
+      <header id="topbar">
+        <div class="page-heading">
+          <span class="page-kicker" id="pageKicker">Agent Inbox</span>
+          <h1 id="pageTitle">Settings</h1>
+        </div>
+        <div class="floating-search" role="search" aria-label="Workspace search">
+          <svg class="floating-search-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5"></circle>
+            <path d="m10.5 10.5 3 3"></path>
+          </svg>
+          <input id="search" class="search-box" type="search" placeholder="Search this workspace" role="combobox" aria-label="Search items and plans" aria-autocomplete="list" aria-controls="searchResults" aria-expanded="false" aria-keyshortcuts="Meta+K Control+K" autocomplete="off">
+          <kbd class="floating-search-key" aria-hidden="true">Ctrl K</kbd>
+          <div id="searchResults" class="search-results" role="listbox" aria-label="Workspace search results" hidden=""></div>
+          <span id="searchStatus" class="visually-hidden" role="status" aria-live="polite"></span>
+        </div>
+        <div id="keyboardTools" class="keyboard-tools">
+          <button id="keyboardHints" type="button" aria-pressed="false" data-key-hints-ignore="" title="Show keys for controls on this screen" data-shortcut="F" data-shortcut-id="hints" aria-description="Keyboard shortcut: F." aria-keyshortcuts="f">Show keys</button>
+          <button id="keyboardHelp" type="button" aria-haspopup="dialog" aria-controls="keyboardbox" title="Keyboard shortcuts" data-shortcut="?" data-shortcut-id="help" aria-description="Keyboard shortcut: ?." aria-keyshortcuts="Shift+/">Keyboard</button>
+        </div>
+        <div class="topbar-notices"><span id="status"></span><span id="pauseHint" role="status" hidden=""></span></div>
+      </header>
+      <main>
+        <section class="panel" id="dashboard" role="tabpanel" hidden=""><div class="dashboard"><div class="dash-head"><div class="dash-chips" role="group" aria-label="Lanes"><button type="button" class="dash-chip att" data-dash-chip="needs" data-dashboard-focus-key="chip:needs" aria-label="Needs you: 1"><span class="dash-chip-label">Needs you</span><b class="dash-chip-count">1</b></button><button type="button" class="dash-chip" data-dash-chip="working" data-dashboard-focus-key="chip:working" aria-label="Working: 0"><span class="dash-chip-label">Working</span><b class="dash-chip-count">0</b></button><button type="button" class="dash-chip" data-dash-chip="quiet" data-dashboard-focus-key="chip:quiet" aria-label="Quiet: 0"><span class="dash-chip-label">Quiet</span><b class="dash-chip-count">0</b></button></div><div class="dash-head-actions"><button class="ah-new" type="button" data-dashboard-focus-key="ah:new" hidden="">＋ New session…</button></div></div><p class="ah-note" hidden=""></p><p class="dash-since" hidden="" title=""></p><section class="dashboard-card needs-you-lane" aria-labelledby="needsYouLaneTitle"><div class="dashboard-card-head ny-head"><h2 id="needsYouLaneTitle" tabindex="-1">Needs you</h2><button class="ny-later" type="button" hidden="" title="Open the Inbox’s Later section" data-dashboard-focus-key="ny:later"></button><button class="ny-review" type="button" data-shortcut-id="review" data-dashboard-focus-key="ny:review" data-shortcut="T" aria-description="Keyboard shortcut: T." aria-keyshortcuts="t">Review queue</button></div><div class="ny-cards" role="list" aria-label="Asks waiting on you"><article class="ny-card" data-ny-ask="<uuid>" data-dashboard-focus-key="ny:<uuid>" role="listitem" tabindex="0" style="--ny-project: oklch(0.72 0.14 220);" aria-label="Ship it? alpha · claude · main. asked just now. no session"><div class="ny-meta"><i class="ny-dot" aria-hidden="true"></i><span class="ny-project">alpha</span><span class="ny-agent">claude</span><span class="ny-branch">main</span><span class="ny-age">now</span><span class="ny-session">no session</span><b class="ny-kind" hidden="">Hand-off</b><b class="ny-draft" hidden="">Draft</b></div><div class="ny-title" title="Ship it?">Ship it?</div><div class="ny-next">One ask.</div><div class="ny-plan" hidden=""></div></article></div><p class="ny-empty" hidden="">Nothing in this view is waiting on you.</p></section><div class="dashboard-grid"><div class="dash-split"><div class="agents-home"><section class="dashboard-card ah-lane working-lane" data-ah-lane="working" aria-labelledby="workingLaneTitle"><div class="dashboard-card-head ah-lane-head"><h2 id="workingLaneTitle" tabindex="-1">Working</h2></div><p class="ah-outside" hidden=""><span class="ah-outside-text"></span> · <button class="ah-outside-all" type="button" data-dashboard-focus-key="ah:outside-all">Show all</button></p><div class="ah-groups"></div><div class="ah-empty"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v4M12 18v4M2 12h4M18 12h4"></path></svg><p class="ah-empty-text">No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.</p></div><p class="ah-lane-empty" hidden="">No session in this view is working.</p></section><section class="dashboard-card ah-lane quiet-lane" data-ah-lane="quiet" aria-labelledby="quietLaneTitle"><div class="dashboard-card-head ah-lane-head"><h2 id="quietLaneTitle" tabindex="-1">Quiet</h2></div><div class="qt-rows" role="list" aria-label="Quiet sessions" hidden=""><div class="qt-head" aria-hidden="true"><span>State</span><span>Session</span><span>Branch</span><span>Last caption</span><span>Since</span><span></span></div></div><p class="ah-lane-empty">No session in this view is quiet.</p><div class="ah-mesh"></div><div class="ah-folds" hidden=""><details class="ah-fold ah-fold-ended" data-ah-fold="ended" hidden=""><summary data-dashboard-focus-key="ah:fold:ended" data-key="[[&quot;Ended (0)&quot;,true]]"><b>Ended (0)</b></summary><div class="ah-cards"></div><details class="ah-fold ah-fold-earlier" data-ah-fold="earlier" hidden=""><summary data-dashboard-focus-key="ah:fold:earlier" data-key="[[&quot;Earlier sessions (0)&quot;,true]]"><b>Earlier sessions (0)</b></summary><div class="ah-cards"></div></details></details><details class="ah-fold ah-fold-dormant" data-ah-fold="dormant" hidden=""><summary data-dashboard-focus-key="ah:fold:dormant" data-key="[[&quot;Dormant (0)&quot;,true],[&quot; · quiet 8 h or more&quot;,false]]"><b>Dormant (0)</b> · quiet 8 h or more</summary><div class="ah-cards"></div></details><details class="ah-fold ah-fold-closed" data-ah-fold="closed" hidden=""><summary data-dashboard-focus-key="ah:fold:closed" data-key="[[&quot;In closed projects (0)&quot;,true]]"><b>In closed projects (0)</b></summary><div class="ah-cards"></div></details><div class="ah-undelivered" data-key="[[],29742360]"></div></div></section></div><aside id="dashFocus" class="dash-focus" hidden="" aria-labelledby="dashFocusTitle">
+    <div class="sp-head">
+      <div class="dash-focus-head">
+        <span class="sp-state"></span>
+        <h2 id="dashFocusTitle" tabindex="-1"></h2>
+        <button type="button" class="dash-focus-close" aria-label="Close the session panel" title="Close (Esc)" data-dashboard-focus-key="focus:close" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">×</button>
+      </div>
+      <p class="dash-focus-meta"></p>
+      <p class="sp-chat" hidden=""></p>
+      <p class="sp-hint" hidden=""></p>
+    </div>
+    <div class="sp-actions" role="group" aria-label="Session actions" hidden=""></div>
+    <p class="sp-note" role="status" hidden=""></p>
+    <div class="sp-body">
+      <p class="dash-focus-doing"></p>
+      <p class="dash-focus-detail"></p>
+      <p class="dash-focus-gone" hidden="">This session is no longer listed, or is outside the current filters.</p>
+      <section class="dash-focus-part sp-place" aria-label="Where it runs" hidden=""><div class="dash-focus-place"></div></section>
+      <section class="dash-focus-part sp-approval" aria-label="Approval"><h3>Approval <span class="sp-approval-count"></span></h3><div class="dash-focus-approval"></div></section>
+      <section class="dash-focus-part sp-asks" aria-label="Asking you" hidden=""><h3>Asking you <span class="sp-asks-count"></span></h3><div class="dash-focus-asks" data-panel=""></div></section>
+      <section class="dash-focus-part sp-worktree" aria-label="Worktree" hidden=""><h3>Worktree</h3><dl class="sp-worktree-box"></dl></section>
+      <section class="dash-focus-part sp-transcript" aria-label="Transcript" hidden=""><h3>Transcript <small>newest at the bottom</small></h3>
+        <div class="sp-transcript-box"><p class="sp-transcript-status"></p><ol class="sp-transcript-lines" aria-live="polite"></ol></div></section>
+      <section class="dash-focus-part" aria-label="Subagents"><h3>Subagents</h3><div class="dash-focus-children"></div></section>
+      <section class="dash-focus-part" aria-label="Plan"><h3>Plan</h3><div class="dash-focus-planbox"></div></section>
+      <section class="dash-focus-part" aria-label="Recent outcomes"><h3>Recent outcomes</h3><div class="dash-focus-outcomes"></div></section>
+      <section class="dash-focus-part" aria-label="Pull request"><h3>Pull request</h3><div class="dash-focus-source"></div></section>
+      <section class="dash-focus-part" aria-label="Links"><div class="dash-focus-links"></div></section>
+    </div>
+    <section class="dash-focus-message" aria-label="Message" hidden=""><div class="dash-focus-composer"></div></section>
+    <section class="sp-resume" aria-label="Resume and send" hidden="">
+      <h3>Resume and send</h3><div class="sp-resume-slot"></div>
+      <div class="sp-resume-actions"><button type="button" class="launch-action primary" data-launch-action="resume">Resume and send</button></div>
+    </section></aside></div><section class="dashboard-card plans-lane" aria-labelledby="plansLaneTitle"><div class="dashboard-card-head"><h2 id="plansLaneTitle" tabindex="-1">Plans in progress</h2></div><div class="pl-rows" role="list" aria-label="Plans in progress"></div><p class="pl-empty">No plan in this view has open steps.</p><p class="pl-more" hidden=""><button class="pl-all" type="button" data-dashboard-focus-key="pl:all">All plans ›</button></p></section><section class="dashboard-card dashboard-outcomes"><div class="dashboard-card-head"><h2 id="dashLandedTitle" tabindex="-1">Just landed</h2></div><div class="dashboard-outcome-list"><div class="dashboard-empty" role="img" aria-label="No recorded outcomes" title="No recorded outcomes"><svg class="dashboard-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="m8 12 2.5 2.5L16 9"></path></svg></div></div><p class="dash-landed-waiting" hidden=""></p></section><section class="dashboard-card dashboard-activity">
+    <div class="dashboard-card-head"><h2 class="dash-ribbon-title">Today</h2><select class="dashboard-range" data-dashboard-focus-key="activity-range" aria-label="Dashboard activity range"><option value="86400000">24 hours</option><option value="604800000">7 days</option><option value="2592000000">30 days</option></select></div>
+    <div class="dashboard-activity-total"><strong>0m</strong><span class="dash-ribbon-legend" aria-hidden="true"><span class="dash-ribbon-key now"></span>now <span class="dash-ribbon-key-ask">◆</span> asked you <span class="dash-ribbon-key-outcome">●</span> landed</span></div>
+    <div class="dash-ribbon"><div class="dash-ribbon-lane" data-ribbon-project="alpha" role="img" style="--lane-color: oklch(0.72 0.14 220);" aria-label="alpha: 0m of work, 1 ask (1 open)"><span class="dash-ribbon-name">alpha</span><span class="dash-ribbon-track" data-key="[[],[[&quot;ask&quot;,&quot;item:<uuid>&quot;,true]]]"><span class="dash-ribbon-mark ask open" style="left:100%" title="Asking you: Ship it? · 3:00 AM">◆</span></span></div></div>
+    <div class="dash-ribbon-axis"><span class="dash-ribbon-from" aria-hidden="true">24h ago</span><span class="dash-ribbon-note"></span><span aria-hidden="true">now</span></div>
+    <div class="dash-ribbon-more" hidden=""></div></section></div></div></section>
+        <section class="panel" id="needsYou" role="tabpanel" hidden="">
+          <div id="needsYouList" class="rows" role="list" aria-label="Items needing attention"><div class="tab-header"><div class="queue-filter-group"><button class="header-toggle active" data-action-filter="all">All</button><button class="header-toggle" data-action-filter="decision">Decisions</button><button class="header-toggle" data-action-filter="task">To do</button><button class="header-toggle" data-changed-filter="1" disabled="">Updates</button></div><div class="queue-tool-group"><label class="queue-sort"><span>Sort</span><select aria-label="Sort queue"><option value="priority">Priority</option><option value="newest">Newest</option><option value="oldest">Oldest</option></select></label><button class="relay-btn">Handoffs</button><button data-shortcut-id="review" class="triage-btn" data-shortcut="T" aria-description="Keyboard shortcut: T." aria-keyshortcuts="t">Review queue</button></div><div class="triage-hold"><span class="triage-hold-text" role="status"></span><button class="triage-hold-show" hidden="">Show them</button></div></div><div class="nrow nrow-item" data-card-id="<uuid>" data-key-hint-owner="item:<uuid>" data-key-hint-version="2026-07-20T10:00:00.000Z" role="listitem" aria-current="false" aria-expanded="false" tabindex="-1" aria-label="Ship it?. Decision. Queued moments." style="--wash: oklch(0.28 0.045 220);">
+    <div class="nrow-l1">
+      <div class="nrow-primary">
+        <span class="pdot" style="background:oklch(0.72 0.14 220)" title="alpha"></span>
+        <span class="nrow-proj" title="alpha">AL</span>
+        
+        <span class="nrow-title" title="Ship it?">Ship it?</span>
+      </div>
+      <div class="nrow-meta">
+        <span class="nrow-owner owner-decision">Decision</span>
+        
+        <time class="nrow-asked" datetime="2026-07-20T10:00:00.000Z" data-exact="Jul 20, 2026, 3:00:00 AM PDT" aria-label="Asked moments ago, Jul 20, 2026, 3:00:00 AM PDT" tabindex="0">Asked moments ago</time>
+        
+        <span class="chip chip-neutral"><span aria-hidden="true">◌</span> Queued moments</span>
+        <span class="nrow-src"></span>
+        <span class="nrow-star"></span>
+        
+        <button class="nrow-dismiss" title="Dismiss (x)" aria-label="Dismiss" data-shortcut-id="dismiss">✕</button>
+        <span class="nrow-caret">▸</span>
+      </div>
+    </div>
+    <div class="nrow-l2"><span class="nrow-sec">One ask.</span></div></div></div>
+          <aside class="inspector-empty" aria-hidden="true">
+            <span>Select an item</span>
+            <p>Choose something from the queue to review the context and respond.</p>
+          </aside>
+          <div id="inspectorResize" class="pane-resizer inspector-resizer" role="separator" aria-label="Resize item pane" aria-orientation="vertical" tabindex="0" aria-valuemin="360" aria-valuemax="688" aria-valuenow="520" title="Drag to resize; arrow keys adjust; double-click resets to 520px"></div>
+        </section>
+        <section class="panel" id="boards" role="tabpanel" hidden=""><div class="boards"><div class="tab-header"><label class="header-switch"><input type="checkbox" id="group-plans-switch" role="switch">Group by parent issue</label><button class="header-toggle active">Show completed rows</button></div><p class="empty">No plans yet.</p></div></section>
+        <section class="panel" id="notes" role="tabpanel" hidden=""><div class="groups"><p class="empty">Nothing here.</p></div></section>
+        <section class="panel" id="done" role="tabpanel" hidden=""><div class="items"><p class="empty">Nothing yet.</p></div></section>
+        <section class="panel" id="chats" role="tabpanel" hidden=""><div class="chats"></div></section>
+        <section class="panel" id="agentPage" role="tabpanel" aria-label="Mesh agent" hidden=""></section>
+        <section class="panel" id="setup" role="tabpanel"><div class="setup-body"><section class="setup-block theme-picker"><h3>Appearance</h3><p class="setup-hint">Choose a theme for this browser or app profile.</p><fieldset aria-label="Appearance"><label class="theme-choice"><input type="radio" name="theme-preference" value="light"><span class="theme-choice-copy"><strong>Light</strong><small>Always use the light editorial palette.</small></span></label><label class="theme-choice"><input type="radio" name="theme-preference" value="dark"><span class="theme-choice-copy"><strong>Dark</strong><small>Always use the low-light editorial palette.</small></span></label><label class="theme-choice"><input type="radio" name="theme-preference" value="system"><span class="theme-choice-copy"><strong>System</strong><small>Follow this device and update automatically.</small></span></label></fieldset></section><section class="setup-block sort-settings"><h3>Default sort order</h3><p class="setup-hint" id="default-sort-hint">Used each time Agent Inbox opens in this browser or app profile. The Sort menu above the queue changes only the current view.</p><select aria-label="Default sort order" aria-describedby="default-sort-hint"><option value="priority">Priority</option><option value="newest">Newest</option><option value="oldest">Oldest</option></select></section><section class="setup-block motion-settings"><h3>Motion</h3><p class="setup-hint" id="motion-hint">Full shows live activity with gentle movement. Calm keeps everything still and only fades things in. Reduce motion in your system settings turns movement off either way.</p><select aria-label="Motion" aria-describedby="motion-hint"><option value="full">Full</option><option value="calm">Calm</option></select></section><section class="setup-block later-settings"><h3>Inbox</h3><label class="settings-toggle"><input type="checkbox" class="later-section-toggle" aria-describedby="later-section-detail later-section-hint"><span><strong>Later section</strong><small id="later-section-detail">Move pinned and snoozed asks to a Later section at the foot of the inbox. Used each time Agent Inbox opens in this browser or app profile.</small></span></label><p class="setup-hint later-section-hint" id="later-section-hint" hidden=""></p></section><section class="setup-block plan-settings"><h3>Plans</h3><label class="settings-toggle"><input type="checkbox" aria-describedby="group-plans-detail"><span><strong>Group plans by parent issue</strong><small id="group-plans-detail">Gathers the active plans of one project that share a GitHub parent issue under a heading for it. No plan is hidden. Used each time Agent Inbox opens; the switch above Plans changes only the current view.</small></span></label></section><section class="setup-block copy-settings"><h3>Copying</h3><label class="settings-toggle"><input type="checkbox" class="copy-on-select-toggle" aria-describedby="copy-on-select-detail"><span><strong>Copy text when selected</strong><small id="copy-on-select-detail">Copies text to the clipboard as soon as you finish selecting it. Text you select in a reply box or other field is never copied this way.</small></span></label></section><section class="setup-block link-settings" id="link-settings"><h3>Links</h3><p class="setup-hint" id="link-settings-hint">In the Agent Inbox app on macOS, you can choose which app opens web links and each type of file.</p><div class="link-rules"></div><p class="link-settings-message" role="status" aria-live="polite"></p></section><p class="setup-hint">Running from the checkout at <path> · HEAD 9d645df.</p><section class="setup-block agents-status"><h3>Agents</h3><ul class="agents-hosts"><li data-host="claude"><strong>Claude Code:</strong> not registered</li><li data-host="copilot"><strong>Copilot CLI:</strong> not registered</li><li data-host="hooks"><strong>Claude hooks:</strong> not installed</li></ul><div class="agents-cli"><p class="setup-hint"><strong>meshctl:</strong> not installed; Setup writes ~/.agent-inbox/bin/meshctl when it installs or updates the agents</p></div><div class="agents-actions"></div><pre class="agents-result" hidden=""></pre><div class="agents-restart" role="status" hidden=""></div></section><section class="setup-block runtimes-status" hidden=""><h3>Runtimes</h3><p class="setup-hint">Setup keeps a copy of Node for each Agent Inbox version it installed, in ~/.agent-inbox/runtime.</p><ul class="runtimes-list"></ul><div class="runtimes-actions"></div><pre class="runtimes-result" hidden=""></pre></section><div class="setup-menu"><h3>Set up MCP + agent instructions</h3><p class="setup-hint">Choose the hosts once, then install here or hand the exact command to an agent or terminal. Optional Claude wake hooks stay under Advanced setup.</p><select class="setup-target" aria-label="Agents to configure"><option value="all">Claude Code + Copilot CLI (recommended)</option><option value="claude">Claude Code only</option><option value="copilot">Copilot CLI only</option></select><p class="setup-hint setup-app-note">Open this panel in the Electron app for one-click installation.</p><pre class="setup-command-preview">cd '<path> &amp;&amp; npm run install:agents -- --apply</pre><div class="setup-menu-actions"><button class="setup-agent-btn">Copy prompt for agent</button><button class="setup-command-btn">Copy terminal command</button></div><pre class="setup-result" hidden=""></pre></div><div class="setup-block"><h3>Advanced · Manual MCP registration — Claude Code</h3><p class="setup-hint">Use the installer above unless you intentionally manage configuration by hand.</p><pre>claude mcp add --scope user agent-inbox -- <path> <path></pre><button class="copy-btn">Copy</button></div><div class="setup-block"><h3>Advanced · Manual Copilot MCP config</h3><pre>{
+  "mcpServers": {
+    "agent-inbox": {
+      "command": "<path>",
+      "args": [
+        "<path>"
+      ]
+    }
+  }
+}</pre><button class="copy-btn">Copy</button></div><div class="setup-block"><h3>Advanced · Manual shared instructions</h3><p class="setup-hint">This snippet is the signal-quality lever: it tells agents when to raise questions/notes, attach options, poll for your replies, and keep boards. Claude Code can instead import docs/reporting-snippet.md with an @path line, which stays current by itself — the installer detects that and skips its inlined copy. Copilot CLI cannot import, so it always gets the text.</p><pre># Agent Inbox — reporting instructions (paste into global agent instructions)
+
+You have an \`agent-inbox\` MCP server. Use it to surface things the human would
+otherwise miss in the terminal firehose, and to keep standing status they can
+watch live. For customer-facing drafts, also use it as the review-before-send
+source of truth. project/stream/agent are inferred automatically.
+
+## Flags (one-shot attention)
+
+Call \`flag\` when:
+- **One ask, one surface.** If an existing tracking-board row already represents the
+  dependency, set that row to \`blocked\` and do **not** create a question item for the same
+  ask. Use a question item only when no board row already owns it.
+- **\`kind: "question"\`** — you are about to pause and wait on the human: a decision,
+  a missing credential, an ambiguity you cannot resolve yourself. One flag per real
+  blocker; put the actual question in \`title\`, a one-sentence TL;DR in \`detail\`, the ONE
+  concrete action the human should take in \`next_step\`, why it matters in \`impact\`,
+  what happens after in \`next_after\`, and long background in \`context\`. Set
+  \`action_owner\` to \`decision\` (they choose), \`task\` (they do it), or \`approval\`
+  (they approve and you act). Start \`next_step\` with a verb and do not bundle multiple asks.
+  \`decision\`/\`approval\` requires 2-4 answers; \`task\` has no options. When sensible answers
+  exist, ALWAYS attach 2-4 \`options\` — your recommendation first with \`recommended: true\`,
+  each with a short \`label\` and a \`detail\` explaining the tradeoff. The human can pick
+  one, compare them, or answer in their own words. **Options now buy more than clarity:**
+  they become one-click buttons on the desktop notification itself, so the human can answer
+  without opening the app at all. A question with no options can only be answered by someone
+  who stops what they are doing and goes to the inbox — so write \`label\`s that stand alone
+  out of context, because that button may be the entire question they ever see. If a Copilot question flag returns a
+  \`watch\` object, **immediately launch \`watch.shell_command\` as a detached async background
+  command** using the returned \`mode\`, \`detach\`, \`shell_id\`, and \`timeout_seconds\`; do not
+  wait for it synchronously. The background completion notification wakes your session when
+  the answer lands. On that notification, call \`pending()\` immediately, act on the answer,
+  and resolve the question. A timeout is not an answer: relaunch the same command under a new
+  \`shell_id\` (append \`-2\`, \`-3\`, …), which waits longer each time the question is unanswered. If the watcher says the human asked
+  you to stop waiting, do not re-arm it; their answer still arrives through \`pending()\` or
+  chat. Clients without a returned watcher keep using their native wake
+  path. Also **poll \`pending()\`** between work steps: it returns \`{ items, rows, messages }\` — your open questions with \`reply\` once answered (an
+  option label or free text — follow it either way), plus optional \`reply_context\` when they
+  attach extra direction with their answer, **and \`rows\`: the human's per-row notes on your
+  boards** (see Boards below), and \`messages\`: the human's messages to your session (see
+  Messages from the human below). Act on items and rows: call \`resolve\` after handling a question item,
+  passing \`expected_response_revision\` from that item's \`response_revision\`,
+  and move a board row out of \`blocked\` after handling its response. \`pending()\` is the ONE poll —
+  everything they have said to you arrives through it. Do
+  not park forever waiting in the terminal. If you end a turn with a Copilot question still
+  open, the returned watcher must already be running unless the human asked you to stop
+  waiting; do not tell the human they need to message you again.
+  **One question, two channels.** A flagged question IS the question you are asking in
+  chat — never open a second, independent prompt for a decision you already flagged; point
+  at the flag instead. If they answer you in chat, call \`answer({ id, text, context? })\` so
+  the inbox stops showing it open and unread. If that comes back
+  \`{ ok:false, reason:"unread_inbox_answer" }\` they also answered in the inbox and you have
+  not read it — poll \`pending()\` and follow that one; the inbox wins.
+  A successful \`answer\` returns \`response_revision\`; use it when resolving that answer.
+  Once an item has response or annotation history, including a clear, \`resolve\` requires
+  the exact revision you handled. \`response_changed\` or \`response_revision_required\`
+  means re-read with \`pending({item_id: id})\`, handle the current response, and retry explicitly —
+  never borrow a sibling's newer revision to acknowledge an answer you did not handle.
+  Items with no response history can still be resolved without a revision.
+  \`pending()\` also delivers human annotations on open notes and milestones, including
+  a clear (empty \`annotation\` with \`annotated_at\`). This informational feedback normally
+  leaves the queue after pickup; use \`pending({item_id: id})\` to recover it afterward,
+  adding \`full: true\` for its background or \`project\` when needed.
+  \`annotation_seen_at\`/\`annotation_seen_by\` mean handed to a reader, not handled by the
+  intended session. Informational feedback creates no new human attention or automatic
+  host-wake guarantee. Do not resolve a note or milestone merely because you read its
+  feedback; close it only when the item itself is complete or moot.
+  Read \`reply_kind\`: \`clarify\` means resolve this wording and raise a corrected replacement
+  question; \`decline\` means stop/cancel the proposed path and resolve with an \`outcome\`.
+  \`snoozed_until\` means the human deferred the ask; do not nag or treat it as an answer.
+- **\`kind: "note"\`** — you made a notable **assumption**, took a **workaround**, hit a
+  **caveat**, or left **tech debt** the human should know about but that does NOT block
+  you. Do not flag routine progress or things visible in the diff.
+- **\`kind: "done"\`** — a completed **milestone** worth announcing (shipped, merged,
+  deployed). Use sparingly — it is NOT for routine progress. If \`next_step\` is a real
+  action for the human (review this, try that), the item is a **hand-off**: it goes to
+  their Needs you until they acknowledge it, so use it whenever you hand work back. The
+  server decides: a \`next_step\` that STARTS WITH "No action" (also "No further action",
+  "No-action"), or is "None", "N/A", "Nothing" or "FYI", is an announcement and stays a
+  milestone in History, so write exactly "No action" for one. A hand-off's result is
+  \`{ id, handoff: true }\`, and it stores no \`options\`. No agent is blocked on it, so do
+  not wait for it; there is no
+  answer to read, and Acknowledge resolves it with the outcome "Acknowledged".
+
+**Keep every item glanceable.** Every flag has distinct fields: \`title\` is the ask or finding
+itself in one line (aim under ~80 chars), \`detail\` is a one-sentence TL;DR of the current
+state, \`next_step\` is the ONE concrete action the human should take now, \`impact\` says why
+it matters, and \`next_after\` says what follows. Use
+\`next_step: "No action"\` for a pure FYI or milestone. If you catch yourself writing a
+paragraph into any of those fields, compress it and move the body into \`context\`.
+Agent-authored long-form text supports paragraphs, explicit line breaks, simple \`-\`/\`*\`
+bullets, \`1.\` numbered lists, safe \`http://\`/\`https://\` autolinks, and triple-backtick
+fenced code or command blocks with an optional short language label. Fenced blocks render
+inertly with a Copy control; they are never executed, validated, rewritten, or inferred
+from prose. It does not render other Markdown or raw HTML. Keep titles, TL;DRs, notes, and
+action fields short and action-first; use that small structure for the reasoning and
+history in collapsed \`context\`. Code- or markup-like fragments outside fences quarantine
+the remainder of their paragraph or list item from autolinking; put prose URLs that should
+be clickable in a separate paragraph or list item.
+GitHub references (\`#287\`, \`PR #284\`, \`owner/name#12\`) and local file paths become links
+too, and every link a card shows is also listed at the top of the card. **Write local files
+the human should open as absolute paths** (\`<path> or \`~/…/spec.md\`, with
+an optional \`:line\`), never repo-relative ones (\`docs/spec.md\`); a path containing a space
+does not link. Common documents (Markdown, text, JSON, YAML, CSV, PDF, images, HTML) open in
+their default app; any other file is only shown in its folder. A single-digit \`#N\` links
+only after \`issue\`, \`PR\` or a closing keyword such as \`Fixes\`, or in parentheses like
+\`(#7)\`, because on its own it reads as an ordinal.
+A bare \`#N\` on a plan row is read against the row's issue link, else the plan's pinned issue, else the
+project's repository, so write \`owner/name#N\` for any other repository.
+**Always provide \`context\`** — the background a human returning cold needs
+to act without asking you anything: what you were working on, why this came up, relevant
+files/PRs/links. They may read the item hours later with zero memory of the task; it
+renders as a collapsed dropdown, so length is fine. Do not flag more than the human
+needs — a noisy inbox gets ignored. One \`done\` flag per shipped thing: re-flagging an
+identical open milestone title (or hand-off title) is deduped, not stacked. If a question you raised
+resolves itself before they answer, call \`resolve\` with its id.
+
+**The end-of-turn rule — flag decisions, don't bury them.** The test is not "am I still
+chatting?" — it's **"am I about to stop and wait on the human?"** If your next move depends
+on their answer and you are ending your turn, that is a question — flag it, **even
+mid-conversation, even if you just answered something.** This catches the case agents miss
+most: you end on a **recommendation** to accept ("I'd do X"), a **next step awaiting
+go-ahead** ("want me to…?", "say the word", "should I…?"), or you hand back a **decision**.
+A recommendation in the last paragraph of a great analysis is invisible — no banner, no
+badge, no triage, and it will not wake you when they answer; flagging it (with \`options\`)
+does all three. Writing it in chat **and** flagging is right — the flag is what makes it
+survive, so don't choose between them. *Example: you conclude "I'd add the tour row and
+file the issue — go?" → \`flag(kind:"question", title:"Add the feature-tour gate row + file
+the --handbook issue?", options:[Do both (rec), Just the row, Just the issue, Not now])\`.*
+
+## Boards (standing status the human watches)
+
+For a **multi-item effort** where the human would otherwise have to ask "what's the
+status?" — a test-coverage matrix, a rollout/QA checklist, a migration's file list, a
+review's findings — keep a **board** (a titled table of rows) instead of burying it in
+prose. Do this **proactively**, without being asked:
+
+- **\`board_upsert({ title, rows })\`** — create or refresh the WHOLE table (idempotent by
+  title). Existing boards require \`board_version\`; re-send the full table whenever status
+  changes. Each row is
+  \`{ label, status, revision?, note?, next_step?, action_owner?, impact?, next_after?, options?, outcome?, context? }\`,
+  \`status ∈ done | partial | missing | tracked | na | blocked\`.
+  \`blocked\` means the row needs the HUMAN and nobody else — it escalates into their attention
+  banner. Every blocked row MUST have \`note\` as a one-sentence TL;DR and \`next_step\` as
+  the ONE concrete action the human can take now, plus \`action_owner\` and \`impact\`.
+  Start it with a verb; split multiple asks into separate rows. If the blocker is a
+  **decision/approval**, attach 2-4 \`options\` (recommendation first); if it is a **task**
+  the human must perform, omit options so
+  the viewer offers “I’ve done my part.” The blocked row is itself the ask:
+  **one ask, one surface** — never also create a question item for that dependency.
+  **Being stuck is not being blocked:** a failing
+  test, a build or release that does not exist yet, another PR — no person can unblock those, so
+  they are \`partial\` (or \`tracked\`) with the reason in \`note\`. Waiting on another GitHub issue
+  (GitHub's 'blocked by') or on another step (\`waits_on\`) is tracked or partial, never blocked.
+  \`pending()\` delivers their response kind too: \`answer\`, \`clarify\`, or \`decline\`.
+  A row comes back as an \`annotation\` (words/choice), or \`handled_at\` — **the human telling you THEY have gone and
+  DONE the thing** you blocked on. Both mean their part is finished; **flip the row's status
+  once you have acted and include \`outcome\` — that status change/result tells them you did.**
+  A clarification request is NOT a final answer: rewrite the same stable row with
+  \`board_advance({ board_version, expected_revision, ...fresh action fields })\`. If their answer creates
+  another human step, use \`board_advance\` again rather than stacking a second row. A decline
+  normally becomes \`na\` with an outcome saying what was cancelled. Until you acknowledge, they
+  see the row sitting there marked "delivered to you", which is exactly what it is — and
+  \`pending()\` keeps handing you the same note on every poll, so nothing is lost when a
+  sibling session polls first. \`annotation_seen_at\`/\`annotation_seen_by\` mean the note reached
+  **some** agent — often a sibling session sharing your name, not you — so a stamp is never a
+  reason to skip it. **If the row is still \`blocked\`, it is not done.** Act on it, then flip the
+  status and it stops coming back. Moving a row out of \`blocked\` and later back into it is a
+  NEW request and archives the previous step, so never do that just to nag about the same ask.
+  Keep \`label\` stable — rows are matched by label, and the human's notes stick to the label.
+  Every EXISTING row update must carry the current row \`revision\` from \`board_get\`/\`pending\`;
+  a mismatch is a stale sibling and the write is refused.
+  \`note\` is the TL;DR, \`next_step\` is the action, \`impact\` is why now, and \`next_after\`
+  is the immediate follow-up; put long-form backstory (reasoning, history, links) in
+  \`context\` — the human sees it as a collapsed dropdown, so the row stays scannable.
+  Example decision row: \`label: "#334 PR-X0 spec (#582)"\`,
+  \`note: "The spec is settled and every review gate is green."\`,
+  \`next_step: "Choose whether to merge PR #582."\`,
+  \`action_owner: "approval"\`, \`impact: "Unblocks PR-X"\`,
+  \`options: [Merge PR #582 (recommended), Hold]\`; the six review rounds belong in \`context\`.
+- **GitHub issue links.** \`board_upsert({ title, issue, rows })\` pins the plan to an issue (say an
+  umbrella issue, when you work from a child's branch), and \`rows[].issue\` or
+  \`board_row({ issue })\` links a row. Accepted forms: \`owner/name#123\`, \`#123\` or \`123\` (this
+  session's GitHub repository) and \`https://github.com/owner/name/issues/123\`; anything else is
+  refused. Omitting \`issue\` keeps the link, \`""\` clears it, and \`board_advance\` or a move into
+  \`blocked\` keeps it. A titled \`board_get\` echoes \`issue\` and, once the viewer has fetched it,
+  a short \`issue_rel\` (parent and child counts, never titles; once GitHub's dependencies are
+  known, also \`waits_on_issues\`, the open blockers' issue keys, and an \`unblocks\` count). Those
+  keys are read-only GitHub data, never labels for \`waits_on\`. Agent Inbox never edits GitHub
+  relationships: use \`gh issue edit --parent\` / \`--add-sub-issue\` / \`--add-blocked-by\`.
+- **Step dependencies.** \`rows[].waits_on\` (or \`board_row({ waits_on })\`) lists the labels of
+  other rows in the same plan that a row waits on: at most 20 entries as sent, and duplicates
+  collapse. Omitting it keeps the list, \`[]\` clears it, and \`board_advance\` or a move into
+  \`blocked\` keeps it. An unknown label, a row naming itself and a cycle are refused with the
+  reason; a label whose row you later remove is kept and draws nothing. It never makes a row
+  \`blocked\`: a row that only waits is \`tracked\` or \`partial\`, and \`blocked\` remains for a
+  separate human action.
+- **\`board_row({ title, label, expected_revision, status?, ..., outcome? })\`** — update one
+  existing row; when acknowledging the human, move it out of \`blocked\` and record the result.
+- **\`board_advance({ title, label, board_version, expected_revision, ...fresh action })\`** — atomically archive
+  the prior step and reuse the same row for the next human action.
+- **\`board_get({ title? })\`** — read a board back, **including the human's per-row notes**.
+  Call it when you (re)start work on a tracked effort, and before updating a board. You do
+  not need it to HEAR from them — \`pending()\` delivers their notes — so prefer the titled
+  form; the title-less one summarises every board in the project at once.
+  **Reads do not return \`context\`.** The human's \`annotation\` always comes back in full, but
+  the \`context\` YOU wrote comes back as \`context_chars\` (its size) — you wrote it, so you are
+  not charged to read it again. \`board_get({ title, full: true })\` returns the real text if you
+  genuinely need it; \`pending({ full: true })\` does the same for items. \`context_chars\` is not
+  proof you have the text, only that text exists. Row \`revision\` is the CAS token for writes;
+  \`action_version\` numbers chained steps; \`history_count\` says prior steps exist without shipping them.
+- **\`board_archive({ title })\`** — when the effort is finished.
+  Existing boards require the current \`board_version\`.
+
+Prefer updating an existing board (same title) over spawning new ones. One board per
+effort; let it track from start to done. A board is the durable, always-current answer —
+maintain it as the work moves, not just at the end.
+
+## Draft review / approval loop
+
+For customer-facing emails and other sendable copy, treat the board as the single
+source of truth before anything is sent.
+
+- Keep one stable board title for the active review queue, such as \`Email draft review\`.
+- Use one row per draft/thread. Keep the row label stable, and put the draft's
+  subject/customer/thread key in the label.
+- Put the draft body, relevant context, and any open questions in the row \`context\`;
+  use \`note\` for a one-sentence TL;DR and \`next_step\` for the exact approval/action needed.
+- Set \`status: tracked\` while drafting, \`blocked\` when you need the human to decide
+  something, and \`done\` once the final draft has been approved and sent.
+- If a draft row already represents a concrete blocker, set that row to \`blocked\` and
+  ask through the row only. If no board row owns the ask, raise a
+  \`flag({ kind: "question" })\` with 2-4 options when possible. Never create both for the
+  same dependency.
+- Treat that flag as the ONE question across both channels. Poll \`pending()\` for an
+  inbox answer; if the human answers in chat, record it with \`answer({ id, text })\`.
+- Before sending, call \`pending()\` and re-read the titled board for full draft context.
+  Do not rely on a separate chat thread or scattered notes as the approval record.
+
+## Session status (ephemeral presence)
+
+Your session appears as a card in the human's Agents view automatically (an idle
+presence card — no action needed from you). For **long-running work** — especially multi-agent fan-outs
+the human loses the mental model of — call \`status({ doing, detail?, children?, done? })\`
+at meaningful **phase changes only** (never on a timer, never per step): starting a long effort, entering a new
+phase, spawning or finishing subagents, wrapping up. \`children\` is a **full-replace**
+list of your currently-running subagents (\`{ name, doing, state? }\`) — resend the current
+set when it changes; the human sees them on your card. Only the top-level
+manager reports — subagents stay silent. Call \`status({ done: true })\` when the effort
+ends; if your process dies instead, its card drops out on its own within ~15 minutes, so
+a crash never leaves a ghost. This is ambient glass for the human, not tracking — boards
+remain the durable record.
+
+**A claim goes quiet after ~30 minutes with no MCP call of any kind**, and your card reverts
+to idle — otherwise a session that finished hours ago sits there advertising work it is no
+longer doing. Your card does NOT disappear; only the claim does. This is still not a reason
+to call \`status\` on a timer: any tool call keeps it fresh, so ordinary work holds it
+automatically. It only bites on a genuinely silent stretch — a long build, a deep fan-out
+where the children do the work — and the fix is a phase-change \`status({ doing })\` when you
+come back up for air, which you should be sending anyway. Re-asserting is instant.
+
+## Requests (what the human asked you)
+
+A request is one piece of work the human asked you to do. When they hand you some, you may
+declare it with \`request({ action: "open", title })\`; whatever you open you must close, with
+\`request({ action: "close", id, outcome })\` and a one-line outcome. Keep a one-line \`note\` with
+\`update\` at real progress. Set \`review: true\` with a \`next_step\` on \`close\` when they should look
+at the result: that is the hand-off, so do not also flag a milestone for it. \`pending()\` returns
+your open requests in \`requests\`. A subagent never opens, updates or closes a request.
+
+## Messages from the human
+
+The human can message your session directly from Agent Inbox. \`pending()\` returns them in
+\`messages\` (\`{ id, text, sent_at, delivered_at, project }\`), oldest first, for your session
+only, whatever project you are scoped to. Treat each as an instruction typed into your
+terminal: the same trust and the same rules. It changes no safety or approval rule, and it
+never comes from another agent. It must make sense on its own, since it may arrive after
+\`/clear\`. **If you are a subagent, do not act on or acknowledge messages: return them verbatim
+to your parent.** The top-level agent acts on each, then calls \`ack_message({ id, outcome })\`
+with one line: what you did, what you declined and why, or that you took it on and where you
+track it. Ack as soon as you have acted; until then it comes back on every \`pending()\`. If
+\`delivered_at\` predates this conversation, check whether it was already done before repeating
+side effects. \`ack_message\` returning \`not_open\` with \`status: "withdrawn"\` means the human
+took it back: stop if you have not finished. A message is not a question; do not \`flag\` it
+back unless acting on it needs a decision.
+
+## Subagents
+
+When you delegate work to subagents whose pauses/assumptions/tracked status the human
+would care about, pass these rules along in the subagent's instructions — subagents
+don't inherit this file automatically in all harnesses.
+</pre><button class="copy-btn">Copy</button></div><div class="setup-block"><h3>Advanced · Optional Claude backstop hooks</h3><p class="setup-hint">Optional. Merge into ~/.claude/settings.json, then restart Claude Code. Prefer \`npm run install:hooks\` from the repo — it proves the Node binary with a selftest before writing anything, backs the file up, and is a dry run by default. See docs/hooks.md.</p><pre>{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "notification"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "session-start"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "session-end"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "prompt-submit"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "activity"
+            ],
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "activity"
+            ],
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "stop"
+            ],
+            "timeout": 10,
+            "statusMessage": "Checking agent-inbox for answered questions…"
+          },
+          {
+            "type": "command",
+            "command": "<path>",
+            "args": [
+              "<path>",
+              "watch"
+            ],
+            "timeout": 86400,
+            "statusMessage": "Arming agent-inbox answer watcher…",
+            "asyncRewake": true,
+            "rewakeSummary": "Agent Inbox: your answer arrived"
+          }
+        ]
+      }
+    ]
+  }
+}</pre><button class="copy-btn">Copy</button></div><p class="setup-hint">Everything lands in <path> — any viewer (browser tab, app) reads the same file.</p></div></section>
+      </main>
+    </div>
+  </div>
+  <div id="lightbox" hidden="">
+    <div class="lb-backdrop"></div>
+    <div class="lb-panel" role="dialog" aria-modal="true" aria-label="Review queue" tabindex="-1">
+      <div class="lb-head">
+        <div class="lb-run">
+          <span class="lb-kicker">Review queue</span>
+          <span class="lb-count"></span>
+        </div>
+        <span class="lb-owner"></span>
+        <button class="lb-close" title="Close (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+      </div>
+      <div class="lb-progress" aria-hidden="true"><span class="lb-progress-fill"></span></div>
+      <div class="lb-mix"></div>
+      <div class="lb-card"></div>
+      <div class="lb-shortcuts"><kbd>1-4</kbd> choose · <kbd>J/K</kbd> or <kbd>←/→</kbd> move · <kbd>Esc</kbd> close</div>
+      <div class="lb-nav"><button class="lb-prev">← Back</button><button class="lb-next">Next →</button></div>
+    </div>
+  </div>
+  <div id="relaybox" hidden="">
+    <div class="relay-backdrop"></div>
+    <div class="relay-panel" role="dialog" aria-modal="true" aria-label="Handoffs" tabindex="-1">
+      <div class="relay-head">
+        <div>
+          <span class="relay-kicker">Handoffs</span>
+          <h2>From your response to the result</h2>
+        </div>
+        <span class="relay-summary"></span>
+        <button class="relay-close" title="Close (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+      </div>
+      <div class="relay-lanes">
+        <section class="relay-lane" data-relay-lane="human">
+          <header><span class="relay-dot human"></span><strong>Waiting on you</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+        <section class="relay-lane" data-relay-lane="agent">
+          <header><span class="relay-dot agent"></span><strong>With the agent</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+        <section class="relay-lane" data-relay-lane="outcome">
+          <header><span class="relay-dot outcome"></span><strong>Outcome</strong><b class="relay-count"></b></header>
+          <div class="relay-body"></div>
+        </section>
+      </div>
+      <div class="relay-foot">Open any card to see its action, handoff, or recorded outcome.</div>
+    </div>
+  </div>
+  <div id="missionbox" hidden="">
+    <div class="mission-backdrop"></div>
+    <div class="mission-panel" role="dialog" aria-modal="true" aria-label="Plan flow" tabindex="-1">
+      <div class="mission-head">
+        <div>
+          <span class="mission-kicker">Plan flow</span>
+          <h2>Steps and outcomes</h2>
+          <p class="mission-subtitle"></p>
+        </div>
+        <button class="mission-close" title="Close (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+      </div>
+      <div class="mission-graph">
+        <div class="mission-root-column">
+          <div class="mission-root-card">
+            <span class="mission-root-project"></span>
+            <strong class="mission-root-title"></strong>
+            <span class="mission-root-progress"></span>
+          </div>
+        </div>
+        <div class="mission-paths"></div>
+      </div>
+      <div class="mission-foot">Connections follow recorded next steps and outcomes. “Waits on” and “Unblocks” follow recorded steps and GitHub dependencies, in the plan’s own order.</div>
+    </div>
+    <div class="mission-detail" hidden="">
+      <div class="mission-detail-backdrop"></div>
+      <section class="mission-detail-panel" role="dialog" aria-modal="true" aria-label="Plan step detail" tabindex="-1">
+        <div class="mission-detail-head">
+          <div>
+            <span class="mission-detail-meta"></span>
+            <h3 class="mission-detail-title"></h3>
+          </div>
+          <button class="mission-detail-close" title="Close detail (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">✕</button>
+        </div>
+        <div class="mission-detail-body"></div>
+        <div class="mission-detail-actions">
+          <button class="mission-detail-board">Open in Plans</button>
+        </div>
+      </section>
+    </div>
+  </div>
+  <div id="keyboardbox" class="keyboard-box" hidden="">
+    <div class="keyboard-backdrop"></div>
+    <section class="keyboard-panel" role="dialog" aria-modal="true" aria-labelledby="keyboardTitle" aria-describedby="keyboardIntro" tabindex="-1">
+      <header class="keyboard-head">
+        <div>
+          <h2 id="keyboardTitle">Keyboard shortcuts</h2>
+          <p id="keyboardIntro">Start with <kbd>F</kbd>: type the keys shown beside a control to use it.</p>
+        </div>
+        <button class="keyboard-close" type="button" aria-label="Close keyboard shortcuts" title="Close keyboard shortcuts (Esc)" data-shortcut="Esc" data-shortcut-id="escape" aria-description="Keyboard shortcut: Esc." aria-keyshortcuts="Escape">×</button>
+      </header>
+      <div class="keyboard-groups"><section><h3>Start here</h3><dl><div><dt><kbd>F</kbd></dt><dd>Show keys for the controls on screen</dd></div><div><dt><kbd>?</kbd></dt><dd>Open keyboard shortcuts</dd></div><div><dt><kbd>Ctrl K</kbd></dt><dd>Search this workspace (or press /)</dd></div></dl></section><section><h3>Go to</h3><dl><div><dt><kbd>G D</kbd></dt><dd>Dashboard</dd></div><div><dt><kbd>G I</kbd></dt><dd>Inbox</dd></div><div><dt><kbd>G P</kbd></dt><dd>Plans</dd></div><div><dt><kbd>G N</kbd></dt><dd>Notes</dd></div><div><dt><kbd>G H</kbd></dt><dd>History</dd></div><div><dt><kbd>G C</kbd></dt><dd>Chats</dd></div><div><dt><kbd>G S</kbd></dt><dd>Settings</dd></div><div><dt><kbd>G A</kbd></dt><dd>Agent filter</dd></div><div><dt><kbd>G O</kbd></dt><dd>Project picker</dd></div><div><dt><kbd>G L</kbd></dt><dd>Sessions</dd></div></dl></section><section><h3>Work through items</h3><dl><div><dt><kbd>J / K</kbd></dt><dd>Move between items (arrow keys also work)</dd></div><div><dt><kbd>Enter</kbd></dt><dd>Open the selected item or focused control</dd></div><div><dt><kbd>R</kbd></dt><dd>Focus the open reply box</dd></div><div><dt><kbd>1-4</kbd></dt><dd>Choose an option in the active card</dd></div><div><dt><kbd>Ctrl Enter</kbd></dt><dd>Send a reply; plain Enter keeps a new line</dd></div><div><dt><kbd>E</kbd></dt><dd>Resolve the current item</dd></div><div><dt><kbd>X</kbd></dt><dd>Dismiss the current item with its undo window</dd></div><div><dt><kbd>T</kbd></dt><dd>Open the review queue</dd></div></dl></section><section><h3>Dashboard</h3><dl><div><dt><kbd>J / K</kbd></dt><dd>Move between the cards in a Dashboard lane (the arrows too)</dd></div><div><dt><kbd>Enter</kbd></dt><dd>Open a card: an ask in the Inbox, a session in its panel, a plan in Plans</dd></div><div><dt><kbd>1-4</kbd></dt><dd>Choose an option of the panel's ask</dd></div><div><dt><kbd>S</kbd></dt><dd>Snooze the panel's ask for 4 hours</dd></div><div><dt><kbd>P</kbd></dt><dd>Pin the panel's ask for later</dd></div><div><dt><kbd>R</kbd></dt><dd>Write an answer to the panel's ask</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the session panel, or an ask opened from the Dashboard, and return to its card</dd></div></dl></section><section><h3>Messages</h3><dl><div><dt><kbd>Ctrl Enter</kbd></dt><dd>Send a message from its composer</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the session panel from its composer: the text is kept</dd></div></dl></section><section><h3>Every control</h3><dl><div><dt><kbd>Tab / Shift Tab</kbd></dt><dd>Move through controls; use arrows for pickers and pane dividers</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Leave hints, cancel a shortcut, or close the current surface</dd></div></dl></section></div>
+      <footer class="keyboard-foot">
+        <p>Letters stay yours while typing. Go-to shortcuts use <kbd>G</kbd>, then the next key.
+          <kbd>Esc</kbd> cancels. Close a dialog before navigating elsewhere.</p>
+        <button id="keyboardHintsFromHelp" type="button">Show keys on this screen</button>
+      </footer>
+    </section>
+  </div>
+  <span id="keyboardStatus" class="keyboard-status" role="status" aria-live="polite"></span>
+  
+  
+<div id="structured-copy-announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div><div id="linkOpenStatus" class="link-open-status" role="status" aria-live="polite" aria-atomic="true"></div><div id="selectionCopyStatus" class="selection-copy-status" role="status" aria-live="polite" aria-atomic="true"></div>"
+`;

@@ -42,8 +42,8 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 - The wiring of the hub controller: IPC, the `agentInboxRemoteEntry` preload bridge, the native
   notifications, the Settings panel (switch, **Add a device**, the device list with Remove,
   **Test**, the removal command) and Open at login (the next PR). Until then nothing in the app
-  writes `remote.json` or asks for a code: a code is made only by a local process that holds the
-  owner token and calls the code route itself.
+  writes `remote.json` or asks for a code. Any local process on the hub can still make one: the
+  owner token is not a secret from local processes (below).
 - Connect mode in the desktop app (PR 3), and Open desk and notifications against a hub (PR 4).
 
 So the entry is still off for everyone until the owner writes `remote.json`. With no device in it,
@@ -65,8 +65,9 @@ off. Then:
   an address such as `127.0.0.1` is refused.
 - `logins`: 1 to 16 strings of 1 to 254 characters with no control characters, kept lowercased.
 - `viewerPort` and `port` are both required; `port` is 1024 to 65535 and not `viewerPort`.
-- `devices`: at most 16. Each needs a 16-character lowercase hex `id`, a `label` of 1 to 40
-  characters with no control characters, and a 64-character lowercase hex `secretSha256`. A bad
+- `devices`: at most 16. Each needs a 16-character lowercase hex `id`, a `label` by the device
+  label rule (1 to 40 characters, no control character, no Unicode format character, no lone
+  surrogate: the same rule as a pairing request, below), and a 64-character lowercase hex `secretSha256`. A bad
   device is dropped; the rest still count.
 - `enabled` is on only when it is exactly `true`.
 
@@ -170,40 +171,64 @@ the request also needs `Origin: http://127.0.0.1:<port>`, as every unsafe method
 plain `fetch` from another local process with both headers works. While the remote entry is not on
 for this viewer, or its listener is not bound on the setting's port, the route answers
 `409 { "error": "remote_entry_off" }` and makes no code. Otherwise it answers
-`{ code: "7K3QX-9M2PD", expiresAt }` with `Cache-Control: no-store`.
+`{ code: "7K3QX-9M2PD", codeId, expiresAt }` with `Cache-Control: no-store`.
+
+**Who can make a code.** Any local process on the hub can: `GET /api/owner` serves the owner token
+to any loopback client, which is the same local trust the loopback viewer already gives. What the
+token does is keep the route from existing on a viewer the desktop app did not start (a checkout's
+`npm run view`, a scratch hub). So a device that paired after the app asked for a code is not proof
+that the app's code paired it. `codeId` settles that: 16 random hex characters, made with the code
+but not derived from it, answered only to the caller, and shown in the status only once a device
+has paired with it. An expected pairing is one whose `codeId` the app itself was given.
 
 The code is 10 Crockford base32 characters (no I, L, O or U), each drawn with `crypto.randomInt(32)`,
 so 50 unbiased random bits, shown in two groups of five. The viewer keeps only its SHA-256, in
 memory. At most one code exists. It is valid for 10 minutes from when it was made, used once, void
-after 5 wrong tries, and voided by a newer code, by the entry turning off (even if it comes back on)
-and by a viewer restart.
+after 5 wrong tries, and voided by a newer code, by a viewer restart, and by any change to
+`remote.json` after it was made.
+
+**A code is tied to the file it was made under.** The entry remembers the setting cache's version
+when it makes a code, and voids the code as soon as the cache re-reads the file for any reason: the
+entry off and on again (even between two polls), a device added or removed by anyone, a hand edit
+that changes nothing the entry uses. The gate reads the cache at the start of every request, so the
+void happens before the pairing handler compares. The consequence for the app: any write to
+`remote.json` while a code is pending voids it, so the app asks for a code after its last write. A
+pairing's own write voids nothing: its code is already void, and the next code is made after it.
 
 **`POST /api/remote/pair`.** Steps 1 to 6 of the gate apply as for any request, so it needs the
 right `Host`, no Funnel header, an allowed login, a clean target, `Origin: https://<host>` and no
 cross-site Fetch Metadata. Then, in order:
 
-1. **Rate limit.** At most 10 requests in any 60 seconds go further. It is one counter for the
-   route, not per client: every request arrives from Serve on loopback. A request over the limit
-   is refused before its body is read, so it uses no try.
+1. **Rate limit.** At most 10 requests in any 60 seconds are let into the handler, each counted
+   when it arrives, before its body is read. It is one counter for the route, not per client:
+   every request arrives from Serve on loopback. A request over the limit is refused at once, so it
+   uses no try. This caps requests, not comparisons (a request let in can hold its body back and
+   compare later); what bounds guessing is the five tries per code.
 2. **Body.** One `Content-Type` header, exactly `application/json` (no parameters). At most
    1 KiB, checked on `Content-Length` and again while reading, which stops at the limit. Strict
-   UTF-8. A JSON object with exactly the keys `code` and `label`, both strings. `label` is 1 to 40
-   characters with no control characters and no lone surrogate (the reader's rule, plus the
-   surrogate). A body that fails any of these uses no try.
+   UTF-8. A JSON object with exactly the keys `code` and `label`, both strings. `label` follows the
+   device label rule, shared with the reader (`isDeviceLabel`): 1 to 40 characters with no control
+   character (Cc), no Unicode format character (Cf: bidirectional controls, zero-width characters,
+   the byte-order mark, the soft hyphen) and no lone surrogate (Cs). A zero-width joiner is refused
+   even inside an emoji sequence, so `👩‍💻` is refused while `😀` is taken. A label is read by a
+   person, in Settings and in a notification. A body that fails any of these uses no try.
 3. **A code is pending**, else refused.
 4. **The code.** Only ASCII letters, digits, spaces and dashes are read, at most 64 of them; case,
    spaces and dashes are ignored, `I` and `L` read as `1` and `O` as `0`, and the result must be 10
    letters of the alphabet. Its SHA-256 is compared with the pending one by `timingSafeEqual`. A
    wrong code, and a code string that does not normalise (a `U`, a short code), each use one try;
    the fifth voids the code.
-5. **On a match** the code is voided first, in the same synchronous step as the compare, so two
-   requests racing with the right code cannot both pair. Then a 32-byte secret (43 base64url
+5. **On a match** the code is voided first, in the same synchronous step as the compare (no
+   `await` between them), so two requests racing with the right code cannot both pair. Two tests
+   hold this: eight real sockets that release the right code's body in the same tick, and eight
+   concurrent calls of the handler in process; each pairs exactly one device. Then a 32-byte secret (43 base64url
    characters) is made, and the device is written (below). The answer is
    `200 { ok: true, device: <id>, secret: <43 characters> }` with the remote headers. The secret
    is in that one response and nowhere else.
 
 Every refusal on this route, at any of these steps or at the write, is the same bare `403 Forbidden`
-with no marker, counted under `pair`. The reason never reaches the client.
+with no marker, counted under `pair`. The reason never reaches the client. A busy lock answers the
+same 403, after the lock's 5-second deadline.
 
 **The write.** `createLockedFile` from `electron/update-preferences.cjs` (it needs nothing from
 Electron): the cross-process `remote.json.lock` main also uses, a temp file and rename in the same
@@ -221,20 +246,26 @@ once.
 
 If the write cannot be made (the lock is busy for 5 seconds, a permission error), the code stays
 void, the client gets the same 403, and one fixed line is logged naming only the error's code:
-`agent-inbox remote entry: pairing could not write remote.json (EACCES)`.
+`agent-inbox remote entry: pairing could not write remote.json (EACCES)`, or `(error)` for an error
+with no code, such as the busy lock.
+
+The lock waits under one deadline whatever holds it: since PR 2b it reads the lock path with
+`lstat`, so a dangling symlink there is a held lock (refused after 5 seconds, or removed as stale
+after 5 minutes) instead of a retry with no deadline and no sleep, which once spun forever.
 
 Kept by value means through `JSON.parse` and `JSON.stringify`: an unknown number that does not fit
-a double, or one written as `1.0`, is written back as JavaScript prints it, and the file is
-re-indented.
+a double, or one written as `1.0`, is written back as JavaScript prints it; `-0` becomes `0`; of
+duplicate keys only the last is kept; and the file is re-indented.
 
 ## Status, loopback only
 
 `GET /api/remote-entry` on the loopback app answers `{ on, listening, port, host, error,
 codePending, paired, refused: { host, funnel, login, path, origin, device, route, pair } }`.
-`codePending` says a code is waiting to be used; `paired` lists the ids of the devices this viewer
-paired since it started, the last 16; the counts are since the viewer started. `error` is a bind
-failure or fixed words for a refused file. It never holds a login, a header value, a secret, a
-hash, a label or a code. It is not on the remote allowlist.
+`codePending` says a code is waiting to be used (never which: the pending code's `codeId` is not
+shown); `paired` lists `{ device, codeId }` for each device this viewer paired since it started,
+the device's id and the identity of the code that paired it, the last 16; the counts are since the
+viewer started. `error` is a bind failure or fixed words for a refused file. It never holds a login,
+a header value, a secret, a hash, a label or a code. It is not on the remote allowlist.
 
 ## Logging
 

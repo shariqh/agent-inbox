@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, lutimesSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import fsPromises from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import updatePreferences from '../electron/update-preferences.cjs'
 
-const { createUpdatePreferences, createUpdateTrustState } = updatePreferences
+const { createLockedFile, createUpdatePreferences, createUpdateTrustState } = updatePreferences
 const root = resolve(import.meta.dirname, '..')
 const workDirs: string[] = []
 
@@ -128,6 +129,46 @@ describe('update preferences', () => {
       automaticChecks: true,
       lastNotifiedVersion: '2.0.0',
     })
+  })
+
+  // #617 PR 2b review: open(lock, 'wx') on a dangling symlink is EEXIST while stat (which follows
+  // the link) is ENOENT; that case once retried with no deadline and no sleep, forever.
+  it('a dangling symlink at the lock path fails within the deadline, and the next mutate works once it is gone', async () => {
+    const dir = workDir()
+    const filePath = join(dir, 'locked.json')
+    const lockPath = `${filePath}.lock`
+    symlinkSync(join(dir, 'nowhere'), lockPath)
+    const file = createLockedFile(filePath, fsPromises)
+    const started = Date.now()
+    const outcome = await Promise.race([
+      file.mutate(async () => 'ran').then(() => 'ran', (error: Error) => error.message),
+      new Promise((resolve) => setTimeout(resolve, 9_000, 'still waiting')),
+    ])
+    expect(outcome).toMatch(/busy in another process/)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(4_900)
+    expect(lstatSync(lockPath).isSymbolicLink()).toBe(true)
+    unlinkSync(lockPath)
+    await expect(file.mutate(async () => {
+      await file.atomicWrite({ ok: true })
+      return 'ran'
+    })).resolves.toBe('ran')
+    expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ ok: true })
+    expect(existsSync(lockPath)).toBe(false)
+  }, 15_000)
+
+  it('removes a dangling symlink at the lock path as a stale lock once it is older than five minutes', async () => {
+    const dir = workDir()
+    const filePath = join(dir, 'locked.json')
+    const lockPath = `${filePath}.lock`
+    symlinkSync(join(dir, 'nowhere'), lockPath)
+    const old = new Date(Date.now() - 10 * 60_000)
+    lutimesSync(lockPath, old, old)
+    const file = createLockedFile(filePath, fsPromises)
+    const started = Date.now()
+    await expect(file.mutate(async () => 'ran')).resolves.toBe('ran')
+    expect(Date.now() - started).toBeLessThan(2_000)
+    // existsSync follows the link, so ask lstat whether the link itself is gone
+    expect(() => lstatSync(lockPath)).toThrow(/ENOENT/)
   })
 
   it('re-reads the live file for each mutation instead of using a startup snapshot', async () => {

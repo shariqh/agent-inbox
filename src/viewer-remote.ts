@@ -22,7 +22,8 @@ import { createAdaptorServer } from '@hono/node-server'
 import type { HttpBindings } from '@hono/node-server'
 import { Hono } from 'hono'
 import type { Handler, MiddlewareHandler } from 'hono'
-import { PAIR_PATH, createPairing } from './remote-pair.js'
+import { PAIR_PATH, createPairing, isDeviceLabel } from './remote-pair.js'
+import type { MadeCode, PairedDevice } from './remote-pair.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
 const REMOTE_FILE = 'remote.json'
@@ -112,7 +113,8 @@ function parseDevice(value: unknown): RemoteDevice | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const { id, label, secretSha256 } = value as Record<string, unknown>
   if (typeof id !== 'string' || !DEVICE_ID.test(id)) return null
-  if (!plainText(label, 40)) return null
+  // the same rule as a pairing request's label (src/remote-pair.ts): a person reads it
+  if (!isDeviceLabel(label)) return null
   if (typeof secretSha256 !== 'string' || !SHA256_HEX.test(secretSha256)) return null
   return { id, label, digest: Buffer.from(secretSha256, 'hex') }
 }
@@ -455,8 +457,8 @@ export interface RemoteEntryStatus {
   error: string | null
   /** a pairing code is waiting to be used */
   codePending: boolean
-  /** the ids of devices paired since this viewer started, the last 16 */
-  paired: string[]
+  /** the devices paired since this viewer started, each with the identity of the code that paired it, the last 16 */
+  paired: PairedDevice[]
   refused: RemoteCounts
 }
 
@@ -464,7 +466,7 @@ export interface RemoteEntry {
   /** for GET /api/remote-entry on the loopback app: counts since start and paired ids, never a login, header value, secret, hash, label or code */
   status(): RemoteEntryStatus
   /** A new pairing code, voiding any older one, or null while the entry is not on and listening. */
-  makeCode(): { code: string; expiresAt: string } | null
+  makeCode(): MadeCode | null
   address(): ReturnType<Server['address']>
   close(): Promise<void>
 }
@@ -505,10 +507,23 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
     refused: () => { refused.pair += 1 },
   })
 
+  // A code is tied to the file it was made under: once the cache re-reads remote.json for any reason
+  // (the entry off and on again, a device added or removed, a hand edit), the code is void. Every
+  // read of the setting goes through here, and the gate reads it before the pairing handler runs.
+  let codeVersion: number | null = null
+  function current(): RemoteRead {
+    const read = cache.current()
+    if (codeVersion !== null && cache.version !== codeVersion) {
+      pairing.voidCode()
+      codeVersion = null
+    }
+    return read
+  }
+
   const guarded = guardRemoteApp(opts.app, remoteGate({
     refused,
     setting: (incoming) => {
-      const read = cache.current()
+      const read = current()
       if (cache.version !== reconciled) setImmediate(reconcile)
       const setting = active(read)
       // only on the listener the current setting names: a request still on an old port is refused
@@ -560,7 +575,7 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
 
   function reconcile(): void {
     if (stopped) return
-    const setting = active(cache.current())
+    const setting = active(current())
     reconciled = cache.version
     const wanted = setting ? setting.port : null
     if (server && serverPort !== wanted) closeServer()
@@ -579,7 +594,7 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
 
   return {
     status() {
-      const read = cache.current()
+      const read = current()
       const setting = read.ok ? read.setting : null
       let error = bindError
       if (!read.ok && read.reason !== 'missing') error = REFUSAL_WORDS[read.reason]
@@ -597,10 +612,13 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
     },
     makeCode() {
       // only for a listener that is there: on for this viewer, and bound
-      const read = cache.current()
+      const read = current()
       if (cache.version !== reconciled) setImmediate(reconcile)
       const setting = active(read)
-      return setting !== null && listening && serverPort === setting.port ? pairing.makeCode() : null
+      if (setting === null || !listening || serverPort !== setting.port) return null
+      const made = pairing.makeCode()
+      codeVersion = cache.version
+      return made
     },
     address() {
       return listening && server ? server.address() : null

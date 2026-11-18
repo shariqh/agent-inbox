@@ -1649,6 +1649,19 @@ describe('review round 1: Tailscale unreadable with the secret in memory', () =>
     expect(a.fetchTimes).toEqual([0, 0])
     expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
   })
+
+  it('drops the secret itself, not only the header: it is decrypted again when Tailscale is back', async () => {
+    let fail = false
+    const a = await app({ peers: () => (fail ? { error: Object.assign(new Error('Command failed'), { code: 1 }) } : { raw: peersText() }) })
+    await a.rc.start()
+    expect(a.safeStorage.calls.decrypt).toBe(1)
+    fail = true
+    await a.rc.kick()
+    fail = false
+    await a.rc.kick()
+    expect(a.rc.connection()).toMatchObject({ state: 'online' })
+    expect(a.safeStorage.calls.decrypt).toBe(2)
+  })
 })
 
 describe('review round 1: hubFetch reads its input once', () => {
@@ -1717,6 +1730,24 @@ describe('review round 1: stop() stops', () => {
     expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
   })
 
+  it('a probeHub() queued behind a probe when stop() lands sends nothing', async () => {
+    let release: () => void = () => {}
+    let hold = false
+    const a = await app({ version: () => (hold ? new Promise<Response>((resolve) => { release = () => resolve(json({ current: '2.12.0' })) }) : json({ current: '2.12.0' })) })
+    await a.rc.start()
+    hold = true
+    const kicked = a.rc.kick()
+    await until(() => a.fetchTimes.length === 2)
+    const queued = a.rc.probeHub()
+    a.rc.stop()
+    release()
+    await kicked
+    expect(await queued).toEqual({ ok: false, reason: 'stopped' })
+    expect(a.fetchTimes).toHaveLength(2)
+    expect(a.checkTimes).toHaveLength(2)
+    expect(a.rc.deviceHeaderFor(`${ORIGIN}/`)).toBeNull()
+  })
+
   it('connect() and forget() still work on the store, but start no probing; start() resumes', async () => {
     const a = await app()
     await a.rc.start()
@@ -1766,6 +1797,16 @@ describe('review round 1: the store is opened the hub’s way', () => {
     expect(await race(h.connect.forget(ID_A))).toEqual({ ok: false, reason: 'bad_file' })
     expect(await race(h.connect.probeHub())).toEqual({ ok: false, reason: 'no_hub' })
     expect(h.fetch.calls).toHaveLength(0)
+  })
+
+  it('reads a FIFO or a folder with mode 0600 as bad_file: it must be a regular file', async () => {
+    const fifo = harness()
+    ;(await import('node:child_process')).execFileSync('/usr/bin/mkfifo', [fifo.filePath])
+    ;(await import('node:fs')).chmodSync(fifo.filePath, 0o600)
+    expect(await race(fifo.connect.view())).toMatchObject({ hub: null, problem: 'bad_file' })
+    const folder = harness()
+    ;(await import('node:fs')).mkdirSync(folder.filePath, { mode: 0o700 })
+    expect(await folder.connect.view()).toMatchObject({ hub: null, problem: 'bad_file' })
   })
 
   it('reads a symlink to a good store as bad_file, and never follows it', async () => {

@@ -429,6 +429,31 @@ describe('startRemoteEntry: the listener', () => {
     socket.destroy()
   })
 
+  // #617 PR 2d: main reads the status right after it writes, so the listener follows within
+  // milliseconds instead of the next poll (Test right after switching on met nothing listening)
+  it('one status read after a change opens, then closes, the listener at once, with the poll far away', async () => {
+    const dir = scratchDir('remote-entry-')
+    const port = await freePort()
+    writeSetting(dir, setting(port, [], { enabled: false }))
+    const entry = await start(dir, { intervalMs: 3_600_000 })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(entry.address()).toBeNull()
+    writeSetting(dir, setting(port, []))
+    // address() reads nothing, so only the one status() below can start the reconcile
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(entry.address()).toBeNull()
+    entry.status()
+    await waitUntil(() => entry.address(), 'the listener to open after one status read', 2_000)
+    expect(await refused(port)).toBe(false)
+
+    writeSetting(dir, setting(port, [], { enabled: false }))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(entry.address()).not.toBeNull()
+    entry.status()
+    await waitUntil(() => entry.address() === null, 'the listener to close after one status read', 2_000)
+    expect(await refused(port)).toBe(true)
+  })
+
   it('a request still on the old port after the setting moved is refused', async () => {
     const dir = scratchDir('remote-entry-')
     const first = await freePort()

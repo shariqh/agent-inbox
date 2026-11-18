@@ -595,6 +595,9 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
   return {
     status() {
       const read = current()
+      // #617 PR 2d: main reads this right after it writes remote.json, so a changed file opens or
+      // closes the listener now, as the gate's own read does, not at the next poll
+      if (cache.version !== reconciled) setImmediate(reconcile)
       const setting = read.ok ? read.setting : null
       let error = bindError
       if (!read.ok && read.reason !== 'missing') error = REFUSAL_WORDS[read.reason]

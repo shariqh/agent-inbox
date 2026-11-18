@@ -71,6 +71,19 @@ const CHANNELS: Record<string, { allows: 'local page only' | 'hub view'; args: u
   'agent-inbox:launch-continue-chat': { allows: 'local page only', args: [{ tool: 'claude', id: CHAT_ID, mode: 'ask', prompt: 'go' }] },
   'agent-inbox:chat-resume-available': { allows: 'local page only', args: [] },
   'agent-inbox:chat-resume': { allows: 'local page only', args: [{ tool: 'claude', id: CHAT_ID }] },
+  // Settings → Other devices (#617, PR 2d): the hub controller's panel, for the owned local page only
+  'agent-inbox:remote-entry': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-turn-on': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-turn-on-remove-devices': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-turn-off': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-remove-device': { allows: 'local page only', args: ['3f9c0a1b2d4e5f60'] },
+  'agent-inbox:remote-entry-clear-unreadable': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-repair': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-acknowledge': { allows: 'local page only', args: ['a'.repeat(64)] },
+  'agent-inbox:remote-entry-test': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-add-device': { allows: 'local page only', args: [] },
+  'agent-inbox:remote-entry-open-at-login': { allows: 'local page only', args: [true] },
+  'agent-inbox:remote-entry-recheck': { allows: 'local page only', args: [] },
   'agent-inbox:connect-view': { allows: 'local page only', args: [] },
   'agent-inbox:connect-connect': { allows: 'local page only', args: [{ address: 'hub.example.ts.net', code: '7K3QX-9M2PD' }] },
   'agent-inbox:connect-forget': { allows: 'local page only', args: [ID] },
@@ -210,15 +223,15 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     expect(registered).toEqual(Object.keys(CHANNELS).sort())
   })
 
-  it('names in main.cjs only channels it registers at its top level, through one of three register functions or a literal', () => {
+  it('names in main.cjs only channels it registers at its top level, through one of four register functions or a literal', () => {
     const source = read('electron/main.cjs')
     // every use of ipcMain: the require, ipcMain.handle with a literal or handleLinkSettings' parameter, or a register call
     const uses = [...source.matchAll(/\bipcMain\b[^\n]*/g)].map((m) => m[0])
     for (const use of uses) {
       expect(use, use).toMatch(/^ipcMain(, Menu,|\.handle\('agent-inbox:[a-z-]+', |\.handle\(channel, async \(event, \.\.\.args\) => \{$|,$)/)
     }
-    expect([...source.matchAll(/^(register\w+)\(\{\n {2}ipcMain,$/gm)].map((m) => m[1])).toEqual(['registerLaunchIpc', 'registerChatResumeIpc', 'registerHubIpc'])
-    expect(source.match(/\bipcMain,\n/g)).toHaveLength(3)
+    expect([...source.matchAll(/^(register\w+)\(\{\n {2}ipcMain,$/gm)].map((m) => m[1])).toEqual(['registerLaunchIpc', 'registerChatResumeIpc', 'registerRemoteEntryIpc', 'registerHubIpc'])
+    expect(source.match(/\bipcMain,\n/g)).toHaveLength(4)
     // no channel is registered later, inside a function that runs after start-up
     const literals = [...source.matchAll(/ipcMain\.handle\('([a-z:-]+)'/g), ...source.matchAll(/handleLinkSettings\('([a-z:-]+)'/g)].map((m) => m[1])
     for (const channel of literals) expect(main.handlers.has(channel!), channel).toBe(true)
@@ -252,6 +265,7 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     ['agent-inbox:chat-resume-available', []],
     ['agent-inbox:connect-view', []],
     ['agent-inbox:connect-show', [null]],
+    ['agent-inbox:remote-entry', []],
   ])('%s does answer the owned local page, so the comparison above is meaningful', async (channel, args) => {
     const handler = main.handlers.get(channel)!
     const e = events()

@@ -20,6 +20,11 @@ export function hubLabelFor(machine: unknown, host: string): string
 export function inTailnet(host: string, suffix: string | undefined): boolean
 /** The mesh command line's rule (its suffixFrom). */
 export function suffixFrom(json: string): string | undefined
+/**
+ * The one "is this URL on the hub's origin" decision: a string or `URL`, no user info however
+ * written, `https:`, and its parsed origin exactly `origin`. The parsed href, else null.
+ */
+export function hubHref(url: unknown, origin: unknown): string | null
 /** Whether a fetch failure is a certificate the TLS check refused. */
 export function certificateFailure(error: unknown): boolean
 

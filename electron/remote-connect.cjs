@@ -26,8 +26,8 @@ const crypto = require('node:crypto')
 const { createLockedFile, resolveFilePath } = require('./update-preferences.cjs')
 const { isObject, runTailscale, validHost } = require('./remote-tailscale.cjs')
 const {
-  DEVICE_ID, HUB_ID, PLACE, SECRET, activeOf, certificateFailure, deviceLabelFor, discard, hubLabelFor, inTailnet, isDeviceLabel, isRedirect,
-  keychainReady, marked, normaliseCode, parseHubOrigin, parsePeers, readJson, suffixFrom, versionText, writeBase, writtenUserInfo,
+  DEVICE_ID, HUB_ID, PLACE, SECRET, activeOf, certificateFailure, deviceLabelFor, discard, hubHref, hubLabelFor, inTailnet, isDeviceLabel, isRedirect,
+  keychainReady, marked, normaliseCode, parseHubOrigin, parsePeers, readJson, suffixFrom, versionText, writeBase,
 } = require('./remote-connect-rules.cjs')
 
 const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants
@@ -302,17 +302,8 @@ function createRemoteConnect(options = {}) {
    */
   function decide(url) {
     if (stopped || hub === null || !verified || plain === null) return null
-    const text = typeof url === 'string' ? url : url instanceof URL ? url.href : null
-    // user info, even empty and however it is written, which the parser drops without a trace
-    if (typeof text !== 'string' || writtenUserInfo(text)) return null
-    let parsed
-    try {
-      parsed = new URL(text)
-    } catch {
-      return null
-    }
-    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '' || parsed.origin !== hub.origin) return null
-    return { value: plain, href: parsed.href }
+    const href = hubHref(url, hub.origin)
+    return href === null ? null : { value: plain, href }
   }
 
   function deviceHeaderFor(url) {
@@ -729,6 +720,7 @@ module.exports = {
   certificateFailure,
   createRemoteConnect,
   deviceLabelFor,
+  hubHref,
   hubLabelFor,
   inTailnet,
   isDeviceLabel,

@@ -1,6 +1,7 @@
 'use strict'
 // The pure rules of connect mode (#617, PR 3a), split from electron/remote-connect.cjs for size
-// only; that file is the controller and the only module that requires this one. Nothing here does
+// only; that file is the controller and the only module that requires this one (hub-view.cjs reads
+// `hubHref` through remote-connect.cjs's re-export). Nothing here does
 // any I/O: the hub's address, the pairing code and label rules mirrored from the hub, the tailnet
 // rules mirrored from the mesh command line, reading the peer list, recognising a certificate error, and the
 // stored file's field rules. test/remote-connect.test.ts compares each mirrored rule with the
@@ -79,6 +80,27 @@ function writtenUserInfo(text) {
   const plain = text.replace(/[\t\n\r]/g, '').replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '')
   const match = /^[A-Za-z][A-Za-z0-9+.-]*:[/\\]*([^/?#]*)/.exec(plain)
   return match !== null && match[1].includes('@')
+}
+
+/**
+ * The one decision of "is this URL on the hub's origin": `url` a string or a `URL` (its href read
+ * once), written with no user info, parsing as `https:` with no user or password, and its parsed
+ * origin exactly `origin`. Gives the parsed href the decision was made on, else null. Shared by
+ * the device header (remote-connect.cjs) and the hub view's navigation and permission rules
+ * (hub-view.cjs), so there is no second parser.
+ */
+function hubHref(url, origin) {
+  const text = typeof url === 'string' ? url : url instanceof URL ? url.href : null
+  // user info, even empty and however it is written, which the parser drops without a trace
+  if (typeof text !== 'string' || typeof origin !== 'string' || writtenUserInfo(text)) return null
+  let parsed
+  try {
+    parsed = new URL(text)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '' || parsed.origin !== origin) return null
+  return parsed.href
 }
 
 /** A typed pairing code, the hub's way: case, spaces and dashes ignored, I and L read as 1, O as 0; null unless 10 letters of the alphabet. */
@@ -310,6 +332,7 @@ module.exports = {
   certificateFailure,
   deviceLabelFor,
   discard,
+  hubHref,
   hubLabelFor,
   inTailnet,
   isDeviceLabel,

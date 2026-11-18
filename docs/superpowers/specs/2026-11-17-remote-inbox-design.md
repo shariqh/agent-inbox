@@ -334,8 +334,26 @@ the entry is on. A read that fails is tried once more after 5 seconds. Any other
 writes `enabled: false` (the viewer then closes the listener), shows a native notification ("Agent
 Inbox stopped sharing with your other devices: Tailscale Serve is not set up as expected") and
 puts the reason in the status line. Whenever the switch is off and a Serve configuration for that
-port exists, the panel shows the command that removes it, `tailscale serve --bg <port> off`, because
-a `--bg` configuration outlives the switch.
+port exists, the panel shows the command that removes it, `tailscale serve --https=443 off`, because
+a `--bg` configuration outlives the switch. (That form is from Tailscale's documentation; it has not
+yet been seen in real output.)
+**(As built in PR 2c,** `electron/remote-entry.cjs` with its read-only half
+`electron/remote-tailscale.cjs`; the notification and the panel are the next PR's. Stricter than
+above, because unknown is never ok: the handler entry may hold only `Proxy`, and only the
+`127.0.0.1` form, since nothing showed that Tailscale writes `localhost` for a bare port; the TCP
+entry for 443 must be exactly `{ "HTTPS": true }`; a `TCPForward` on any port, or another host's or
+port's handler `Proxy`, that reaches the port is refused, each read as host and port with the port
+as plain decimal digits compared as a number (`04320` is 4320; a service name is `unknown_shape`);
+a non-empty `Foreground` or `Services`, any key it does not know at the top level, in a TCP entry or
+in a handler, and anything nested deeper than 32 levels, is refused. So a foreground
+`tailscale serve` on any port, or any Tailscale Service, switches sharing off; the reason says
+which. The good shape and `{}` are from a real run (§9 item 4); every other configured shape in the
+tests is from documentation. This node is read with `tailscale status --json --peers=false` (the
+full list printed 822 KB for 531 peers; without peers, about 5.5 KB), and the watch also turns the
+entry off when it no longer gives the stored host and an allowed login (ignoring case). A check
+that throws counts as a failed read, and a turn-off that does not land is retried at every 5-second
+tick. `turnOn` reads Tailscale before it takes the file's lock, never under it. Three argument
+lists in all: those two and `status --json`, the full peer list for the connecting Mac (PR 3).)
 
 **Changes made behind the app's back.** An agent on the hub can edit `remote.json`. It already
 controls the hub, so the risk is that the exposure is silent. Main keeps the SHA-256 of the
@@ -347,6 +365,22 @@ can make a code, so a pairing that merely follows main's request is not enough. 
 with any other `codeId` is a change outside the app.) Any other difference
 gets a native notification ("Agent Inbox's sharing settings were changed outside the app") and a
 flag on the Settings panel until the owner presses **Review** and confirms or reverts.
+**(As built in PR 2c:** the digest also covers `viewerPort`, which decides which viewer opens the
+entry, and covers each device's `id`, `secretSha256` and whether the reader keeps it, but not the
+label itself: a label decides whether the reader keeps a device, so an edit that makes a dormant
+hash live is a change, while a rename that keeps it readable is not. A pairing is expected only
+when nothing else changed and the viewer's `paired` list names the device with the `codeId` of a
+code main's own `requestCode()` received in the last 11 minutes, one code per device, because any
+local process can read the owner token and make a code. The viewer's list starts empty when it
+restarts, so a pairing seen across a restart is flagged. The `paired` list carries no hash, so a
+hash swapped under a just-paired id before the next check is announced as the expected pairing; the
+owner's device then fails to connect. The controller never reverts: "Review" passes the flagged
+state's digest to `acknowledge(digest)`, which accepts it only if the file still has that digest
+(otherwise the flag stays and the new state is announced), and the owner reverts with the panel's
+own switch and Remove. Any write by main voids a pending code. **Known gap, closed by the next
+PR:** the first read after the watch starts is the baseline, so a change made to `remote.json`
+while the app is closed takes effect at the next start with no notification, and the device list is
+the only record; the next PR keeps a baseline in main across restarts.)
 
 **The hub's Settings** ("Let my other devices use this Inbox", macOS, owned viewer only) use a
 bridge, `agentInboxRemoteEntry` in `setup-preload.cjs`, gated like `handleLinkSettings`
@@ -354,13 +388,22 @@ bridge, `agentInboxRemoteEntry` in `setup-preload.cjs`, gated like `handleLinkSe
 viewer gets `{ available: false }` and is told to quit and reopen. `tailnetSelf()` reads `tailscale status --json` for this node's
 `Self.DNSName` (trailing dot dropped) and `User[String(Self.UserID)].LoginName`; a tagged hub has
 no user login, so the list starts empty and the switch stays off until a login is added.
+**(As built in PR 2c:** there is no Add or Remove for logins: `turnOn` writes `logins` as exactly
+this node's login, and a tagged hub cannot turn the entry on (`tailnetSelf()` answers `tagged`; its
+`UserID` still resolves to a placeholder user, whose login is never used). When the stored host or
+logins differ from this node's (the machine was renamed, or another account signed in), `turnOn`
+removes every device, since their secrets were issued under another identity. A file with group or
+other bits is rewritten `0600` only by an explicit repair, which also turns it off and removes every
+device, since another user may have edited it and added one.)
 `selfTest()` fetches `https://<host>/api/version` from main with no device secret. It passes when
 the answer is a 403 and `/api/remote-entry` shows the `device` count rose: that proves Serve, the
 `Host` and the login all reached the gate. A rise in `host` or `login` names the problem.
+**(As built:** it passes only when the `device` count rose by exactly one, and the watch and
+`turnOn` do not depend on it. §9 item 3 is now settled: a hub's own request carries its login.)
 
 The panel shows, top to bottom: the switch; the risk sentence; the one command to run in Terminal,
-`tailscale serve --bg 4320`, with Copy (the app never runs it); the address; the allowed logins
-with Add and Remove; **Add a device** and the paired devices with Remove; the status line and any
+`tailscale serve --bg 4320`, with Copy (the app never runs it); the address; the allowed login (as
+built, read-only: see above); **Add a device** and the paired devices with Remove; the status line and any
 "changed outside the app" flag; **Test**; the removal command when it applies; and **Open Agent
 Inbox at login**, which is `app.setLoginItemSettings({ openAtLogin })` read back with
 `getLoginItemSettings()`, the app's own setting.
@@ -520,6 +563,10 @@ The hub app opens at login, and its viewer reads `remote.json` at start and reop
 entry. A `--bg` Serve configuration persists across a reboot and `tailscale down` and `up`. The
 laptop follows §3.3's retry rules, and its secret survives restarts in the Keychain-backed store.
 
+**Known gap after PR 2c, closed by the next PR:** when Tailscale is not running or cannot be read
+at the first check after the app starts (the app opens before Tailscale is up), the watch switches
+the entry off, and it stays off until the owner switches it on again.
+
 **Still needs a person:** after the hub restarts, its user must log in before the app or tmux
 runs, and with FileVault on macOS needs the password at boot. Agent sessions and their tmux
 sessions do not survive a restart. Keeping the hub awake is a system setting the app never touches.
@@ -580,7 +627,7 @@ PR 2 is split because pairing roughly doubles it. PR 2a cannot be turned on by i
 | 0 | This spec | none |
 | 1 | `src/session-place.ts` (`readPlace`, `readDesk`, `readRemoteSession`, patterns); `buildMcpServer`'s `place()` and `refreshPlace` timer; `ensureColumn` ×4, `ActivityUpdate`, `upsertActivityTxn`, `setActivityPlace`, `listActivity`, `Activity` in `src/store.ts`; `machine` in `/api/version`; `public/place.js`; card meta in `public/agents-home.js`; panel meta, Open in claude.ai and Copy attach command in `public/app.js`; `activity-and-live.md` | `test/session-place.test.ts` (each pattern, a leading `-`, a hostile tmux name, timeout, no `TMUX`; the live file: another pid's, a symlink, oversized, a bad id, none); `test/store.test.ts` (`machine`, `pane` kept on omission; `setActivityPlace` writes nulls and moves no stamp; the upsert never names `desk`); `test/live-tick.test.ts` unchanged and green; `test/mcp.integration.test.ts`; `test/place.test.ts` (URL only from a valid id; the quoted attach command); `test/dom/agents-home.test.ts`; `test/csp-source.test.ts` |
 | 2a | `src/viewer-remote.ts` (`readRemoteSetting`, the setting cache, `remoteGate`, `REMOTE_ROUTES`, `startRemoteEntry` with `closeAllConnections`); `src/viewer-server.ts` (second `createViewer`, `GET /api/remote-entry`) | `test/viewer-remote.test.ts` (every gate step and order, header case, `:443`, Funnel header, device header absent, wrong, removed, timing-safe compare of all; `/%61pi/setup`, `%2e%2e`, `//`, `\`, trailing slash, `HEAD` on a refused route; no marker on 403; marker, CSP and framing on 200); `test/remote-routes.test.ts` (every route in `createViewer`'s `app.routes` classified; `/api/owner` absent on `remoteApp`); `test/remote-setting.test.ts` (symlink, other owner, mode `0644`, size, newer schema, bad device dropped, port mismatch, re-read on change, close on off) |
-| 2b | **(As built, viewer process only:** pairing in a new `src/remote-pair.ts`, wired into `src/viewer-remote.ts`'s gate and `src/viewer-server.ts`; `test/remote-pair.test.ts`. Everything after `POST /api/remote-entry/code` in this row moves to the next PR, 2c.) Pairing in `src/viewer-remote.ts` (`POST /api/remote/pair`, the code, rate limit, device write under the lock); `POST /api/remote-entry/code`; `electron/remote-entry.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch); IPC and notifications in `electron/main.cjs`; `agentInboxRemoteEntry` in `setup-preload.cjs`; the Settings section (`public/remote-settings.js`, `public/app.js`) | `test/remote-pair.test.ts` (code once, expired, five wrong tries, rate limit, no code pending, secret answered once, only the hash stored); `test/serve-state.test.ts` (fixtures: the one good shape; a second path; a TCP forward; Funnel; another port; malformed JSON; one failed read retried); `test/remote-entry-settings.test.ts` (writes, outside change flagged, an expected pairing notified); `test/dom/settings-remote.test.ts` |
+| 2b | **(As built, viewer process only:** pairing in a new `src/remote-pair.ts`, wired into `src/viewer-remote.ts`'s gate and `src/viewer-server.ts`; `test/remote-pair.test.ts`. Everything after `POST /api/remote-entry/code` in this row moves to the next PR, 2c. **PR 2c as built:** logic and tests only, `electron/remote-entry.cjs` and `electron/remote-tailscale.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch), with `test/serve-state.test.ts` and `test/remote-entry-settings.test.ts`; IPC, notifications, the preload bridge, the Settings section and the login item move to the PR after it.) Pairing in `src/viewer-remote.ts` (`POST /api/remote/pair`, the code, rate limit, device write under the lock); `POST /api/remote-entry/code`; `electron/remote-entry.cjs` (settings writes, `tailscaleCli`, `tailnetSelf`, `serveState`, the 60-second check, `selfTest`, the outside-change watch); IPC and notifications in `electron/main.cjs`; `agentInboxRemoteEntry` in `setup-preload.cjs`; the Settings section (`public/remote-settings.js`, `public/app.js`) | `test/remote-pair.test.ts` (code once, expired, five wrong tries, rate limit, no code pending, secret answered once, only the hash stored); `test/serve-state.test.ts` (fixtures: the one good shape; a second path; a TCP forward; Funnel; another port; malformed JSON; one failed read retried); `test/remote-entry-settings.test.ts` (writes, outside change flagged, an expected pairing notified); `test/dom/settings-remote.test.ts` |
 | 3 | `electron/remote-connect.cjs` (settings, `validateHubOrigin` with the tailnet and peer checks, pairing, `safeStorage`, `hubFetch`, `probeHub`, backoff); `electron/remote-preload.cjs`; `electron/remote-offline.html`; the view, header injection, navigation, redirect, download and permission handlers, menu items and `powerMonitor` in `electron/main.cjs`; `agentInboxConnect` and local `agentInboxDesk` in `setup-preload.cjs`; connect settings and the banner in `public/app.js` | `test/remote-connect.test.ts` (origin rules, outside the tailnet, a tagged or another user's peer, a changed node, marker required, secret never stored in clear, backoff 2→60 s, resume and online triggers, reload only on version change, refused state); `test/remote-preload.test.ts` (one object, exact members); `test/main-source.test.ts` (the view never gets the install binding; the header handler filters on the hub origin); `test/dom/connect-banner.test.ts` |
 | 4 | `createAttentionWatch` in `electron/main.cjs`; `electron/desk-open.cjs` (`fillTemplate`, `deskScript`, `openDesk`, the confirmation dialog); `writeChatScript` generalised; Open desk in `public/place.js`, `public/agents-home.js`, `public/app.js`, `public/chats-view.js` | `test/reply-watch.test.ts` (posts to the hub base with a trailing slash, its Origin and the device header); `test/attention-watch.test.ts` (badge sum, per-source `known`, wake adapter local only); `test/desk-open.test.ts` (each placeholder's quoting, parsed back by `sh` and by a second `sh -c` for `{attach}`; unknown placeholder refused; `sshHost` with a leading `-` refused; no save without the dialog; source by sender; `not_on_hub`, `not_here`; gesture and rate limits); `test/badge.test.ts` still green; `test/dom/chats-view.test.ts` |
 
@@ -636,15 +683,28 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
    session Remote Control itself started, whose live file reports the entrypoint `sdk-cli`.
 2. **Settled: `tmux` is on the MCP server's `PATH` on the hub** (seven of seven servers). Keep the
    fixed-path fallback for other setups.
-3. **Does a request from the hub to its own Serve address carry its user's login?** If not, Test
-   on the hub sees the `login` count rise instead of `device`, and says to test from the other Mac.
+3. **Settled on 2026-11-17 (Tailscale 1.102.4, macOS): a request from the hub to its own Serve
+   address carries its user's login**, with the same headers as one from another of the user's
+   devices, so Test on the hub sees the `device` count rise. Run through the gate: 403, `device`.
 4. **Partly settled: the Tailscale fields.** Observed on 1.102.4: `Self.DNSName` (with a trailing
    dot), `User[String(Self.UserID)].LoginName`, and a top-level `CertDomains` that lists the name
-   when HTTPS certificates are on; the CLI was at `/usr/local/bin/tailscale`. Not observed:
-   `tailscale serve status --json` with a configuration (expected: `TCP`, `Web` keyed by
-   `host:443` with `Handlers` by path and a `Proxy`, and `AllowFunnel`), the shape of a raw TCP
-   forward in it, a peer's `StableID` and `Tags`, and the exact removal command
-   (`tailscale serve --bg <port> off`, from the CLI reference's "add `off` to the command").
+   when HTTPS certificates are on; the CLI was at `/usr/local/bin/tailscale`. Also observed on
+   2026-11-17 after `tailscale serve --bg 4320`: `tailscale serve status --json` is exactly
+   `{ "TCP": { "443": { "HTTPS": true } }, "Web": { "<host>:443": { "Handlers": { "/": { "Proxy":
+   "http://127.0.0.1:4320" } } } } }`, with no `AllowFunnel`, `Foreground` or `Services` key, and
+   `{}` with nothing configured; Serve forwards `Host` as the bare tailnet name and the request
+   target unchanged, sets one `Tailscale-User-Login` after removing the client's, and sends none
+   from a tagged node (docs/architecture/remote-inbox.md, "Checked against real Tailscale Serve").
+   On a tailnet with 531 peers `tailscale status --json` was 822,251 bytes; with `--peers=false` it
+   was 5,566 bytes and still held `BackendState`, `Self` and this node's `User` entry, with `Peer`
+   empty. The app's own binary (`/Applications/Tailscale.app/Contents/MacOS/Tailscale`) answers
+   `status --json` correctly when run directly, on a Mac with no command-line install.
+   Not observed: Funnel, a raw TCP forward, a second path or a services section in that output,
+   a peer's `StableID` and `Tags`, and the exact removal command
+   (`tailscale serve --https=443 off`, from Tailscale's documentation; `tailscale serve --help` on
+   1.102 lists `--bg`, `--https`, `--http`, `--tcp`, `--tls-terminated-tcp`, `--set-path`,
+   `--service`, `--accept-app-caps`, `--proxy-protocol`, `--tun`, `--yes`, `status` and `reset`).
+   Also observed: a tagged node's `Self.UserID` still resolves to a placeholder user in `User`.
 5. **App Nap.** The packaged app runs the viewer in its main process. If hours hidden slow the
    remote entry, hold `powerSaveBlocker.start('prevent-app-suspension')` while it is on.
 6. **Login items.** Does `setLoginItemSettings` need approval in System Settings → Login Items?
@@ -657,5 +717,6 @@ Beside the tests, before PR 2b, PR 3 and PR 4 merge:
 10. **A laptop build for the proof.** The laptop has no app today, so the laptop half of §7
     step 3 runs on the signed release, after the hub-only half has passed.
 11. **`/api/version`'s `machine` and a session's `machine` can differ** when `AGENT_INBOX_MACHINE` is set only for terminals; PR 4's machine checks must allow for it.
-12. **PR 2b: main and the viewer must name the same `remote.json`;** main computes it by the same
-    rule (the folder of `AGENT_INBOX_DB`, else `~/.agent-inbox`) or passes the path.
+12. **Settled in PR 2c: main and the viewer name the same `remote.json`:** main's `remoteFile()`
+    uses the same rule (the folder of `AGENT_INBOX_DB`, else `~/.agent-inbox`), and a test compares
+    it with `remoteDir()` over several environments.

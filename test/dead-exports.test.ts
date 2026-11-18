@@ -77,6 +77,15 @@ const ENTRY_POINTS = new Map<string, string>([
   ['electron/setup-preload.cjs', 'loaded by BrowserWindow webPreferences.preload'],
 ])
 
+// Modules built ahead of the PR that wires them in, the same idea as ALLOWED's store.ts entries
+// for exports. Each is checked below to be genuinely unimported still: once something requires
+// it, the entry must go, so it cannot sit here widening the guard. The reachability check sees only
+// a destructuring require, `const { … } = require('…')`, so the wiring must use that form, or the
+// stale-entry check never fires.
+const NOT_YET_WIRED = new Map<string, string>([
+  ['electron/remote-entry.cjs', 'the hub remote-entry controller (#617, PR 2c, logic and tests only); the next PR requires it from electron/main.cjs for IPC, notifications and Settings'],
+])
+
 // electron/*.cjs is read as a CONSUMER only, never scanned for exports: it
 // exports through CommonJS `module.exports`, a different form, and its one
 // exporting module (reuse.cjs) has both names required by main.cjs.
@@ -249,7 +258,7 @@ const publicFiles = readAll('public', (n) => n.endsWith('.js') && n !== 'ufuzzy.
 const srcFiles = readAll('src', (n) => n.endsWith('.ts'))
 const electronFiles = readAll('electron', (n) => n.endsWith('.cjs'))
 const allFiles = [...publicFiles, ...srcFiles, ...electronFiles]
-const analysis = analyse(allFiles, ENTRY_POINTS.keys())
+const analysis = analyse(allFiles, [...ENTRY_POINTS.keys(), ...NOT_YET_WIRED.keys()])
 
 describe('public/*.js and src/*.ts have no dead exports', () => {
   it('scans a plausible number of exports — a regex matching nothing must not pass vacuously', () => {
@@ -285,6 +294,10 @@ describe('public/*.js and src/*.ts have no dead exports', () => {
     for (const [path, why] of ENTRY_POINTS) {
       expect(paths.has(path), `ENTRY_POINTS names ${path}, which no longer exists`).toBe(true)
       expect(unreached.has(path), `ENTRY_POINTS excuses ${path} (${why}), but something imports it now — drop the entry`).toBe(true)
+    }
+    for (const [path, why] of NOT_YET_WIRED) {
+      expect(paths.has(path), `NOT_YET_WIRED names ${path}, which no longer exists`).toBe(true)
+      expect(unreached.has(path), `NOT_YET_WIRED excuses ${path} (${why}), but something requires it now — drop the entry`).toBe(true)
     }
     // with the entry points supplied, nothing is left unreachable
     expect(analysis.unreached).toEqual([])

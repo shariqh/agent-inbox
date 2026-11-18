@@ -6,7 +6,10 @@ paths:
   - "test/remote-routes.test.ts"
   - "test/remote-setting.test.ts"
   - "test/remote-pair.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts"
+  - "electron/remote-*.cjs"
+  - "test/serve-state.test.ts"
+  - "test/remote-entry-settings.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -18,9 +21,9 @@ Process boundaries: [`overview.md`](overview.md).
 
 Claude Code and Copilot CLI load this file when they read or edit a file matching the
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
-Later PRs add their files (`electron/remote-*.cjs`, `electron/desk-open.cjs`) to the globs.
+Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
-## What is built (PR 2a, PR 2b)
+## What is built (PR 2a, PR 2b, PR 2c)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -29,13 +32,18 @@ Later PRs add their files (`electron/remote-*.cjs`, `electron/desk-open.cjs`) to
 - `src/viewer-server.ts`: a second `createViewer(db, { mesh })` with no owner token, its static
   files, `startRemoteEntry`, and on the loopback app `GET /api/remote-entry` and, when the viewer
   has an owner token, `POST /api/remote-entry/code`.
+- `electron/remote-entry.cjs` (PR 2c): the hub controller for the desktop app's main: the
+  settings store, the code and status requests to the app's own viewer, the self test and the
+  watch. Its read-only Tailscale half is `electron/remote-tailscale.cjs`. Logic and tests only:
+  nothing requires it yet (below).
 
 ## What is not built yet
 
-- The desktop app's half of pairing: Settings → **Add a device**, the paired-device list with
-  Remove, main's settings writer, every Tailscale command, the Serve check and the notifications
-  (the next PR). Until then nothing in the app asks for a code. Any local process on the hub can
-  still make one: the owner token is not a secret from local processes (below).
+- The wiring of the hub controller: IPC, the `agentInboxRemoteEntry` preload bridge, the native
+  notifications, the Settings panel (switch, **Add a device**, the device list with Remove,
+  **Test**, the removal command) and Open at login (the next PR). Until then nothing in the app
+  writes `remote.json` or asks for a code. Any local process on the hub can still make one: the
+  owner token is not a secret from local processes (below).
 - Connect mode in the desktop app (PR 3), and Open desk and notifications against a hub (PR 4).
 
 So the entry is still off for everyone until the owner writes `remote.json`. With no device in it,
@@ -267,3 +275,189 @@ line naming the error's class (`agent-inbox remote entry: a request failed (Type
 with a bare 500. It never logs a login, a header value, a code, a secret, a hash, a label, the
 tailnet host, a path or an error's message (a store error can quote ids taken from the path). The
 loopback entry keeps Hono's default error handler.
+
+## The hub controller (PR 2c)
+
+`electron/remote-entry.cjs` is what the desktop app's main uses to own `remote.json` and to check
+Tailscale; its read-only Tailscale half is `electron/remote-tailscale.cjs`.
+`createRemoteEntry(options)` returns one object; every dependency (`fsImpl`, `execFile`, `exists`,
+`fetch`, `now`, `sleep`, the timer and interval functions) is an option, so the tests run no
+command, open no socket of their own and never sleep. It logs nothing. No public operation
+rejects: a throw anywhere answers `{ ok: false, reason }`, or an unavailable view.
+
+**When the entry is on.** `turnOn()` writes `enabled: true` only after this node's identity and
+Serve's shape both read ok just then. While the entry is on, a check that fails or throws turns it
+off: a failed read after one retry 5 seconds later, anything else at once. A turn-off that does not
+land (the file could not be written) is retried at every 5-second tick until it does.
+
+**The file.** `remoteFile(env, home)` is `remote.json` in `remoteDir()`'s folder, by the same rule;
+a test compares the two over several environments. The controller reads the file by the viewer's
+rules (`O_NOFOLLOW`, checked on the descriptor, owned by this user, no group or other bits, at most
+64 KiB, strict UTF-8, schema 1), with the same device label rule (`isDeviceLabel`: 1 to 40
+characters, no control, format or lone surrogate character), and a test reads many files with both
+readers and compares the answers.
+
+**Tailscale, read-only.** `tailscaleCli` takes the first of `/usr/local/bin/tailscale`,
+`/opt/homebrew/bin/tailscale` and `/Applications/Tailscale.app/Contents/MacOS/Tailscale` that
+exists; never a search, never a configured path. A Mac with the App Store or standalone app and no
+command-line install has only the third, and that binary answers `status --json` when run
+directly. Every run is `execFile` with an argument array, no shell, a 5-second timeout (and a
+6-second limit of its own, in case the command ignores the kill), and only three argument lists:
+
+- `status --json --peers=false` for this node (1 MiB cap). It leaves the peers out: this node, its
+  user and its tags are all it needs, and the full list printed 822 KB for a tailnet with 531
+  peers, which a larger one would push past the cap and so switch sharing off. Without peers it is
+  about 5.5 KB.
+- `serve status --json` for Serve's shape (1 MiB cap).
+- `status --json` for the full peer list (16 MiB cap), for the connecting Mac to find the hub
+  among its peers in the next PR. Nothing here parses it yet.
+
+Nothing here changes Tailscale's configuration. A source test pins the three lists and the one
+`execFile` call, and checks that `remote-entry.cjs` itself runs nothing.
+
+- `tailnetSelf()`: `Self.DNSName` lowercased without its trailing dot, and
+  `User[String(Self.UserID)].LoginName` (the ID is read from the JSON text, so one past 2^53 keeps
+  its digits). The host follows the reader's rule; the login follows it too, and also may hold no
+  format character and no leading or trailing space. A tagged node is decided from `Self.Tags`
+  (`null` and `[]` are untagged); its `UserID` still resolves to Tailscale's placeholder user, and
+  the placeholder login `tagged-devices` is refused as `tagged` whatever `Tags` says. Otherwise a
+  fixed word: `no_cli`, `failed`, `not_json`, `not_running`, `no_dns_name`, `bad_host`, `tagged`,
+  `no_login`. Its result holds the login: it is for main only, never for a page.
+- `serveState(host, port)`: ok only for exactly one handler for `<host>:443` (case and a trailing
+  dot ignored), at `/`, whose entry has only `Proxy` and it is exactly `http://127.0.0.1:<port>`;
+  the TCP entry for 443 exactly `{ "HTTPS": true }`; no TCP forward to the port on any port (each
+  `TCPForward` is read as host and port, and the port must be plain decimal digits, compared as a
+  number, so `04320` is 4320); no other host's or port's handler whose `Proxy` reaches the port
+  (read the same way, with the scheme's default when none is written); no `AllowFunnel` for
+  `<host>:443` other than `false`; `Foreground` and `Services` absent or empty; no key it does not
+  know at the top level, in a TCP entry or in a handler; and nothing nested deeper than 32 levels.
+  Every walk over the output uses an explicit stack, so output nested 100,000 deep is
+  `unknown_shape`, not a stack overflow. Anything else is `{ ok: false, reason, present }`, where
+  `present` says some configuration names `<host>:443` or the port. A failed read is `unreadable`.
+  By the "unknown is never ok" rule, a foreground `tailscale serve` on any port, or any Tailscale
+  Service, switches sharing off; the reason says which (`foreground`, `services`). The good shape
+  and `{}` are from a real run (below); every other shape in the tests is from Tailscale's
+  documentation, so a real shape that differs reads as not ok and the entry stays off.
+
+**The store.** Writes go through `createLockedFile` on `remote.json`, the lock the viewer's pairing
+write uses: read again under the lock, temp file and rename, mode `0600`, every unknown field kept
+at the top level and in each device, never past 64 KiB. A newer schema, a symlink, a folder,
+another user's file and a file that is not JSON are never written. A file with group or other bits
+is refused by every operation except `repairPermissions()`, which rewrites it `0600`, turns it off
+and removes every device, because another user may have edited it and added one; the result says
+how many. A file with an unknown field nested too deep to serialise is written by `turnOff()` only,
+with the fields the reader knows (`unknownFieldsDropped: true`), because that write must land.
+
+- `view()`: `{ available, enabled, host, port, viewerPort, logins, devices: [{ id, label,
+  pairedAt }], unreadableDevices, problem }`. Never a hash. `enabled` is true only when the viewer
+  would open the entry for this app's `viewerPort`; a file on for the other build's viewer reads
+  `problem: 'other_viewer'`. `unreadableDevices` counts the entries the reader drops, since they
+  still count toward its limit of 16.
+- `turnOn()`: reads `tailnetSelf()` and then `serveState(host, port)` first, outside the lock, and
+  writes only when both are ok: `enabled: true`, `host`, `port` (4320 packaged, 4393 for a checkout
+  build), `viewerPort` (`viewerPort()` in `electron/reuse.cjs`) and `logins: [<this node's
+  login>]`. When the stored host or logins are not exactly this node's (ignoring case, as the gate
+  does), it removes every device, since their secrets were issued under another identity, and
+  says how many. It never takes the entry over while the file is on for the other build's viewer,
+  and never writes a file the reader would refuse. A successful `turnOn()` clears the last stop.
+- `turnOff()`: writes `enabled: false` and nothing else. `removeDevice(id)`: by id, never by label
+  (labels are not unique); an unknown id writes nothing.
+- `turnOn()` and `removeDevice()` drop the device entries the reader would drop when they write,
+  and say how many. This is the one place the controller does not keep what it does not
+  understand: such an entry blocks pairing at 16 with no visible cause.
+- There is no operation that sets `logins`, `host` or `port` freely, and none that adds a device:
+  devices come only from the viewer's pairing route. Every write voids a pending code, and the
+  result says `voidedCode: true` when a code asked for in the last 10 minutes was pending.
+
+**Codes and status.** `requestCode()` posts to `http://127.0.0.1:<viewerPort>/api/remote-entry/code`
+with the loopback `Origin` and `X-Agent-Inbox-Owner`, retries a 409 every second for 6 seconds, and
+returns `{ code, expiresAt }`; it keeps the code's `codeId` to itself. It refuses without calling
+the viewer while the view is not enabled. `entryStatus()` reads `GET /api/remote-entry` and returns
+it only in its known shape (`paired` as `{ device, codeId }` entries); it is for main only. The
+owner token is never returned or logged.
+
+**The watch.** `start()` runs `tick()` every 5 seconds; tests call `tick()` themselves.
+
+- While the entry is on: at start and every 60 seconds, `tailnetSelf()` and `serveState()`. A read
+  that failed, or a check that threw, is tried once more 5 seconds later before it counts. When the
+  shape is not ok, or this node no longer has the stored host and an allowed login (ignoring case),
+  the watch calls `turnOff()` and then `onStopped(reason, { off })`, once per stop. When that
+  turn-off did not land (`off: false`), each later tick tries it again until it does, without a new
+  notice. An entry switched back on (by `turnOn()` or by hand) that fails again is a new stop,
+  announced again. While the entry is off,
+  Serve is read once after start (when the file names a host) and on `refresh()`, for the removal
+  hint only. The watch leaves a file that is on for the other build's viewer alone.
+- Every tick reads the file and compares a SHA-256 over the canonical JSON of `enabled`, `host`,
+  `port`, `viewerPort`, `logins`, and each device's `id`, `secretSha256` and whether the reader
+  keeps it, with what main last wrote or accepted. The last part matters because a label decides
+  whether the reader keeps a device: an edit that makes a dormant hash live, or a live one dormant,
+  is a change, while a rename that keeps it readable is not. Devices added at the end, with nothing
+  else changed, are expected only when each is in the viewer's `paired` list with the `codeId` of
+  a code this controller's `requestCode()` received in the last 11 minutes, one code per device:
+  `onPaired(label)` for each. Anything else calls `onOutsideChange()` once per distinct state and
+  sets `flag`. A code another local process made proves nothing, and the viewer's `paired` list
+  starts empty when it restarts, so a pairing seen across a restart is flagged: the safe side.
+  Nothing is reverted.
+- `acknowledge(digest)` takes `state().flagDigest`, the digest of the flagged state, and clears the
+  flag only when the file still has that digest. Otherwise the flag stays, the result is
+  `{ ok: false, reason: 'changed' }`, and the new state is announced, so a device added after the
+  owner looked is never accepted with the one they saw.
+- The viewer's status is read before any lock, and only when a code main asked for could explain a
+  change. Under the lock the file is only compared with it, synchronously, so main's own write
+  never hides an outside change, and nothing that awaits the network or a child process runs while
+  the lock is held: the viewer's pairing write waits at most about 5 seconds for it.
+- `state()`: the view, the last Serve answer and when, the last identity (the host and whether the
+  login is allowed, never the login), the flag and `flagDigest`, the last stop, and `removalHint`,
+  `tailscale serve --https=443 off`, while the entry is off and a Serve configuration naming the
+  host or port is present. That command is from Tailscale's documentation and not yet seen in real
+  output. No callback and no `state()` carries a login, a hash, the owner token or a code;
+  `view().logins` holds the file's logins for the panel.
+
+**Known limits and gaps.**
+
+- A change made to `remote.json` while the app is closed takes effect at the next start with no
+  notification, because the first read after `start()` is the baseline; the device list is the
+  only record. The next PR closes this with a baseline main keeps across restarts.
+- When Tailscale is not running or cannot be read at the first check after the app starts (a
+  restart where the app opens before Tailscale is up), the entry is switched off and stays off
+  until the owner switches it on again. This is a gap against design §3.5 ("coming back by
+  itself"), closed by the next PR.
+- A hash swapped under a just-paired id before the next check is announced as the expected
+  pairing, because the viewer's `paired` list carries no hash; the owner's device then fails to
+  connect.
+
+**`selfTest()`** fetches `https://<host>/api/version` from main with no device secret, a 5-second
+timeout and redirects refused, and reads `entryStatus()` before and after. It passes on a 403 with
+the `device` count up by exactly one; otherwise it names the counter that rose. A request from the
+hub to its own Serve address carries its user's login (below), so that is the right pass. Nothing
+else depends on the self test.
+
+## Checked against real Tailscale Serve
+
+On 2026-11-17, on macOS with Tailscale 1.102.4, after the owner ran `tailscale serve --bg 4320`:
+
+- `tailscale serve status --json` printed exactly the one good shape: `TCP` with `"443":
+  { "HTTPS": true }`, and `Web` with `"<host>:443"` holding one handler at `/` whose only field is
+  `Proxy: "http://127.0.0.1:4320"`. No `AllowFunnel`, `Foreground` or `Services` key. With nothing
+  configured it printed `{}`.
+- What Serve forwards to the loopback port: `Host` is the tailnet name with no `:443`, and the
+  request target arrives exactly as the client sent it (`/static/../api/setup` and `/%61pi/setup`
+  unchanged). From a device of the same user: exactly one `Tailscale-User-Login`, plus
+  `Tailscale-User-Name`, `Tailscale-User-Profile-Pic`, `Tailscale-Headers-Info` and
+  `X-Forwarded-For`, `-Host` and `-Proto: https`. A request the hub makes to its own Serve address
+  carries the same headers with the hub user's login.
+- Serve removed a client's own `Tailscale-User-Login`, `Tailscale-Funnel-Request`,
+  `Tailscale-User-Name` and `X-Forwarded-For` and set its own: one login header, no Funnel header.
+- From a tagged server: no `Tailscale-User-Login`, `-Name` or `-Headers-Info` at all, only
+  `X-Forwarded-*`; the gate refused it at `login`, even with a valid device secret.
+- The gate behind real Serve: a paired device got 200 with the marker; no secret was a 403 counted
+  `device` (also from the hub itself, which is the self test's pass); the dot-segment and
+  percent-encoded targets were 403 `path`; `/api/setup` and `/api/launches` were 403 `route`; a
+  POST with the page's `Origin` passed, and one with no or a foreign `Origin` was 403 `origin`.
+
+- `tailscale status --json` on a tailnet whose user has many exit nodes listed 531 peers in 822,251
+  bytes; `status --json --peers=false` was 5,566 bytes, with `Peer` empty and one `User` entry, and
+  still held `BackendState`, `Self` (`DNSName`, `UserID`, `Tags`) and this node's user.
+
+Not yet confirmed by a real run: the `off` form of the removal hint, and the Funnel, TCP-forward,
+extra-path and services shapes. Those stay as documented.

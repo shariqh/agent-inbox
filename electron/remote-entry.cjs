@@ -38,6 +38,8 @@
 //   then; it writes `enabled: true` and nothing else, and never takes turnOn's identity-change path.
 //   A stop for this node's identity never comes back by itself; one for Serve's shape does (see
 //   stopEntry). A stop soon after a resume backs off, up to 30 minutes.
+// - Off means off: when the state read for this file and viewer says `wanted: false` and the file
+//   is on anyway, the watch switches it off again before any Tailscale read (keepOff).
 // - The owner's turnOff, the watch's stop and the repair never wait on the state store, and no call
 //   to it is waited for longer than STATE_TIMEOUT_MS.
 // Without a state store, none of this happens: the first read after start() is the baseline, and
@@ -374,6 +376,8 @@ function createRemoteEntry(options = {}) {
   let keptDigest = null // the digest of the state main last wrote or accepted
   let wanted = false // the owner's intent
   let ownerSetWanted = false
+  // the first read of the store succeeded and found a state for this remote.json and viewer
+  let stateRead = false
   let stateSaved = null
   let stateDirty = false
   let saving = Promise.resolve()
@@ -481,6 +485,7 @@ function createRemoteEntry(options = {}) {
           stateSaved = false
         }
         if (stored && (stored.file !== stateFor.file || stored.viewerPort !== stateFor.viewerPort)) stored = null
+        stateRead = stored !== null
         keptDigest = stored ? stored.digest : null
         if (stored && !ownerSetWanted) wanted = stored.wanted
         loadDone = true
@@ -651,6 +656,23 @@ function createRemoteEntry(options = {}) {
     observe(current, status)
     // saved without waiting here: the tick waits once Serve was checked
     if (stateDirty) queueSave()
+    await keepOff(current)
+  }
+
+  /**
+   * Off means off. When the state read for this remote.json and viewer says the owner wants the
+   * entry off, and the file is on for this viewer anyway (put back, or edited, behind the app's
+   * back), the watch switches it off again: `enabled: false` and nothing else, the same write as its
+   * own stop, before any Tailscale read and without waiting for one, announced once as `not_wanted`
+   * and retried at every tick if it does not land. The change is flagged as any other. Only an
+   * explicit `wanted: false` read for this file and viewer counts: no state, another file's or
+   * viewer's, a read that failed or timed out, or no store at all is not the owner's Off.
+   */
+  async function keepOff(current) {
+    if (!stateStore || !stateRead || wanted || pendingStop !== null) return
+    const setting = current.state === 'document' ? current.setting : null
+    if (setting === null || !setting.enabled || setting.viewerPort !== viewerPort) return
+    await stopEntry('not_wanted', setting)
   }
 
   /**

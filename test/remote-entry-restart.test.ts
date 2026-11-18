@@ -792,10 +792,11 @@ describe('after a restart, an entry the watch switched off comes back by itself'
     expect((await s.c.turnOff()).ok).toBe(true)
     expect((await s.c.state()).wanted).toBe(false)
     // switched on again by hand (an outside change), then the watch stops it: a stop, not a pause
+    // (off means off: the owner's Off switches it off before any Tailscale check)
     edit(p.file, (doc) => { doc.enabled = true })
     p.ts.self = starting()
     await after(p, s, 60_000)
-    expect(s.events.stopped).toEqual([{ reason: 'not_running', off: true, willResume: false }])
+    expect(s.events.stopped).toEqual([{ reason: 'not_wanted', off: true, willResume: false }])
     expect(await waitingOf(s)).toBe(null)
   })
 
@@ -1961,6 +1962,168 @@ describe('review round 1: state().resume', () => {
     await s.c.tick()
     expect(s.events.stopped[0]).toMatchObject({ willResume: false })
     expect(await waitingOf(s)).toBe('flagged')
+  })
+})
+
+// ── review round 2: off means off ──────────────────────────────────────────
+
+/** Seeded and on, then the owner switches it off: `wanted: false` kept for this file and viewer. The on file, as it was. */
+async function switchedOff(p: Place) {
+  await seeded(p)
+  const onFile = readFileSync(p.file, 'utf8')
+  const s = open(p)
+  expect((await s.c.turnOff()).ok).toBe(true)
+  await s.c.settled()
+  s.c.stop()
+  expect(keptOnDisk(p)).toMatchObject({ wanted: false, file: fileIdOf(p), viewerPort: 4319 })
+  return onFile
+}
+const notWanted = (s: ReturnType<typeof open>) => s.events.stopped.filter((e) => e.reason === 'not_wanted')
+
+describe('review round 2: the owner\'s Off is kept when the file says on', () => {
+  it('the old on file put back while closed: switched off at start, before any Tailscale command, devices kept, flagged', async () => {
+    const p = place()
+    const onFile = await switchedOff(p)
+    writeFileSync(p.file, onFile, { mode: 0o600 })
+    // Tailscale cannot be read at all: the switch-off needs none of it
+    p.ts.cli = false
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(deviceIds(p.file)).toEqual([A])
+    expect(s.tailscale.calls).toEqual([])
+    expect(notWanted(s)).toEqual([{ reason: 'not_wanted', off: true, willResume: false }])
+    const state = await s.c.state()
+    expect(state.flag).toBe(true)
+    expect(state.stopped).toMatchObject({ reason: 'not_wanted', off: true, willResume: false })
+    expect(state.wanted).toBe(false)
+    expect(s.events.outside).toBe(1)
+    for (let i = 0; i < 5; i += 1) await after(p, s, 5_000)
+    expect(notWanted(s)).toHaveLength(1)
+    expect(s.events.resumed).toBe(0)
+    // Review accepts the file as main left it
+    expect(await s.c.acknowledge((await s.c.review()).digest)).toEqual({ ok: true })
+  })
+
+  it('the switch-off writes enabled: false and nothing else', async () => {
+    const p = place()
+    const onFile = await switchedOff(p)
+    const doc = JSON.parse(onFile) as Record<string, unknown>
+    const planted = { ...doc, note: { kept: true }, devices: [...(doc.devices as unknown[]), { id: 'short', label: 'x', secretSha256: 'y' }] }
+    writeFileSync(p.file, JSON.stringify(planted), { mode: 0o600 })
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect(fileJson(p.file)).toEqual({ ...planted, enabled: false })
+  })
+
+  it('while running: enabled flipped on by hand after the owner\'s Off is off again at the next file check', async () => {
+    const p = place()
+    await seeded(p)
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect((await s.c.turnOff()).ok).toBe(true)
+    edit(p.file, (doc) => { doc.enabled = true })
+    p.ts.cli = false
+    await after(p, s, 5_000)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(notWanted(s)).toHaveLength(1)
+    expect(s.events.outside).toBe(1)
+    await after(p, s, 5_000)
+    expect(notWanted(s)).toHaveLength(1)
+    // a second occurrence is announced again
+    edit(p.file, (doc) => { doc.enabled = true })
+    await after(p, s, 5_000)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(notWanted(s)).toHaveLength(2)
+  })
+
+  it('a switch-off that does not land is retried at every tick, announced once', async () => {
+    const p = place()
+    const onFile = await switchedOff(p)
+    writeFileSync(p.file, onFile, { mode: 0o600 })
+    chmodSync(p.dir, 0o500)
+    const s = open(p)
+    try {
+      s.c.start()
+      await s.c.tick()
+      expect(fileJson(p.file).enabled).toBe(true)
+      expect(notWanted(s)).toEqual([{ reason: 'not_wanted', off: false, willResume: false }])
+      await after(p, s, 5_000)
+      expect(fileJson(p.file).enabled).toBe(true)
+    } finally {
+      chmodSync(p.dir, 0o700)
+    }
+    await after(p, s, 5_000)
+    expect(fileJson(p.file).enabled).toBe(false)
+    expect(notWanted(s)).toHaveLength(1)
+    expect((await s.c.state()).stopped).toMatchObject({ reason: 'not_wanted', off: true })
+  })
+
+  /** The owner's Off kept, the on file put back, then `spoil` before the next start: flag only, left on. */
+  async function flagOnly(spoil: (p: Place) => Parameters<typeof open>[1] | void) {
+    const p = place()
+    const onFile = await switchedOff(p)
+    writeFileSync(p.file, onFile, { mode: 0o600 })
+    const opts = spoil(p) ?? {}
+    const s = open(p, opts)
+    s.c.start()
+    await s.c.tick()
+    return { p, s }
+  }
+
+  it.each([
+    ['no state stored', (p: Place) => { unlinkSync(p.stateFile) }],
+    ['a state for another viewer port', (p: Place) => { writeFileSync(p.stateFile, JSON.stringify({ ...fileJson(p.stateFile), viewerPort: 4392 }), { mode: 0o600 }) }],
+    ['a state for another file', (p: Place) => { writeFileSync(p.stateFile, JSON.stringify({ ...fileJson(p.stateFile), file: 'e'.repeat(64) }), { mode: 0o600 }) }],
+    ['a store whose read throws', () => ({ store: { read: async () => { throw new Error('read broke') }, write: async () => {} } })],
+    ['no state store', () => ({ store: null })],
+  ] as Array<[string, (p: Place) => Parameters<typeof open>[1] | void]>)('not enforced with %s: flagged only, left on', async (_name, spoil) => {
+    const { p, s } = await flagOnly(spoil)
+    expect(fileJson(p.file).enabled).toBe(true)
+    expect(notWanted(s)).toEqual([])
+    expect(s.events.outside).toBe(_name === 'no state store' ? 0 : 1)
+  })
+
+  it('not enforced with a store whose read never answers: flagged only, left on', async () => {
+    const p = place()
+    const onFile = await switchedOff(p)
+    writeFileSync(p.file, onFile, { mode: 0o600 })
+    const timers = heldTimers()
+    const store = { read: () => new Promise<never>(() => {}), write: async () => {} }
+    const s = open(p, { store: store as never, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout })
+    s.c.start()
+    let done = false
+    const ticking = s.c.tick().then(() => { done = true })
+    await waitUntil(() => { timers.fire(); return done }, 'the tick to end')
+    await ticking
+    expect(fileJson(p.file).enabled).toBe(true)
+    expect(notWanted(s)).toEqual([])
+    expect(s.events.outside).toBe(1)
+  })
+
+  it('not enforced while wanted is true (paused): a hand edit to on is flagged and left to the Serve check', async () => {
+    const p = place()
+    const s = await paused(p)
+    edit(p.file, (doc) => { doc.enabled = true })
+    p.ts.self = selfStatus()
+    await after(p, s, 60_000)
+    expect(s.events.outside).toBe(1)
+    expect(notWanted(s)).toEqual([])
+    expect(fileJson(p.file).enabled).toBe(true)
+  })
+
+  it('a file on for another viewer is left alone', async () => {
+    const p = place()
+    const onFile = await switchedOff(p)
+    writeFileSync(p.file, JSON.stringify({ ...JSON.parse(onFile), viewerPort: 4392 }), { mode: 0o600 })
+    const s = open(p)
+    s.c.start()
+    await s.c.tick()
+    expect(fileJson(p.file).enabled).toBe(true)
+    expect(notWanted(s)).toEqual([])
   })
 })
 

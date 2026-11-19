@@ -561,11 +561,16 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     expect(lines[bare[0]!.n]).toBe('setInterval(load, 3000)')
 
     // The awaited form belongs to reloadAndPaint and nowhere else — an `await
-    // load()` anywhere else is the same defect wearing a keyword.
+    // load()` anywhere else is the same defect wearing a keyword. One exception
+    // (#636): a refused row send reads the current row mid-write, to decide
+    // whether to send again; every path after it still ends in reloadAndPaint.
     const awaited = lines
       .map((line, i) => ({ line, n: i + 1 }))
       .filter(({ line }) => /^(?:const loaded = )?await\s+load\(\);?$/.test(line))
-    expect(awaited.length, `stray await load(): ${JSON.stringify(awaited)}`).toBe(1)
-    expect(lines[awaited[0]!.n - 2]).toBe('async function reloadAndPaint() {')
+    const midWrite = awaited.filter(({ n }) => lines[n] === 'const owner = currentRow(r.id)')
+    expect(midWrite.length, 'the #636 re-read of a refused row send').toBe(1)
+    const ending = awaited.filter((entry) => !midWrite.includes(entry))
+    expect(ending.length, `stray await load(): ${JSON.stringify(ending)}`).toBe(1)
+    expect(lines[ending[0]!.n - 2]).toBe('async function reloadAndPaint() {')
   })
 })

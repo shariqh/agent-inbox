@@ -66,9 +66,18 @@ export interface ConnectView {
    * local page reads it at every start.
    */
   keychain: boolean
-  hub: { id: string; label: string; origin: string; machine: string | null; state: ConnectionState | null; reason: string | null } | null
+  hub: {
+    id: string; label: string; origin: string; machine: string | null; state: ConnectionState | null; reason: string | null
+    /** #617 PR 4b: the valid stored Open desk command, or null. This Mac's own Settings shows it; it never goes to the hub. */
+    deskCommand: string | null
+  } | null
   problem: StoreProblem | null
 }
+
+/** #617 PR 4b: setDeskCommand's answer. */
+export type DeskCommandAnswer =
+  | { ok: true }
+  | { ok: false; reason: 'bad_request' | 'bad_command' | 'not_found' | 'cancelled' | 'too_large' | 'write_failed' }
 
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean
@@ -97,6 +106,11 @@ export interface RemoteConnectOptions {
   clearTimeout?: (handle: unknown) => void
   /** Called once when /api/version's `current` differs from the last online probe's. */
   onReload?: () => void
+  /**
+   * #617 PR 4b: main's native confirmation of an Open desk command (the text to save); true only
+   * when the owner pressed Save. Without it no command is ever stored.
+   */
+  confirmDeskCommand?: (command: string) => Promise<boolean> | boolean
 }
 
 export interface RemoteConnect {
@@ -106,6 +120,13 @@ export interface RemoteConnect {
   forget(id: unknown): Promise<{ ok: true } | { ok: false; reason: string }>
   probeHub(): Promise<ProbeAnswer>
   view(): Promise<ConnectView>
+  /**
+   * #617 PR 4b: `{ id, command }`. `''` removes the active hub's Open desk command with no question;
+   * any other valid command is stored only after confirmDeskCommand answered true.
+   */
+  setDeskCommand(input: unknown): Promise<DeskCommandAnswer>
+  /** #617 PR 4b: the stored active hub's id, machine and valid Open desk command, from the file; null for none. */
+  storedHub(): Promise<{ id: string; machine: string | null; deskCommand: string | null } | null>
   connection(): Connection
   /** Called with the new answer each time it changes; returns the unsubscribe function. */
   onConnection(callback: unknown): () => void

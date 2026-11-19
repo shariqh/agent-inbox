@@ -12,7 +12,7 @@
 // tagged peers with `Tags` and another user's `UserID`, and one user peer with no `Tags` key.
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import remoteConnect from '../electron/remote-connect.cjs'
 import remoteConnectRules from '../electron/remote-connect-rules.cjs'
 import { inTailnet as tsInTailnet } from '../src/mesh-config.js'
@@ -492,6 +492,8 @@ interface HarnessOptions {
   fsImpl?: unknown
   onReload?: () => void
   exists?: (path: string) => boolean
+  // #617 PR 4b: the native confirmation of an Open desk command, driven by the test
+  confirmDeskCommand?: (command: string) => unknown
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -517,6 +519,7 @@ function harness(options: HarnessOptions = {}) {
     clearInterval: () => { intervals.length = 0 },
     onReload: options.onReload ?? (() => { reloads += 1 }),
     ...(options.fsImpl ? { fsImpl: options.fsImpl } : {}),
+    ...(options.confirmDeskCommand ? { confirmDeskCommand: options.confirmDeskCommand as never } : {}),
   })
   return { dir, filePath, clock, execFile, fetch, safeStorage, connect, intervals, reloads: () => reloads }
 }
@@ -862,7 +865,7 @@ describe('view', () => {
     const h = harness()
     const { id } = idOf(await h.connect.connect({ address: HOST, code: CODE }))
     const view = await h.connect.view()
-    expect(view).toEqual({ available: true, keychain: true, hub: { id, label: 'studio', origin: ORIGIN, machine: 'studio', state: 'online', reason: null }, problem: null })
+    expect(view).toEqual({ available: true, keychain: true, hub: { id, label: 'studio', origin: ORIGIN, machine: 'studio', state: 'online', reason: null, deskCommand: null }, problem: null })
     const text = JSON.stringify(view)
     for (const value of [...secretForms(), readStore(h.filePath).hubs[id]!.secret as string, DEVICE, NODE]) expect(text).not.toContain(value)
   })
@@ -965,6 +968,101 @@ async function connected(options: HarnessOptions = {}) {
   expect(result.ok).toBe(true)
   return { ...h, id: idOf(result).id }
 }
+
+// #617 PR 4b: the Open desk command is stored per hub, and only after the native dialog's Save
+describe('setDeskCommand', () => {
+  const COMMAND = 'ssh -t studio {attach}'
+
+  it('stores a valid command only after the dialog answered Save, and shows it in view() and storedHub()', async () => {
+    const asked: string[] = []
+    const h = await connected({ confirmDeskCommand: (command) => { asked.push(command); return true } })
+    expect(await h.connect.setDeskCommand({ id: h.id, command: COMMAND })).toEqual({ ok: true })
+    expect(asked).toEqual([COMMAND])
+    expect(readStore(h.filePath).hubs[h.id]!.deskCommand).toBe(COMMAND)
+    expect((await h.connect.view()).hub?.deskCommand).toBe(COMMAND)
+    expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: COMMAND })
+  })
+
+  it('stores nothing when the dialog is cancelled, throws, answers something that is not true, or is not there', async () => {
+    for (const confirm of [() => false, () => { throw new Error('closed') }, () => 'yes', async () => 1, undefined]) {
+      const h = await connected(confirm ? { confirmDeskCommand: confirm } : {})
+      expect(await h.connect.setDeskCommand({ id: h.id, command: COMMAND })).toEqual({ ok: false, reason: 'cancelled' })
+      expect(readStore(h.filePath).hubs[h.id]!).not.toHaveProperty('deskCommand')
+      expect((await h.connect.view()).hub?.deskCommand).toBeNull()
+    }
+  })
+
+  it('removes the command with an empty one, without asking', async () => {
+    let answer = true
+    const confirm = vi.fn(() => answer)
+    const h = await connected({ confirmDeskCommand: confirm })
+    await h.connect.setDeskCommand({ id: h.id, command: COMMAND })
+    answer = false
+    expect(await h.connect.setDeskCommand({ id: h.id, command: '' })).toEqual({ ok: true })
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(readStore(h.filePath).hubs[h.id]!).not.toHaveProperty('deskCommand')
+    expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: null })
+  })
+
+  it('never shows the dialog for an invalid command, a wrong id or a request that is not { id, command }', async () => {
+    const confirm = vi.fn(() => true)
+    const h = await connected({ confirmDeskCommand: confirm })
+    for (const command of ['ssh studio', 'ssh {host} {attach}', 'a {desk} }', 'a\n{desk}', 'x'.repeat(509) + '{desk}']) {
+      expect(await h.connect.setDeskCommand({ id: h.id, command }), command).toEqual({ ok: false, reason: 'bad_command' })
+    }
+    expect(await h.connect.setDeskCommand({ id: 'ffffffff', command: COMMAND })).toEqual({ ok: false, reason: 'not_found' })
+    expect(await h.connect.setDeskCommand({ id: 'ffffffff', command: '' })).toEqual({ ok: false, reason: 'not_found' })
+    for (const input of [null, 'x', { id: h.id }, { command: COMMAND }, { id: 7, command: COMMAND }, { id: h.id, command: 7 }, { id: 'ZZ', command: COMMAND }]) {
+      expect(await h.connect.setDeskCommand(input), JSON.stringify(input)).toEqual({ ok: false, reason: 'bad_request' })
+    }
+    expect(confirm).not.toHaveBeenCalled()
+    expect(readStore(h.filePath).hubs[h.id]!).not.toHaveProperty('deskCommand')
+  })
+
+  it('saves nothing when the hub changed while the dialog was open', async () => {
+    let release!: (value: boolean) => void
+    const h = await connected({ confirmDeskCommand: () => new Promise<boolean>((resolve) => { release = resolve }) })
+    const pending = h.connect.setDeskCommand({ id: h.id, command: COMMAND })
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    expect(await h.connect.forget(h.id)).toEqual({ ok: true })
+    release(true)
+    expect(await pending).toEqual({ ok: false, reason: 'not_found' })
+  })
+
+  it('reads a stored command that fails its rule as none, and the hub stays valid', async () => {
+    const h = await connected()
+    const doc = readStore(h.filePath)
+    for (const bad of ['ssh {host} {attach}', 'no placeholder', 'a\n{desk}', 7, '', 'x'.repeat(513)]) {
+      writeFileSync(h.filePath, JSON.stringify({ ...doc, hubs: { [h.id]: { ...doc.hubs[h.id], deskCommand: bad } } }), { mode: 0o600 })
+      const view = await h.connect.view()
+      expect(view.problem, JSON.stringify(bad)).toBeNull()
+      expect(view.hub).toMatchObject({ id: h.id, deskCommand: null })
+      expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: null })
+    }
+  })
+
+  it('keeps the command through the first probe’s machine record and through a later write', async () => {
+    let machine: unknown = null
+    const fetch = fakeFetch({ pair: pairOk, version: () => json({ current: '2.12.0', mode: 'release', machine }) })
+    const h = await connected({ fetch, confirmDeskCommand: () => true })
+    expect(readStore(h.filePath).hubs[h.id]!.machine).toBeNull()
+    expect(await h.connect.setDeskCommand({ id: h.id, command: COMMAND })).toEqual({ ok: true })
+    machine = 'studio'
+    await h.connect.probeHub()
+    expect(readStore(h.filePath).hubs[h.id]).toMatchObject({ machine: 'studio', label: 'studio', deskCommand: COMMAND })
+    expect(await h.connect.setDeskCommand({ id: h.id, command: 'mydesk studio {desk}' })).toEqual({ ok: true })
+    expect(readStore(h.filePath).hubs[h.id]).toMatchObject({ machine: 'studio', deskCommand: 'mydesk studio {desk}' })
+  })
+
+  it('a new pairing makes a new entry without the command', async () => {
+    const h = await connected({ confirmDeskCommand: () => true })
+    await h.connect.setDeskCommand({ id: h.id, command: COMMAND })
+    const again = await h.connect.connect({ address: HOST, code: CODE, replace: true })
+    const id = idOf(again).id
+    expect(readStore(h.filePath).hubs[id]!).not.toHaveProperty('deskCommand')
+    expect((await h.connect.view()).hub?.deskCommand).toBeNull()
+  })
+})
 
 describe('deviceHeaderFor', () => {
   it('answers the secret for the hub’s exact origin, and for its default port', async () => {

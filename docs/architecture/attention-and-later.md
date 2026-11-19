@@ -157,13 +157,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   for an ask that turns stale while open. A draft pauses the list by design, so nothing may carry it
   out of sight; fix a new case through this rule, never with a per-transition patch. The human
   closing that fold closes the card too (`closeCardIn`, keeping any draft as any closed card
-  does), or the next frame would open the fold again under them. *(#272)* A row snooze moves
-  the revision, so a drafted row's draft still goes to the unsent responses, never re-keyed.
-  `deferAsk` marks the draft's `rowDraftMeta` with `setAside` only after its own write
-  succeeds and clears it once its `reloadAndPaint()` ends; `reconcileDraftOwners` copies it into
-  the recovery entry, so the row says "Kept from before you set this aside" instead of "Not
-  sent because this action changed". The reason is fixed when the entry is made; a pin, which
-  moves no revision, leaves no mark for a later agent edit to inherit. Deferred
+  does), or the next frame would open the fold again under them. *(#636, replacing #272)* A row
+  snooze moves the revision but not the ask's words, so a drafted row's draft stays in its
+  editor and follows the row into its fold (`keepRowDraftWithAsk`, in `viewer-frontend.md`'s
+  "A row draft follows its ask"). A stored `setAside` on an older draft is still read, and no
+  longer written. Deferred
   rows carry a reason chip instead of an urgency (`Pinned 2d ago`, `Back in 3h`,
   `… · agent waits quietly` while a Copilot asker's #217 deferral runs). Electron's `known`
   set is the unsuppressed attention set plus the `pinned` Later entries

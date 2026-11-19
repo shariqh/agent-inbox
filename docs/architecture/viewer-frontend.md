@@ -172,8 +172,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   editor (`[data-draft-focus-key]`) has focus in a focused window; a New session task
   holds while its dialog is open. Past that, the poll paints and every editor is
   rebuilt with its text from module state; nothing is sent or focused. A draft whose
-  target moved (its row advanced, its question closed) is moved to the unsent responses
-  by that poll frame, still durable, but the frame never navigates: `renderIfIdle()`
+  target moved (its row advanced, its question closed; a row whose ask is still the
+  same keeps its draft, #636 below) is moved to the unsent responses by that poll frame, still durable, but the frame never navigates: `renderIfIdle()`
   sets `pollPaint`, so `reconcileDraftOwners()` and `recoverMismatchedRenderedRowDraft()`
   skip `requestDraftRecovery()` (no tab switch, no closing the Review queue, no focus
   move) and leave `recoveryNavPending` for the next frame the human asks for. `hasUnsentResponses()` reads every draft (`typedDrafts()`), so the
@@ -235,7 +235,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (an unreadable or unknown one is dropped, never thrown) and merges one window's
   changes into what the profile holds. The window's memory stays the source of truth:
   `saveDrafts()` writes only what changed since this window last loaded or wrote each
-  key, so an emptied editor, a successful send (JSON `ok:true`), Clear and every
+  key, so an emptied editor, a successful send (JSON `ok:true`), Discard and every
   deliberate discard delete the stored copy, and a refused send keeps it as an unsent
   response. A save is queued from `showPauseHint()`, which every draft change reaches,
   and lands within 300 ms. The leaving saves (`pagehide`, `beforeunload`,
@@ -246,7 +246,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   carries what it was written against: a question draft the question's answer as of
   the last edit (`replied_at`, source, kind and text, never `response_revision`, which
   the human's own Note also moves), a row draft its row and board ids and revisions,
-  its action version and whether its send was still unanswered, and any reply intent
+  its action version, short hashes of its ask's words and of the row's response
+  (#636), and whether its send was still unanswered, and any reply intent
   its claiming client id and its pin, the answer as it stood when the intent was
   claimed. The pin travels on the intent, so nothing can move it while the intent is
   kept, and a fresh intent brings its own. The tab's
@@ -256,13 +257,15 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   draft whose row no active plan holds may wait for the complete archived plans,
   #299 in `store-and-snapshots.md`), and sends
   nothing, focuses nothing and switches no tab. A draft whose target is unchanged and
-  whose project is open goes back to its editor, the newest one in the queue reopens
+  whose project is open goes back to its editor (for a row: the same ask, by #636's
+  rule below, with its notice when the words or response moved), the newest one in the queue reopens
   its card when none is open, a Plans-only row reopens its panel, and the next queue
   render opens any fold holding a restored draft once. Anything else goes to the
   unsent responses, which never pause the list and show in every project view, with a
-  stored `reason`: "this question changed", "this question is closed or no longer
-  available", "this action changed", "Kept because this project is closed", or #272's
-  set-aside reason only when it was recorded. Once a send of the text was tried and
+  stored `reason`: "The question changed before your text was sent.", "This question
+  was closed or removed before your text was sent.", a row's "The ask changed …",
+  "This step was closed …" or "This step was closed or removed …" (#636), "Kept because
+  this project is closed", or #272's set-aside reason on an entry stored before #636. Once a send of the text was tried and
   never answered (a reply intent, or a row send still in flight), the reason says
   "Your send was not confirmed", never "not sent": the write may have landed. A draft
   whose exact text the server already holds is dropped. **One rule decides every reuse
@@ -353,17 +356,47 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   button and `t`) switches to the Inbox and writes "Finish or clear the N unsent
   response(s) first." into the Needs-you header's polite `role="status"` region,
   with a Show control that focuses it. That header node is never rebuilt, so
-  `paintTriageHold()` writes it in place (Clear calls it too, even while the list's
+  `paintTriageHold()` writes it in place (Discard calls it too, even while the list's
   rebuild is held back); `triageHeld` is in `frameInputs()` and ends when the queue
   opens, the held entries are gone or the human leaves the Inbox. Show is an
   explicit navigation: it opens the row (`requestDraftRecovery(target)`) for an
   inline recovery, then `revealDetailsAncestors`, `revealControl` and a
   `motion.scrollBehavior()` scroll of the in-flow row or line, and focuses the
   editor or the line (`tabIndex = -1`, kept across rebuilds by the recovery focus
-  bookmark). The fold says what its buttons do ("Retry sends a response again;
-  Clear discards it for good.", or the Clear half when no entry can retry). Nothing
+  bookmark). The fold says what its buttons do, naming only those shown
+  (`staleDraftsHelp`: "Retry sends a response again; Copy copies it; Discard removes
+  it for good.", or "Discard removes a response for good." alone). Nothing
   here reaches attention, a badge or the dock. `test/dom/review-queue-hold.test.ts`
   and `review-queue-hold-key.test.ts` pin it.
+- **A row draft follows its ask, not its revision (#636).** The server's guard stays:
+  an annotate whose `expected_revision` or `expected_board_version` is stale is
+  refused, so text never lands on an ask its writer did not see. The page decides what
+  a moved revision means for a draft with `rowAskFate(owner, typedFor)`, where
+  `typedFor` is the draft's `rowDraftMeta` (revision, `action_version`, and
+  `rowAskSignature` / `rowResponseSignature`: cyrb53 hashes of the ask's note, next
+  step, owner, impact, after, context and options, and of the row's annotation, kind
+  and done mark). Three cases:
+  1. *The same ask:* same blocked action, same words, same response. The draft stays in
+     its editor and its meta moves to the current revision (`keepRowDraftWithAsk`, from
+     `reconcileDraftOwners`, `recoverMismatchedRenderedRowDraft` and
+     `placeRestoredDraft`). A Send or an option the server refused is sent once more by
+     the page against the current revision (the loop in `rowAnswerEl`'s `save`); a second
+     refusal keeps the text and says the step kept changing.
+  2. *The same ask, moved:* its words were edited (`edited`), or a response was saved on
+     it from elsewhere (`answered`). The draft stays in its editor at the current
+     revision, and `rowAskNotices` makes the row say so in one `role="status"` line
+     until a send of it lands. An option click is not applied and the editor keeps what
+     it held; the human presses again.
+  3. *A new ask, or none* (`changed`, `closed`, `removed`, `projectClosed`). The text
+     goes to `staleRowDrafts` with its reason. `rowRecoveryEl` shows it beside the row
+     while the row's open card is in the Inbox list (and in any other surface that draws
+     the row's editor), and `renderOrphanedDrafts` lists it in the unsent responses only
+     when the Inbox card does not show it. Both offer **Use this text** while the row is
+     blocked again (`useRowRecovery`: after anything already typed, focus to the editor,
+     nothing sent), **Copy** and **Discard**. A refused option click is not kept: it
+     says the step changed and nothing was applied.
+  `test/dom/stranded-answers.test.ts` pins the three cases; `set-aside-draft.test.ts`
+  the deferrals, which leave the words alone.
 - **An idle tick paints nothing, and the clock still moves (#298).** Rebuilding
   an unchanged page every 3 s cost about 1.3% renderer and 1.5% GPU CPU at idle.
   `load()` calls `renderIfIdle()` unless `pollMaySkipPaint` (`public/poll.js`)

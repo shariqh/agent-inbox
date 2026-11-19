@@ -172,6 +172,8 @@ function unavailableUpdateState() {
 }
 
 function sendUpdateState(state) {
+  // #637: a paired Mac sees the change too (electron/remote-update.cjs reads the controller itself)
+  remoteUpdate?.changed()
   if (!updateWindow || updateWindow.isDestroyed() || updateWindow.webContents.isDestroyed()) return
   updateWindow.webContents.send('agent-inbox:update-state-changed', state)
 }
@@ -707,6 +709,10 @@ let remoteEntry = null
 let remotePanel = null
 let remoteWatch = null
 let remoteEntryQuitting = false
+// #637: what a paired Mac may see of this hub's update, and its request to start one, through the
+// viewer's remote entry (electron/remote-update.cjs, src/remote-update.ts). Made with the controller.
+const { createRemoteUpdateLink } = require('./remote-update.cjs')
+let remoteUpdate = null
 // the notifications' words: the table Settings → Other devices shows (public/remote-words.js)
 const remoteWords = import(pathToFileURL(path.join(REPO_ROOT, 'public', 'remote-words.js')).href)
 remoteWords.catch(() => {})
@@ -762,6 +768,19 @@ function startRemoteEntry() {
   remoteNotifier.started()
   remoteEntry.start()
   remoteWatch = watchRemoteEntry({ panel: remotePanel, changed: remoteEntryChanged })
+  // #637: the update a paired Mac may start runs this app's own controller, gated as the local install is
+  const entry = remoteEntry
+  remoteUpdate = createRemoteUpdateLink({
+    controller: () => updateController,
+    version: app.getVersion(),
+    base: URL_BASE,
+    ownerToken: OWNER_TOKEN,
+    setupRunning: () => installGate.running(),
+    quitting: () => installGate.quitting(),
+    deviceLabel: async (id) => (await entry.view()).devices.find((device) => device.id === id)?.label ?? null,
+    notify: showRemoteUpdateNotice,
+  })
+  remoteUpdate.start()
   // the removal hint is read again when the window regains focus (Settings opening asks too)
   const controller = remoteEntry
   linkWindow?.on('focus', () => {
@@ -771,12 +790,26 @@ function startRemoteEntry() {
   remoteEntryChanged()
 }
 
+// #637: on the hub, the owner hears that a paired Mac started an update; the label is display text only
+function showRemoteUpdateNotice({ label, version }) {
+  if (!Notification.isSupported()) return
+  const note = new Notification({
+    title: 'Agent Inbox is updating',
+    body: `${label ?? 'A paired Mac'} started the update to version ${version}. Agent Inbox restarts by itself when it is ready.`,
+  })
+  note.on('click', () => {
+    if (updateWindow) openUpdatesWindow(updateWindow)
+  })
+  notificationRetainer.show(note)
+}
+
 // For before-quit: true when it held this quit to stop the controller first; app.quit() follows.
 function quitRemoteEntry(event) {
   if (remoteEntry === null || remoteEntryQuitting) return false
   remoteEntryQuitting = true
   event.preventDefault()
   remoteWatch?.stop()
+  remoteUpdate?.stop()
   stopRemoteEntry(remoteEntry).finally(() => app.quit())
   return true
 }

@@ -705,11 +705,22 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
     const made: Json[] = []
-    const controller = controllerStub()
+    // #637: the paired Macs' labels, for the update link's notice
+    const controller = controllerStub({ view: vi.fn(async () => ({ devices: [{ id: A, label: 'laptop', pairedAt: null }] })) })
     const handlers = new Map<string, unknown>()
     const sent: string[] = []
-    const app = { isPackaged, getPath: () => '/scratch/userData', quit: vi.fn(), getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })), setLoginItemSettings: vi.fn() }
+    const app = { isPackaged, getVersion: () => '2.14.1', getPath: () => '/scratch/userData', quit: vi.fn(), getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })), setLoginItemSettings: vi.fn() }
+    // #637: the update link, recorded; its own behaviour is test/remote-update-link.test.ts's
+    const links: Array<{ options: Json; calls: string[] }> = []
+    const opened: unknown[] = []
     const modules: Record<string, unknown> = {
+      './remote-update.cjs': {
+        createRemoteUpdateLink: (options: Json) => {
+          const link = { options, calls: [] as string[] }
+          links.push(link)
+          return { start: () => link.calls.push('start'), stop: () => link.calls.push('stop'), changed: () => link.calls.push('changed') }
+        },
+      },
       './remote-entry.cjs': { createRemoteEntry: (options: Json) => { made.push(options); return { ...controller, start: vi.fn(() => { controller.calls.push('start') }) } } },
       './remote-entry-state.cjs': { createRemoteEntryState: (options: Json) => ({ store: options }) },
       './remote-entry-ipc.cjs': { ...ipc, registerRemoteEntryIpc: (options: Json) => { handlers.set('options', options) }, watchRemoteEntry: () => ({ stop: vi.fn() }) },
@@ -720,22 +731,32 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
     const block = main.slice(start, end).replace(IMPORT, 'loadWords()')
     const windowEvents = new Map<string, () => void>()
     const notes: Array<{ title: string; body: string }> = []
-    const NotificationFake = Object.assign(function Notification(this: { on(): void }, note: { title: string; body: string }) { notes.push(note); this.on = () => {} }, { isSupported: () => notifications })
+    const clicks: Array<() => void> = []
+    const NotificationFake = Object.assign(function Notification(this: { on(event: string, fn: () => void): void }, note: { title: string; body: string }) {
+      notes.push(note)
+      this.on = (_event, fn) => { clicks.push(fn) }
+    }, { isSupported: () => notifications })
+    const installGate = { running: vi.fn(() => false), quitting: vi.fn(() => false) }
+    const updateController = { name: 'the update controller' }
+    const updateWindow = { name: 'the update window' }
     const linkWindow = {
       isDestroyed: () => false, on: (event: string, fn: () => void) => { windowEvents.set(event, fn) },
       webContents: { isDestroyed: () => false, send: (channel: string) => { sent.push(channel) } },
     }
     const scope = new Function(
       'require', 'process', 'app', 'ipcMain', 'Notification', 'notificationRetainer', 'linkSender', 'linkFilesPermitted', 'installBinding', 'OWNER_TOKEN',
-      'REPO_ROOT', 'path', 'pathToFileURL', 'linkWindow', 'viewerOwnedNow', 'loadWords',
-      `let viewerOwned = viewerOwnedNow\n${block}\nreturn { startRemoteEntry, quitRemoteEntry, remoteEntryChanged }`,
+      'REPO_ROOT', 'path', 'pathToFileURL', 'linkWindow', 'viewerOwnedNow', 'loadWords', 'URL_BASE', 'installGate', 'updateController', 'updateWindow', 'openUpdatesWindow',
+      `let viewerOwned = viewerOwnedNow\n${block}\nreturn { startRemoteEntry, quitRemoteEntry, remoteEntryChanged, showRemoteUpdateNotice, link: () => remoteUpdate }`,
     )(
       (id: string) => { if (!(id in modules)) throw new Error(`unexpected require ${id}`); return modules[id] },
       { platform }, app, { handle: () => {} }, NotificationFake, { show: () => {} },
       () => true, () => true, { settled: async () => {} }, TOKEN, REPO, { join }, (p: string) => new URL(`file://${p}`), linkWindow, owned,
-      async () => words,
-    ) as { startRemoteEntry(): void; quitRemoteEntry(event: { preventDefault(): void }): boolean; remoteEntryChanged(): void }
-    return { scope, made, controller, handlers, app, sent, windowEvents, notes }
+      async () => words, 'http://127.0.0.1:4319/', installGate, updateController, updateWindow, (win: unknown) => opened.push(win),
+    ) as {
+      startRemoteEntry(): void; quitRemoteEntry(event: { preventDefault(): void }): boolean; remoteEntryChanged(): void
+      showRemoteUpdateNotice(notice: { label: string | null; version: string }): void; link(): unknown
+    }
+    return { scope, made, controller, handlers, app, sent, windowEvents, notes, links, installGate, updateController, clicks, opened, updateWindow }
   }
 
   it('makes one controller with the owner token, a state store and the four callbacks, and starts it', () => {
@@ -754,10 +775,50 @@ describe('main wires one controller, only on macOS for the viewer it owns', () =
     expect((registered.panel as () => unknown)()).not.toBeNull()
   })
 
+  // #637
+  it('makes one update link with the controller, the owner token, main\'s install gate and the paired Mac\'s label, and starts it', async () => {
+    const w = world()
+    w.scope.startRemoteEntry()
+    w.scope.startRemoteEntry()
+    expect(w.links).toHaveLength(1)
+    const options = w.links[0]!.options as Record<string, unknown> & {
+      controller(): unknown; setupRunning(): boolean; quitting(): boolean; deviceLabel(id: string): Promise<string | null>
+    }
+    expect(Object.keys(options).sort()).toEqual(['base', 'controller', 'deviceLabel', 'notify', 'ownerToken', 'quitting', 'setupRunning', 'version'])
+    expect(options).toMatchObject({ base: 'http://127.0.0.1:4319/', ownerToken: TOKEN, version: '2.14.1', notify: w.scope.showRemoteUpdateNotice })
+    expect(options.controller()).toBe(w.updateController)
+    options.setupRunning()
+    options.quitting()
+    expect(w.installGate.running).toHaveBeenCalledOnce()
+    expect(w.installGate.quitting).toHaveBeenCalledOnce()
+    expect(await options.deviceLabel(A)).toBe('laptop')
+    expect(await options.deviceLabel('0a1b2c3d4e5f6071')).toBeNull()
+    expect(w.links[0]!.calls).toEqual(['start'])
+    // and it stops with the sharing controller when the app quits
+    w.scope.quitRemoteEntry({ preventDefault: () => {} })
+    expect(w.links[0]!.calls).toEqual(['start', 'stop'])
+  })
+
+  it('tells the owner on the hub that a paired Mac started an update, naming it as text, and opens Updates on a click', () => {
+    const w = world({ notifications: true })
+    w.scope.showRemoteUpdateNotice({ label: 'laptop', version: '2.15.0' })
+    w.scope.showRemoteUpdateNotice({ label: null, version: '2.15.0' })
+    expect(w.notes).toEqual([
+      { title: 'Agent Inbox is updating', body: 'laptop started the update to version 2.15.0. Agent Inbox restarts by itself when it is ready.' },
+      { title: 'Agent Inbox is updating', body: 'A paired Mac started the update to version 2.15.0. Agent Inbox restarts by itself when it is ready.' },
+    ])
+    w.clicks[0]!()
+    expect(w.opened).toEqual([w.updateWindow])
+    const quiet = world({ notifications: false })
+    quiet.scope.showRemoteUpdateNotice({ label: 'laptop', version: '2.15.0' })
+    expect(quiet.notes).toEqual([])
+  })
+
   it('makes none on another platform, or for a viewer it did not start', () => {
     for (const w of [world({ platform: 'linux' }), world({ owned: false })]) {
       w.scope.startRemoteEntry()
       expect(w.made).toEqual([])
+      expect(w.links).toEqual([])
       expect(((w.handlers.get('options') as Json).panel as () => unknown)()).toBeNull()
     }
   })

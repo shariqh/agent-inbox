@@ -5,11 +5,15 @@ export interface ConnectBridge {
   forget(id: string): Promise<unknown>
   show(id: string | null): Promise<unknown>
   onChange(callback: () => void): () => void
+  /** #617 PR 4b: proposes the Open desk command ('' removes it); main stores it only after its native dialog */
+  setDeskCommand?(input: { id: string; command: string }): Promise<unknown>
 }
 export interface DeskBridge {
   connection(): Promise<unknown>
   onConnection?(callback: (value: unknown) => void): () => void
   available?(): Promise<unknown>
+  /** #617 PR 4b: the hub view's Open desk (electron/remote-preload.cjs) */
+  open?(request: { session: string }): Promise<unknown>
 }
 
 /** One word per connection state: Online, Connecting…, Reconnecting…, Not connected, Checking…; shared with the strip. */

@@ -64,6 +64,7 @@ import {
   previewRef, rowIssueChipsHtml, rowParentHeadHtml, rowWaitsChipHtml, rowWaitsHtml, sourceChipsHtml, sourceBlockHtml, textLinkHtml, textRepo,
 } from '/source.js'
 import { attachCommand, claudeSessionUrl, placeLine } from '/place.js'
+import { OPEN_DESK, deskSession, installDeskOpen } from '/desk-open.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
@@ -2253,7 +2254,18 @@ const ageText = (ms) => relMs(ms) === 'moments' ? '<1m' : relMs(ms)
 let focusSession = null
 let lastDashModel = null // the model the last paint drew, for a handler's own repaint
 // Its folds are window-local.
+// #617 PR 4b: Open desk, offered only where agentInboxDesk.available() says so (the hub's page shown
+// from another Mac). Asked once now and on each connection change; a change repaints the cards and
+// the session panel.
+const deskOpen = installDeskOpen({
+  onChange: () => {
+    agentsHome.repaint()
+    paintSessionFocus()
+  },
+})
+
 const agentsHome = installAgentsHome({
+  deskOpen: () => deskOpen,
   // a card's or row's click toggles its panel; Enter and Open open it at its head, Message,
   // Transcript and Resume… at that part
   openSession: (key, part, ask) => (part ? openSessionFocus(key, part, ask) : toggleSessionFocus(key)),
@@ -2860,11 +2872,17 @@ function renderDashFocus(aside, model, { forced = false } = {}) {
 // #617: where the session runs. "Open in claude.ai" is an ordinary link, built by the one safe
 // link builder from a pattern-checked Remote Control id, never from agent text. "Copy attach command"
 // copies `tmux attach -t '=<desk>'`, built from a pattern-checked desk. A row with neither draws nothing.
+// #617 PR 4b: "Open desk" before Copy attach command, only where the page offers it (the hub's page
+// shown from another Mac), for a row with a desk; its sentence after a refusal sits beside it.
 function paintPlace(aside, row) {
   const url = claudeSessionUrl(row)
   const command = attachCommand(row)
+  const desk = deskOpen.available() ? deskSession(row) : ''
   setFocusPart(aside, aside.querySelector('.dash-focus-place'), [
     url ? textLinkHtml(url, 'Open in claude.ai', 'web') : '',
+    desk ? focusButton('place:desk', OPEN_DESK, () => deskOpen.run(desk, aside.querySelector('.dash-focus-place-desk'), aside.querySelector('.dash-focus-place-desk-note')),
+      { className: 'dash-focus-place-desk', attrs: ` title="${esc('Open this session’s tmux desk in your terminal')}" data-desk-session="${esc(desk)}"` }) : '',
+    desk ? '<span class="dash-focus-place-desk-note desk-open-note" role="status" hidden></span>' : '',
     command ? focusButton('place:copy', 'Copy attach command', () => copyAttachCommand(aside, command), { className: 'dash-focus-place-copy' }) : '',
   ].join(''))
 }

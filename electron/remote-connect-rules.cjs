@@ -1,7 +1,8 @@
 'use strict'
 // The pure rules of connect mode (#617, PR 3a), split from electron/remote-connect.cjs for size
-// only; that file is the controller and the only module that requires this one (hub-view.cjs reads
-// `hubHref` through remote-connect.cjs's re-export). Nothing here does
+// only; that file is the controller and requires this one (hub-view.cjs reads `hubHref` through
+// remote-connect.cjs's re-export; #617 PR 4b's desk-open.cjs reads the place and Open desk command
+// rules and the capped body reader from here). Nothing here does
 // any I/O: the hub's address, the pairing code and label rules mirrored from the hub, the tailnet
 // rules mirrored from the mesh command line, reading the peer list, recognising a certificate error, and the
 // stored file's field rules. test/remote-connect.test.ts compares each mirrored rule with the
@@ -34,6 +35,12 @@ const SUFFIX = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$/
 const USER_ID = /^[1-9]\d{0,30}$/
 // Tailscale's placeholder user for tagged devices: never a person
 const PLACEHOLDER_LOGIN = 'tagged-devices'
+// #617 PR 4b: the Open desk command template, stored per hub (validDeskCommand)
+const DESK_COMMAND_MAX = 512
+// Printable ASCII only (space to tilde), so the template is one line with no control, bidi, zero-width
+// or look-alike character, and the confirmation dialog shows exactly what will run.
+const DESK_COMMAND_TEXT = /^[\x20-\x7e]{1,512}$/
+const DESK_PLACEHOLDER = /\{(?:desk|attach)\}/g
 
 
 // ── the rules ──────────────────────────────────────────────────────────────
@@ -292,7 +299,22 @@ function keychainReady(safeStorage, platform) {
 
 // ── remote-connect.json ────────────────────────────────────────────────────
 
-/** A stored hub: every field by its rule, unknown fields allowed. */
+/**
+ * #617 PR 4b: whether `text` is an Open desk command template: 1 to 512 printable ASCII characters
+ * (space to tilde, so one line and nothing the confirmation dialog could show differently), holding `{desk}` or `{attach}` at least once, and no other `{` or `}`
+ * anywhere. electron/desk-open.cjs fills only a template that passes this, and the store reads a
+ * stored one that fails it as none.
+ */
+function validDeskCommand(text) {
+  if (typeof text !== 'string' || !DESK_COMMAND_TEXT.test(text)) return false
+  const rest = text.replace(DESK_PLACEHOLDER, '')
+  return rest !== text && !/[{}]/.test(rest)
+}
+
+/**
+ * A stored hub: every field by its rule, unknown fields allowed. `deskCommand` (#617 PR 4b) is not
+ * checked here: an invalid one does not make the entry invalid, activeOf() reads it as none.
+ */
 function validEntry(entry) {
   if (!isObject(entry)) return false
   const origin = parseHubOrigin(entry.origin)
@@ -312,7 +334,11 @@ function activeOf(doc) {
   if (doc.active === undefined || doc.active === null) return null
   if (typeof doc.active !== 'string' || !Object.hasOwn(hubs, doc.active)) return false
   const entry = hubs[doc.active]
-  return { id: doc.active, origin: entry.origin, label: entry.label, node: entry.node, machine: entry.machine ?? null, device: entry.device, secret: entry.secret }
+  return {
+    id: doc.active, origin: entry.origin, label: entry.label, node: entry.node, machine: entry.machine ?? null, device: entry.device, secret: entry.secret,
+    // #617 PR 4b: a stored command that fails its rule is never run nor shown as saved
+    deskCommand: validDeskCommand(entry.deskCommand) ? entry.deskCommand : null,
+  }
 }
 
 /** What a write may start from: a readable document, or nothing when the owner confirmed a replace. */
@@ -327,6 +353,7 @@ function writeBase(read, replace) {
 module.exports = {
   BLOB,
   BLOB_MAX,
+  DESK_COMMAND_MAX,
   DEVICE_ID,
   HUB_ID,
   MAX_HUBS,
@@ -349,6 +376,7 @@ module.exports = {
   parsePeers,
   readJson,
   suffixFrom,
+  validDeskCommand,
   validEntry,
   versionText,
   writeBase,

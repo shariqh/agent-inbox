@@ -2,6 +2,7 @@
 // view on the connecting Mac, and the IPC that view and the local page may use. Runtime lives in
 // the .cjs.
 import type { Connection, RemoteConnect } from './remote-connect.cjs'
+import type { DeskOpen } from './desk-open.cjs'
 
 export const INPUT_WINDOW_MS: 5000
 /** #617 PR 3c: the strip's height in the local page's CSS pixels; the view starts insetFor(zoom) window pixels below the top. */
@@ -14,9 +15,16 @@ export function zoomMenuItems(input: {
   focused: () => { getZoomLevel(): number; setZoomLevel(level: number): void; isDestroyed?(): boolean } | null
   after: () => void
 }): ZoomMenuItem[]
-export const DESK_CHANNELS: Readonly<{ connection: 'agent-inbox:desk-connection'; retry: 'agent-inbox:desk-retry'; changed: 'agent-inbox:desk-changed' }>
+export const DESK_CHANNELS: Readonly<{
+  connection: 'agent-inbox:desk-connection'; retry: 'agent-inbox:desk-retry'
+  /** #617 PR 4b */
+  available: 'agent-inbox:desk-available'; open: 'agent-inbox:desk-open'
+  changed: 'agent-inbox:desk-changed'
+}>
 export const CONNECT_CHANNELS: Readonly<{
   view: 'agent-inbox:connect-view'; connect: 'agent-inbox:connect-connect'; forget: 'agent-inbox:connect-forget'; show: 'agent-inbox:connect-show'
+  /** #617 PR 4b */
+  deskCommand: 'agent-inbox:connect-desk-command'
   changed: 'agent-inbox:connect-changed'
 }>
 
@@ -86,6 +94,14 @@ export interface HubView {
   land(id: unknown, hash: unknown): { ok: boolean }
   /** `trustedDeskSender` for the active view. */
   trusts(event: unknown): 'hub' | 'offline' | null
+  /**
+   * #617 PR 4b: the active hub's id when `event` is from its view's top frame on the hub's page, the
+   * view is focused and its last key press or click is under 5 seconds old; that input is used up.
+   * Else null, and nothing is used up.
+   */
+  takeGesture(event: unknown): string | null
+  /** #617 PR 4b: sends the hub's page the empty change message, so it asks again (after the Open desk command changed). */
+  pageChanged(): void
 }
 
 export interface HubViewOptions {
@@ -116,5 +132,7 @@ export interface HubIpcOptions {
   isOwned: (event: never) => boolean
   connect: () => RemoteConnect | null
   hubView: () => HubView | null
+  /** #617 PR 4b: Open desk's handler (electron/desk-open.cjs), or null; null when left out. */
+  deskOpen?: () => DeskOpen | null
 }
 export function registerHubIpc(options: HubIpcOptions): void

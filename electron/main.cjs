@@ -23,7 +23,7 @@ const {
 } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const { randomBytes, randomUUID } = require('node:crypto')
-const { chmodSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
+const { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } = require('node:fs')
 const os = require('node:os')
 const http = require('node:http')
 const path = require('node:path')
@@ -45,6 +45,7 @@ const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
 const { createRemoteConnect } = require('./remote-connect.cjs')
 const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
+const { createDeskOpen, deskConfirmation } = require('./desk-open.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -785,13 +786,41 @@ function quitRemoteEntry(event) {
 // agentInboxDesk answers only the hub view's top frame, and never grants anything above.
 let remoteConnect = null
 let hubView = null
+// #617 PR 4b: Open desk, made on first use once the controller and the view exist (macOS only). It
+// reads the hub's activity through the hub fetch, writes its scripts to desk-open/ beside the local
+// database (where chat-resume/ is), and opens them with Settings → Terminal's app.
+let deskOpen = null
+const deskOpenFor = () => (remoteConnect === null || hubView === null ? null : (deskOpen ??= createDeskOpen({
+  platform: process.platform,
+  hubView: () => hubView,
+  storedHub: () => remoteConnect.storedHub(),
+  hubFetch: () => remoteConnect.hubFetch(),
+  hubBase: (id) => remoteConnect.hubBase(id),
+  scriptDir: path.join(path.dirname(launchHubPath()), 'desk-open'),
+  terminal: { read: () => linkPrefs().readTerminal(), run: runTerminalCommand },
+  userShell: () => os.userInfo().shell,
+  readShells: () => readFileSync('/etc/shells', 'utf8'),
+  log: (line) => console.log(`[agent-inbox] ${line}`),
+})))
 registerHubIpc({
   ipcMain,
   settled: () => installBinding?.settled() ?? Promise.resolve(),
   isOwned: (event) => linkSender(event) && linkFilesPermitted(event),
   connect: () => remoteConnect,
   hubView: () => hubView,
+  deskOpen: deskOpenFor,
 })
+
+// #617 PR 4b: the only way an Open desk command is stored. The exact command, filled for an example
+// desk and naming the hub, in a native dialog on the app's window; true only when the owner pressed Save (Cancel is the
+// default and the Escape answer).
+async function confirmDeskCommand(win, command, label) {
+  const text = deskConfirmation(command, label)
+  if (text === null) return false
+  const options = { type: 'warning', message: text.message, detail: text.detail, buttons: text.buttons, defaultId: 1, cancelId: 1, noLink: true }
+  const { response } = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+  return response === 0
+}
 
 // The menu, the title and the local page follow what is on top and the hub's state.
 function hubChanged(win) {
@@ -807,7 +836,7 @@ function hubChanged(win) {
 // After the window exists: the controller, the view, and what wakes the controller early.
 function startRemoteConnect(win) {
   if (process.platform !== 'darwin') return
-  remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload() })
+  remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload(), confirmDeskCommand: (command, label) => confirmDeskCommand(win, command, label) })
   hubView = createHubView({
     window: win,
     session,

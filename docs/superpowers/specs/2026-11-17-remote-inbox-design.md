@@ -667,8 +667,9 @@ The version sentence in Settings is not built yet.)
 page sends a proposed `sshHost` and template; main shows the exact command, filled for an example
 desk, in a native `dialog.showMessageBox` ("Agent Inbox will run this in Terminal when you press
 Open desk"), and saves only if the owner confirms. The page can never set either silently. A
-template is one line of at most 512 characters with no control characters, and uses only these
-placeholders; any other `{…}` is refused:
+template is 1 to 512 printable ASCII characters (space to tilde), so one line with no control,
+bidirectional, zero-width or look-alike character, and the dialog shows exactly what will run. It
+uses only these placeholders; any other `{…}` is refused:
 
 | Placeholder | Becomes | For |
 |---|---|---|
@@ -696,7 +697,8 @@ again. Defaults: for a hub `ssh -t {host} {attach}`; for This Mac `tmux attach -
 4. It fills the template by the table. `{host}` needs `sshHost`, else `no_ssh_host`.
 5. It writes `#!/bin/sh` plus `exec <login shell> -l -i -c <quoted command>` through a
    `writeChatScript` generalised to a `desk-open/` folder beside the hub. The login shell is
-   `os.userInfo().shell` when it is absolute and listed in `/etc/shells`, else `/bin/zsh`.
+   `os.userInfo().shell` when it is absolute and listed in `/etc/shells`, else `/bin/zsh`; `csh`
+   and `tcsh` are never used, because they do not take `-l -i -c` together.
    **(My call:** `-i` as well as `-l`. A shell function is usually defined in `.zshrc`, which a
    login shell alone does not read.)
 6. It opens the script with `openInTerminal({ terminal, kind: 'script' })`, using Settings →
@@ -710,6 +712,18 @@ to Open in claude.ai; and in the Chats tab next to **Jump to session**, for a li
 session has a desk. Jump to session keeps its meaning, which is to show the card; Open desk is the
 terminal. The button shows only when `agentInboxDesk.available()` says `open`; elsewhere Copy
 attach command stands in.
+
+**(As built in PR 4b:** cut down from the above. There is no `{host}` placeholder and no `sshHost`:
+the owner types the host into the command. There is no `{target}`: the placeholders are exactly
+`{desk}` and `{attach}`. There is no Open desk for This Mac's own sessions (its `available()` stays
+`{ open: false }`, no template is stored under `local`, and Copy attach command stays there), and
+no button in the Chats tab: it is on the session card, the Quiet row and the session panel of the
+hub's page shown on the connecting Mac. The page names only `session`, any session id rather than
+only a UUID, since cards also use keys such as `launch:<id>`; the refusal for another machine is
+`not_on_hub`, and it passes when either machine is unknown. The command is stored per hub as
+`deskCommand` in `remote-connect.json`, set from Settings → Use another Mac's Inbox, and stored only
+after the native dialog's Save. Architecture notes: `docs/architecture/remote-inbox.md`, "Open
+desk".)
 
 ### 3.5 Coming back by itself
 

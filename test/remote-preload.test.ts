@@ -46,18 +46,84 @@ const HOSTILE = {
 }
 
 describe('remote-preload.cjs: the hub view’s only bridge', () => {
-  it('exposes exactly agentInboxDesk, with exactly its four members, and requires only electron', () => {
+  it('exposes exactly agentInboxDesk, with exactly its five members, and requires only electron', () => {
     const { exposed, required } = loadPreload('electron/remote-preload.cjs', () => null)
     expect(Object.keys(exposed)).toEqual(['agentInboxDesk'])
-    expect(Object.keys(exposed.agentInboxDesk as object).sort()).toEqual(['available', 'connection', 'onConnection', 'retry'])
+    // #617 PR 4b: `open` added deliberately, for Open desk
+    expect(Object.keys(exposed.agentInboxDesk as object).sort()).toEqual(['available', 'connection', 'onConnection', 'open', 'retry'])
     expect(required).toEqual(['electron'])
   })
 
-  it('available() says no terminal action, without asking main', async () => {
-    const { exposed, invoke } = loadPreload('electron/remote-preload.cjs', () => ({ open: true }))
+  // #617 PR 4b
+  it('available() asks main, and passes on only whether Open desk may show', async () => {
+    const yes = loadPreload('electron/remote-preload.cjs', () => ({ open: true, command: 'ssh -t studio {attach}' }))
+    const desk = yes.exposed.agentInboxDesk as Bridge
+    expect(await desk.available!()).toEqual({ open: true })
+    expect(yes.invoke.mock.calls).toEqual([['agent-inbox:desk-available']])
+    expect(await desk.available!('extra')).toEqual({ open: false })
+    expect(yes.invoke).toHaveBeenCalledTimes(1)
+    for (const answer of [{ open: 'yes' }, { available: false }, null, [true], { open: 1 }]) {
+      expect(await (loadPreload('electron/remote-preload.cjs', () => answer).exposed.agentInboxDesk as Bridge).available!()).toEqual({ open: false })
+    }
+    const failing = loadPreload('electron/remote-preload.cjs', () => { throw new Error('gone') })
+    expect(await (failing.exposed.agentInboxDesk as Bridge).available!()).toEqual({ open: false })
+  })
+
+  it('open() sends a fresh { session } and nothing else', async () => {
+    const { exposed, invoke } = loadPreload('electron/remote-preload.cjs', () => ({ ok: true }))
     const desk = exposed.agentInboxDesk as Bridge
-    expect(await desk.available!()).toEqual({ open: false })
+    const given = { session: '00000000-0000-4000-8000-000000000001' }
+    expect(await desk.open!(given)).toEqual({ ok: true })
+    expect(await desk.open!({ session: 'launch:11111111-2222-4333-8444-555555555555' })).toEqual({ ok: true })
+    expect(invoke.mock.calls).toEqual([
+      ['agent-inbox:desk-open', { session: '00000000-0000-4000-8000-000000000001' }],
+      ['agent-inbox:desk-open', { session: 'launch:11111111-2222-4333-8444-555555555555' }],
+    ])
+    expect(invoke.mock.calls[0]![1]).not.toBe(given)
+  })
+
+  it.each([
+    ['nothing', []],
+    ['two arguments', [{ session: 'abc' }, 'extra']],
+    ['a string', ['abc']],
+    ['null', [null]],
+    ['a list', [['abc']]],
+    ['another key beside session', [{ session: 'abc', desk: 'my-desk' }]],
+    ['a desk instead of a session', [{ desk: 'my-desk' }]],
+    ['a session that is not text', [{ session: 7 }]],
+    ['an empty session', [{ session: '' }]],
+    ['a session with a space', [{ session: 'a b' }]],
+    ['a session with a quote', [{ session: "a'b" }]],
+    ['a session that starts with a dash', [{ session: '-x' }]],
+    ['a session of 129 characters', [{ session: 'a'.repeat(129) }]],
+  ])('open() refuses %s itself, without asking main', async (_label, args) => {
+    const { exposed, invoke } = loadPreload('electron/remote-preload.cjs', () => ({ ok: true }))
+    expect(await (exposed.agentInboxDesk as Bridge).open!(...args)).toEqual({ ok: false, reason: 'bad_request' })
     expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an open', { ok: true, terminal: 'iterm2', file: '/Users/x/desk.command' }, { ok: true }],
+    ['an open with a notice', { ok: true, notice: 'iTerm2 could not be opened, so Terminal was opened instead.' },
+      { ok: true, notice: 'iTerm2 could not be opened, so Terminal was opened instead.' }],
+    ['a notice with a control character', { ok: true, notice: 'a\u0000b' }, { ok: true }],
+    ['a notice over 200 characters', { ok: true, notice: 'x'.repeat(201) }, { ok: true }],
+    ['each fixed refusal', { ok: false, reason: 'not_on_hub', detail: 'studio' }, { ok: false, reason: 'not_on_hub' }],
+    ['a refusal word that is not one of them', { ok: false, reason: 'rm -rf' }, { ok: false, reason: 'failed' }],
+    ['ok that is not true', { ok: 'yes' }, { ok: false, reason: 'failed' }],
+    ['nothing', null, { ok: false, reason: 'failed' }],
+  ])('open() reduces %s', async (_label, value, expected) => {
+    const { exposed } = loadPreload('electron/remote-preload.cjs', () => value)
+    expect(await (exposed.agentInboxDesk as Bridge).open!({ session: 'abc' })).toEqual(expected)
+  })
+
+  it('open() passes each fixed refusal word on, and a main that throws reads as failed', async () => {
+    for (const reason of ['unavailable', 'bad_request', 'no_gesture', 'busy', 'no_command', 'unreachable', 'not_found', 'no_desk', 'not_on_hub', 'failed', 'terminal_failed']) {
+      const { exposed } = loadPreload('electron/remote-preload.cjs', () => ({ ok: false, reason }))
+      expect(await (exposed.agentInboxDesk as Bridge).open!({ session: 'abc' })).toEqual({ ok: false, reason })
+    }
+    const failing = loadPreload('electron/remote-preload.cjs', () => { throw new Error('gone') })
+    expect(await (failing.exposed.agentInboxDesk as Bridge).open!({ session: 'abc' })).toEqual({ ok: false, reason: 'failed' })
   })
 
   it('connection() rebuilds main’s answer field by field: mode, label, state and version only', async () => {
@@ -151,16 +217,17 @@ describe('remote-preload.cjs: the hub view’s only bridge', () => {
     expect(await (failing.exposed.agentInboxDesk as Bridge).retry!()).toEqual({ ok: false })
   })
 
-  it('names no channel but its own two and the change message', () => {
+  it('names no channel but its own four and the change message', () => {
     const source = read('electron/remote-preload.cjs')
     expect([...new Set([...source.matchAll(/'agent-inbox:[a-z-]+'/g)].map((m) => m[0]))].sort()).toEqual(
-      ["'agent-inbox:desk-changed'", "'agent-inbox:desk-connection'", "'agent-inbox:desk-retry'"],
+      ["'agent-inbox:desk-available'", "'agent-inbox:desk-changed'", "'agent-inbox:desk-connection'", "'agent-inbox:desk-open'", "'agent-inbox:desk-retry'"],
     )
     expect(source.match(/exposeInMainWorld\(/g)).toHaveLength(1)
   })
 })
 
 describe('setup-preload.cjs: agentInboxDesk on This Mac', () => {
+  // #617 PR 4b: Open desk is the hub page's only; This Mac's bridge keeps { open: false } and has no open()
   it('answers mode local, no terminal action and no changes, without asking main', async () => {
     const { exposed, invoke, listeners } = loadPreload('electron/setup-preload.cjs', () => HOSTILE)
     const desk = exposed.agentInboxDesk as Bridge
@@ -176,7 +243,7 @@ describe('setup-preload.cjs: agentInboxDesk on This Mac', () => {
 
 const VIEW = {
   available: true, keychain: true, problem: null, showing: '0123abcd',
-  hub: { id: '0123abcd', label: 'studio', origin: 'https://hub.example.ts.net', machine: 'studio', state: 'online', reason: null },
+  hub: { id: '0123abcd', label: 'studio', origin: 'https://hub.example.ts.net', machine: 'studio', state: 'online', reason: null, deskCommand: 'ssh -t studio {attach}' },
 }
 
 describe('setup-preload.cjs: agentInboxConnect', () => {
@@ -185,8 +252,38 @@ describe('setup-preload.cjs: agentInboxConnect', () => {
     return { ...loaded, connect: loaded.exposed.agentInboxConnect as Bridge }
   }
 
-  it('has exactly its five members', () => {
-    expect(Object.keys(load(() => null).connect).sort()).toEqual(['connect', 'forget', 'onChange', 'show', 'view'])
+  it('has exactly its six members', () => {
+    // #617 PR 4b: setDeskCommand added deliberately
+    expect(Object.keys(load(() => null).connect).sort()).toEqual(['connect', 'forget', 'onChange', 'setDeskCommand', 'show', 'view'])
+  })
+
+  // #617 PR 4b
+  it('setDeskCommand() sends a fresh { id, command } and nothing else, and rebuilds the answer', async () => {
+    const { connect, invoke } = load(() => ({ ok: false, reason: 'cancelled', command: 'x' }))
+    const given = { id: '0123abcd', command: 'ssh -t studio {attach}' }
+    expect(await connect.setDeskCommand!(given)).toEqual({ ok: false, reason: 'cancelled' })
+    expect(await connect.setDeskCommand!({ id: '0123abcd', command: '' })).toEqual({ ok: false, reason: 'cancelled' })
+    expect(invoke.mock.calls).toEqual([
+      ['agent-inbox:connect-desk-command', { id: '0123abcd', command: 'ssh -t studio {attach}' }],
+      ['agent-inbox:connect-desk-command', { id: '0123abcd', command: '' }],
+    ])
+    expect(invoke.mock.calls[0]![1]).not.toBe(given)
+    expect(await load(() => ({ ok: true, deskCommand: 'x' })).connect.setDeskCommand!(given)).toEqual({ ok: true })
+  })
+
+  it.each([
+    ['nothing', []],
+    ['two arguments', [{ id: '0123abcd', command: 'x {desk}' }, 'extra']],
+    ['no command', [{ id: '0123abcd' }]],
+    ['no id', [{ command: 'x {desk}' }]],
+    ['a third key', [{ id: '0123abcd', command: 'x {desk}', host: 'studio' }]],
+    ['a command that is not text', [{ id: '0123abcd', command: 7 }]],
+    ['an id that is not text', [{ id: 7, command: 'x {desk}' }]],
+    ['a list', [['0123abcd', 'x {desk}']]],
+  ])('setDeskCommand() refuses %s without asking main', async (_label, args) => {
+    const { connect, invoke } = load(() => ({ ok: true }))
+    expect(await connect.setDeskCommand!(...args)).toEqual({ available: false })
+    expect(invoke).not.toHaveBeenCalled()
   })
 
   it('passes each call on with exactly its arguments, as a fresh copy', async () => {
@@ -234,6 +331,11 @@ describe('setup-preload.cjs: agentInboxConnect', () => {
     expect(await connect.view!()).toEqual(VIEW)
     const odd = load(() => ({ ...VIEW, hub: { ...VIEW.hub, id: 'ZZZ', origin: 'javascript:x' }, problem: 'forget_not_saved', showing: 'nope' }))
     expect(await odd.connect.view!()).toEqual({ available: true, keychain: true, problem: 'forget_not_saved', showing: null, hub: null })
+    // #617 PR 4b: a saved command that is not text of 1 to 512 characters reads as none
+    for (const deskCommand of [7, '', 'x'.repeat(513), null]) {
+      const got = await load(() => ({ ...VIEW, hub: { ...VIEW.hub, deskCommand } })).connect.view!() as { hub: { deskCommand: unknown } }
+      expect(got.hub.deskCommand).toBeNull()
+    }
   })
 
   it.each([

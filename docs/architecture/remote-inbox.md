@@ -32,7 +32,11 @@ paths:
   - "test/dom/hub-mode.test.ts"
   - "electron/attention-watch.cjs"
   - "test/attention-watch.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts,electron/attention-watch.cjs,test/attention-watch.test.ts"
+  - "electron/desk-open.cjs"
+  - "test/desk-open.test.ts"
+  - "public/desk-open.js"
+  - "test/dom/desk-open.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts,electron/attention-watch.cjs,test/attention-watch.test.ts,electron/desk-open.cjs,test/desk-open.test.ts,public/desk-open.js,test/dom/desk-open.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -44,9 +48,9 @@ Process boundaries: [`overview.md`](overview.md).
 
 Claude Code and Copilot CLI load this file when they read or edit a file matching the
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
-Later PRs add their files (`electron/desk-open.cjs`) to the globs.
+Later PRs add their files to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c, PR 4a)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c, PR 4a, PR 4b)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -81,10 +85,15 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 - `electron/attention-watch.cjs` (PR 4a): the attention watch, run once for This Mac and once for
   the connected hub, the dock badge's sum, and the one notice for a hub out of reach ("Attention
   from the hub", below).
+- `electron/desk-open.cjs` (PR 4b): Open desk, a session's tmux desk on the hub opened in the
+  connecting Mac's terminal, with its page part in `public/desk-open.js` and its command in
+  Settings → Use another Mac's Inbox ("Open desk", below).
 
 ## What is not built yet
 
-- The rest of connect mode: Open desk (the terminal action, PR 4).
+- Open desk for This Mac's own sessions, and in the Chats tab: there, Copy attach command stays.
+- The design's `{host}` and `{target}` placeholders and a stored SSH host: the owner types the host
+  into the command.
 
 So the entry is off until the owner switches it on in Settings → Other devices on the hub. With no
 device in it, every request but pairing is refused. Any local process on the hub can still make a
@@ -756,9 +765,11 @@ laptop that holds it in plain text, and only in memory.
 
 **The store.** userData `remote-connect.json`, written only through `createLockedFile` (temp file
 and rename under the lock, mode `0600`): `{ schema: 1, active: <id> | null, hubs: { <id>: {
-origin, label, node, machine, device, secret } } }`, `id` 8 random hex characters. One hub at most
-for now, but every hub value sits under its `id`. There is no terminal command or SSH host yet
-(PR 4). Unknown fields are kept, at the top level and in an entry. It is read the way the hub reads
+origin, label, node, machine, device, secret, deskCommand? } } }`, `id` 8 random hex characters. One
+hub at most for now, but every hub value sits under its `id`. `deskCommand` (PR 4b) is the Open desk
+command, stored only after the owner confirmed it in a native dialog ("Open desk", below); an entry
+whose `deskCommand` fails its rule reads as having none and stays valid. There is no SSH host. Unknown
+fields are kept, at the top level and in an entry. It is read the way the hub reads
 `remote.json`: opened with `O_NOFOLLOW | O_NONBLOCK`, checked on the open descriptor, and read from
 that descriptor. A symlink, a FIFO, a folder, another user's file or one with any group or other
 bit is `bad_file`, and a FIFO never blocks a read. A file that cannot be read, is over 64 KiB, is not
@@ -1061,8 +1072,12 @@ exactly one object, `agentInboxDesk`, and nothing else on `window`. It runs sand
 only `electron`. Every answer is rebuilt field by field in the preload, so an unexpected field
 never crosses:
 
-- `available()` → a promise of `{ open: false }`, with no IPC. The terminal action is PR 4; the
-  member is here so the page can feature-detect it.
+- `available()` → a promise of `{ open }` (PR 4b): main's `agent-inbox:desk-available`, reduced to
+  whether `open` is exactly `true`. Any argument, any other answer and any error are `{ open: false }`.
+- `open({ session })` (PR 4b) → a promise of `{ ok: true, notice? }` or `{ ok: false, reason }`,
+  `reason` one of a fixed list of words. Anything but exactly one plain object holding exactly a
+  `session` id is answered `bad_request` by the preload itself, without asking main; the request
+  goes to main as a fresh `{ session }`.
 - `connection()` → a promise of `{ mode: 'hub', label, state, version }`, `state` one of `online`,
   `retrying` or `refused`, or `null` when main refuses. Never an id, an origin or a reason.
 - `onConnection(callback)` → an unsubscribe function. Main's change message carries nothing; the
@@ -1070,13 +1085,15 @@ never crosses:
 - `retry()` → a promise of `{ ok }`. Main takes it only from the offline file: it kicks the
   controller (the node check and a probe at once) and loads the hub page if the hub is online.
 
-Main answers these two channels (`agent-inbox:desk-connection`, `agent-inbox:desk-retry`) only
+Main answers `agent-inbox:desk-connection` and `agent-inbox:desk-retry` only
 when `trustedDeskSender` holds, checked on every call from `event.sender` and `event.senderFrame`:
 the sender is the hub view's own `webContents`, not destroyed, and the frame is its top frame
 (`parent === null`) on the hub's origin or on the offline file. A sub-frame, the view after it
 showed anything else, and the local window's `webContents` are all refused, with `{ available:
 false }` (or `{ ok: false }` for retry). Off macOS there is no view: `desk-connection` answers `{
-available: false }` and `desk-retry` answers `{ ok: false }`.
+available: false }` and `desk-retry` answers `{ ok: false }`. PR 4b's `agent-inbox:desk-available`
+and `agent-inbox:desk-open` are narrower: only the top frame on the hub's own page (`'hub'`), never
+the offline file ("Open desk", below).
 
 **The offline page.** `electron/remote-offline.html` with `remote-offline.js` and
 `remote-offline.css` beside it: no inline script or style, a Content-Security-Policy meta of
@@ -1088,7 +1105,8 @@ its words only through `agentInboxDesk`, sets the label with `textContent`, and 
 dark through `prefers-color-scheme` alone.
 
 **In the local page.** `setup-preload.cjs` gains the same `agentInboxDesk`, answering `{ mode:
-'local' }` and `{ open: false }`, with a no-op `onConnection`, and no IPC. It also gains
+'local' }` and `{ open: false }`, with a no-op `onConnection`, and no IPC. It has no `open` (PR 4b):
+Open desk is offered only in the hub's page. It also gains
 `agentInboxConnect`, for the Settings form a later PR adds:
 
 - `view()` → the controller's `view()` plus `showing` (the id on top, or null).
@@ -1096,6 +1114,8 @@ dark through `prefers-color-scheme` alone.
 - `show(id | null)` → `{ ok: true, showing }` or `{ ok: false, reason }` (`bad_id`, `not_found`, `busy`).
 - `onChange(callback)` → an unsubscribe function; the message carries nothing, so the page asks
   `view()` again.
+- `setDeskCommand({ id, command })` (PR 4b) → `{ ok: true }` or `{ ok: false, reason }`; exactly
+  those two keys, both text. Main shows the command in a native dialog before it stores it.
 
 The preload checks each argument and rebuilds each answer field by field. Main
 (`registerHubIpc`) answers these four channels only for the viewer this app started and owns
@@ -1121,8 +1141,7 @@ viewer's URL) exactly as a stranger, and call nothing. Its fake `BrowserWindow.f
 answers the window for the hub view too, so a handler that trusted "a page in my window" would be
 caught, and a source check finds no handler registered through `webContents.ipc` or a frame's `ipc`.
 
-**Not built yet.** The terminal action (`available()` says `open: false`, PR 4) and keyboard
-shortcuts for the menu items. Notifications and the dock badge for the hub are PR 4a ("Attention
+**Not built yet.** Keyboard shortcuts for the menu items. Open desk is PR 4b ("Open desk", below). Notifications and the dock badge for the hub are PR 4a ("Attention
 from the hub", below). The Settings form, the
 strip and the page's hub mode are PR 3c, below.
 
@@ -1335,6 +1354,98 @@ database, and once through the real remote entry and its gate on a loopback list
 flagged in the store is announced, its button stores the answer, every read is answered);
 `test/hub-view.test.ts` covers `land`; `test/badge.test.ts` holds its pins, and its guard that the
 code never restates the attention rule, for both `electron/main.cjs` and the new file.
+
+## Open desk (PR 4b)
+
+On the connecting Mac, a session in the hub's page (its card, its Quiet row and its session panel)
+gets **Open desk**, which opens this Mac's terminal attached to that session's tmux session (its
+desk) on the hub. It runs one command template the owner typed in Settings on this Mac. The design
+is §3.4 of the spec, cut down: no `{host}` or `{target}`, no stored SSH host, nothing for This Mac's
+own sessions and nothing in the Chats tab.
+
+**The command.** One string per hub, `deskCommand` on the hub's entry in `remote-connect.json`.
+`validDeskCommand` (in `remote-connect-rules.cjs`) is its one rule: 1 to 512 printable ASCII
+characters (`/^[\x20-\x7e]{1,512}$/`, so one line and no control character), `{desk}` or `{attach}`
+at least once, and no other `{` or `}` anywhere. The command is plain ASCII on purpose: the
+confirmation dialog must show exactly what will run, and a bidirectional control, a zero-width
+character, a non-ASCII space or a look-alike letter could make the dialog read as something else. Only the owned local page can propose one, through
+`agentInboxConnect.setDeskCommand({ id, command })` and the `agent-inbox:connect-desk-command`
+channel (gated as the other connect channels are, with exactly those two keys). The controller's
+`setDeskCommand` removes the command for `''`, with no question. Any other text must pass the rule
+(`bad_command`) and `id` must be the stored active hub (`not_found`); then main shows
+`dialog.showMessageBox` on the app's window, a warning with Cancel as the default and the Escape
+answer: "Run this in your terminal when you press Open desk?", the command filled for the desk
+`example-desk`, a blank line, and "It runs on this Mac, in your login shell, to open a desk on
+<label>." (`<label>` is the stored active hub's label, passed to `confirmDeskCommand(command, label)`
+and shown as text only when it passes the device label rule; otherwise the sentence ends at "login
+shell."). One confirmation is open at a time: from the moment a proposal has passed its rule until its dialog settles, any other
+`setDeskCommand` call, a removal included, is `busy` with no dialog and no write. Only **Save** stores it, under the
+store's lock and spreading the entry as `recordMachine` does, and only if the same hub (same device)
+is still active after the dialog; anything else is `cancelled`. The dialog is injected into
+`createRemoteConnect` as `confirmDeskCommand`: without it nothing is stored. A saved or removed
+command sends the hub's page the empty change message (`hubView.pageChanged()`), so a page already
+loaded asks `available()` again. A new pairing writes a new entry, without a command. `view().hub.deskCommand` shows the valid stored one to Settings; it
+never goes to the hub or its page.
+
+**Filling.** `fillDeskCommand(template, desk)` in `desk-open.cjs`. `{desk}` becomes the desk name,
+bare: it matches §3.1's place-name rule (`PLACE`, compared with `public/place.js`'s `PLACE_NAME` in a
+test), which has no shell character and no leading `-`. `{attach}` becomes `tmux attach -t
+'=<desk>'` quoted once more as one shell word, because `ssh` joins its arguments and the remote shell
+parses them again. Tests parse the result back with a real `sh` and, where it exists, `zsh` (which
+reads an unquoted word starting with `=` as a command path), and for `{attach}` through a stand-in
+`ssh` that joins its arguments and a second shell that reads them.
+
+**The open.** `agentInboxDesk.available()` is `{ open: true }` only for the hub view's top frame on
+the hub's own page, on macOS, while the stored active hub has a valid command (and is the
+controller's active hub). `open({ session })` runs these checks in order, each with its word:
+
+1. The sender is that same frame (`unavailable`), and the request is exactly `{ session }`, a
+   session id (`bad_request`).
+2. The view is focused and had a key press or click under 5 seconds ago, used up by this open
+   (`no_gesture`). `hubView.takeGesture(event)` does this with the same `lastInputAt` the view's link
+   rule uses, so one press opens one link or one desk.
+3. At most one open per 2 seconds and three a minute, never two at once (`busy`).
+4. The stored active hub, the one the view shows, has a valid command (`no_command`).
+5. Main reads the hub's `GET /api/activity` itself, through `remoteConnect.hubFetch()` at
+   `hubBase(id)`, never data from the page. A failed or non-200 read, a body over 5 MB or one that is
+   not a list is `unreachable`. No row whose `session` equals the request is `not_found`; a row
+   whose `desk` is missing or fails the place-name rule is `no_desk`, and nothing is written.
+6. When the row has a `machine` that passes the rule and the stored hub has one, they must be equal
+   (`not_on_hub`); with either missing the check passes.
+7. The filled command goes into a script: `#!/bin/sh`, a comment, and `exec '<login shell>' -l -i
+   -c '<command>'`. The login shell is `os.userInfo().shell` when it is absolute, has no control
+   character and `/etc/shells` lists it, else `/bin/zsh` (`csh` and `tcsh`, by basename, are never used: they do not
+   accept `-l -i -c` together); `-i` because a shell function the
+   template calls usually lives in `.zshrc`. The script is `desk-<16 hex>.command`, mode 0700, in a
+   private 0700 `desk-open/` folder beside the local database (where `chat-resume/` is), written
+   through chat resume's `writePrivateScript` with its own name pattern (`O_EXCL | O_NOFOLLOW`, a
+   real directory this user owns, day-old scripts of that pattern swept). A write failure is
+   `failed`.
+8. `openInTerminal` opens it in Settings → Terminal's app, as chat resume does: not opened is
+   `terminal_failed`; opened after falling back to Terminal is `{ ok: true, notice }`.
+
+Nothing from the hub but the pattern-checked desk reaches the command, and the script holds only the
+shell path and the filled command. A refusal logs only its word, a success `desk-open: opened`; the
+refusals before the gesture check (`unavailable`, `bad_request`, `no_gesture`) log nothing, so a page
+calling in a loop writes no line per call.
+
+**On the page.** `public/desk-open.js` asks `available()` once per page load and again on each
+`onConnection`, and draws a button only where it said `{ open: true }`, for a row with a
+pattern-checked desk and a session id: beside the place on a card and on a Quiet row (its click
+never reaches the card), and in the session panel before Copy attach command. While an open runs the
+button is disabled; then it says "Opened" for 1.5 seconds (with the fallback notice when there is
+one), or a refusal's one sentence sits beside it for 6 seconds, as text. On This Mac's page and in
+a browser, nothing changes. Settings → Use another Mac's Inbox gains, while a Mac is connected, an
+"Open desk" block: a sentence naming the label, an example (`ssh -t my-mac {attach}`), the field,
+Save, Remove when one is saved, and a line saying Open desk appears on each session in that Mac's
+Inbox.
+
+Tests: `test/desk-open.test.ts` (the rule, filling with real shells, the script, each check in
+order, the real private writer), `test/remote-connect.test.ts` (setting the command),
+`test/hub-view.test.ts` (`takeGesture`, the channels), `test/remote-preload.test.ts` (the bridges'
+members and reductions), `test/main-ipc.test.ts` (the channels' senders and main's wiring), and the
+DOM tests in `test/dom/desk-open.test.ts`, `agents-home.test.ts`, `dashboard-focus.test.ts` and
+`settings-connect.test.ts`.
 
 ## Checked against real Tailscale Serve
 

@@ -25,6 +25,14 @@ export function chatResumeScript(chat: { tool: unknown; id: unknown; cwd: unknow
 export function scriptName(tool: ChatTool, id: string, random: string): string
 /** The new file's path, or null when the folder or file could not be made safely. */
 export function writeChatScript(options: { dir: string; name: string; text: string; now?: () => number }): string | null
+/**
+ * #617 PR 4b: the writer behind writeChatScript, for any name `pattern` (Open desk passes its own):
+ * a 0700 file made with O_EXCL and O_NOFOLLOW in a private 0700 folder this user owns, after a sweep
+ * of day-old files whose names match `pattern`. The path, or null.
+ */
+export function writePrivateScript(options: { dir: string; name: string; text: string; pattern: RegExp; now?: () => number }): string | null
+/** A POSIX shell word: single-quoted, each ' written as '\'' */
+export function shellWord(text: string): string
 
 export interface ChatResume {
   available(): Promise<{ available: boolean; terminal: TerminalId }>

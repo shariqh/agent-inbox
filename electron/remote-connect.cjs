@@ -27,7 +27,7 @@ const { createLockedFile, resolveFilePath } = require('./update-preferences.cjs'
 const { isObject, runTailscale, validHost } = require('./remote-tailscale.cjs')
 const {
   DEVICE_ID, HUB_ID, PLACE, SECRET, activeOf, certificateFailure, deviceLabelFor, discard, hubHref, hubLabelFor, inTailnet, isDeviceLabel, isRedirect,
-  keychainReady, marked, normaliseCode, parseHubOrigin, parsePeers, readJson, suffixFrom, versionText, writeBase,
+  keychainReady, marked, normaliseCode, parseHubOrigin, parsePeers, readJson, suffixFrom, validDeskCommand, versionText, writeBase,
 } = require('./remote-connect-rules.cjs')
 
 const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants
@@ -70,6 +70,9 @@ function createRemoteConnect(options = {}) {
   const now = options.now ?? Date.now
   const setIntervalFn = options.setInterval ?? setInterval
   const clearIntervalFn = options.clearInterval ?? clearInterval
+  // #617 PR 4b: main's native confirmation for an Open desk command; true only when the owner pressed
+  // Save. Without it no command is ever stored.
+  const confirmDeskCommand = options.confirmDeskCommand
   const deps = {
     execFile: options.execFile,
     exists: options.exists,
@@ -602,10 +605,72 @@ function createRemoteConnect(options = {}) {
       keychain: keychainAsked ? ready() : true,
       hub: entry === null ? null : {
         id: entry.id, label: entry.label, origin: entry.origin, machine: entry.machine, state: live ? live.state : null, reason: live ? live.reason : null,
+        // #617 PR 4b: the valid stored Open desk command, for this Mac's own Settings only
+        deskCommand: entry.deskCommand,
       },
       // the file still holds a forgotten hub and its encrypted secret, which a restart would use
       problem: unsaved.size > 0 ? 'forget_not_saved' : read.state === 'problem' ? read.problem : null,
     }
+  }
+
+  // whether an Open desk confirmation is open (see setDeskCommand)
+  let askingDesk = false
+
+  /**
+   * #617 PR 4b: sets or removes the active hub's Open desk command. `''` removes it with no question.
+   * Any other text must pass validDeskCommand (`bad_command`), `id` must be the stored active hub
+   * (`not_found`), and the owner must press Save in `confirmDeskCommand` (`cancelled`), asked outside
+   * the lock so a dialog left open blocks nothing. While that question is open any other call, a
+   * removal included, is `busy`, with no dialog and no write. The write happens under the store's lock, as
+   * recordMachine's does, spreading the entry, and only if the same hub (same device) is still active.
+   */
+  async function setDeskCommand(input) {
+    if (askingDesk) return no('busy')
+    const given = isObject(input) ? input : {}
+    const { id, command } = given
+    if (typeof id !== 'string' || !HUB_ID.test(id) || typeof command !== 'string') return no('bad_request')
+    if (command !== '' && !validDeskCommand(command)) return no('bad_command')
+    // claimed before the first await, so two calls racing the store read cannot both reach the dialog
+    const asking = command !== ''
+    if (asking) askingDesk = true
+    let before
+    try {
+      before = await readStore()
+      if (before.state !== 'ok' || before.active === null || before.active.id !== id) return no('not_found')
+      if (asking) {
+        let saved = false
+        try {
+          saved = typeof confirmDeskCommand === 'function' && (await confirmDeskCommand(command, before.active.label)) === true
+        } catch {
+          saved = false
+        }
+        if (!saved) return no('cancelled')
+      }
+    } finally {
+      if (asking) askingDesk = false
+    }
+    try {
+      return await locked.mutate(async () => {
+        const read = await readStore()
+        if (read.state !== 'ok' || read.active === null || read.active.id !== id || read.active.device !== before.active.device) return no('not_found')
+        const { deskCommand: _dropped, ...rest } = read.doc.hubs[id]
+        const entry = command === '' ? rest : { ...rest, deskCommand: command }
+        const doc = { ...read.doc, hubs: { ...read.doc.hubs, [id]: entry } }
+        if (Buffer.byteLength(JSON.stringify(doc, null, 2)) > FILE_MAX) return no('too_large')
+        await locked.atomicWrite(doc)
+        return { ok: true }
+      })
+    } catch {
+      return no('write_failed')
+    }
+  }
+
+  /** #617 PR 4b: the stored active hub's id, machine and valid Open desk command, read from the file: no Keychain, nothing sent. */
+  async function storedHub() {
+    await locked.settled()
+    const read = await readStore()
+    const entry = read.state === 'ok' ? read.active : null
+    return entry === null ? null : { id: entry.id, machine: entry.machine, deskCommand: entry.deskCommand }
   }
 
   /** The probes that are due, one after another, never two at once; a kick during one runs another after it. */
@@ -700,6 +765,8 @@ function createRemoteConnect(options = {}) {
     forget: safe(forget, failed),
     probeHub: safe(() => (stopped ? { ...STOPPED } : serial(probeActive)), failed),
     view: safe(view, () => ({ available: false, keychain: false, hub: null, problem: 'unreadable' })),
+    setDeskCommand: safe(setDeskCommand, () => ({ ok: false, reason: 'write_failed' })),
+    storedHub: safe(storedHub, null),
     connection: () => ({ ...current }),
     onConnection,
     start: safe(start, undefined),

@@ -13,6 +13,7 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import hubViewModule from '../electron/hub-view.cjs'
 import remoteConnect from '../electron/remote-connect.cjs'
+import deskOpenModule from '../electron/desk-open.cjs'
 import { cliExists, fakeTailscale } from './remote-entry-fixtures.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
@@ -21,6 +22,7 @@ const {
   partitionFor, registerHubIpc, sendHeaders, trustedDeskSender, watchOnline, windowTitle,
 } = hubViewModule
 const { createRemoteConnect } = remoteConnect
+const { createDeskOpen } = deskOpenModule
 
 afterEach(() => removeScratchDirs())
 
@@ -646,6 +648,21 @@ describe('createHubView: what the view shows', () => {
     expect(w.contents().loads).toEqual([`${ORIGIN}/`, OFFLINE_URL])
   })
 
+  // #617 PR 4b
+  it('pageChanged() tells the page with the same empty message, and does nothing with no view', async () => {
+    const empty = world()
+    expect(() => empty.hub.pageChanged()).not.toThrow()
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    const before = w.contents().sent.length
+    w.hub.pageChanged()
+    expect(w.contents().sent.slice(before)).toEqual([[DESK_CHANNELS.changed]])
+    w.hub.destroy()
+    w.hub.pageChanged()
+    expect(w.contents().sent.length).toBe(before + 1)
+  })
+
   it('tells the page on every change, with nothing in the message', async () => {
     const w = world()
     w.connect.set(hubState('online'))
@@ -1151,6 +1168,70 @@ describe('trustedDeskSender', () => {
   })
 })
 
+// #617 PR 4b
+describe('createHubView: takeGesture(event), Open desk’s gesture check', () => {
+  async function shown() {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    w.hub.show(ID)
+    return w
+  }
+  const hubEvent = (w: Awaited<ReturnType<typeof shown>>, url = `${ORIGIN}/`, parent: unknown = null) => ({ sender: w.contents(), senderFrame: { url, parent } })
+
+  it('answers the hub’s id for the hub page’s top frame with focus and a press under 5 seconds old, and uses the press up', async () => {
+    const w = await shown()
+    w.contents().focused = true
+    w.contents().emit('input-event', {}, { type: 'mouseDown' })
+    w.clock.t += 4_999
+    expect(w.hub.takeGesture(hubEvent(w))).toBe(ID)
+    expect(w.hub.takeGesture(hubEvent(w))).toBeNull()
+    w.contents().emit('before-input-event', {}, { type: 'keyDown' })
+    expect(w.hub.takeGesture(hubEvent(w))).toBe(ID)
+  })
+
+  it('shares the press with links: one press opens one link or one desk', async () => {
+    const w = await shown()
+    w.contents().focused = true
+    w.contents().emit('input-event', {}, { type: 'mouseDown' })
+    expect(w.hub.takeGesture(hubEvent(w))).toBe(ID)
+    const nav = navEvent('https://elsewhere.example.com/a')
+    w.contents().emit('will-navigate', nav, nav.url)
+    expect(w.opened).toEqual([])
+  })
+
+  it('answers null, using nothing up, for stale input, no focus, a mouse move, the offline file, a sub-frame or another sender', async () => {
+    const w = await shown()
+    w.contents().focused = true
+    w.contents().emit('input-event', {}, { type: 'mouseMove' })
+    expect(w.hub.takeGesture(hubEvent(w))).toBeNull()
+    w.contents().emit('input-event', {}, { type: 'mouseDown' })
+    expect(w.hub.takeGesture(hubEvent(w, OFFLINE_URL))).toBeNull()
+    expect(w.hub.takeGesture(hubEvent(w, `${ORIGIN}/`, { url: `${ORIGIN}/` }))).toBeNull()
+    expect(w.hub.takeGesture({ sender: w.local, senderFrame: { url: `${ORIGIN}/`, parent: null } })).toBeNull()
+    expect(w.hub.takeGesture(null)).toBeNull()
+    w.contents().focused = false
+    expect(w.hub.takeGesture(hubEvent(w))).toBeNull()
+    w.contents().focused = true
+    // none of those used the press
+    expect(w.hub.takeGesture(hubEvent(w))).toBe(ID)
+    w.contents().emit('input-event', {}, { type: 'mouseDown' })
+    w.clock.t += 5_000
+    expect(w.hub.takeGesture(hubEvent(w))).toBeNull()
+  })
+
+  it('answers null with no view, and after destroy()', async () => {
+    const empty = world()
+    expect(empty.hub.takeGesture({ sender: {}, senderFrame: { url: `${ORIGIN}/`, parent: null } })).toBeNull()
+    const w = await shown()
+    w.contents().focused = true
+    w.contents().emit('input-event', {}, { type: 'mouseDown' })
+    const event = hubEvent(w)
+    w.hub.destroy()
+    expect(w.hub.takeGesture(event)).toBeNull()
+  })
+})
+
 // ── the IPC ─────────────────────────────────────────────────────────────────────
 
 const PEERS = JSON.stringify({
@@ -1173,9 +1254,10 @@ function fakeSafeStorage() {
 const marked = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json', 'x-agent-inbox-remote-boundary': 'tailnet-v1' } })
 
 /** The real controller, connected to a hub through fake Tailscale, fetch and safeStorage. */
-function realConnect() {
+function realConnect(confirmDeskCommand?: (command: string) => boolean) {
   const dir = scratchDir('hv-')
   return createRemoteConnect({
+    ...(confirmDeskCommand ? { confirmDeskCommand } : {}),
     filePath: join(dir, 'remote-connect.json'),
     execFile: fakeTailscale({ peers: { raw: PEERS } }),
     exists: cliExists,
@@ -1193,7 +1275,7 @@ function realConnect() {
   })
 }
 
-function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | null; owned?: boolean; hubView?: unknown } = {}) {
+function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | null; owned?: boolean; hubView?: unknown; deskOpen?: unknown } = {}) {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const owner = { id: 7 }
   const hubContents = { id: 8, isDestroyed: () => false }
@@ -1201,6 +1283,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
   const isOwned = vi.fn((event: { sender: unknown }) => (options.owned ?? true) && event.sender === owner)
   const shows: unknown[] = []
   const retries: unknown[] = []
+  const pageChanges: unknown[] = []
   const hubView = options.hubView === undefined
     ? {
         trusts: (event: unknown) => trustedDeskSender(event, { webContents: hubContents }, ORIGIN, OFFLINE_URL),
@@ -1208,6 +1291,8 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
         current: () => null,
         retry: async () => { retries.push(1); return { ok: true } },
         cleared: async () => {},
+        takeGesture: () => null,
+        pageChanged: () => { pageChanges.push(1) },
       }
     : options.hubView
   const connect = options.connect === undefined ? realConnect() : options.connect
@@ -1217,12 +1302,13 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
     isOwned: isOwned as never,
     connect: () => connect,
     hubView: () => hubView as never,
+    ...(options.deskOpen === undefined ? {} : { deskOpen: () => options.deskOpen as never }),
   })
   const local = { sender: owner, senderFrame: { url: 'http://127.0.0.1:4319/', parent: null } }
   const hubEvent = { sender: hubContents, senderFrame: { url: `${ORIGIN}/`, parent: null } }
   const offlineEvent = { sender: hubContents, senderFrame: { url: OFFLINE_URL, parent: null } }
   const call = (channel: string, event: unknown, ...args: unknown[]) => handlers.get(channel)!(event, ...args)
-  return { handlers, call, local, hubEvent, offlineEvent, owner, hubContents, settled, isOwned, shows, retries, connect }
+  return { handlers, call, local, hubEvent, offlineEvent, owner, hubContents, settled, isOwned, shows, retries, connect, pageChanges }
 }
 
 const UNAVAILABLE = { available: false }
@@ -1230,9 +1316,107 @@ const UNAVAILABLE = { available: false }
 describe('registerHubIpc', () => {
   it('registers exactly the desk and connect channels', () => {
     const w = ipcWorld()
+    // #617 PR 4b: desk-available, desk-open and connect-desk-command added deliberately
     expect([...w.handlers.keys()].sort()).toEqual([
-      CONNECT_CHANNELS.connect, CONNECT_CHANNELS.forget, CONNECT_CHANNELS.show, CONNECT_CHANNELS.view, DESK_CHANNELS.connection, DESK_CHANNELS.retry,
+      CONNECT_CHANNELS.connect, CONNECT_CHANNELS.forget, CONNECT_CHANNELS.show, CONNECT_CHANNELS.view, CONNECT_CHANNELS.deskCommand,
+      DESK_CHANNELS.connection, DESK_CHANNELS.retry, DESK_CHANNELS.available, DESK_CHANNELS.open,
     ].sort())
+    expect([DESK_CHANNELS.available, DESK_CHANNELS.open, CONNECT_CHANNELS.deskCommand])
+      .toEqual(['agent-inbox:desk-available', 'agent-inbox:desk-open', 'agent-inbox:connect-desk-command'])
+  })
+
+  // #617 PR 4b
+  describe('Open desk', () => {
+    function recordingDesk() {
+      const seen: Array<[string, unknown[]]> = []
+      return {
+        seen,
+        available: async (_event: unknown, args: unknown[]) => { seen.push(['available', args]); return { open: true, extra: 'x' } },
+        open: async (_event: unknown, args: unknown[]) => { seen.push(['open', args]); return { ok: true } },
+      }
+    }
+
+    it('desk-available and desk-open reach the handler from the hub’s own page only: not the offline file, the local page or a sub-frame', async () => {
+      const desk = recordingDesk()
+      const w = ipcWorld({ deskOpen: desk })
+      expect(await w.call(DESK_CHANNELS.available, w.hubEvent)).toEqual({ open: true })
+      expect(await w.call(DESK_CHANNELS.open, w.hubEvent, { session: 's1' })).toEqual({ ok: true })
+      const subFrame = { sender: w.hubContents, senderFrame: { url: `${ORIGIN}/`, parent: {} } }
+      const stranger = { sender: { id: 99 }, senderFrame: { url: `${ORIGIN}/`, parent: null } }
+      for (const event of [w.offlineEvent, w.local, subFrame, stranger]) {
+        expect(await w.call(DESK_CHANNELS.available, event)).toEqual({ open: false })
+        expect(await w.call(DESK_CHANNELS.open, event, { session: 's1' })).toEqual({ ok: false, reason: 'unavailable' })
+      }
+      expect(await w.call(DESK_CHANNELS.available, w.hubEvent, 'extra')).toEqual({ open: false })
+      expect(desk.seen).toEqual([['available', []], ['open', [{ session: 's1' }]]])
+    })
+
+    it('without a handler (off macOS, or before the view exists) both answer no', async () => {
+      const w = ipcWorld()
+      expect(await w.call(DESK_CHANNELS.available, w.hubEvent)).toEqual({ open: false })
+      expect(await w.call(DESK_CHANNELS.open, w.hubEvent, { session: 's1' })).toEqual({ ok: false, reason: 'unavailable' })
+      const throwing = ipcWorld({ deskOpen: { available: async () => { throw new Error('x') }, open: async () => { throw new Error('x') } } })
+      expect(await throwing.call(DESK_CHANNELS.available, throwing.hubEvent)).toEqual({ open: false })
+      expect(await throwing.call(DESK_CHANNELS.open, throwing.hubEvent, { session: 's1' })).toEqual({ ok: false, reason: 'failed' })
+    })
+
+    it('with the real handler: the hub’s page with a saved command may open, and nothing else is offered', async () => {
+      const connect = realConnect(() => true)
+      const hubContents = { id: 8, isDestroyed: () => false }
+      const hubView = {
+        trusts: (event: unknown) => trustedDeskSender(event, { webContents: hubContents }, ORIGIN, OFFLINE_URL),
+        show: () => ({ ok: true }), current: () => null, retry: async () => ({ ok: true }), cleared: async () => {},
+        takeGesture: () => null,
+      }
+      const desk = createDeskOpen({
+        platform: 'darwin', hubView: () => hubView, storedHub: () => connect.storedHub(), hubFetch: () => connect.hubFetch(),
+        hubBase: (id) => connect.hubBase(id), scriptDir: '/Users/tester/.agent-inbox/desk-open',
+        terminal: { read: async () => 'terminal', run: async () => { throw new Error('no terminal in tests') } },
+      })
+      const w = ipcWorld({ connect, hubView, deskOpen: desk })
+      const hubEvent = { sender: hubContents, senderFrame: { url: `${ORIGIN}/`, parent: null } }
+      const connected = await connect.connect({ address: HOST, code: '7K3QX-9M2PD' }) as { id: string }
+      expect(await w.call(DESK_CHANNELS.available, hubEvent)).toEqual({ open: false })
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'ssh -t studio {attach}' })).toEqual({ ok: true })
+      expect(await w.call(DESK_CHANNELS.available, hubEvent)).toEqual({ open: true })
+      expect(await w.call(DESK_CHANNELS.available, { sender: hubContents, senderFrame: { url: OFFLINE_URL, parent: null } })).toEqual({ open: false })
+      // no gesture in this world: an open stops there, before any read or write
+      expect(await w.call(DESK_CHANNELS.open, hubEvent, { session: 's1' })).toEqual({ ok: false, reason: 'no_gesture' })
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: '' })).toEqual({ ok: true })
+      expect(await w.call(DESK_CHANNELS.available, hubEvent)).toEqual({ open: false })
+    })
+
+    it('connect-desk-command answers the owned local page only, with exactly { id, command }, both text', async () => {
+      const w = ipcWorld({ connect: realConnect(() => true) })
+      const connected = await w.connect!.connect({ address: HOST, code: '7K3QX-9M2PD' }) as { id: string }
+      for (const event of [w.hubEvent, w.offlineEvent, { sender: { id: 99 }, senderFrame: { url: 'http://127.0.0.1:4319/', parent: null } }]) {
+        expect(await w.call(CONNECT_CHANNELS.deskCommand, event, { id: connected.id, command: 'ssh -t studio {attach}' })).toEqual(UNAVAILABLE)
+      }
+      const bad: unknown[][] = [
+        [], [{ id: connected.id }], [{ command: 'x {desk}' }], [{ id: connected.id, command: 'x {desk}', host: 'studio' }],
+        [{ id: connected.id, command: 7 }], [{ id: 7, command: 'x {desk}' }], [{ id: connected.id, command: 'x {desk}' }, 'extra'],
+        [[connected.id, 'x {desk}']], [{ id: connected.id, command: 'x'.repeat(4097) }],
+      ]
+      for (const args of bad) expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, ...args), JSON.stringify(args)).toEqual(UNAVAILABLE)
+      expect((await w.connect!.view()).hub?.deskCommand).toBeNull()
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x {desk} }' })).toEqual({ ok: false, reason: 'bad_command' })
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: 'ffffffff', command: 'x {desk}' })).toEqual({ ok: false, reason: 'not_found' })
+      expect(w.pageChanges).toEqual([])
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x {desk}' })).toEqual({ ok: true })
+      expect((await w.call(CONNECT_CHANNELS.view, w.local) as { hub: { deskCommand: unknown } }).hub.deskCommand).toBe('x {desk}')
+      // the hub's page is told once per saved change, so it asks available() again without a reload
+      expect(w.pageChanges).toEqual([1])
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: '' })).toEqual({ ok: true })
+      expect(w.pageChanges).toEqual([1, 1])
+    })
+
+    it('a cancelled or refused command tells the hub’s page nothing', async () => {
+      const w = ipcWorld({ connect: realConnect(() => false) })
+      const connected = await w.connect!.connect({ address: HOST, code: '7K3QX-9M2PD' }) as { id: string }
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x {desk}' })).toEqual({ ok: false, reason: 'cancelled' })
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x' })).toEqual({ ok: false, reason: 'bad_command' })
+      expect(w.pageChanges).toEqual([])
+    })
   })
 
   it('agentInboxConnect answers the owned viewer only, after the re-proof has settled', async () => {

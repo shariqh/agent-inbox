@@ -298,6 +298,9 @@ class FakeContents extends EventEmitter {
   getZoomLevel() { return this.zoomLevel }
   setZoomLevel(level: number) { this.zoomLevel = level }
   getZoomFactor() { return 1.2 ** this.zoomLevel }
+  // #617 PR 4a: a notification click lands inside the hub's page
+  scripts: string[] = []
+  executeJavaScript(code: string) { this.scripts.push(code); return Promise.resolve() }
 }
 
 class FakeSession {
@@ -1493,5 +1496,93 @@ describe('createHubView: the inset follows the local page’s zoom', () => {
     // with nothing focused, it still lays out
     zoomMenuItems({ focused: () => null, after })[1]!.click()
     expect(after).toHaveBeenCalledTimes(5)
+  })
+})
+
+// #617 PR 4a: a click on a hub's notification lands on its ask inside the hub's page
+describe('createHubView: land(id, hash)', () => {
+  async function online() {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+    return w
+  }
+
+  it('sets location.hash in the hub’s page, JSON-quoted, for the active hub with its page loaded', async () => {
+    const w = await online()
+    expect(w.hub.land(ID, '#item/q-1.a_b~c%2Fd')).toEqual({ ok: true })
+    expect(w.contents().scripts).toEqual(['location.hash = "#item/q-1.a_b~c%2Fd"'])
+    // never in this Mac's own page
+    expect(w.local.scripts).toEqual([])
+  })
+
+  it.each([
+    ['another link', '#boards'],
+    ['no id', '#item/'],
+    ['a quote', '#item/a"b'],
+    ['a space', '#item/a b'],
+    ['a script', 'javascript:alert(1)'],
+    ['a path', '#item/a/b'],
+    ['too long', `#item/${'a'.repeat(201)}`],
+    ['not text', 42],
+    ['null', null],
+  ])('does nothing for %s', async (_name, hash) => {
+    const w = await online()
+    expect(w.hub.land(ID, hash)).toEqual({ ok: false })
+    expect(w.contents().scripts).toEqual([])
+  })
+
+  it('takes an id of at most 200 characters', async () => {
+    const w = await online()
+    expect(w.hub.land(ID, `#item/${'a'.repeat(200)}`)).toEqual({ ok: true })
+  })
+
+  it('does nothing over the offline page', async () => {
+    const w = await online()
+    w.connect.set(hubState('refused', 'refused'))
+    await settle()
+    expect(w.contents().url).toBe(OFFLINE_URL)
+    expect(w.hub.land(ID, '#item/q-1')).toEqual({ ok: false })
+    expect(w.contents().scripts).toEqual([])
+  })
+
+  it('does nothing while the first check runs and nothing is loaded', async () => {
+    const w = world()
+    w.connect.set(hubState('retrying', 'connecting'))
+    await settle()
+    expect(w.hub.land(ID, '#item/q-1')).toEqual({ ok: false })
+  })
+
+  it('does nothing when the page has gone off the hub’s origin', async () => {
+    const w = await online()
+    w.contents().url = 'https://elsewhere.example.com/'
+    expect(w.hub.land(ID, '#item/q-1')).toEqual({ ok: false })
+    expect(w.contents().scripts).toEqual([])
+  })
+
+  it('does nothing for another id', async () => {
+    const w = await online()
+    expect(w.hub.land('89abcdef', '#item/q-1')).toEqual({ ok: false })
+    expect(w.hub.land(null, '#item/q-1')).toEqual({ ok: false })
+    expect(w.contents().scripts).toEqual([])
+  })
+
+  it('does nothing once the view closed itself, was dropped or destroyed', async () => {
+    const closed = await online()
+    const contents = closed.contents()
+    contents.close()
+    expect(closed.hub.land(ID, '#item/q-1')).toEqual({ ok: false })
+    expect(contents.scripts).toEqual([])
+
+    const dropped = await online()
+    dropped.connect.set({ mode: 'local' })
+    await settle()
+    expect(dropped.hub.land(ID, '#item/q-1')).toEqual({ ok: false })
+
+    const destroyed = await online()
+    destroyed.hub.destroy()
+    expect(destroyed.hub.land(ID, '#item/q-1')).toEqual({ ok: false })
+    expect(destroyed.contents().scripts).toEqual([])
   })
 })

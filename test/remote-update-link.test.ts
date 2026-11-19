@@ -49,6 +49,8 @@ describe('updateSummary: what a paired device may see, and whether it may start'
     ['an install running', state('installing', { available: offer() }), 'installing', '2.15.0', 'installing'],
     ['an installation that cannot update itself', state('unsupported'), 'current', null, 'not_here'],
     ['a release only the release page offers (a .deb, an app outside Applications)', state('available', { available: offer({ downloadable: false, installable: false }) }), 'available', '2.15.0', 'not_here'],
+    ['a release that is installable but not downloadable here', state('available', { available: offer({ downloadable: false }) }), 'available', '2.15.0', 'not_here'],
+    ['a release that is downloadable but not installable here', state('available', { available: offer({ installable: false }) }), 'available', '2.15.0', 'not_here'],
     ['a download with no installer here', state('available', { available: offer({ installable: false, installPermitted: false }) }), 'available', '2.15.0', 'not_here'],
     ['a window that may not install right now (a reload)', state('verified', { available: offer({ installPermitted: false }) }), 'available', '2.15.0', 'busy'],
   ])('refuses for %s', (_name, given, status, newer, reason) => {

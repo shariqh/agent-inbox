@@ -14,7 +14,7 @@ import { startLocalViewer } from '../src/viewer-network.js'
 import { remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import {
-  UPDATE_PATH, createRemoteUpdate, parseSummary, remoteUpdateReportRoute,
+  UPDATE_PATH, createRemoteUpdate, parseSummary, remoteUpdateReportRoute, remoteUpdateRoutes,
 } from '../src/remote-update.js'
 import type { UpdateSummary } from '../src/remote-update.js'
 import { scratchDir } from './scratch.js'
@@ -94,6 +94,18 @@ describe('createRemoteUpdate', () => {
     expect(update.summary()).toEqual({ ...READY, status: 'installing', canStart: false, reason: 'installing' })
     expect(update.report({ ...READY, status: 'downloading', canStart: false, reason: 'installing' })).toEqual({ request: null, looked: false })
     expect(update.summary()).toEqual({ ...READY, status: 'downloading', canStart: false, reason: 'installing' })
+  })
+
+  // the guard in start(): a request waiting for main is installing, even when main's report has aged
+  it('answers installing, not not_ready, to a second press while a request waits for a report that is late', () => {
+    const { update, clock } = make()
+    update.report(READY)
+    expect(update.start(LAPTOP)).toEqual({ ok: true })
+    clock.now += 15_001
+    expect(update.summary()).toMatchObject({ canStart: false, reason: 'not_ready' })
+    expect(update.start(STUDIO)).toEqual({ ok: false, reason: 'installing' })
+    // the first press is still the one main hears
+    expect(update.report(READY)).toEqual({ request: { id: '0000000000000001', device: LAPTOP }, looked: false })
   })
 
   it('refuses a start with main\'s reason when main says it cannot', () => {
@@ -216,6 +228,18 @@ describe('/api/remote/update through the real gate', () => {
     expect(await report(READY)).toEqual({ request: null, looked: true })
   })
 
+  // the gate checks the method on GUARDED_ROUTES: a PUT or DELETE is refused at step 9, not by a 404 later
+  it('refuses a PUT or DELETE from a paired device at the gate (step 9), not with a 404 further in', async () => {
+    const before = entry.status().refused.route
+    for (const method of ['PUT', 'DELETE', 'PATCH']) {
+      const response = await rawRequest(port, { method, target: UPDATE_PATH, headers: deviceHeaders(laptop, [['Origin', ORIGIN]]) })
+      expect(response.status, method).toBe(403)
+      expect(response.body, method).toBe('Forbidden')
+    }
+    expect(entry.status().refused.route).toBe(before + 3)
+    expect(await report(READY)).toEqual({ request: null, looked: false })
+  })
+
   it('refuses a POST without the hub\'s Origin, or from another site', async () => {
     const before = entry.status().refused.origin
     expect((await post(deviceHeaders(laptop))).status).toBe(403)
@@ -273,5 +297,50 @@ describe('/api/remote/update through the real gate', () => {
     })
     expect(response.status).toBe(403)
     expect(entry.status().refused.route).toBe(before + 1)
+  })
+})
+
+// the handlers by themselves, behind a gate that is not the real one
+describe('remoteUpdateRoutes: each handler on its own', () => {
+  const build = (device: string | null) => {
+    const update = createRemoteUpdate({ version: '2.14.1' })
+    update.report(READY)
+    const routes = remoteUpdateRoutes(update, () => device)
+    const app = new Hono()
+    app.get(UPDATE_PATH, routes.get)
+    app.post(UPDATE_PATH, routes.post)
+    const call = (method: string, incoming: Record<string, unknown>) => app.request(UPDATE_PATH, { method }, { incoming })
+    return { update, call }
+  }
+
+  it('refuses a GET and a POST that carry no matched device, and changes nothing', async () => {
+    const { update, call } = build(null)
+    expect((await call('GET', { url: UPDATE_PATH, headers: {} })).status).toBe(403)
+    expect((await call('POST', { url: UPDATE_PATH, headers: {} })).status).toBe(403)
+    expect(update.report(READY)).toEqual({ request: null, looked: false })
+  })
+
+  it('refuses when the request has no connection to read a device from at all', async () => {
+    const update = createRemoteUpdate({ version: '2.14.1' })
+    update.report(READY)
+    const routes = remoteUpdateRoutes(update, (incoming) => (incoming === undefined ? null : LAPTOP))
+    const app = new Hono()
+    app.get(UPDATE_PATH, routes.get)
+    app.post(UPDATE_PATH, routes.post)
+    expect((await app.request(UPDATE_PATH, { method: 'GET' })).status).toBe(403)
+    expect((await app.request(UPDATE_PATH, { method: 'POST' })).status).toBe(403)
+    expect(update.report(READY)).toEqual({ request: null, looked: false })
+  })
+
+  it('answers a matched device\'s POST with 202, and a Transfer-Encoding header with bad_request, starting nothing', async () => {
+    const odd = build(LAPTOP)
+    for (const headers of [{ 'transfer-encoding': 'chunked' }, { 'transfer-encoding': 'identity' }, { 'content-length': '2' }]) {
+      const response = await odd.call('POST', { url: UPDATE_PATH, headers })
+      expect(response.status, JSON.stringify(headers)).toBe(400)
+      expect(await response.json()).toEqual({ ok: false, reason: 'bad_request' })
+    }
+    expect(odd.update.report(READY)).toEqual({ request: null, looked: false })
+    const fine = build(LAPTOP)
+    expect((await fine.call('POST', { url: UPDATE_PATH, headers: { 'content-length': '0' } })).status).toBe(202)
   })
 })

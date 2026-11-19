@@ -10,12 +10,16 @@
 // After a start this Mac follows the update from what it already sees: the hub reports its download
 // and install, its app quits and the connection retries, and it comes back on the new version, or
 // it does not come back within a few minutes and has to be looked at. A hub older than this change
-// has no such route and refuses it (403): it has to be updated once at that Mac.
+// has no such route and refuses it (403): it has to be updated once at that Mac. A 403 from a hub that
+// is not older (this Mac was removed from its list, its login or host changed) is `refused` instead,
+// and the connection is asked to check the hub again so that its own state catches up.
 //
 // Architecture notes: docs/architecture/remote-inbox.md ("Updating the hub from another Mac").
 const { discard, marked, readJson } = require('./remote-connect-rules.cjs')
 
 const UPDATE_PATH = 'api/remote/update'
+// the first version with the update routes: a hub older than this answers them with a 403
+const UPDATE_ROUTES_FROM = '2.15.0'
 const BODY_MAX = 1024
 // after a start: how long the hub may stay away before this Mac says it did not come back
 const NOT_BACK_MS = 5 * 60_000
@@ -59,6 +63,8 @@ function createHubUpdate(options) {
   let run = null
   // the newer release the hub last offered, so a run can name it while the hub reports its steps
   let offered = null
+  // whether the connection was already asked to check a hub that refused this Mac, in this run of refusals
+  let kickedRefusal = false
 
   const answer = (phase, version, summary = null) => ({
     ok: true,
@@ -70,8 +76,12 @@ function createHubUpdate(options) {
     reason: summary?.reason ?? null,
   })
 
-  /** `{ summary }`, `{ old: true }` for a hub that refuses the route, or `{ away: true }` when it does not answer. */
-  async function read(connect, base) {
+  /**
+   * `{ summary }`, `{ old: true }` for a hub older than the routes, `{ refused: true }` for a hub that
+   * has them and still answers 403, or `{ away: true }` when it does not answer. `version` is the hub's
+   * as the connection probed it.
+   */
+  async function read(connect, base, version) {
     let response
     try {
       response = await connect.hubFetch()(`${base}${UPDATE_PATH}`, { method: 'GET' })
@@ -80,7 +90,7 @@ function createHubUpdate(options) {
     }
     if (response.status === 403) {
       await discard(response)
-      return { old: true }
+      return isNewer(UPDATE_ROUTES_FROM, version) ? { old: true } : { refused: true }
     }
     if (response.status !== 200 || !marked(response)) {
       await discard(response)
@@ -97,10 +107,20 @@ function createHubUpdate(options) {
     if (run !== null && run.id !== id) run = null
     const elapsed = run === null ? 0 : now() - run.at
     if (connection.state !== 'online') {
+      kickedRefusal = false
       if (run === null) return answer('offline', connection.version)
       return answer(elapsed > NOT_BACK_MS ? 'not_back' : 'restarting', connection.version)
     }
-    const got = await read(connect, base)
+    const got = await read(connect, base, connection.version)
+    if (got.refused) {
+      // the hub has the routes and does not accept this Mac: the connection checks it again, once
+      if (!kickedRefusal) {
+        kickedRefusal = true
+        Promise.resolve().then(() => connect.kick()).catch(() => {})
+      }
+      return answer('refused', connection.version)
+    }
+    kickedRefusal = false
     if (got.away) {
       if (run === null) return answer('unreadable', connection.version)
       // the hub went away before the connection's next probe noticed: it checks now, once
@@ -164,5 +184,6 @@ function createHubUpdate(options) {
 
 module.exports = {
   NOT_BACK_MS,
+  UPDATE_ROUTES_FROM,
   createHubUpdate,
 }

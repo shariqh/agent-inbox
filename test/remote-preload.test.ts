@@ -269,6 +269,11 @@ describe('setup-preload.cjs: agentInboxConnect', () => {
     expect(invoke.mock.calls).toEqual([['agent-inbox:connect-hub-update', '0123abcd'], ['agent-inbox:connect-hub-update-start', '0123abcd']])
   })
 
+  it.each(['idle', 'updating', 'restarting', 'done', 'failed', 'not_back', 'offline', 'old_hub', 'refused', 'unreadable'])('hubUpdate() takes the phase word %s', async (phase) => {
+    expect(await load(() => ({ ok: true, phase, version: null, status: null, newer: null, canStart: false, reason: null })).connect.hubUpdate!('0123abcd'))
+      .toMatchObject({ ok: true, phase })
+  })
+
   it('hubUpdate() drops a field of the wrong shape, and refuses an unknown phase whole', async () => {
     const odd = { ok: true, phase: 'idle', version: '2.14.1 (beta)', status: 'Some Words', newer: 7, canStart: 'yes', reason: 'not_here' }
     expect(await load(() => odd).connect.hubUpdate!('0123abcd')).toEqual({ ok: true, phase: 'idle', version: null, status: null, newer: null, canStart: false, reason: 'not_here' })

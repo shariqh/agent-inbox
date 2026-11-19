@@ -984,6 +984,17 @@ describe('the other Mac’s update', () => {
     expect(text('connect-update-status')).toBe(sentence)
     expect(shown('connect-update-start')).toBe(false)
   })
+  it('has a sentence for every phase electron/hub-update.d.cts declares, except the two with nothing to say', async () => {
+    const phases = [...(/export type HubUpdatePhase = ([^\n]+)/.exec(hubUpdateTypes)?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!)
+    expect(phases).toContain('refused')
+    for (const phase of phases.filter((one) => !['idle', 'offline'].includes(one))) {
+      const api = connectBridge({ ...NONE, hub: hub('online') })
+      api.hubUpdate.mockResolvedValue(answer({ phase, status: null, reason: null }))
+      draw(api)
+      await flush()
+      expect(text('connect-update-status'), phase).not.toBe('')
+    }
+  })
   it('has a sentence for every reason word the controller declares', () => {
     expect(REASONS.sort()).toEqual(['busy', 'installing', 'not_here', 'not_ready', 'nothing_newer', 'setup_running'])
   })
@@ -994,6 +1005,7 @@ describe('the other Mac’s update', () => {
     ['failed', answer({ phase: 'failed', status: 'failed', newer: '2.15.0', canStart: true, reason: null }), 'The update didn’t finish: MBP still runs 2.14.1. Open Settings → Updates on MBP to see why.', true],
     ['not_back', answer({ phase: 'not_back', status: null, reason: null }), 'MBP hasn’t come back since the update started. Check that Mac: Agent Inbox may need to be opened there.', false],
     ['old_hub', answer({ phase: 'old_hub', status: null, reason: null }), 'MBP runs an older Agent Inbox that can’t be updated from here. Update it once on MBP: Agent Inbox → Check for Updates….', false],
+    ['refused', answer({ phase: 'refused', status: null, reason: null }), 'MBP didn’t accept this Mac’s request. Check that this Mac is still listed under Settings → Other devices on MBP.', false],
     ['unreadable', answer({ phase: 'unreadable', status: null, reason: null }), 'Agent Inbox couldn’t read MBP’s updates.', false],
     ['offline', answer({ phase: 'offline', status: null, reason: null }), '', false],
     ['updating, downloading', answer({ phase: 'updating', status: 'downloading', newer: '2.15.0', reason: 'installing' }), 'MBP is downloading the update…', false],
@@ -1046,7 +1058,7 @@ describe('the other Mac’s update', () => {
   it.each([
     ['setup_running', 'MBP is setting up agents. Try again when that is done.'],
     ['offline', 'MBP isn’t online.'],
-    ['refused', 'Agent Inbox couldn’t ask MBP to update. Try again.'],
+    ['refused', 'MBP didn’t accept this Mac’s request. Check that this Mac is still listed under Settings → Other devices on MBP.'],
     ['failed', 'Agent Inbox couldn’t ask MBP to update. Try again.'],
   ])('a refused start says why: %s', async (reason, sentence) => {
     const api = connectBridge({ ...NONE, hub: hub('online') })

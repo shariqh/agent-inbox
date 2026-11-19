@@ -492,7 +492,7 @@ function connectResult(value) {
 const connectCall = (rebuild, channel, ...args) => ipcRenderer.invoke(channel, ...args).then(rebuild, () => rebuild(undefined))
 
 // #637: the hub's update as Settings shows it (electron/hub-update.cjs), rebuilt field by field
-const HUB_UPDATE_PHASES = new Set(['idle', 'updating', 'restarting', 'done', 'failed', 'not_back', 'offline', 'old_hub', 'unreadable'])
+const HUB_UPDATE_PHASES = new Set(['idle', 'updating', 'restarting', 'done', 'failed', 'not_back', 'offline', 'old_hub', 'refused', 'unreadable'])
 const RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const releaseOf = (value) => (typeof value === 'string' && RELEASE_VERSION.test(value) ? value : null)
 

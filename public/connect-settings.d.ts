@@ -7,6 +7,10 @@ export interface ConnectBridge {
   onChange(callback: () => void): () => void
   /** #617 PR 4b: proposes the Open desk command ('' removes it); main stores it only after its native dialog */
   setDeskCommand?(input: { id: string; command: string }): Promise<unknown>
+  /** #637: the connected Mac's update, by its id (electron/hub-update.cjs) */
+  hubUpdate?(id: string): Promise<unknown>
+  /** #637: asks the connected Mac to install the release its own update controller verified */
+  updateHub?(id: string): Promise<unknown>
 }
 export interface DeskBridge {
   connection(): Promise<unknown>
@@ -33,6 +37,8 @@ export function renderConnectSettings(
     desk?: () => DeskBridge | null | undefined
     documentRef?: Document
     platform?: () => string
+    /** #637: how a follow-up read of the other Mac's update is scheduled (setTimeout by default) */
+    schedule?: (fn: () => void, ms: number) => unknown
   },
 ): HTMLElement | null
 

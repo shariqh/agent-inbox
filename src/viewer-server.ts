@@ -5,6 +5,8 @@ import { startGithubPoller } from './issue-poller.js'
 import { startLocalViewer } from './viewer-network.js'
 import { remoteDir, startRemoteEntry } from './viewer-remote.js'
 import { remoteCodeRoute } from './remote-pair.js'
+import { createRemoteUpdate, remoteUpdateReportRoute } from './remote-update.js'
+import { AGENT_INBOX_VERSION } from './version.js'
 import { meshDir } from './mesh-config.js'
 import { meshAgents } from './mesh-agents.js'
 
@@ -27,14 +29,20 @@ startGithubPoller(db)
 // folder, never AGENT_INBOX_MESH_DIR. Its app is a second createViewer built with no owner
 // token, so /api/owner does not exist on it; createViewer starts no timers, so building it
 // twice is safe. The entry copies the app's routes when it starts: add nothing to it after.
+// #637: what a paired device may see of this hub's update, and its request to start it, relayed to
+// the desktop app's main, which reports here (src/remote-update.ts)
+const update = createRemoteUpdate({ version: AGENT_INBOX_VERSION })
 const remoteApp = createViewer(db, { mesh })
 remoteApp.get('/*', serveStatic({ root: './public' }))
-const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port })
+const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update })
 // loopback only, and never on the remote allowlist: counts since start, no login or secret
 app.get('/api/remote-entry', (c) => c.json(remote.status()))
 // loopback only, and only for the desktop app that started this viewer with an owner token: a
 // pairing code (src/remote-pair.ts). Without a token the route does not exist.
 if (ownerToken) app.post('/api/remote-entry/code', remoteCodeRoute(remote, ownerToken))
+// #637: main's report of its update state, and the request a paired device made since; loopback only,
+// only with the owner token. It starts nothing: main decides on its own state.
+if (ownerToken) app.post('/api/remote-entry/update', remoteUpdateReportRoute(update, ownerToken))
 
 app.get('/*', serveStatic({ root: './public' }))
 

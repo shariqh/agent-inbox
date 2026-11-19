@@ -491,6 +491,26 @@ function connectResult(value) {
 
 const connectCall = (rebuild, channel, ...args) => ipcRenderer.invoke(channel, ...args).then(rebuild, () => rebuild(undefined))
 
+// #637: the hub's update as Settings shows it (electron/hub-update.cjs), rebuilt field by field
+const HUB_UPDATE_PHASES = new Set(['idle', 'updating', 'restarting', 'done', 'failed', 'not_back', 'offline', 'old_hub', 'refused', 'unreadable'])
+const RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const releaseOf = (value) => (typeof value === 'string' && RELEASE_VERSION.test(value) ? value : null)
+
+function hubUpdateView(value) {
+  if (isPlainObject(value) && value.available === false) return connectOff()
+  if (!isPlainObject(value) || value.ok !== true || !HUB_UPDATE_PHASES.has(value.phase)) return { ok: false, reason: isPlainObject(value) ? wordOf(value.reason) ?? 'failed' : 'failed' }
+  return {
+    ok: true,
+    phase: value.phase,
+    version: releaseOf(value.version),
+    status: wordOf(value.status),
+    newer: releaseOf(value.newer),
+    canStart: value.canStart === true,
+    reason: wordOf(value.reason),
+  }
+}
+const hubIdArgument = (args) => args.length === 1 && hubIdOf(args[0]) !== null
+
 contextBridge.exposeInMainWorld('agentInboxConnect', {
   view(...args) {
     if (args.length !== 0) return Promise.resolve(connectOff())
@@ -521,6 +541,16 @@ contextBridge.exposeInMainWorld('agentInboxConnect', {
   show(...args) {
     if (args.length !== 1 || (args[0] !== null && (typeof args[0] !== 'string' || args[0].length > 64))) return Promise.resolve(connectOff())
     return connectCall(connectResult, 'agent-inbox:connect-show', args[0])
+  },
+  // #637: the connected hub's update, by its id: what it would be, and the one request that starts it.
+  // The request names nothing else: the hub installs only the release its own controller verified.
+  hubUpdate(...args) {
+    if (!hubIdArgument(args)) return Promise.resolve(connectOff())
+    return connectCall(hubUpdateView, 'agent-inbox:connect-hub-update', args[0])
+  },
+  updateHub(...args) {
+    if (!hubIdArgument(args)) return Promise.resolve(connectOff())
+    return connectCall(connectResult, 'agent-inbox:connect-hub-update-start', args[0])
   },
   // the change message carries nothing: the page asks view() again
   onChange(callback) {

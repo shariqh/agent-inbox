@@ -252,9 +252,49 @@ describe('setup-preload.cjs: agentInboxConnect', () => {
     return { ...loaded, connect: loaded.exposed.agentInboxConnect as Bridge }
   }
 
-  it('has exactly its six members', () => {
-    // #617 PR 4b: setDeskCommand added deliberately
-    expect(Object.keys(load(() => null).connect).sort()).toEqual(['connect', 'forget', 'onChange', 'setDeskCommand', 'show', 'view'])
+  it('has exactly its eight members', () => {
+    // #617 PR 4b: setDeskCommand added deliberately; #637: hubUpdate and updateHub
+    expect(Object.keys(load(() => null).connect).sort()).toEqual(['connect', 'forget', 'hubUpdate', 'onChange', 'setDeskCommand', 'show', 'updateHub', 'view'])
+  })
+
+  // #637
+  it('hubUpdate() and updateHub() send exactly one hub id, and rebuild the answer field by field', async () => {
+    const answer = {
+      ok: true, phase: 'idle', version: '2.14.1', status: 'available', newer: '2.15.0', canStart: true, reason: null,
+      url: 'https://example.com/', secret: 'x'.repeat(43),
+    }
+    const { connect, invoke } = load((channel) => (channel === 'agent-inbox:connect-hub-update' ? answer : { ok: true, version: '9.9.9' }))
+    expect(await connect.hubUpdate!('0123abcd')).toEqual({ ok: true, phase: 'idle', version: '2.14.1', status: 'available', newer: '2.15.0', canStart: true, reason: null })
+    expect(await connect.updateHub!('0123abcd')).toEqual({ ok: true })
+    expect(invoke.mock.calls).toEqual([['agent-inbox:connect-hub-update', '0123abcd'], ['agent-inbox:connect-hub-update-start', '0123abcd']])
+  })
+
+  it.each(['idle', 'updating', 'restarting', 'done', 'failed', 'not_back', 'offline', 'old_hub', 'refused', 'unreadable'])('hubUpdate() takes the phase word %s', async (phase) => {
+    expect(await load(() => ({ ok: true, phase, version: null, status: null, newer: null, canStart: false, reason: null })).connect.hubUpdate!('0123abcd'))
+      .toMatchObject({ ok: true, phase })
+  })
+
+  it('hubUpdate() drops a field of the wrong shape, and refuses an unknown phase whole', async () => {
+    const odd = { ok: true, phase: 'idle', version: '2.14.1 (beta)', status: 'Some Words', newer: 7, canStart: 'yes', reason: 'not_here' }
+    expect(await load(() => odd).connect.hubUpdate!('0123abcd')).toEqual({ ok: true, phase: 'idle', version: null, status: null, newer: null, canStart: false, reason: 'not_here' })
+    expect(await load(() => ({ ...odd, phase: 'exploded' })).connect.hubUpdate!('0123abcd')).toEqual({ ok: false, reason: 'not_here' })
+    expect(await load(() => ({ ok: false, reason: 'not_found' })).connect.hubUpdate!('0123abcd')).toEqual({ ok: false, reason: 'not_found' })
+    expect(await load(() => ({ available: false })).connect.hubUpdate!('0123abcd')).toEqual({ available: false })
+    expect(await load(() => { throw new Error('gone') }).connect.hubUpdate!('0123abcd')).toEqual({ ok: false, reason: 'failed' })
+    expect(await load(() => ({ ok: false, reason: 'setup_running' })).connect.updateHub!('0123abcd')).toEqual({ ok: false, reason: 'setup_running' })
+  })
+
+  it.each([
+    ['nothing', []],
+    ['two arguments', ['0123abcd', 'extra']],
+    ['a version', ['2.15.0']],
+    ['an id in capitals', ['0123ABCD']],
+    ['an object', [{ id: '0123abcd' }]],
+  ])('hubUpdate() and updateHub() refuse %s without asking main', async (_label, args) => {
+    const { connect, invoke } = load(() => ({ ok: true }))
+    expect(await connect.hubUpdate!(...args)).toEqual({ available: false })
+    expect(await connect.updateHub!(...args)).toEqual({ available: false })
+    expect(invoke).not.toHaveBeenCalled()
   })
 
   // #617 PR 4b

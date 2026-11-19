@@ -3285,7 +3285,7 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 .connect-form, .connect-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2) var(--sp-3); }
 .connect-form { margin: var(--sp-2) 0; }
 .connect-actions { margin-top: var(--sp-2); }
-.connect-desk { margin-top: var(--sp-4); }
+.connect-desk, .connect-update { margin-top: var(--sp-4); }
 .connect-desk h4 { margin: 0 0 var(--sp-1); font-size: var(--fs-body); }
 .connect-desk-example code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 #connect-desk-command { width: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

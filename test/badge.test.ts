@@ -60,14 +60,20 @@ describe('packaged app can resolve public/ from REPO_ROOT', () => {
 // hand-rolled inline filter. A duplicate predicate is exactly the bug this
 // task exists to fix — it can disagree with the viewer, and (worse) it can
 // never reach zero for an already-annotated blocked row.
+// #617 PR 4a: the watch itself moved into electron/attention-watch.cjs (run once for This Mac and
+// once for the connected hub); main.cjs keeps the import of the shared modules and the wiring. Every
+// pin below holds for the file the code now lives in, and the guards cover both files.
 describe('the Electron dock badge shares the §7 attention predicate (no duplicate)', () => {
   const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8')
+  const watchFile = readFileSync(new URL('../electron/attention-watch.cjs', import.meta.url), 'utf8')
+  const files = [['electron/main.cjs', main], ['electron/attention-watch.cjs', watchFile]] as const
+  const pass = watchFile.slice(watchFile.indexOf('async function pass()'), watchFile.indexOf('\n  function poll()'))
 
   it('does not re-implement the needs-you filter inline', () => {
-    expect(main).not.toContain('.filter((i) => !i.reply)')
+    for (const [, text] of files) expect(text).not.toContain('.filter((i) => !i.reply)')
   })
   it('does not re-implement the blocked-row filter inline', () => {
-    expect(main).not.toContain("r.status === 'blocked'")
+    for (const [, text] of files) expect(text).not.toContain("r.status === 'blocked'")
   })
   // issue #37 changed what a blocked row MEANS — twice. The requirement on
   // main.cjs is NEGATIVE: it must gain nothing, because its count is
@@ -83,8 +89,10 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   // call the predicate, count it and render it, but may not say what it decides.
   const ROW_RULE_VOCABULARY = [/annotat/i, /pickup/i, /picked[- ]up/i, /delivered/i, /\bblocked\b/i, /\bstale\b/i, /unanswered/i]
   it('never restates the attention rule — not in code, not in a comment', () => {
-    for (const re of ROW_RULE_VOCABULARY) {
-      expect(main, `electron/main.cjs must not describe what counts as attention (${re}) — public/attention.js owns that, and a copy in a comment goes stale silently`).not.toMatch(re)
+    for (const [name, text] of files) {
+      for (const re of ROW_RULE_VOCABULARY) {
+        expect(text, `${name} must not describe what counts as attention (${re}) — public/attention.js owns that, and a copy in a comment goes stale silently`).not.toMatch(re)
+      }
     }
   })
   it('dynamically imports the shared attention module rather than re-deriving it', () => {
@@ -92,25 +100,29 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
     expect(main).toMatch(/import\(pathToFileURL\(ATTENTION_PATH\)/)
   })
   it('sizes the dock badge off the shared attention set, not a local list length', () => {
-    expect(main).toMatch(/attentionEntries\(/)
-    expect(main).toMatch(/setBadgeCount\(attn\.length\)/)
+    expect(pass).toMatch(/attentionEntries\(/)
+    // each source reports its visible set's size, and the dock shows the sum of the sources
+    expect(pass).toMatch(/onCount\(attn\.length\)/)
+    expect(main).toMatch(/app\.setBadgeCount\(badgeTotal\(\{/)
+    expect(main).toContain('local: localAttentionCount,')
+    expect(main).toMatch(/onCount: \(n\) => \{\s*localAttentionCount = n\s*updateDockBadge\(\)/)
   })
   // issue #32: the dock badge and the title badge must agree on the CLOSED set
   // too, or tenet 3 breaks in the most visible place there is — the dock. The
   // main process cannot read the renderer's localStorage, which is exactly why
   // closure is server state; this pins that main.cjs actually reads it.
   it('reads the same closed set the title badge reads, and passes it to the shared predicate', () => {
-    expect(main).toContain('api/projects/closed')
-    expect(main).toMatch(/attentionEntries\([^\n]*closed\s*\)/)
+    expect(pass).toContain('api/projects/closed')
+    expect(pass).toMatch(/attentionEntries\([^\n]*closed\s*\)/)
   })
 
   it('fails OPEN on the closed-set fetch — an unknown closed set suppresses nothing', () => {
     // confirmReuse() can attach this app to an OLDER standalone viewer with no
     // such route. Failing open over-counts (a truthful superset); failing closed
     // would dark the badge entirely, which tenet 2 cannot survive.
-    const line = main.split('\n').find((l) => l.includes('api/projects/closed'))
+    const line = pass.split('\n').find((l) => l.includes('api/projects/closed'))
     expect(line, 'no api/projects/closed fetch found').toBeTruthy()
-    const block = main.slice(main.indexOf('api/projects/closed'))
+    const block = pass.slice(pass.indexOf('api/projects/closed'))
     expect(block.slice(0, 200)).toMatch(/\.catch\(/)
     expect(block.slice(0, 200)).toMatch(/res\.ok|r\.ok/)
   })
@@ -122,10 +134,9 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   // ago. `known` therefore tracks what EXISTS; the badge and the notification
   // body read what is VISIBLE.
   it('maintains its seen-set from the UNSUPPRESSED set, so reopening announces nothing old', () => {
-    const watch = main.slice(main.indexOf('function startAttentionWatch'))
-    expect(watch).toMatch(/const everything = attentionEntries\(items, boards, Date\.now\(\), liveSessions\)/)
+    expect(pass).toMatch(/const everything = attentionEntries\(items, boards, at, liveSessions\)/)
     // #247: the pinned asks join it, read without the closed set for the same reason.
-    expect(watch).toMatch(/known\s*=\s*knownNotificationIds\(everything, laterEntries\(items, boards, Date\.now\(\)\)\)/)
+    expect(pass).toMatch(/known\s*=\s*knownNotificationIds\(everything, laterEntries\(items, boards, at\)\)/)
   })
 
   it('never swallows a failed module import silently', () => {
@@ -139,12 +150,12 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   // and hands the shared predicate only the groups that projection carries.
   // test/reply-watch.test.ts pins that both inputs derive identical results.
   it('polls the lean item projection and reads only its needsYou groups', () => {
-    const start = main.indexOf('function startAttentionWatch')
-    const watch = main.slice(start, main.indexOf('\nfunction ', start + 1))
-    expect(watch).toContain('read(`${URL_BASE}api/items?scope=attention`)')
-    expect(watch).not.toContain('fetch(`${URL_BASE}api/items`)')
-    expect(watch).toMatch(/const items = g\.needsYou\.flatMap\(/)
-    expect(watch).not.toMatch(/\bg\.(notes|done)\b/)
+    expect(pass).toContain('read(`${base}api/items?scope=attention`)')
+    expect(pass).not.toMatch(/fetch(Impl)?\(`\$\{base\}api\/items`\)/)
+    expect(pass).toMatch(/const items = g\.needsYou\.flatMap\(/)
+    expect(pass).not.toMatch(/\bg\.(notes|done)\b/)
+    // This Mac's watch reads This Mac's own viewer
+    expect(main).toMatch(/createAttentionWatch\(\{\s*base: URL_BASE,/)
   })
 
   // issue #287: the plans read is the lean projection too, and both projections
@@ -153,13 +164,12 @@ describe('the Electron dock badge shares the §7 attention predicate (no duplica
   // test/reply-watch.test.ts pins that the lean, full and untagged reads all
   // derive one result.
   it('polls both lean projections conditionally and refreshes a refused answer from every plan', () => {
-    const start = main.indexOf('function startAttentionWatch')
-    const watch = main.slice(start, main.indexOf('\nfunction ', start + 1))
-    expect(main).toContain("const { createConditionalReader } = require('./conditional-read.cjs')")
-    expect(watch).toContain('const read = createConditionalReader()')
-    expect(watch).toContain('const boards = await read(`${URL_BASE}api/boards?scope=attention`)')
-    expect(watch).toContain('const latestBoards = await (await fetch(`${URL_BASE}api/boards`)).json()')
-    expect(watch).toContain('refreshNotificationTarget(latestBoards, actionable.target)')
+    expect(watchFile).toContain("const { createConditionalReader } = require('./conditional-read.cjs')")
+    // one reader per source, through that source's fetch
+    expect(watchFile).toContain('const read = createConditionalReader(fetchImpl)')
+    expect(pass).toContain('const boards = await read(`${base}api/boards?scope=attention`)')
+    expect(pass).toContain('const latestBoards = await (await fetchImpl(`${base}api/boards`)).json()')
+    expect(pass).toContain('refreshNotificationTarget(latestBoards, actionable.target)')
   })
 })
 

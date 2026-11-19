@@ -118,6 +118,8 @@ export interface RemoteConnect {
   deviceHeaderFor(url: unknown): string | null
   /** A fetch for main's own requests to the hub: refuses any other origin, adds the header, no redirect, a timeout. */
   hubFetch(): (input: unknown, init?: RequestInit) => Promise<Response>
+  /** #617 PR 4a: `<origin>/` while `id` is the active hub, else null. From memory: no store read, no Keychain. */
+  hubBase(id: unknown): string | null
 }
 
 export function createRemoteConnect(options?: RemoteConnectOptions): RemoteConnect

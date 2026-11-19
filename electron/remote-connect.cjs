@@ -720,6 +720,14 @@ function createRemoteConnect(options = {}) {
       }
     },
     hubFetch,
+    /**
+     * #617 PR 4a: the base main's own requests to hub `id` are joined to (its origin with a
+     * trailing slash), while `id` is the active hub; else null. From memory only: no store read,
+     * no Keychain, nothing sent.
+     */
+    hubBase(id) {
+      return hub !== null && typeof id === 'string' && hub.id === id ? `${hub.origin}/` : null
+    },
   })
 }
 

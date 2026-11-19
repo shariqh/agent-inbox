@@ -644,6 +644,25 @@ which brings that view forward and sets `location.hash` in it.
 - The predicate is the laptop's own `public/attention.js` applied to the hub's data, so Settings
   shows "This Mac runs 2.13.0, the hub 2.12.0" when the releases differ.
 
+**(As built in PR 4a:** `electron/attention-watch.cjs` exports `createAttentionWatch`, with every
+dependency an option (`base`, `fetchImpl`, `label`, `show`, the shared modules, `Notification`,
+the retainer, `onCount`, `wake`, `now`, a logger). Main runs it every 3 seconds for This Mac,
+unchanged, and every 5 seconds for the connected hub, but only while that hub is `online` and its
+view may be shown, and also at once when the connection changes while it is live. One hub watch per hub id; it keeps what it announced across offline stretches
+and is dropped when the hub changes or the mode returns to local. Main learns the base from a new
+`remoteConnect.hubBase(id)`, read from memory. A hub's titles read `Agent Inbox · <label> — …`.
+The dock badge is the sum, with a hub counting 0 while not online, while it cannot be shown and
+once dropped (its stored count is zeroed at each connection change while it is not live). A
+notification answer pressed while the connection checks the hub again (after a wake, an unlock or
+the network coming back) waits for that check, for at most 10 seconds, and is sent once more
+(`waitingHubFetch`); if it still cannot be saved, the notice says so for the hub and sends the
+owner to answer it there. A click shows the hub's view and lands with a new `hubView.land(id, hash)`, which
+acts only on the loaded hub page and an item link. One notice, "can't reach <label>", follows 2
+minutes of awake time out of reach with a network, and nothing more until the hub was online again;
+waking, unlocking or the network coming back restarts those 2 minutes, and it says the hub no
+longer accepts this Mac only when it was refused for that reason.
+The version sentence in Settings is not built yet.)
+
 **The terminal command.** It is shell text that main will run, so it is set only by main. The
 page sends a proposed `sshHost` and template; main shows the exact command, filled for an example
 desk, in a native `dialog.showMessageBox` ("Agent Inbox will run this in Terminal when you press

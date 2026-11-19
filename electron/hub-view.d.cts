@@ -78,6 +78,12 @@ export interface HubView {
   cleared(): Promise<void>
   /** Checks the node and probes now; loads the hub page when it is online. */
   retry(): Promise<{ ok: boolean }>
+  /**
+   * #617 PR 4a: sets `location.hash` in the hub's page, only when `id` is the active hub, its view is
+   * alive, the hub's own page (not the offline file) is loaded, and `hash` is one item link
+   * (`#item/<1–200 of A-Z a-z 0-9 % . _ ~ ->`). Anything else does nothing.
+   */
+  land(id: unknown, hash: unknown): { ok: boolean }
   /** `trustedDeskSender` for the active view. */
   trusts(event: unknown): 'hub' | 'offline' | null
 }

@@ -38,6 +38,8 @@ const ZOOM_STEP = 0.5
 const ZOOM_MIN = -7.5
 const ZOOM_MAX = 8.5
 const HUB_PARTITION = /^hub-[0-9a-f]{8}$/
+// #617 PR 4a: the one kind of place a notification click may land on in the hub's page, an item link
+const LAND_HASH = /^#item\/[A-Za-z0-9%._~-]{1,200}$/
 const CLIPBOARD_WRITE = 'clipboard-sanitized-write'
 // Chromium's code for a navigation that was cancelled, a prevented one included: not a failure
 const ERR_ABORTED = -3
@@ -241,7 +243,7 @@ const isHttp = (url) => {
 
 /**
  * One view for the active hub. `show(id | null)` puts it or This Mac on top; `current()` says
- * which; `reload()`, `destroy()`, `layout()`, `flush()`, `retry()` and `trusts(event)`. What it
+ * which; `reload()`, `destroy()`, `layout()`, `flush()`, `retry()`, `land(id, hash)` and `trusts(event)`. What it
  * shows follows `connect.onConnection`: the hub page once online, kept through `retrying`; the
  * offline file when refused, or while retrying with no hub page; nothing while the first check
  * runs. The active hub going away closes the view and asks its partition to clear everything.
@@ -731,6 +733,24 @@ function createHubView(options) {
       if (entry !== active) return { ok: false }
       const connection = connect.connection()
       if (connection.mode === 'hub' && connection.id === entry.id && connection.state === 'online' && entry.loaded !== 'hub') load(entry, 'hub')
+      return { ok: true }
+    },
+    /**
+     * #617 PR 4a: a notification click lands on one item in the hub's page. Only when `id` is the
+     * active hub, its view is alive, the hub's own page (not the offline file) is what loaded, and
+     * `hash` is one item link; then it sets `location.hash` there, JSON-quoted, as the local path
+     * does. Anything else does nothing.
+     */
+    land(id, hash) {
+      const entry = active
+      if (destroyed || entry === null || entry.id !== id || entry.loaded !== 'hub') return { ok: false }
+      if (typeof hash !== 'string' || !LAND_HASH.test(hash)) return { ok: false }
+      try {
+        if (entry.contents.isDestroyed() || hubHref(entry.contents.getURL(), entry.origin) === null) return { ok: false }
+        Promise.resolve(entry.contents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`)).catch(() => {})
+      } catch {
+        return { ok: false }
+      }
       return { ok: true }
     },
     /** Resolves when the partitions being cleared are cleared, or after 5 seconds. */

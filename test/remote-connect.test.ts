@@ -1089,6 +1089,23 @@ describe('hubFetch', () => {
   })
 })
 
+// #617 PR 4a: where main's attention watch for the hub joins its paths
+describe('hubBase', () => {
+  it('answers the active hub’s origin with a trailing slash, for its id only', async () => {
+    const h = await connected()
+    expect(h.connect.hubBase(h.id)).toBe(`${ORIGIN}/`)
+    expect(h.connect.hubBase('89abcdef')).toBeNull()
+    expect(h.connect.hubBase(null)).toBeNull()
+  })
+
+  it('answers null with no hub, and once the hub is forgotten', async () => {
+    expect(harness().connect.hubBase('0123abcd')).toBeNull()
+    const h = await connected()
+    await h.connect.forget(h.id)
+    expect(h.connect.hubBase(h.id)).toBeNull()
+  })
+})
+
 describe('probeHub', () => {
   async function probeWith(version: Route) {
     const fetch = fakeFetch({ pair: pairOk, version: versionOk() })

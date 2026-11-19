@@ -385,9 +385,21 @@ describe('electron/main.cjs wires the hub view (source)', () => {
   })
 
   it('kicks the controller on wake, on unlock and when the network comes back', () => {
-    expect(startRemote).toContain("powerMonitor.on('resume', kick)")
-    expect(startRemote).toContain("powerMonitor.on('unlock-screen', kick)")
-    expect(startRemote).toContain('watchOnline({ isOnline: () => net.isOnline(), onBack: kick })')
+    // #617 PR 4a: waking or unlocking also restarts the lost-hub notice's 2 minutes
+    expect(startRemote).toMatch(/const woke = \(\) => \{\s*lostHub\.awake\(\)\s*kick\(\)\s*\}/)
+    expect(startRemote).toContain("powerMonitor.on('resume', woke)")
+    expect(startRemote).toContain("powerMonitor.on('unlock-screen', woke)")
+    // #617 PR 4a: the network coming back also restarts the lost-hub notice's 2 minutes
+    expect(startRemote).toContain('watchOnline({ isOnline: () => net.isOnline(), onBack: () => { lostHub.awake(); kick() } })')
+  })
+
+  it('wires the hub watch: its own waiting fetch, polled only while live, and a count of 0 while not live', () => {
+    // an answer refused while the connection checks the hub again waits for that check
+    expect(main).toContain('fetchImpl: waitingHubFetch(remoteConnect.hubFetch(), () => remoteConnect.tick()),')
+    expect(startRemote).toContain('if (hubAttentionLive()) hubAttention.watch.poll()')
+    const sync = main.slice(main.indexOf('function syncHubAttention(win, connection)'), main.indexOf('\n}\n', main.indexOf('function syncHubAttention(win, connection)')))
+    // after every connection change: a hub that is not live counts 0, a live one is read now
+    expect(sync).toMatch(/if \(hubAttention !== null\) \{\s*if \(hubAttentionLive\(\)\) hubAttention\.watch\.poll\(\)\s*else hubAttention\.count = 0\s*\}\s*updateDockBadge\(\)\s*$/)
   })
 
   it('stops the controller before quitting, and writes the hub partition’s storage on quit', () => {
@@ -414,14 +426,26 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(menu).toContain("{ role: 'viewMenu' }")
   })
 
+  // #617 PR 4a: every click of This Mac's attention notifications goes through its watch's one
+  // `show`; a hub's goes through the hub watch's, which lands inside the hub's view
   it('every attention notification click brings This Mac forward before it shows the window and sets its location', () => {
     const watch = main.slice(main.indexOf('function startAttentionWatch(win)'), main.indexOf('function refreshUpdatesAfterLoad()'))
-    const clicks = [...watch.matchAll(/\.on\('click', \(\) => \{\n([\s\S]*?)\n\s*\}\)/g)].map((m) => m[1]!)
-    expect(clicks).toHaveLength(3)
-    for (const body of clicks) {
-      expect(body.trim().startsWith('hubView?.show(null)'), body).toBe(true)
-      expect(body).toContain('executeJavaScript(\`location.hash')
-    }
+    const shows = [...watch.matchAll(/show: \(hash\) => \{\n([\s\S]*?)\n\s{4}\},/g)].map((m) => m[1]!)
+    expect(shows).toHaveLength(1)
+    expect(shows[0]!.trim().startsWith('hubView?.show(null)'), shows[0]).toBe(true)
+    expect(shows[0]!.indexOf('bringWindowForward(win)')).toBeGreaterThan(0)
+    expect(shows[0]).toContain('executeJavaScript(`location.hash = ${JSON.stringify(hash)}`)')
+    const forward = main.slice(main.indexOf('function bringWindowForward(win)'), main.indexOf('\n}\n', main.indexOf('function bringWindowForward(win)')))
+    expect(forward).toMatch(/if \(win\.isMinimized\(\)\) win\.restore\(\)\s*win\.show\(\)\s*win\.focus\(\)/)
+    // every notification the watch makes is clicked through `open(hash)`, which calls that `show`
+    const watchFile = read('electron/attention-watch.cjs')
+    const watchClicks = [...watchFile.matchAll(/\.on\('click', ([^\n]*)\n/g)].map((m) => m[1]!)
+    // the reminder, the new asks and the answer that was not applied, in the watch; one more in the lost-hub notice
+    expect(watchClicks.filter((line) => line.startsWith('open('))).toHaveLength(3)
+    expect(watchClicks.filter((line) => !line.startsWith('open('))).toEqual(['() => {'])
+    // the hub's: its view first, then the window, then the landing inside that view only
+    const hub = main.slice(main.indexOf('function syncHubAttention(win, connection)'), main.indexOf('\n}\n', main.indexOf('function syncHubAttention(win, connection)')))
+    expect(hub).toMatch(/show: \(hash\) => \{\s*hubView\?\.show\(id\)\s*bringWindowForward\(win\)\s*if \(hash\) hubView\?\.land\(id, hash\)\s*\}/)
     // the update notifications open Settings → Updates through openUpdatesWindow
     expect(main.match(/note\.on\('click', \(\) => \{\n\s*if \(updateWindow\) openUpdatesWindow\(updateWindow\)/g)).toHaveLength(2)
   })
@@ -441,6 +465,7 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     const apply = binding.slice(binding.indexOf('apply({ setup, update, files, launch }) {'))
     expect(apply.indexOf('hubView?.ownerChanged()')).toBeGreaterThan(apply.indexOf('fileLinkWebContentsId = files ? setupWindowWebContentsId : null'))
     // nothing else in main shows a hub: every path is hubView.show(id), behind mayShow
-    expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id'])
+    // (#617 PR 4a: the hub watch's notification click and the lost-hub notice's click are two more, by id)
+    expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id', 'id', 'id'])
   })
 })

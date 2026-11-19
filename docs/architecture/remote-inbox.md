@@ -30,7 +30,9 @@ paths:
   - "test/dom/hub-strip-keys.test.ts"
   - "test/dom/hub-strip-deck-keys.test.ts"
   - "test/dom/hub-mode.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts"
+  - "electron/attention-watch.cjs"
+  - "test/attention-watch.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts,electron/attention-watch.cjs,test/attention-watch.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -44,7 +46,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files (`electron/desk-open.cjs`) to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c, PR 4a)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -76,11 +78,13 @@ Later PRs add their files (`electron/desk-open.cjs`) to the globs.
   (`public/connect-settings.js`), the strip that says whose Inbox is on screen
   (`public/hub-strip.js`) and the page's hub mode (`public/hub-mode.js`) ("The connecting Mac's
   screens", below).
+- `electron/attention-watch.cjs` (PR 4a): the attention watch, run once for This Mac and once for
+  the connected hub, the dock badge's sum, and the one notice for a hub out of reach ("Attention
+  from the hub", below).
 
 ## What is not built yet
 
-- The rest of connect mode: Open desk (the terminal action) and notifications against a hub
-  (PR 4).
+- The rest of connect mode: Open desk (the terminal action, PR 4).
 
 So the entry is off until the owner switches it on in Settings → Other devices on the hub. With no
 device in it, every request but pairing is refused. Any local process on the hub can still make a
@@ -1117,8 +1121,9 @@ viewer's URL) exactly as a stranger, and call nothing. Its fake `BrowserWindow.f
 answers the window for the hub view too, so a handler that trusted "a page in my window" would be
 caught, and a source check finds no handler registered through `webContents.ipc` or a frame's `ipc`.
 
-**Not built yet.** The terminal action (`available()` says `open: false`), notifications and the
-dock badge for the hub (PR 4), and keyboard shortcuts for the menu items. The Settings form, the
+**Not built yet.** The terminal action (`available()` says `open: false`, PR 4) and keyboard
+shortcuts for the menu items. Notifications and the dock badge for the hub are PR 4a ("Attention
+from the hub", below). The Settings form, the
 strip and the page's hub mode are PR 3c, below.
 
 ## The connecting Mac's screens (PR 3c)
@@ -1257,6 +1262,79 @@ leaves that state by itself within 3 seconds of the hub answering again. A write
 with "write failed (403)" and keeps the draft with its own error beside Send. The Chats tab keeps
 "Couldn't load chats" until Refresh or until the tab is opened again. No request is retried by this
 PR.
+
+## Attention from the hub (PR 4a)
+
+All agent chats may run on the hub while the owner sits at the connecting Mac, so that Mac must
+notify for the hub's asks and let them be answered from the notification. Main's attention watch
+moved into `electron/attention-watch.cjs` (`createAttentionWatch`), which takes everything it
+touches as an option and runs under vitest with fakes. Main runs it twice:
+
+- **This Mac**, as before: its own viewer every 3 seconds, the same titles, bodies, buttons,
+  reminder, wake adapter, refused-answer retry and fail-open read of closed projects, and nothing
+  announced on the first poll.
+- **The connected hub**: one watch per hub id, made when `remoteConnect.connection()` first names
+  that hub and dropped (its count and what it announced with it) when the hub changes or the mode
+  returns to local. It polls every 5 seconds, and only while the connection for that id is `online`
+  and `hubView.canShow()` is true: a hub that cannot be shown neither notifies nor counts. Every
+  request goes through `remoteConnect.hubFetch()` (its origin only, the device header, no redirect,
+  a 5-second timeout), to `remoteConnect.hubBase(id)`, the hub's origin with a trailing slash, read
+  from memory (no store read, no Keychain). The hub side needs no change: the four reads and the two
+  answer routes are on the remote entry's allowlist, and a hub on 2.12.0 serves them.
+
+Each watch keeps its own record of what it announced, its own conditional reader and its own
+response watch. The hub's record survives offline stretches of the same hub, so asks that arrived
+while this Mac slept are announced once when the hub is back (one summary for several), and a new
+watch starts empty, so connecting announces nothing old. The wake adapter runs only for This Mac
+(the hub's own app runs its own); the "waiting for agent" reminder runs for both. A failed poll is
+quiet and retried at the next tick; the watch never kicks or probes the hub. The hub's watch polls
+at once when the connection becomes `online` (the 5-second interval stays beside it; the watch never
+overlaps itself).
+
+**Titles name the hub**: `Agent Inbox · <label> — needs you`, `… — <n> new need you`,
+`… — waiting for agent` (and its plural) and `… — Response not applied`, with the connection's
+stored label as text only. This Mac's titles are unchanged. A hub's log line says only how many new
+asks there are, never the hub's text, its host or its label.
+
+**Answer buttons** on a hub notification post through the same `hubFetch` to the hub's base, with
+the hub's origin as `Origin`; a refused row answer reads `<base>api/boards` through it too, as This
+Mac's does. An app launch's approval still gets no buttons. Waking, unlocking or the network coming
+back makes the connection distrust the hub until its next check passes, and until then `hubFetch`
+refuses every request. A button pressed in that window would fail, so the hub watch's fetch is
+wrapped in `waitingHubFetch`: a request that changes something (not GET or HEAD) and is refused
+for that reason waits for the connection's check to finish, for at most 10 seconds, and is sent
+once more. Reads and every other error are never retried. A hub watch cannot be made without its own
+fetch. If the answer still cannot be saved, the "Response not applied" notice for a hub says it was
+not saved on the hub and to answer it there; This Mac's notice keeps its wording.
+
+**A click** on a hub notification shows the hub's view (`hubView.show(id)`), brings the window
+forward, and lands on the ask with `hubView.land(id, hash)`: it sets `location.hash` (JSON-quoted)
+only when that id's view exists, the hub's own page (not the offline file) is what loaded and is on
+the hub's origin, and the hash is one item link (`#item/` and 1 to 200 of `A-Z a-z 0-9 % . _ ~ -`).
+Anything else does nothing. A view not built yet (`not_ready`) still brings the window forward; no
+landing is queued.
+
+**The dock badge** is the sum of This Mac's last count and the hub's (`badgeTotal`), where the hub
+counts 0 while it is not `online`, while it cannot be shown, and once dropped. It is set whenever a
+count, the connection or what may be shown changes, and the hub's stored count is zeroed at each
+connection change while it is not live, so an old count cannot come back for a few seconds when the
+hub does. A failed import of the shared attention modules
+still sets it to 0 once, loudly.
+
+**One notice when the hub is lost** (`createLostHubNotice`): when the same hub has been continuously
+`retrying` or `refused` (never for the reason `stopped`, which is this app quitting) for 2 minutes of
+awake time while this Mac has a network, one notification says `Agent Inbox — can't reach <label>`.
+Its body says the hub no longer accepts this Mac only when it was refused for that reason, and
+otherwise that new asks will not show until it is back. Waking or unlocking the Mac, the network
+coming back, and another hub, restart the 2 minutes; a wait that ends with no network starts over. It says nothing more until that hub has been online again,
+and there is no "it is back" notice. Its click brings the window forward and shows the hub's view,
+whose offline page explains.
+
+Tests: `test/attention-watch.test.ts` drives both kinds of watch against a real viewer on a scratch
+database, and once through the real remote entry and its gate on a loopback listener (a question
+flagged in the store is announced, its button stores the answer, every read is answered);
+`test/hub-view.test.ts` covers `land`; `test/badge.test.ts` holds its pins, and its guard that the
+code never restates the attention rule, for both `electron/main.cjs` and the new file.
 
 ## Checked against real Tailscale Serve
 

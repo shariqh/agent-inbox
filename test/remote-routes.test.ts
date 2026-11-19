@@ -18,7 +18,7 @@ import type { Server } from 'node:http'
 import { openDb } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
-import { REMOTE_ROUTES, guardRemoteApp, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
+import { GUARDED_ROUTES, REMOTE_ROUTES, guardRemoteApp, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
 import { remoteCodeRoute } from '../src/remote-pair.js'
 import type { Handler } from 'hono'
 import type { RemoteEntry } from '../src/viewer-remote.js'
@@ -53,6 +53,7 @@ const REFUSED = new Map<string, string>([
 const LOOPBACK_ONLY = new Map<string, string>([
   ['GET /api/remote-entry', 'the remote entry\'s own status: setup, which only makes sense at the hub'],
   ['POST /api/remote-entry/code', 'makes a pairing code, which hands out a credential: only main, with the owner token, at the hub'],
+  ['POST /api/remote-entry/update', 'main\'s report of the hub\'s update (#637): only main, with the owner token, at the hub'],
 ])
 
 describe('REMOTE_ROUTES', () => {
@@ -120,6 +121,11 @@ describe('REMOTE_ROUTES', () => {
     expect(added.sort()).toEqual([...LOOPBACK_ONLY.keys()].sort())
   })
 
+  it('lists the guarded app\'s own update routes apart (#637): never createViewer\'s, never on REMOTE_ROUTES', () => {
+    expect(GUARDED_ROUTES.map((r) => key(r.method, r.path))).toEqual(['GET /api/remote/update', 'POST /api/remote/update'])
+    for (const route of GUARDED_ROUTES) expect(remoteRouteAllowed(route.method, route.path)).toBe(false)
+  })
+
   it('never lets createViewer register the pairing route: only the guarded app serves it', () => {
     const app = createViewer(db, { ownerToken: 'owner-token-for-the-test', agentHome: dir, runtimeRoot: join(dir, 'runtime') })
     expect(app.routes.filter((route) => route.path.startsWith('/api/remote'))).toEqual([])
@@ -143,10 +149,21 @@ function runChain(app: Hono<never>, method: string, path: string): RouteRecord[]
 const samplePath = (pattern: string) => pattern.replace(/:[A-Za-z]+/g, 'sample0')
 
 const pairHandler: Handler = (c) => c.text('pair')
+const updateHandlers: { get: Handler; post: Handler } = { get: (c) => c.text('update'), post: (c) => c.text('start') }
 
 function chainProblems(app: Hono, gate: MiddlewareHandler): string[] {
-  const guarded = guardRemoteApp(app, gate, pairHandler) as unknown as Hono<never>
+  const guarded = guardRemoteApp(app, gate, pairHandler, updateHandlers) as unknown as Hono<never>
   const problems: string[] = []
+  // #637: the update routes, the same way: the gate, then the guarded app's own handler, which answers
+  for (const route of GUARDED_ROUTES) {
+    const chain = runChain(guarded, route.method, route.path)
+    const got = chain.map((r) => `${r.method} ${r.path}`)
+    const own = route.method === 'GET' ? updateHandlers.get : updateHandlers.post
+    if (got[0] !== 'ALL /*' || got[1] !== `${route.method} ${route.path}` || chain[0]!.handler !== gate || chain[1]!.handler !== own) {
+      problems.push(`${route.method} ${route.path}: ${got.join(', ')}`)
+    }
+    if (runChain(app as unknown as Hono<never>, route.method, route.path).some((r) => r.path !== '/*')) problems.push(`the wrapped app serves ${route.method} ${route.path}`)
+  }
   // pairing: the gate, then the guarded app's own handler, which answers; never a handler of the wrapped app
   const pair = runChain(guarded, 'POST', '/api/remote/pair')
   const pairGot = pair.map((r) => `${r.method} ${r.path}`)
@@ -211,6 +228,12 @@ describe('what Hono runs for each allowed path', () => {
       'the wrapped app serves POST /api/remote/pair',
     ]))
   })
+
+  it('catches an update route on the wrapped app (#637)', () => {
+    const app = remoteApp()
+    app.post('/api/remote/update', (c) => c.text('wrapped'))
+    expect(chainProblems(app, gate)).toContain('the wrapped app serves POST /api/remote/update')
+  })
 })
 
 describe('the remote app', () => {
@@ -219,7 +242,7 @@ describe('the remote app', () => {
     expect(server).toContain([
       'const remoteApp = createViewer(db, { mesh })',
       "remoteApp.get('/*', serveStatic({ root: './public' }))",
-      'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port })',
+      'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update })',
     ].join('\n'))
     // Hono copies the routes when the entry wraps the app: anything added to it later is never served
     expect(server.match(/\bremoteApp\b/g)).toHaveLength(3)

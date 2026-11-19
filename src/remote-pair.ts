@@ -73,7 +73,7 @@ export function normaliseCode(text: string): string | null {
 }
 
 /** Compares a sent owner token with the viewer's, as SHA-256 digests by timingSafeEqual. */
-function ownerTokenMatches(sent: string | undefined, token: string): boolean {
+export function ownerTokenMatches(sent: string | undefined, token: string): boolean {
   return typeof sent === 'string' && crypto.timingSafeEqual(sha256(sent), sha256(token))
 }
 

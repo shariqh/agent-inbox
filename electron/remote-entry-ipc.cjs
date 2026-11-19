@@ -396,14 +396,22 @@ async function stopRemoteEntry(controller, { setTimeout: setTimeoutFn = setTimeo
   await Promise.race([Promise.resolve().then(() => controller.settled()).catch(() => {}), limit])
 }
 
-/** Every 5 seconds, get() again; a ping when what it shows changed. */
-function watchRemoteEntry({ panel, changed, setInterval: setIntervalFn = setInterval, clearInterval: clearIntervalFn = clearInterval }) {
+/**
+ * Every 5 seconds, get() again; a ping when what it shows changed. `onView(view)`, when given, hears
+ * every view read (#637: main learns from the same read whether this Mac shares with a paired device).
+ */
+function watchRemoteEntry({ panel, changed, onView, setInterval: setIntervalFn = setInterval, clearInterval: clearIntervalFn = clearInterval }) {
   let last = null
   let busy = false
   const timer = setIntervalFn(() => {
     if (busy) return
     busy = true
     Promise.resolve().then(() => panel.get()).then((view) => {
+      try {
+        onView?.(view)
+      } catch {
+        // what main does with a view never stops the watch
+      }
       // a pause's next try moves every few seconds; the page shows it to the minute
       const text = JSON.stringify(view, (key, value) => (key === 'nextAt' && typeof value === 'number' ? Math.floor(value / 60_000) : value))
       if (last !== null && text !== last) changed()

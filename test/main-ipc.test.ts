@@ -90,6 +90,9 @@ const CHANNELS: Record<string, { allows: 'local page only' | 'hub view'; args: u
   'agent-inbox:connect-show': { allows: 'local page only', args: [ID] },
   // #617 PR 4b: the Open desk command, proposed by the owned local page only
   'agent-inbox:connect-desk-command': { allows: 'local page only', args: [{ id: ID, command: 'ssh -t studio {attach}' }] },
+  // #637: the hub's update, read and started by the owned local page only
+  'agent-inbox:connect-hub-update': { allows: 'local page only', args: [ID] },
+  'agent-inbox:connect-hub-update-start': { allows: 'local page only', args: [ID] },
   // the only four the hub view may use: its connection (label, state, version), Retry from the offline
   // file, and (#617 PR 4b) Open desk from the hub's own page
   'agent-inbox:desk-connection': { allows: 'hub view', args: [] },
@@ -278,6 +281,8 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     ['agent-inbox:chat-resume-available', []],
     ['agent-inbox:connect-view', []],
     ['agent-inbox:connect-show', [null]],
+    // #637: the harness's hub is online and its fetch answers an empty list, which reads as unreadable
+    ['agent-inbox:connect-hub-update', [ID]],
     ['agent-inbox:remote-entry', []],
   ])('%s does answer the owned local page, so the comparison above is meaningful', async (channel, args) => {
     const handler = main.handlers.get(channel)!
@@ -455,6 +460,10 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(desk).toContain("readShells: () => readFileSync('/etc/shells', 'utf8'),")
     const register = main.slice(main.indexOf('registerHubIpc({'), main.indexOf('})', main.indexOf('registerHubIpc({')))
     expect(register).toContain('deskOpen: deskOpenFor,')
+    // #637: the hub's update goes through the connection controller's hub fetch, never its own fetch
+    expect(register).toContain('hubUpdate: hubUpdateFor,')
+    expect(main).toContain('const hubUpdateFor = () => (remoteConnect === null ? null : (hubUpdate ??= createHubUpdate({ connect: () => remoteConnect })))')
+    expect(read('electron/hub-update.cjs')).not.toMatch(/\bfetch\(|globalThis\.fetch|safeStorage|deviceHeaderFor/)
     const confirm = main.slice(main.indexOf('async function confirmDeskCommand(win, command, label) {'), main.indexOf('\n}\n', main.indexOf('async function confirmDeskCommand(win, command, label) {')))
     expect(confirm).toContain('const text = deskConfirmation(command, label)')
     expect(confirm).toContain('if (text === null) return false')
@@ -571,8 +580,9 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     // the hub's: its view first, then the window, then the landing inside that view only
     const hub = main.slice(main.indexOf('function syncHubAttention(win, connection)'), main.indexOf('\n}\n', main.indexOf('function syncHubAttention(win, connection)')))
     expect(hub).toMatch(/show: \(hash\) => \{\s*hubView\?\.show\(id\)\s*bringWindowForward\(win\)\s*if \(hash\) hubView\?\.land\(id, hash\)\s*\}/)
-    // the update notifications open Settings → Updates through openUpdatesWindow
-    expect(main.match(/note\.on\('click', \(\) => \{\n\s*if \(updateWindow\) openUpdatesWindow\(updateWindow\)/g)).toHaveLength(2)
+    // the update notifications open Settings → Updates through openUpdatesWindow (#637: and the hub's
+    // notice that a paired Mac started an update)
+    expect(main.match(/note\.on\('click', \(\) => \{\n\s*if \(updateWindow\) openUpdatesWindow\(updateWindow\)/g)).toHaveLength(3)
   })
 
   it('names the hub in the title while its view is on top, and tells only the owned local page of a change', () => {
@@ -592,5 +602,23 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     // nothing else in main shows a hub: every path is hubView.show(id), behind mayShow
     // (#617 PR 4a: the hub watch's notification click and the lost-hub notice's click are two more, by id)
     expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id', 'id', 'id, true'])
+  })
+})
+
+// #637: the hub's update, as a paired Mac sees it
+describe('electron/main.cjs reports the update controller to the remote update link (source)', () => {
+  const main = read('electron/main.cjs')
+
+  it('tells the link of every state the controller emits, before anything else, whether or not a window is open', () => {
+    const send = main.slice(main.indexOf('function sendUpdateState(state) {'), main.indexOf('\n}\n', main.indexOf('function sendUpdateState(state) {')))
+    expect(send.indexOf('remoteUpdate?.changed()')).toBeGreaterThan(-1)
+    expect(send.indexOf('remoteUpdate?.changed()')).toBeLessThan(send.indexOf('return'))
+    expect(main).toContain('    emit: sendUpdateState,\n')
+    expect(main).toContain("const { createRemoteUpdateLink } = require('./remote-update.cjs')")
+    // made in one place only: with the sharing controller, for the owned viewer on macOS
+    expect(main.match(/createRemoteUpdateLink\(/g)).toHaveLength(1)
+    const start = main.slice(main.indexOf('function startRemoteEntry() {'), main.indexOf('\n}\n', main.indexOf('function startRemoteEntry() {')))
+    expect(start).toContain("if (process.platform !== 'darwin' || !viewerOwned || remoteEntry !== null) return")
+    expect(start).toContain('remoteUpdate = createRemoteUpdateLink({')
   })
 })

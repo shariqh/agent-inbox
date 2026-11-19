@@ -24,6 +24,8 @@ import { Hono } from 'hono'
 import type { Handler, MiddlewareHandler } from 'hono'
 import { PAIR_PATH, createPairing, isDeviceLabel } from './remote-pair.js'
 import type { MadeCode, PairedDevice } from './remote-pair.js'
+import { UPDATE_PATH, remoteUpdateRoutes } from './remote-update.js'
+import type { RemoteUpdate } from './remote-update.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
 const REMOTE_FILE = 'remote.json'
@@ -297,6 +299,16 @@ const ROUTE_SEGMENTS = REMOTE_ROUTES.map((route) => ({ method: route.method, seg
 
 const isApiPath = (path: string): boolean => path === '/api' || path.startsWith('/api/')
 
+/**
+ * #637: the routes the guarded app serves itself, after the gate, for a paired device only: what the
+ * hub's update would be, and the request to start it (src/remote-update.ts). Not on REMOTE_ROUTES,
+ * which lists what the wrapped app serves.
+ */
+export const GUARDED_ROUTES: ReadonlyArray<{ method: 'GET' | 'POST'; path: string }> = [
+  { method: 'GET', path: UPDATE_PATH },
+  { method: 'POST', path: UPDATE_PATH },
+]
+
 /** Step 9: a GET outside `/api/` (a static file), or a route on REMOTE_ROUTES (`:param` is one non-empty segment). */
 export function remoteRouteAllowed(method: string, path: string): boolean {
   if (method === 'GET' && !isApiPath(path)) return true
@@ -356,12 +368,23 @@ export function pathFormOk(raw: unknown, routed: string): boolean {
 
 const DEVICE_SECRET = /^[A-Za-z0-9_-]{43}$/
 
-/** Step 8: the secret's SHA-256 against every paired device's, all of them, with no early exit. */
-function deviceMatches(secret: string, devices: readonly RemoteDevice[]): boolean {
+/** Step 8: the secret's SHA-256 against every paired device's, all of them, with no early exit; the matching device's id. */
+function matchedDevice(secret: string, devices: readonly RemoteDevice[]): string | null {
   const digest = crypto.createHash('sha256').update(secret, 'ascii').digest()
-  let matched = 0
-  for (const device of devices) matched |= crypto.timingSafeEqual(digest, device.digest) ? 1 : 0
-  return matched === 1
+  let matched: string | null = null
+  for (const device of devices) {
+    const same = crypto.timingSafeEqual(digest, device.digest)
+    matched = same ? device.id : matched
+  }
+  return matched
+}
+
+// #637: which paired device step 8 let through, for the guarded app's own routes; never answered or logged
+const DEVICE_OF = new WeakMap<IncomingMessage, string>()
+
+/** The id of the paired device whose secret this request passed the gate with, or null. */
+export function remoteDeviceOf(incoming: IncomingMessage | undefined): string | null {
+  return incoming === undefined ? null : DEVICE_OF.get(incoming) ?? null
 }
 
 /**
@@ -414,12 +437,15 @@ export function remoteGate(opts: {
     if (!pairing) {
       // 8. a paired device's secret, sent once
       const secrets = headerValues(incoming, 'x-agent-inbox-device')
-      if (secrets.length !== 1 || !DEVICE_SECRET.test(secrets[0]!) || !deviceMatches(secrets[0]!, setting.devices)) {
-        return refuse('device')
-      }
+      const matched = secrets.length === 1 && DEVICE_SECRET.test(secrets[0]!) ? matchedDevice(secrets[0]!, setting.devices) : null
+      if (matched === null) return refuse('device')
+      if (incoming) DEVICE_OF.set(incoming, matched)
 
-      // 9. the method (HEAD as GET, as Hono routes it) and the routed path on the allowlist
-      if (!remoteRouteAllowed(c.req.method === 'HEAD' ? 'GET' : c.req.method, c.req.path)) return refuse('route')
+      // 9. the method (HEAD as GET, as Hono routes it) and the routed path on the allowlist, or one of
+      //    the guarded app's own routes (#637)
+      const method = c.req.method === 'HEAD' ? 'GET' : c.req.method
+      const guardedRoute = GUARDED_ROUTES.some((route) => route.method === method && route.path === c.req.path)
+      if (!guardedRoute && !remoteRouteAllowed(method, c.req.path)) return refuse('route')
     }
 
     await next()
@@ -441,7 +467,9 @@ export function remoteGate(opts: {
  * one fixed line naming only the error's class (a store error can quote ids taken from the path)
  * and answers a bare 500.
  */
-export function guardRemoteApp(app: Hono, gate: MiddlewareHandler<{ Bindings: HttpBindings }>, pair: Handler): Hono<{ Bindings: HttpBindings }> {
+export function guardRemoteApp(
+  app: Hono, gate: MiddlewareHandler<{ Bindings: HttpBindings }>, pair: Handler, update?: { get: Handler; post: Handler },
+): Hono<{ Bindings: HttpBindings }> {
   const guarded = new Hono<{ Bindings: HttpBindings }>()
   // The gate must precede route(), as in src/viewer-network.ts: middleware added after the routes
   // would let Hono match those routes first.
@@ -449,6 +477,11 @@ export function guardRemoteApp(app: Hono, gate: MiddlewareHandler<{ Bindings: Ht
   // Pairing is served by this guarded app, never by the wrapped one: after the gate, before route().
   // It answers itself, so the wrapped app's middleware never runs for it.
   guarded.post(PAIR_PATH, pair)
+  // #637: the hub's update, for a paired device only (step 8 ran); served here, never by the wrapped app
+  if (update) {
+    guarded.get(UPDATE_PATH, update.get)
+    guarded.post(UPDATE_PATH, update.post)
+  }
   // Hono copies the app's routes at this call: a route added to `app` afterwards is never served.
   guarded.route('/', app as unknown as Hono<{ Bindings: HttpBindings }>)
   // createViewer sets no onError, so this one handles its errors (Hono's default logs the error itself)
@@ -487,7 +520,11 @@ export interface RemoteEntry {
  * too) when that stops being so. Checked on every request and every 5 seconds. A bind failure is
  * logged once and shown in the status; nothing else stops.
  */
-export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: number; intervalMs?: number; now?: () => number }): RemoteEntry {
+export function startRemoteEntry(opts: {
+  app: Hono; dir: string; viewerPort: number; intervalMs?: number; now?: () => number
+  /** #637: the hub's update relay (src/remote-update.ts); without it the update routes answer 404 */
+  update?: RemoteUpdate
+}): RemoteEntry {
   const file = join(opts.dir, REMOTE_FILE)
   const cache = remoteSettingCache(file)
   const refused: RemoteCounts = { host: 0, funnel: 0, login: 0, path: 0, origin: 0, device: 0, route: 0, pair: 0 }
@@ -539,7 +576,7 @@ export function startRemoteEntry(opts: { app: Hono; dir: string; viewerPort: num
       // only on the listener the current setting names: a request still on an old port is refused
       return setting && incoming?.socket.localPort === setting.port ? setting : null
     },
-  }), pairing.handler)
+  }), pairing.handler, opts.update ? remoteUpdateRoutes(opts.update, remoteDeviceOf) : undefined)
 
   function closeServer(): void {
     const current = server

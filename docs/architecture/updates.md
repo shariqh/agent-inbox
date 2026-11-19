@@ -229,7 +229,11 @@ These landed after v1 and still hold invariants; the release history itself is i
   window bound to a viewer this app started and proved it owns (`viewerOwned`, set only
   in the `waitForOwnership()` branch; bound at the first navigation and, since #216, again
   after a later load re-proves it — `electron-app.md`) — not Setup's runtime
-  payload; a reused or failed-over viewer never gets installs. *(#465)* Main then
+  payload; a reused or failed-over viewer never gets installs. *(#637)* A paired Mac can
+  also start an install, through the hub's remote entry (`remote-inbox.md`, "Updating the
+  hub from another Mac"): `electron/remote-update.cjs` calls `downloadNow()` and
+  `installNow()` with no argument, only while the offer is `installPermitted` (this same
+  window grant) and no setup or quit runs. *(#465)* Main then
   registers no installer and passes `installWithheld: 'unowned-viewer'`, which the
   controller copies onto every downloadable offer no installer is registered for (the
   preload refuses it on an offer that installs or cannot download), so Settings and the notification say to quit

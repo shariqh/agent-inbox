@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
   advanceBoardRow, annotateBoardRow, annotateItem, answerItem, archiveBoard, closeProject, getBoard, getItem, insertItem,
-  markReplySeen, pinItem, replyItem, resolveItem, upsertBoard,
+  markReplySeen, pinItem, replyItem, resolveItem, updateBoardRow, upsertBoard,
 } from '../../src/store.js'
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
@@ -50,14 +50,14 @@ const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 const KEY = 'agent-inbox-drafts-v1'
 const DAY = 24 * 60 * 60 * 1000
 const PAUSED = 'paused — updating when you\'re done'
-const QUESTION_CHANGED = 'Not sent because this question changed.'
-const QUESTION_CLOSED = 'Not sent because this question is closed or no longer available.'
-const ACTION_CHANGED = 'Not sent because this action changed.'
-const SET_ASIDE = 'Kept from before you set this aside.'
+const QUESTION_CHANGED = 'The question changed before your text was sent.'
+const QUESTION_CLOSED = 'This question was closed or removed before your text was sent.'
+const ACTION_CHANGED = 'The ask changed before your text was sent.'
+const STEP_GONE = 'This step was closed or removed before your text was sent.'
 const UNCONFIRMED = 'Note save was not confirmed'
 const PROJECT_CLOSED = 'Kept because this project is closed.'
 const SEND_UNCONFIRMED_QUESTION = 'Your send was not confirmed, and this question has changed since.'
-const SEND_UNCONFIRMED_ACTION = 'Your send was not confirmed, and this action has changed since.'
+const SEND_UNCONFIRMED_ACTION = 'Your send was not confirmed, and the ask has changed since.'
 
 interface Stored { savedAt: number; draft: Record<string, unknown> }
 // A stored question draft's pin for a question nobody has answered yet.
@@ -452,16 +452,16 @@ describe('a draft whose target changed goes to the unsent responses', () => {
   })
 
   it.each([
-    ['its action moved', (d: Database.Database) => moveAction(d)],
-    ['its plan was archived', (d: Database.Database) => {
+    ['its action moved', ACTION_CHANGED, (d: Database.Database) => moveAction(d)],
+    ['its plan was archived', STEP_GONE, (d: Database.Database) => {
       const board = getBoard(d, 'alpha', 'Launch plan')!
       expect(archiveBoard(d, board.id, board.revision)).toBe(true)
     }],
-    ['it was removed', (d: Database.Database) => {
+    ['it was removed', STEP_GONE, (d: Database.Database) => {
       const board = getBoard(d, 'alpha', 'Launch plan')!
       upsertBoard(d, { ...AGENT, title: 'Launch plan', expectedVersion: board.revision, rows: [] })
     }],
-  ] as const)('a plan row when %s', async (_label, change) => {
+  ] as const)('a plan row when %s', async (_label, reason, change) => {
     db = freshDb()
     const board = plan(db)
     const rowId = board.rows[0]!.id
@@ -474,11 +474,38 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     await pollTick()
     expect(bridge.posts).toHaveLength(0)
     const fold = recovery()!
-    expect(fold.textContent).toContain(ACTION_CHANGED)
+    expect(fold.textContent).toContain(reason)
     expect(fold.textContent).toContain('Approve the original action.')
-    expect(fold.textContent).not.toContain(SET_ASIDE)
     await saved()
     expect(Object.keys(stored())).toEqual([`row-recovery:${rowId}:${board.rows[0]!.revision}`])
+  })
+
+  // #636: the same ask is still the draft's, whatever else moved on the row
+  it.each([
+    ['an issue link', { issue: { repo: 'example/repo', number: 7 } }, null],
+    ['its note', { note: 'Choose now, after the hotfix.' }, 'This ask was edited while you were typing. Read it again, then send.'],
+  ] as const)('puts a plan row draft back in its editor when an agent changed %s of the same ask', async (_label, edit, notice) => {
+    db = freshDb()
+    const board = plan(db)
+    const rowId = board.rows[0]!.id
+    await bootApp(db)
+    await draftAnswer(rowId, 'Approve the original action.')
+    window.dispatchEvent(new Event('pagehide'))
+    updateBoardRow(db, {
+      ...AGENT, title: 'Launch plan', label: 'Approve launch',
+      expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision, ...edit,
+    })
+
+    const bridge = await reopen(db)
+    await pollTick()
+    expect(bridge.posts).toHaveLength(0)
+    expect(recovery()).toBeNull()
+    await showInbox()
+    expect(answerInput(rowId)?.value).toBe('Approve the original action.')
+    expect(row(rowId)?.querySelector('.ask-edited')?.textContent ?? null).toBe(notice)
+    click(sendButton(rowId))
+    await settle()
+    expect(getBoard(db, 'alpha', 'Launch plan')!.rows[0]!.annotation).toBe('Approve the original action.')
   })
 
   // Issue #299: the poll carries archived plans in brief, without the human's
@@ -547,7 +574,7 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     })
     await pollTick()
     const fold = recovery()!
-    expect(fold.textContent).toContain(ACTION_CHANGED)
+    expect(fold.textContent).toContain(STEP_GONE)
     expect(fold.textContent).toContain('Approve the original action.')
     expect(document.getElementById('status')?.textContent).toBe('')
   })
@@ -622,7 +649,7 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     expect(fold.textContent).not.toContain(ACTION_CHANGED)
   })
 
-  it('keeps #272\'s set-aside reason only where the human set the ask aside', async () => {
+  it('brings a draft on an ask the human set aside back to its editor (#636)', async () => {
     db = freshDb()
     const board = plan(db)
     const rowId = board.rows[0]!.id
@@ -634,14 +661,14 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     const bridge = await reopen(db)
     await pollTick()
     expect(bridge.posts).toHaveLength(0)
-    expect(recovery()?.textContent).toContain('answer: Half an answer')
+    expect(recovery()).toBeNull()
     await showInbox()
     const later = document.querySelector<HTMLDetailsElement>('#needsYouList .later-section')!
     later.open = true
-    click(row(rowId))
+    if (!answerInput(rowId)) click(row(rowId))
     await settle()
-    const warnings = [...row(rowId)!.querySelectorAll('.stale-draft')].map((el) => el.textContent)
-    expect(warnings).toEqual([`${SET_ASIDE} Preserved answer: Half an answer`])
+    expect(answerInput(rowId)?.value).toBe('Half an answer')
+    expect(row(rowId)!.querySelectorAll('.stale-draft')).toHaveLength(0)
   })
 })
 
@@ -737,7 +764,7 @@ describe('the stored copy follows the draft', () => {
     await settle()
     await saved()
     expect(storedTexts()).toEqual(['Too late again.'])
-    click(buttonLabelled('Clear', recovery()!))
+    click(buttonLabelled('Discard', recovery()!))
     await settle()
     await saved()
     expect(stored()).toEqual({})

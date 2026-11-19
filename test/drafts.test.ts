@@ -87,6 +87,18 @@ describe('draftEntry', () => {
     })).toBeNull()
   })
 
+  it('keeps the signatures of the ask and response a row draft was typed under (#636)', () => {
+    const row = {
+      type: 'row', rowId: 'r1', boardId: 'b1', boardRevision: 4, revision: 7, actionVersion: 2,
+      text: 'Go.', kind: 'answer', boardTitle: 'Plan', label: 'Step', context: '',
+    }
+    expect(draftEntry({ ...row, ask: 'k3x9', response: 'p2q' })).toMatchObject({ ask: 'k3x9', response: 'p2q' })
+    expect(draftEntry(row), 'a draft stored before #636 has neither').toMatchObject({ ask: null, response: null })
+    expect(draftEntry({ ...row, ask: 7 })).toBeNull()
+    expect(draftEntry({ ...row, ask: 'x'.repeat(65) })).toBeNull()
+    expect(draftEntry({ ...row, response: false })).toBeNull()
+  })
+
   it('names every kind but an item recovery, whose window names it', () => {
     expect(draftKey(reply('q1'))).toBe('reply:q1')
     expect(draftKey(draftEntry({

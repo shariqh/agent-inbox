@@ -323,7 +323,7 @@ describe('Pin for later (#247)', () => {
     expect(getBoard(d, 'alpha', 'Release')!.rows[0]!.pinned_at).toBeNull()
     expect(row(rowId)?.closest('details')).toBeNull()
     expect(row(rowId)?.querySelector('.write-error')?.textContent)
-      .toBe('This action changed before your click; refreshed without applying it.')
+      .toBe('This step changed before your click, so nothing was applied. Check it and try again.')
   })
 
   it('keeps the badge, the tab count, Needs you and the dock projection in agreement with pins', async () => {
@@ -389,6 +389,8 @@ describe('a draft on a deferred ask stays in view (#247)', () => {
     ['Pin for later', 'pinned', 'question'],
     ['Not now · 4h', 'snoozed', 'question'],
     ['Pin for later', 'pinned', 'plan row'],
+    // #636: a row snooze moves its revision but not its ask, so the draft stays too
+    ['Not now · 4h', 'snoozed', 'plan row'],
   ] as const)('keeps the draft in view after "%s" from the list (%s, %s)', async (choice, name, kind) => {
     const d = open()
     let id: string
@@ -415,29 +417,6 @@ describe('a draft on a deferred ask stays in view (#247)', () => {
     type(answerInput(id), '')
     await settle()
     expect(row(next), 'clearing the draft lets the list catch up').not.toBeNull()
-  })
-
-  // A row snooze moves the row revision, and a draft never answers a newer
-  // revision, so the existing recovery keeps it: the unsent-responses list.
-  it('keeps a plan row draft in view after a snooze, in the unsent responses', async () => {
-    const d = open()
-    upsertBoard(d, { ...AGENT, title: 'Release', rows: [blockedRow()] })
-    const id = getBoard(d, 'alpha', 'Release')!.rows[0]!.id
-    await bootApp(d)
-    await showInbox()
-    click(row(id))
-    await settle()
-    type(answerInput(id), 'Half an answer')
-    click(buttonLabelled('Not now · 4h', row(id)!))
-    await settle()
-
-    const next = await arriveWhilePaused(d)
-    const recovery = document.querySelector<HTMLDetailsElement>('#needsYouList .stale-drafts-fold')
-    expect(recovery?.open).toBe(true)
-    expect(recovery?.textContent).toContain('Half an answer')
-    expect(later()?.open).toBe(true)
-    expect(row(id)?.querySelector('.stale-draft')?.textContent).toContain('Preserved answer: Half an answer')
-    expect(row(next), 'a recovered draft no longer pauses the list').not.toBeNull()
   })
 
   it.each(['question', 'plan row'] as const)('keeps the draft of a %s pinned from the Review queue in view once the deck moves on', async (kind) => {
@@ -520,7 +499,9 @@ describe('a draft on a deferred ask stays in view (#247)', () => {
     expect(later()?.open).toBe(false)
     expect(row(id)?.closest('details')).toBeNull()
     expect(row(id)?.dataset.open).toBe('1')
-    expect(row(id)?.textContent).toContain('Half an answer')
+    // #636: the ask's note was edited, so the draft stays in its editor and the row says so
+    expect(answerInput(id)?.value).toBe('Half an answer')
+    expect(row(id)?.querySelector('.ask-edited')).not.toBeNull()
   })
 
   it('still files an ask without a draft into its closed fold and leaves the open card alone', async () => {

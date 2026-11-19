@@ -91,11 +91,14 @@ export function draftEntry(raw) {
       if (actionVersion === undefined || !isId(raw.rowId) || !isId(raw.boardId) || !isInt(raw.boardRevision, 0)
         || !isInt(raw.revision, 0) || !isText(raw.text) || !filled(raw.text) || !KINDS.has(raw.kind)
         || !isText(raw.boardTitle, MAX_LABEL) || !isText(raw.label, MAX_LABEL) || !isText(raw.context)
-        || typeof (raw.setAside ?? false) !== 'boolean' || typeof (raw.unconfirmed ?? false) !== 'boolean') return null
-      // unconfirmed: its send was in flight, or lost its answer, when this was written
+        || typeof (raw.setAside ?? false) !== 'boolean' || typeof (raw.unconfirmed ?? false) !== 'boolean'
+        || !optionalText(raw.ask ?? null, 64) || !optionalText(raw.response ?? null, 64)) return null
+      // unconfirmed: its send was in flight, or lost its answer, when this was written.
+      // ask, response: hashes of the ask's words and of the response the row held
+      // when it was typed (#636); null before that.
       return {
         type: 'row', rowId: raw.rowId, boardId: raw.boardId, boardRevision: raw.boardRevision,
-        revision: raw.revision, actionVersion, text: raw.text, kind: raw.kind, boardTitle: raw.boardTitle,
+        revision: raw.revision, actionVersion, ask: raw.ask ?? null, response: raw.response ?? null, text: raw.text, kind: raw.kind, boardTitle: raw.boardTitle,
         label: raw.label, context: raw.context, setAside: raw.setAside === true, unconfirmed: raw.unconfirmed === true,
       }
     }

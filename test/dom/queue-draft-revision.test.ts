@@ -20,6 +20,13 @@ function sortBy(value: 'newest' | 'oldest'): void {
   select.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+// #636: kept text waits beside its row while the row's card is open in the
+// Inbox, and in the unsent responses otherwise
+function kept(): string {
+  return [...document.querySelectorAll('#needsYouList .stale-drafts-fold, #needsYouList .row-recovery')]
+    .map((el) => el.textContent).join('\n')
+}
+
 function recoveryFold(): HTMLDetailsElement {
   const fold = document.querySelector<HTMLDetailsElement>('.stale-drafts-fold')
   if (!fold) throw new Error('draft recovery fold not rendered')
@@ -67,8 +74,8 @@ describe('versioned board-row draft ownership', () => {
     const lightbox = document.getElementById('lightbox')!
     expect(lightbox.hidden).toBe(true)
     expect(lightbox.querySelector<HTMLInputElement>('.reply-input')?.value).not.toBe('Draft that belongs only to v1')
-    expect(recoveryFold().textContent).toContain('Draft that belongs only to v1')
-    expect(recoveryFold().textContent).toContain('Old action context')
+    expect(kept()).toContain('Draft that belongs only to v1')
+    expect(kept()).toContain('The ask changed before your text was sent.')
     expect(bridge.posts.filter((post) => post.url.includes('/annotate'))).toHaveLength(0)
   })
 
@@ -111,15 +118,14 @@ describe('versioned board-row draft ownership', () => {
     await repaint()
 
     expect(answerInput(rowId)?.value).toBe('')
-    expect(recoveryFold().textContent).toContain('Draft for old action')
-    expect(recoveryFold().textContent).toContain('Approve release')
-    expect(recoveryFold().textContent).toContain('Old action context')
+    expect(kept()).toContain('Draft for old action')
+    expect(kept()).toContain('The ask changed before your text was sent.')
     click(sendButton(rowId))
     await settle()
     expect(bridge.posts.filter((post) => post.url.includes('/annotate'))).toHaveLength(0)
-    click(buttonLabelled('Clear', recoveryFold()))
+    click(buttonLabelled('Discard', row(rowId)!))
     await settle()
-    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
+    expect(kept()).toBe('')
 
     type(answerInput(rowId), 'Draft for advanced action')
     const advanced = getBoard(db, 'alpha', 'Launch')!
@@ -145,7 +151,8 @@ describe('versioned board-row draft ownership', () => {
     expect(row(rowId)).toBeNull()
     expect(recoveryFold().textContent).toContain('Draft for advanced action')
     expect(recoveryFold().textContent).toContain('New action context')
-    click(buttonLabelled('Clear', recoveryFold()))
+    expect(recoveryFold().textContent).toContain('This step was closed before your text was sent.')
+    click(buttonLabelled('Discard', recoveryFold()))
     await settle()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })

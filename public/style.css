@@ -417,6 +417,12 @@ body.settings-open #rail, body.settings-open #tabs, body.settings-open .floating
 .stale-drafts-fold { opacity: .85; }
 .stale-drafts-help { margin: 2px 8px 4px; font-size: 12px; color: var(--app-muted); }
 .stale-draft-line { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: color-mix(in srgb, var(--app-danger) 70%, var(--app-text)); }
+/* #636: a row's ask moved under its draft, and text kept beside a row whose ask changed */
+.ask-edited { margin: 4px 0; font-size: 12px; color: var(--app-warning); }
+.row-recovery { margin: 6px 0 0; padding: 4px 8px; border-left: 2px solid var(--app-warning); font-size: 12px; }
+.row-recovery-why { margin: 0; color: var(--app-warning); }
+.row-recovery-text { margin: 2px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.row-recovery-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 /* what an unsent response's Retry would replace (#321) */
 .replace-notice { font-weight: 600; }
 .empty { opacity: .4; font-size: 13px; }

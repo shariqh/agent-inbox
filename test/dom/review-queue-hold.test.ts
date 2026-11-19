@@ -168,8 +168,8 @@ describe('Review queue and unsent responses (#407)', () => {
     expect(lightbox().hidden).toBe(true)
     expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
 
-    // Clear discards it, the hold line goes, and the queue opens
-    click(buttonLabelled('Clear', fold()!))
+    // Discard removes it, the hold line goes, and the queue opens
+    click(buttonLabelled('Discard', fold()!))
     await settle()
     expect(fold()).toBeNull()
     expect(holdText()).toBe('')
@@ -291,16 +291,16 @@ describe('Review queue and unsent responses (#407)', () => {
     await settle()
     const lines = () => [...fold()!.querySelectorAll<HTMLElement>('.stale-draft-line')]
     expect(document.activeElement).toBe(lines()[0])
-    const firstClear = buttonLabelled('Clear', lines()[0]!)!
-    firstClear.focus()
-    click(firstClear)
+    const firstDiscard = buttonLabelled('Discard', lines()[0]!)!
+    firstDiscard.focus()
+    click(firstDiscard)
     await settle()
     expect(lines()).toHaveLength(1)
     expect(document.activeElement).toBe(lines()[0])
     expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
-    const lastClear = buttonLabelled('Clear', lines()[0]!)!
-    lastClear.focus()
-    click(lastClear)
+    const lastDiscard = buttonLabelled('Discard', lines()[0]!)!
+    lastDiscard.focus()
+    click(lastDiscard)
     await settle()
     expect(fold()).toBeNull()
     expect(document.activeElement).toBe(document.querySelector('.triage-btn'))
@@ -326,7 +326,7 @@ describe('Review queue and unsent responses (#407)', () => {
     expect(document.activeElement).toBe(fold()!.querySelector('summary'))
   })
 
-  it('explains Retry and Clear in the unsent responses', async () => {
+  it('explains Retry, Copy and Discard in the unsent responses', async () => {
     db = freshDb()
     const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Release day?' })
     seed({
@@ -337,11 +337,11 @@ describe('Review queue and unsent responses (#407)', () => {
     click(document.querySelector('.tab[data-tab="needsYou"]'))
     await settle()
     expect(fold()?.querySelector('.stale-drafts-help')?.textContent)
-      .toBe('Retry sends a response again; Clear discards it for good.')
+      .toBe('Retry sends a response again; Copy copies it; Discard removes it for good.')
 
-    click(buttonLabelled('Clear', fold()!.querySelector<HTMLElement>(`.stale-draft-line[data-recovery-line*="${id}"]`)!))
+    click(buttonLabelled('Discard', fold()!.querySelector<HTMLElement>(`.stale-draft-line[data-recovery-line*="${id}"]`)!))
     await settle()
-    // a row response has no Retry, so only Clear is explained
-    expect(fold()?.querySelector('.stale-drafts-help')?.textContent).toBe('Clear discards a response for good.')
+    // a row response has no Retry; its row is gone, so it has no Use this text either (#636)
+    expect(fold()?.querySelector('.stale-drafts-help')?.textContent).toBe('Copy copies a response; Discard removes it for good.')
   })
 })

@@ -206,7 +206,7 @@ describe('viewer restart with human-owned work', () => {
     expect(recovery.textContent).toContain('The original condition.')
     await pollTick()
     expect(reload).not.toHaveBeenCalled()
-    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
+    click(buttonLabelled('Discard', document.querySelector('.stale-drafts-fold')!))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -244,12 +244,12 @@ describe('viewer restart with human-owned work', () => {
     await repaint()
     expect(reload).not.toHaveBeenCalled()
     expect(answerInput(rowId)?.value).toBe('')
-    const recovery = document.querySelector('.stale-drafts-fold')!
+    // #636: kept beside the row, whose card is open, until the human discards it
+    const recovery = row(rowId)!.querySelector<HTMLElement>('.row-recovery')!
     expect(recovery.textContent).toContain('Only approve the original action.')
-    expect(recovery.textContent).toContain('Original action context')
-    expect(recovery.textContent).toContain(`action ${original.rows[0]!.action_version}`)
+    expect(recovery.textContent).toContain('The ask changed before your text was sent.')
     expect(bridge.posts).toHaveLength(0)
-    click(buttonLabelled('Clear', recovery))
+    click(buttonLabelled('Discard', recovery))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -282,7 +282,7 @@ describe('viewer restart with human-owned work', () => {
     expect(reload).not.toHaveBeenCalled()
     const recovery = document.querySelector('.stale-drafts-fold')!
     expect(recovery.textContent).toContain('Ship now')
-    click(buttonLabelled('Clear', recovery))
+    click(buttonLabelled('Discard', recovery))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -350,7 +350,7 @@ describe('viewer restart with human-owned work', () => {
     expect(reload).not.toHaveBeenCalled()
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Ship now')
     expect(bridge.posts).toHaveLength(1)
-    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
+    click(buttonLabelled('Discard', document.querySelector('.stale-drafts-fold')!))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)

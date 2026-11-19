@@ -141,7 +141,8 @@ describe('#563 · an idle draft never keeps an advanced row on its old step', ()
     expect(activeTab()).toBe('dashboard')
     expect(pauseHint()).toBe('')
     expect(chip(rowId)).toBe('Needs input')
-    expect(unsent()).toContain('Design B, actually')
+    // kept in the Inbox: beside the row, whose card is still open there (#636)
+    expect(document.querySelector('#needsYouList .row-recovery-text')?.textContent).toBe('Design B, actually')
     expect(stored()).toContain('Design B, actually')
 
     // the human's next frame shows it in the Inbox; the new step's editor is empty
@@ -150,7 +151,9 @@ describe('#563 · an idle draft never keeps an advanced row on its old step', ()
     await settle()
     expect(row(rowId)?.querySelector('.nrow-card')?.textContent).toContain('Choose the rollout')
     expect(answerInput(rowId)?.value ?? '').toBe('')
-    expect(unsent()).toContain('Design B, actually')
+    // #636: kept beside the row it was typed for, now that its card is open
+    expect(row(rowId)?.querySelector('.row-recovery-text')?.textContent).toBe('Design B, actually')
+    expect(row(rowId)?.querySelector('.row-recovery-why')?.textContent).toBe('The ask changed before your text was sent.')
   })
 
   it('sets aside an idle draft whose question an agent resolved, without switching tabs', async () => {

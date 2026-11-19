@@ -22,6 +22,7 @@ interface View { available: boolean; keychain?: boolean; hub?: Hub | null; probl
 const hub = (state: State = 'online', reason: string | null = null, extra: Partial<Hub> = {}): Hub =>
   ({ id: ID, label: 'MBP', origin: ORIGIN, machine: 'MBP', state, reason, ...extra })
 const NONE: View = { available: true, keychain: true, hub: null, problem: null, showing: null }
+const UP_TO_DATE = { ok: true, phase: 'idle', version: '2.14.1', status: 'current', newer: null, canStart: false, reason: 'nothing_newer' }
 
 /** A main process behind agentInboxConnect, as far as this section can tell. */
 function connectBridge(start: View = NONE) {
@@ -34,6 +35,9 @@ function connectBridge(start: View = NONE) {
     show: vi.fn(async (id: string | null): Promise<Record<string, unknown>> => ({ ok: true, showing: id })),
     // #617 PR 4b: main's answer after its own native dialog
     setDeskCommand: vi.fn(async (_input: { id: string; command: string }): Promise<Record<string, unknown>> => ({ ok: true })),
+    // #637: the other Mac's update, as main answers it
+    hubUpdate: vi.fn(async (_id: string): Promise<Record<string, unknown>> => ({ ...UP_TO_DATE })),
+    updateHub: vi.fn(async (_id: string): Promise<Record<string, unknown>> => ({ ok: true })),
     onChange: vi.fn((callback: () => void) => {
       listeners.add(callback)
       return () => listeners.delete(callback)
@@ -59,14 +63,18 @@ const flush = async () => {
 }
 
 let host: HTMLElement
+// #637: follow-up reads of the other Mac's update, run by the test
+let scheduled: Array<{ fn: () => void; ms: number }> = []
 function draw(api: ReturnType<typeof connectBridge> | null, desk: unknown = localDesk(), platform = 'MacIntel') {
   host = document.createElement('div')
   document.body.appendChild(host)
+  scheduled = []
   return renderConnectSettings(host, {
     connect: () => api as never,
     desk: () => desk as never,
     documentRef: document,
     platform: () => platform,
+    schedule: (fn, ms) => { scheduled.push({ fn, ms }) },
   })
 }
 
@@ -918,6 +926,159 @@ describe('the Open desk command', () => {
     expect($('connect-desk')!.querySelector('img')).toBeNull()
     expect(text('connect-desk-saved')).toBe(`Open desk appears on each session in ${hostile}’s Inbox.`)
     expect(deskValue()).toBe(`${hostile} {desk}`)
+  })
+})
+
+// ── the other Mac's update (#637) ───────────────────────────────────────────
+
+describe('the other Mac’s update', () => {
+  const READY = { ok: true, phase: 'idle', version: '2.14.1', status: 'available', newer: '2.15.0', canStart: true, reason: null }
+  const answer = (extra: Record<string, unknown>) => ({ ...UP_TO_DATE, ...extra })
+
+  it('is drawn only while a Mac is connected, between its controls and Open desk', async () => {
+    const api = connectBridge()
+    draw(api)
+    await flush()
+    expect(shown('connect-update')).toBe(false)
+    expect(api.hubUpdate).not.toHaveBeenCalled()
+    api.set({ ...NONE, hub: hub('online') })
+    await flush()
+    expect(shown('connect-update')).toBe(true)
+    expect($('connect-update')!.nextElementSibling).toBe($('connect-desk'))
+    expect(api.hubUpdate).toHaveBeenCalledWith(ID)
+  })
+
+  it('shows the other Mac’s version, and Update <label> when its update controller verified a newer release', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.hubUpdate.mockResolvedValue(READY)
+    draw(api)
+    await flush()
+    expect(text('connect-update-version')).toBe('MBP runs Agent Inbox 2.14.1.')
+    expect(text('connect-update-status')).toBe('Version 2.15.0 is ready to install on MBP. Its Agent Inbox restarts when it is done.')
+    expect(text('connect-update-start')).toBe('Update MBP')
+  })
+
+  it('offers nothing while nothing newer is verified there, and says so', async () => {
+    draw(connectBridge({ ...NONE, hub: hub('online') }))
+    await flush()
+    expect(text('connect-update-version')).toBe('MBP runs Agent Inbox 2.14.1.')
+    expect(text('connect-update-status')).toBe('MBP has no newer version to install.')
+    expect(shown('connect-update-start')).toBe(false)
+  })
+
+  // every reason word electron/hub-update.d.cts declares has its own sentence
+  const hubUpdateTypes = readFileSync(join(ROOT, 'electron', 'hub-update.d.cts'), 'utf8')
+  const REASONS = [...(/reason: ('[a-z_]+'(?: \| '[a-z_]+')*) \| null/.exec(hubUpdateTypes)?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!)
+  it.each([
+    ['setup_running', 'MBP is setting up agents. Try again when that is done.'],
+    ['installing', 'MBP is already installing an update.'],
+    ['not_here', 'Agent Inbox on MBP can’t install updates by itself. Update it on MBP.'],
+    ['nothing_newer', 'MBP has no newer version to install.'],
+    ['busy', 'MBP is busy with an update step. Try again in a moment.'],
+    ['not_ready', 'MBP isn’t ready yet. Try again in a moment.'],
+  ])('says why it cannot start: %s', async (reason, sentence) => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.hubUpdate.mockResolvedValue(answer({ status: 'available', newer: '2.15.0', reason }))
+    draw(api)
+    await flush()
+    expect(text('connect-update-status')).toBe(sentence)
+    expect(shown('connect-update-start')).toBe(false)
+  })
+  it('has a sentence for every reason word the controller declares', () => {
+    expect(REASONS.sort()).toEqual(['busy', 'installing', 'not_here', 'not_ready', 'nothing_newer', 'setup_running'])
+  })
+
+  it.each([
+    ['restarting', answer({ phase: 'restarting', status: null, reason: null }), 'Agent Inbox on MBP is restarting…', false],
+    ['done', answer({ phase: 'done', version: '2.15.0' }), 'MBP now runs Agent Inbox 2.15.0.', false],
+    ['failed', answer({ phase: 'failed', status: 'failed', newer: '2.15.0', canStart: true, reason: null }), 'The update didn’t finish: MBP still runs 2.14.1. Open Settings → Updates on MBP to see why.', true],
+    ['not_back', answer({ phase: 'not_back', status: null, reason: null }), 'MBP hasn’t come back since the update started. Check that Mac: Agent Inbox may need to be opened there.', false],
+    ['old_hub', answer({ phase: 'old_hub', status: null, reason: null }), 'MBP runs an older Agent Inbox that can’t be updated from here. Update it once on MBP: Agent Inbox → Check for Updates….', false],
+    ['unreadable', answer({ phase: 'unreadable', status: null, reason: null }), 'Agent Inbox couldn’t read MBP’s updates.', false],
+    ['offline', answer({ phase: 'offline', status: null, reason: null }), '', false],
+    ['updating, downloading', answer({ phase: 'updating', status: 'downloading', newer: '2.15.0', reason: 'installing' }), 'MBP is downloading the update…', false],
+    ['updating, installing', answer({ phase: 'updating', status: 'installing', newer: '2.15.0', reason: 'installing' }), 'MBP is installing the update. Its Agent Inbox restarts when it is done…', false],
+  ])('follows an update: %s', async (_name, given, sentence, offered) => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.hubUpdate.mockResolvedValue(given)
+    draw(api)
+    await flush()
+    expect(text('connect-update-status')).toBe(sentence)
+    expect(shown('connect-update-start')).toBe(offered)
+  })
+
+  it('Update <label> sends only the Mac’s id, says it is asking meanwhile, then follows the update every few seconds', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.hubUpdate.mockResolvedValue(READY)
+    let release!: (value: Record<string, unknown>) => void
+    api.updateHub.mockImplementation(() => new Promise((resolve) => { release = resolve }))
+    draw(api)
+    await flush()
+    press('connect-update-start')
+    await flush()
+    expect(api.updateHub.mock.calls).toEqual([[ID]])
+    expect(text('connect-update-status')).toBe('Asking MBP to update…')
+    expect($<HTMLButtonElement>('connect-update-start')!.disabled).toBe(true)
+    // a second press while it asks sends nothing more
+    $('connect-update-start')!.click()
+    api.hubUpdate.mockResolvedValue(answer({ phase: 'updating', status: 'downloading', newer: '2.15.0', reason: 'installing' }))
+    release({ ok: true })
+    await flush()
+    expect(api.updateHub).toHaveBeenCalledTimes(1)
+    expect(text('connect-update-status')).toBe('MBP is downloading the update…')
+    expect(shown('connect-update-start')).toBe(false)
+    expect(scheduled.map((entry) => entry.ms)).toEqual([5_000])
+    // the hub restarts: the next read says so, and another read is scheduled
+    api.hubUpdate.mockResolvedValue(answer({ phase: 'restarting', status: null, reason: null }))
+    scheduled.shift()!.fn()
+    await flush()
+    expect(text('connect-update-status')).toBe('Agent Inbox on MBP is restarting…')
+    expect(scheduled).toHaveLength(1)
+    // back on the new version: nothing more is scheduled
+    api.hubUpdate.mockResolvedValue(answer({ phase: 'done', version: '2.15.0' }))
+    scheduled.shift()!.fn()
+    await flush()
+    expect(text('connect-update-status')).toBe('MBP now runs Agent Inbox 2.15.0.')
+    expect(text('connect-update-version')).toBe('MBP runs Agent Inbox 2.15.0.')
+    expect(scheduled).toEqual([])
+  })
+
+  it.each([
+    ['setup_running', 'MBP is setting up agents. Try again when that is done.'],
+    ['offline', 'MBP isn’t online.'],
+    ['refused', 'Agent Inbox couldn’t ask MBP to update. Try again.'],
+    ['failed', 'Agent Inbox couldn’t ask MBP to update. Try again.'],
+  ])('a refused start says why: %s', async (reason, sentence) => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.hubUpdate.mockResolvedValue(READY)
+    api.updateHub.mockResolvedValue({ ok: false, reason })
+    draw(api)
+    await flush()
+    press('connect-update-start')
+    await flush()
+    expect(text('connect-update-status')).toBe(sentence)
+    // gone when Settings opens again
+    await refreshConnectSettings()
+    await flush()
+    expect(text('connect-update-status')).toBe('Version 2.15.0 is ready to install on MBP. Its Agent Inbox restarts when it is done.')
+  })
+
+  it('draws nothing of it with a bridge that has no hubUpdate', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    Reflect.deleteProperty(api, 'hubUpdate')
+    draw(api)
+    await flush()
+    expect(shown('connect-update')).toBe(false)
+  })
+
+  it('sets the other Mac’s label as text', async () => {
+    const hostile = '<img src=x onerror=alert(1)>'
+    const api = connectBridge({ ...NONE, hub: hub('online', null, { label: hostile }) })
+    api.hubUpdate.mockResolvedValue(READY)
+    draw(api)
+    await flush()
+    expect($('connect-update')!.querySelector('img')).toBeNull()
+    expect(text('connect-update-start')).toBe(`Update ${hostile}`)
   })
 })
 

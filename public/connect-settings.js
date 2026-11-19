@@ -11,9 +11,11 @@
 // - no Mac connected: Address, Code and Connect, with one line of help;
 // - connecting or disconnecting: every control disabled, and a line saying so;
 // - a refusal: one sentence per reason, saying what to do next, with Replace it where that helps;
-// - connected: "<label>'s Inbox", its address, its status, Show its Inbox and Disconnect, and
-//   (#617 PR 4b) the Open desk command: one text field, Save and Remove. Save only proposes it: main
-//   shows the command in a native dialog and stores it only when the owner presses Save there.
+// - connected: "<label>'s Inbox", its address, its status, Show its Inbox and Disconnect, then
+//   (#637) the other Mac's version, one line about its update and, when its own update controller has
+//   verified a newer release, "Update <label>"; then (#617 PR 4b) the Open desk command: one text
+//   field, Save and Remove. Save only proposes it: main shows the command in a native dialog and
+//   stores it only when the owner presses Save there.
 //
 // The label comes from the other Mac: text it chose, set with textContent, never proof of
 // anything. Every string reaches the DOM as textContent.
@@ -149,6 +151,48 @@ const hostOf = (origin) => {
   }
 }
 
+// #637: the other Mac's update (electron/hub-update.cjs): one sentence per refusal word it answers
+const UPDATE_REFUSALS = {
+  setup_running: (name) => `${name} is setting up agents. Try again when that is done.`,
+  installing: (name) => `${name} is already installing an update.`,
+  not_here: (name) => `Agent Inbox on ${name} can’t install updates by itself. Update it on ${name}.`,
+  nothing_newer: (name) => `${name} has no newer version to install.`,
+  busy: (name) => `${name} is busy with an update step. Try again in a moment.`,
+  not_ready: (name) => `${name} isn’t ready yet. Try again in a moment.`,
+}
+// what a start can answer besides those words
+const START_REFUSALS = {
+  ...UPDATE_REFUSALS,
+  offline: (name) => `${name} isn’t online.`,
+}
+// while one of these lasts, the section asks again every few seconds
+const FOLLOWED = new Set(['updating', 'restarting'])
+const UPDATE_EVERY_MS = 5_000
+
+/** The one line about the other Mac's update, from hubUpdate()'s answer; '' when there is nothing to say. */
+function updateSentence(update, name) {
+  if (update === null) return ''
+  const refusal = typeof update.reason === 'string' && Object.hasOwn(UPDATE_REFUSALS, update.reason) ? UPDATE_REFUSALS[update.reason](name) : ''
+  switch (update.phase) {
+    case 'idle':
+      if (update.status === 'checking') return `${name} is checking for updates…`
+      if (update.status === 'downloading') return `${name} is downloading an update.`
+      if (update.canStart && update.status === 'failed') return `The last try to install version ${update.newer} on ${name} didn’t finish. You can try again.`
+      if (update.canStart) return `Version ${update.newer} is ready to install on ${name}. Its Agent Inbox restarts when it is done.`
+      return refusal
+    case 'updating':
+      if (update.status === 'downloading') return `${name} is downloading the update…`
+      return `${name} is installing the update. Its Agent Inbox restarts when it is done…`
+    case 'restarting': return `Agent Inbox on ${name} is restarting…`
+    case 'done': return `${name} now runs Agent Inbox ${update.version}.`
+    case 'failed': return `The update didn’t finish: ${name} still runs ${update.version ?? 'its old version'}. Open Settings → Updates on ${name} to see why.`
+    case 'not_back': return `${name} hasn’t come back since the update started. Check that Mac: Agent Inbox may need to be opened there.`
+    case 'old_hub': return `${name} runs an older Agent Inbox that can’t be updated from here. Update it once on ${name}: Agent Inbox → Check for Updates….`
+    case 'unreadable': return `Agent Inbox couldn’t read ${name}’s updates.`
+    default: return ''
+  }
+}
+
 let refreshShown = null
 let stopShown = null
 
@@ -162,6 +206,7 @@ export function renderConnectSettings(host, {
   desk = () => globalThis.agentInboxDesk,
   documentRef = globalThis.document,
   platform = () => globalThis.navigator?.platform ?? '',
+  schedule = (fn, ms) => globalThis.setTimeout(fn, ms),
 } = {}) {
   refreshShown = null
   stopShown?.()
@@ -255,7 +300,21 @@ export function renderConnectSettings(host, {
   deskMessage.setAttribute('role', 'status')
   deskMessage.setAttribute('aria-live', 'polite')
   deskBlock.append(make('h4', '', 'Open desk'), deskHelp, deskExample, deskForm, deskSaved, deskMessage)
-  hubBlock.append(hubName, hubAddress, hubStatusLine, pairAgain, hubActions, deskBlock)
+
+  // #637: the other Mac's version, one line about its update, and Update <label> when it may start
+  const updateBlock = make('div', 'connect-update')
+  updateBlock.id = 'connect-update'
+  const updateVersion = make('p', 'setup-hint')
+  updateVersion.id = 'connect-update-version'
+  const updateLine = make('p', 'connect-update-status')
+  updateLine.id = 'connect-update-status'
+  updateLine.setAttribute('role', 'status')
+  updateLine.setAttribute('aria-live', 'polite')
+  const updateStart = button('connect-update-start', 'Update', 'connect-primary')
+  const updateActions = make('div', 'connect-actions')
+  updateActions.append(updateStart)
+  updateBlock.append(updateVersion, updateLine, updateActions)
+  hubBlock.append(hubName, hubAddress, hubStatusLine, pairAgain, hubActions, updateBlock, deskBlock)
 
   const busyLine = make('p', 'connect-busy')
   busyLine.id = 'connect-busy'
@@ -296,6 +355,13 @@ export function renderConnectSettings(host, {
   let deskBusy = false
   let deskSaid = ''
   let deskShown // undefined until the field first shows a hub's command
+  // #637: the other Mac's update as main last answered it, a start in flight, a start's refusal, the
+  // newest read, and whether a follow-up read is scheduled
+  let update = null
+  let updateBusy = false
+  let updateSaid = ''
+  let updateReads = 0
+  let updateFollowing = false
 
   const connected = () => Boolean(view && view.available === true && view.hub)
 
@@ -336,6 +402,18 @@ export function renderConnectSettings(host, {
       deskShown = undefined
       deskSaid = ''
     }
+    const updatable = showHub && typeof api.hubUpdate === 'function'
+    updateBlock.hidden = !updatable
+    if (updatable) {
+      const known = update !== null && update.id === hub.id ? update.answer : null
+      updateVersion.textContent = known?.version ? `${hub.label} runs Agent Inbox ${known.version}.` : ''
+      updateVersion.hidden = updateVersion.textContent === ''
+      updateLine.textContent = updateBusy ? `Asking ${hub.label} to update…` : updateSaid !== '' ? updateSaid : updateSentence(known, hub.label)
+      updateLine.hidden = updateLine.textContent === ''
+      updateStart.textContent = `Update ${hub.label}`
+      updateStart.hidden = !(known?.canStart === true && typeof known.newer === 'string' && (known.phase === 'idle' || known.phase === 'failed'))
+      updateActions.hidden = updateStart.hidden
+    }
     deskMessage.textContent = deskSaid
     deskMessage.hidden = deskSaid === ''
     form.hidden = !showForm
@@ -359,6 +437,35 @@ export function renderConnectSettings(host, {
     }
     for (const control of section.querySelectorAll('input, button')) control.disabled = busy !== null
     if (deskBusy) for (const control of deskBlock.querySelectorAll('input, button')) control.disabled = true
+    if (updateBusy) updateStart.disabled = true
+  }
+
+  // #637: asks main for the other Mac's update; while one is followed, again every few seconds
+  async function refreshUpdate() {
+    const mine = ++updateReads
+    const id = connected() && typeof api.hubUpdate === 'function' ? view.hub.id : null
+    if (id === null) {
+      update = null
+      paint()
+      return
+    }
+    let answer
+    try {
+      answer = await api.hubUpdate(id)
+    } catch {
+      answer = null
+    }
+    if (mine !== updateReads) return
+    update = answer !== null && typeof answer === 'object' && answer.ok === true ? { id, answer } : null
+    paint()
+    const busyThere = update !== null && (FOLLOWED.has(update.answer.phase) || (update.answer.phase === 'idle' && ['checking', 'downloading', 'installing'].includes(update.answer.status)))
+    if (busyThere && !updateFollowing && section.isConnected) {
+      updateFollowing = true
+      schedule(() => {
+        updateFollowing = false
+        if (section.isConnected) void refreshUpdate()
+      }, UPDATE_EVERY_MS)
+    }
   }
 
   // A focused control that the paint hid or disabled (focus may then fall to the body) leaves focus on
@@ -386,9 +493,11 @@ export function renderConnectSettings(host, {
     if (shownKey !== null && key !== shownKey && offered === null && busy === null) {
       said = ''
       note = false
+      updateSaid = ''
     }
     shownKey = key
     paint()
+    void refreshUpdate()
     return view
   }
 
@@ -534,6 +643,27 @@ export function renderConnectSettings(host, {
     void sendDeskCommand('', () => deskInput)
   })
 
+  // #637: one request, naming only which connected Mac; that Mac decides what it installs
+  updateStart.addEventListener('click', async () => {
+    if (!connected() || busy !== null || updateBusy || typeof api.updateHub !== 'function') return
+    const hub = view.hub
+    updateBusy = true
+    updateSaid = ''
+    paint()
+    let answer
+    try {
+      answer = await api.updateHub(hub.id)
+    } catch {
+      answer = null
+    }
+    updateBusy = false
+    const reason = answer !== null && typeof answer === 'object' && answer.ok === false && typeof answer.reason === 'string' ? answer.reason : null
+    if (answer !== null && typeof answer === 'object' && (answer.ok === true || answer.available === false)) updateSaid = ''
+    else updateSaid = reason !== null && Object.hasOwn(START_REFUSALS, reason) ? START_REFUSALS[reason](hub.label) : `Agent Inbox couldn’t ask ${hub.label} to update. Try again.`
+    await refreshUpdate()
+    keepFocus(updateStart.hidden ? show : updateStart)
+  })
+
   show.addEventListener('click', async () => {
     if (!connected() || busy !== null) return
     const hub = view.hub
@@ -578,6 +708,7 @@ export function renderConnectSettings(host, {
         confirming = null
       }
       if (!deskBusy) deskSaid = ''
+      if (!updateBusy) updateSaid = ''
       return refresh()
     }
     await refresh()

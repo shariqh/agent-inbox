@@ -3785,13 +3785,15 @@ function clearRowRecoveryTarget(rowId, revision) {
   }
 }
 
-// #636: what the person reads of a row's ask, as a short hash. A draft keeps
+// #636: what the person reads of a row's ask (its status, words, options and
+// outcome: the Outcome block changes the card's headline too), as a short hash. A draft keeps
 // the signature of the ask it was typed under, so a later revision of the same
 // action tells an edit to those words (case 2) from a write that left them
 // alone (case 1). Hashed so the stored draft (#279) does not carry the words twice.
 function rowAskSignature(r) {
   return textHash(JSON.stringify([
-    r.note ?? '', r.next_step ?? '', r.action_owner ?? null, r.impact ?? '', r.next_after ?? '', r.context ?? '',
+    r.status, r.note ?? '', r.next_step ?? '', r.action_owner ?? null, r.impact ?? '', r.next_after ?? '',
+    r.context ?? '', r.outcome ?? '',
     (r.options ?? []).map((option) => [option.label, option.detail ?? '', Boolean(option.recommended)]),
   ]))
 }

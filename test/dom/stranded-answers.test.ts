@@ -11,7 +11,9 @@
 //      Discard.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { advanceBoardRow, getBoard, updateBoardRow, upsertBoard } from '../../src/store.js'
+import {
+  advanceBoardRow, annotateBoardRow, closeProject, getBoard, markRowHandled, updateBoardRow, upsertBoard,
+} from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, repaint, row,
   sendButton, settle, showInbox, type, useDomTest,
@@ -30,6 +32,7 @@ const AGENT = { project: 'alpha', stream: 'main', agent: 'claude' } as const
 const TITLE = 'Release'
 const LABEL = 'Install test'
 const EDITED = 'This ask was edited while you were typing. Read it again, then send.'
+const ANSWERED = 'A response was saved on this step before yours was sent. Read it, then send yours to replace it.'
 const ASK_CHANGED = 'The ask changed before your text was sent.'
 const STEP_CLOSED = 'This step was closed before your text was sent.'
 
@@ -246,6 +249,63 @@ describe('case 2: the same ask, its words edited', () => {
     click(sendButton(rowId))
     await settle()
     expect(annotation(d)).toBe('Half an answer')
+    expect(annotatePosts(bridge)).toHaveLength(1)
+  })
+})
+
+// What the person reads of an ask is what tells an edit from a write that left it
+// alone (#636 review, points 1 and 13): every field, and the response the row
+// holds, moves the fate off `same`.
+describe('what the person reads', () => {
+  it.each([
+    ['its outcome', { outcome: 'Tested by hand.' }],
+    ['its background', { context: 'Why the install test matters.' }],
+    ['what happens after', { next_after: 'The release goes out.' }],
+    ['its next step', { next_step: 'Do the install test twice.' }],
+    ['who acts', { action_owner: 'approval' }],
+    ['which option is recommended', { options: [{ label: 'Ship it' }, { label: 'Hold', recommended: true }] }],
+  ] as const)('says the ask was edited when an agent changes %s', async (_what, edit) => {
+    const { d, rowId } = seed(true)
+    const bridge = await bootApp(d)
+    await draftOn(rowId)
+    agentWrite(d, edit as RowEdit)
+    click(sendButton(rowId))
+    await settle()
+
+    expect(annotation(d)).toBeNull()
+    expect(editedNotice(rowId)).toBe(EDITED)
+    expect(answerInput(rowId)?.value).toBe('Half an answer')
+    expect(annotatePosts(bridge)).toHaveLength(1)
+  })
+
+  it('treats a response another window saved as an answer on the step, whatever the response was', async () => {
+    const { d, rowId } = seed()
+    const bridge = await bootApp(d)
+    await draftOn(rowId)
+    const board = getBoard(d, 'alpha', TITLE)!
+    expect(markRowHandled(d, rowId, board.rows.find((r) => r.id === rowId)!.revision, board.revision)).toBe(true)
+    click(sendButton(rowId))
+    await settle()
+
+    expect(annotation(d)).toBeNull()
+    expect(editedNotice(rowId)).toBe(ANSWERED)
+    expect(answerInput(rowId)?.value).toBe('Half an answer')
+    expect(annotatePosts(bridge)).toHaveLength(1)
+  })
+
+  it('treats a response whose kind alone changed as an answer on the step', async () => {
+    const { d, rowId } = seed()
+    const board = getBoard(d, 'alpha', TITLE)!
+    expect(annotateBoardRow(d, rowId, 'Same words', 'clarify', board.rows.find((r) => r.id === rowId)!.revision, board.revision)).toBe(true)
+    const bridge = await bootApp(d)
+    await draftOn(rowId)
+    const moved = getBoard(d, 'alpha', TITLE)!
+    expect(annotateBoardRow(d, rowId, 'Same words', 'answer', moved.rows.find((r) => r.id === rowId)!.revision, moved.revision)).toBe(true)
+    click(sendButton(rowId))
+    await settle()
+
+    expect(annotation(d)).toBe('Same words')
+    expect(editedNotice(rowId)).toBe(ANSWERED)
     expect(annotatePosts(bridge)).toHaveLength(1)
   })
 })

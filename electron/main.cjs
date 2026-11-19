@@ -53,27 +53,12 @@ const { createAppImageInstaller } = require('./update-install-appimage.cjs')
 const { checkForUpdate, runsFromAppImage } = require('./update-fetch.cjs')
 const { createUpdatePreferences, createUpdateTrustState } = require('./update-preferences.cjs')
 const { loadUpdateRegistry } = require('./update-trust.cjs')
-const { createConditionalReader } = require('./conditional-read.cjs')
 const { syncSpellcheckLanguages } = require('./spellcheck-languages.cjs')
 const { runOutcome } = require('./terminal-launch.cjs')
 const { defaultWindowSize } = require('./window-size.cjs')
 const { quitWhenRestartManagerAsks, setWindowsAppIdentity } = require('./windows-app.cjs')
-const {
-  attentionNotification,
-  answerableByNotification,
-  cannedResponseActions,
-  createNotificationRetainer,
-  createResponseWatch,
-  formatResponseReminder,
-  freshAttentionNotifications,
-  knownNotificationIds,
-  refreshNotificationTarget,
-  responseForNotificationAction,
-  runWakeAdapter,
-  submitNotificationResponse,
-  wakeAdapterFromEnv,
-  wakeAdapterPayload,
-} = require('./reply-watch.cjs')
+const { createNotificationRetainer, runWakeAdapter, wakeAdapterFromEnv, wakeAdapterPayload } = require('./reply-watch.cjs')
+const { badgeTotal, createAttentionWatch, createLostHubNotice, hubLive } = require('./attention-watch.cjs')
 
 // Windows (#87): the per-user MSI's Start-menu shortcut carries this app's
 // AppUserModelID and toast activator CLSID; claim them before any window or
@@ -104,7 +89,6 @@ const updateFeatureAvailable = (
   UPDATE_PLATFORMS.has(process.platform) &&
   UPDATE_ARCHITECTURES.has(process.arch)
 )
-const responseWatch = createResponseWatch()
 const notificationRetainer = createNotificationRetainer()
 const wakeAdapter = wakeAdapterFromEnv(process.env)
 const THEME_SOURCE_VALUES = new Set(['light', 'dark', 'system'])
@@ -811,6 +795,8 @@ registerHubIpc({
 
 // The menu, the title and the local page follow what is on top and the hub's state.
 function hubChanged(win) {
+  // whether the hub may be shown changes what it adds to the dock badge
+  updateDockBadge()
   if (win.isDestroyed()) return
   installApplicationMenu(win)
   win.setTitle(windowTitle(remoteConnect?.connection(), hubView?.current() ?? null))
@@ -839,13 +825,87 @@ function startRemoteConnect(win) {
     backgroundColor: themeBackgroundColor,
     readPartitions: () => readdirSync(path.join(app.getPath('userData'), 'Partitions')),
   })
+  // #617 PR 4a: one notice when the hub stays out of reach; its click shows the hub's offline page
+  const lostHub = createLostHubNotice({
+    Notification,
+    retainer: notificationRetainer,
+    isOnline: () => net.isOnline(),
+    show: (id) => {
+      bringWindowForward(win)
+      hubView?.show(id)
+    },
+  })
+  // the hub's attention watch and the notice follow every connection change, from the first one
+  const followHub = (connection) => {
+    syncHubAttention(win, connection)
+    lostHub.update(connection)
+  }
+  remoteConnect.onConnection(followHub)
+  followHub(remoteConnect.connection())
+  setInterval(() => {
+    if (hubAttentionLive()) hubAttention.watch.poll()
+  }, HUB_POLL_MS)
   const kick = () => {
     remoteConnect?.kick()
   }
-  powerMonitor.on('resume', kick)
-  powerMonitor.on('unlock-screen', kick)
+  const woke = () => {
+    lostHub.awake()
+    kick()
+  }
+  powerMonitor.on('resume', woke)
+  powerMonitor.on('unlock-screen', woke)
   watchOnline({ isOnline: () => net.isOnline(), onBack: kick })
   remoteConnect.start()
+}
+
+// #617 PR 4a: the connected hub's attention watch, { id, base, count, watch }, or null. One per hub:
+// made when the connection first names that hub, dropped (its count and what it announced with it)
+// when the hub changes or the mode returns to local. It survives the hub's offline stretches, so asks
+// that arrived meanwhile are announced once when it is back.
+let hubAttention = null
+
+/** The hub's watch polls and counts only while that hub is online and its view may be shown. */
+function hubAttentionLive() {
+  return hubAttention !== null && hubLive(remoteConnect?.connection() ?? null, hubAttention.id, hubView?.canShow() === true)
+}
+
+function syncHubAttention(win, connection) {
+  const hub = connection?.mode === 'hub' && typeof connection.id === 'string' ? connection : null
+  const base = hub === null ? null : remoteConnect.hubBase(hub.id)
+  if (hubAttention !== null && (hub === null || hubAttention.id !== hub.id || hubAttention.base !== base)) {
+    hubAttention.watch.stop()
+    hubAttention = null
+  }
+  if (hubAttention === null && hub !== null && base !== null) {
+    const id = hub.id
+    const firstLabel = hub.label
+    const entry = { id, base, count: 0, watch: null }
+    entry.watch = createAttentionWatch({
+      base,
+      // the hub's origin only, with the device header, no redirect and a timeout
+      fetchImpl: remoteConnect.hubFetch(),
+      // the stored label, read at each notification, as text only
+      label: () => {
+        const current = remoteConnect.connection()
+        return current.mode === 'hub' && current.id === id && typeof current.label === 'string' ? current.label : firstLabel
+      },
+      show: (hash) => {
+        hubView?.show(id)
+        bringWindowForward(win)
+        if (hash) hubView?.land(id, hash)
+      },
+      mods: attentionMods,
+      Notification,
+      retainer: notificationRetainer,
+      onCount: (n) => {
+        if (hubAttention !== entry) return
+        entry.count = n
+        updateDockBadge()
+      },
+    })
+    hubAttention = entry
+  }
+  updateDockBadge()
 }
 
 // The quit prompt (§7): sessions keep running unless the human stops them all.
@@ -870,6 +930,29 @@ for (const p of [ATTENTION_PATH, BADGE_PATH, CARD_PATH]) {
 }
 
 let attentionModsFailed = false
+// This Mac's share of the dock badge, as its watch last counted it
+let localAttentionCount = 0
+const LOCAL_POLL_MS = 3000
+const HUB_POLL_MS = 5000
+
+/** The dock badge: the sum of each source's last count (attention-watch.cjs's badgeTotal). */
+function updateDockBadge() {
+  // the failed import already set it to 0, once, loudly
+  if (attentionModsFailed || typeof app.setBadgeCount !== 'function') return
+  app.setBadgeCount(badgeTotal({
+    local: localAttentionCount,
+    hubs: hubAttention === null ? [] : [hubAttention],
+    connection: remoteConnect?.connection() ?? null,
+    canShow: hubView?.canShow() === true,
+  }))
+}
+
+function bringWindowForward(win) {
+  if (win.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
 const attentionMods = Promise.all([
   import(pathToFileURL(ATTENTION_PATH).href),
   import(pathToFileURL(BADGE_PATH).href),
@@ -1039,10 +1122,12 @@ function spawnViewer() {
 }
 
 /**
- * Attention watch (issue #19): poll the viewer API, badge the dock with the size
- * of the §7 attention set, and fire ONE native notification per poll for newly
- * arrived entries only. Nothing notifies on launch: what already needs you is on
- * screen. Runs in the main process so the shared frontend stays browser-neutral.
+ * Attention watch (issue #19): This Mac's own viewer, polled every 3 seconds by
+ * electron/attention-watch.cjs, which badges the dock with its share of the §7
+ * attention set and fires ONE native notification per poll for newly arrived
+ * entries only. Nothing notifies on launch: what already needs you is on screen.
+ * Runs in the main process so the shared frontend stays browser-neutral. The
+ * connected hub has its own watch (#617 PR 4a, startRemoteConnect).
  *
  * WHAT counts as attention is not decided here and is not described here — that
  * is public/attention.js's job, and this file must never restate its rule even
@@ -1052,155 +1137,31 @@ function spawnViewer() {
  * test/badge.test.ts enforces this against the whole file, prose included.
  */
 function startAttentionWatch(win) {
-  let known = null // ids seen on the previous poll; null until the first one
-  let polling = false
-  // Issue #287: the two projections are conditional. Each read sends the
-  // validator its last answer carried, and an unchanged one comes back as a
-  // bodyless 304 the reader answers from what it parsed then.
-  const read = createConditionalReader()
-  const poll = async () => {
-    if (attentionModsFailed) return // already logged once — don't spam every 3s
-    let mods
-    try {
-      mods = await attentionMods
-    } catch {
-      return // the .catch above owns the (loud) reporting
-    }
-    const { attentionEntries, laterEntries, focusHashFor, optionOrder } = mods
-    try {
-      // The lean projections (issues #156 and #287): the same shapes without the
-      // closed history and the plan rows this watcher never reads, which would
-      // otherwise be built, sent and parsed in this process every 3 seconds. An
-      // older reused viewer ignores the parameter and sends the full payload,
-      // which the shared module reads the same way, with or without a validator;
-      // test/reply-watch.test.ts pins that every one of them yields one result.
-      const g = await read(`${URL_BASE}api/items?scope=attention`)
-      const boards = await read(`${URL_BASE}api/boards?scope=attention`)
-      const activity = await (await fetch(`${URL_BASE}api/activity`)).json()
-      // Projects the human closed (issue #32). FAIL OPEN, deliberately: an older
-      // standalone viewer from a different checkout has no such route, and
-      // confirmReuse() will happily attach this app to it. An unknown closed set
-      // must mean "suppress nothing" (a truthful over-count) — never a dark badge.
-      const closed = await fetch(`${URL_BASE}api/projects/closed`)
-        .then((r) => (r.ok ? r.json() : []))
-        .catch(() => [])
-      const items = g.needsYou.flatMap((gr) => gr.items)
-      const { newTargets, reminders } = responseWatch.scan(g, boards, Date.now())
-      const dueByKey = new Map([...newTargets, ...reminders].map((target) => [target.key, target]))
-      const due = [...dueByKey.values()]
-      if (wakeAdapter && due.length) {
-        await runWakeAdapter(wakeAdapter, wakeAdapterPayload(due)).catch((err) => {
-          console.error(`[agent-inbox] wake adapter failed: ${err.message}`)
-        })
-      }
-      if (reminders.length && Notification.isSupported()) {
-        const note = new Notification(formatResponseReminder(reminders))
-        const hash = reminders.length === 1 ? focusHashFor(reminders[0].focusId) : null
-        note.on('click', () => {
-          hubView?.show(null)
-          if (win.isMinimized()) win.restore()
-          win.show()
-          win.focus()
-          if (hash) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch((err) => {
-            console.error('[agent-inbox] deep link failed', err)
-          })
-        })
-        notificationRetainer.show(note)
-      }
-      const liveSessions = new Set(activity.map((a) => a.session))
-      // THE §7 attention set — the exact same call the viewer's badge, rail,
-      // tab count and triage deck all read from (spec §7 / tenet 3). No inline
-      // re-derivation, and no local copy of the rule: whatever the shared module
-      // includes or drops, the dock follows for free, which is the only way the
-      // dock and the title badge can be guaranteed to agree.
-      // `attn` is the VISIBLE set (closed projects suppressed): it sizes the dock
-      // badge and fills the notification body. It is computed on every tick, 304s
-      // or not (#287): what the shared module decides can change with the clock
-      // alone, and over the lean reads it costs microseconds.
-      const attn = attentionEntries(items, boards, Date.now(), liveSessions, closed)
-      if (typeof app.setBadgeCount === 'function') app.setBadgeCount(attn.length)
-      const entries = attn.map(attentionNotification)
-      // …but `known` is maintained from the UNSUPPRESSED set. If it tracked only
-      // what is visible, closing a project would drop its items from `known` and
-      // reopening would re-announce every one of them as new — an OS notification
-      // for items the human closed days ago. Reopen is the advertised happy path,
-      // so that would fire routinely. `known` tracks what EXISTS; the badge and
-      // the notification body track what is VISIBLE. It also keeps the asks the
-      // human pinned for later (#247), so bringing one back announces nothing.
-      const everything = attentionEntries(items, boards, Date.now(), liveSessions)
-      const fresh = freshAttentionNotifications(known, entries)
-      known = knownNotificationIds(everything, laterEntries(items, boards, Date.now()))
-      // Per-item notifications stay (owner's call) — informational only.
-      if (fresh.length && Notification.isSupported()) {
-        console.log(`[agent-inbox] notifying: ${fresh.length} new (${fresh[0].text})`)
-        // #412 step 3: an app launch's approval gets no buttons; a click opens its card
-        const actionable = fresh.length === 1 && answerableByNotification(fresh[0]) ? fresh[0] : null
-        const canned = cannedResponseActions(actionable ? optionOrder(actionable.item.options) : [])
-        const note = new Notification({
-          title: fresh.length === 1 ? 'Agent Inbox — needs you' : `Agent Inbox — ${fresh.length} new need you`,
-          body: fresh.slice(0, 3).map((f) => f.text).join('\n'),
-          ...(canned.actions.length ? { actions: canned.actions } : {}),
-        })
-        const hash = fresh.length === 1 ? focusHashFor(fresh[0].itemId) : null
-        note.on('action', async (details, legacyActionIndex) => {
-          const answer = responseForNotificationAction(canned.responses, details, legacyActionIndex)
-          if (!answer || !actionable) return
-          try {
-            await submitNotificationResponse(URL_BASE, actionable.target, answer)
-          } catch (firstError) {
-            let saved = false
-            if (actionable.target.source === 'row') {
-              try {
-                // The default representation, read fresh and unconditionally
-                // (#287): a refused answer is rare, and its retry is pinned to
-                // the row revision the notification showed.
-                const latestBoards = await (await fetch(`${URL_BASE}api/boards`)).json()
-                const refreshed = refreshNotificationTarget(latestBoards, actionable.target)
-                if (refreshed) {
-                  await submitNotificationResponse(URL_BASE, refreshed, answer)
-                  saved = true
-                }
-              } catch { /* surface the original choice below */ }
-            }
-            if (saved) return
-            console.error(`[agent-inbox] could not save notification response: ${firstError.message}`)
-            if (Notification.isSupported()) {
-              const failed = new Notification({
-                title: 'Agent Inbox — Response not applied',
-                body: `“${answer}” was preserved here because the action changed. Open Agent Inbox to review it.`,
-              })
-              failed.on('click', () => {
-                hubView?.show(null)
-                if (win.isMinimized()) win.restore()
-                win.show()
-                win.focus()
-                if (hash) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch((err) => {
-                  console.error('[agent-inbox] deep link failed', err)
-                })
-              })
-              notificationRetainer.show(failed)
-            }
-          }
-        })
-        note.on('click', () => {
-          hubView?.show(null)
-          if (win.isMinimized()) win.restore()
-          win.show()
-          win.focus()
-          // Clicking only opens the app — and, for a single item, lands on it.
-          if (hash) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch((err) => {
-            console.error('[agent-inbox] deep link failed', err)
-          })
-        })
-        notificationRetainer.show(note)
-      }
-    } catch { /* viewer briefly unreachable — retry next tick */ }
-  }
+  const local = createAttentionWatch({
+    base: URL_BASE,
+    fetchImpl: (url, init) => fetch(url, init),
+    label: null,
+    show: (hash) => {
+      hubView?.show(null)
+      bringWindowForward(win)
+      // Clicking only opens the app — and, for a single item, lands on it.
+      if (hash) win.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch((err) => {
+        console.error('[agent-inbox] deep link failed', err)
+      })
+    },
+    mods: attentionMods,
+    Notification,
+    retainer: notificationRetainer,
+    onCount: (n) => {
+      localAttentionCount = n
+      updateDockBadge()
+    },
+    // This Mac only: the hub's own app runs the hub's
+    wake: wakeAdapter ? (due) => runWakeAdapter(wakeAdapter, wakeAdapterPayload(due)) : null,
+  })
   setInterval(() => {
-    if (polling) return
-    polling = true
-    poll().finally(() => { polling = false })
-  }, 3000)
+    local.poll()
+  }, LOCAL_POLL_MS)
 }
 
 function refreshUpdatesAfterLoad() {

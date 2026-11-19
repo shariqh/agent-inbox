@@ -77,7 +77,7 @@ export interface ConnectView {
 /** #617 PR 4b: setDeskCommand's answer. */
 export type DeskCommandAnswer =
   | { ok: true }
-  | { ok: false; reason: 'bad_request' | 'bad_command' | 'not_found' | 'cancelled' | 'too_large' | 'write_failed' }
+  | { ok: false; reason: 'bad_request' | 'bad_command' | 'busy' | 'not_found' | 'cancelled' | 'too_large' | 'write_failed' }
 
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean
@@ -108,9 +108,9 @@ export interface RemoteConnectOptions {
   onReload?: () => void
   /**
    * #617 PR 4b: main's native confirmation of an Open desk command (the text to save); true only
-   * when the owner pressed Save. Without it no command is ever stored.
+   * when the owner pressed Save. `label` is the stored active hub's label. Without it no command is ever stored.
    */
-  confirmDeskCommand?: (command: string) => Promise<boolean> | boolean
+  confirmDeskCommand?: (command: string, label: string) => Promise<boolean> | boolean
 }
 
 export interface RemoteConnect {
@@ -122,7 +122,7 @@ export interface RemoteConnect {
   view(): Promise<ConnectView>
   /**
    * #617 PR 4b: `{ id, command }`. `''` removes the active hub's Open desk command with no question;
-   * any other valid command is stored only after confirmDeskCommand answered true.
+   * any other valid command is stored only after confirmDeskCommand answered true; while that question is open every other call answers `busy`.
    */
   setDeskCommand(input: unknown): Promise<DeskCommandAnswer>
   /** #617 PR 4b: the stored active hub's id, machine and valid Open desk command, from the file; null for none. */

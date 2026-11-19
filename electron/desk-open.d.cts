@@ -19,9 +19,12 @@ export const SESSION: RegExp
 
 /** The template filled for `desk`: `{desk}` bare, `{attach}` as one shell word; null unless both pass their rules. */
 export function fillDeskCommand(template: unknown, desk: unknown): string | null
-/** The native confirmation's message, detail (the command filled for the example desk) and buttons; null for an invalid command. */
-export function deskConfirmation(command: unknown): { message: string; detail: string; buttons: ['Save', 'Cancel'] } | null
-/** `shell` when absolute, free of control characters and listed in `shells` (the text of /etc/shells); else /bin/zsh. */
+/**
+ * The native confirmation's message, detail (the command filled for the example desk, a blank line,
+ * and where it runs, naming the hub when `label` passes the device label rule) and buttons; null for an invalid command.
+ */
+export function deskConfirmation(command: unknown, label?: unknown): { message: string; detail: string; buttons: ['Save', 'Cancel'] } | null
+/** `shell` when absolute, free of control characters, listed in `shells` (the text of /etc/shells) and not csh or tcsh; else /bin/zsh. */
 export function loginShell(shell: unknown, shells: unknown): string
 /** The script's whole text: `#!/bin/sh`, a comment, `exec '<shell>' -l -i -c '<command>'`. */
 export function deskScript(shell: string, command: string): string

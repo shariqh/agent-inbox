@@ -613,28 +613,41 @@ function createRemoteConnect(options = {}) {
     }
   }
 
+  // whether an Open desk confirmation is open (see setDeskCommand)
+  let askingDesk = false
+
   /**
    * #617 PR 4b: sets or removes the active hub's Open desk command. `''` removes it with no question.
    * Any other text must pass validDeskCommand (`bad_command`), `id` must be the stored active hub
    * (`not_found`), and the owner must press Save in `confirmDeskCommand` (`cancelled`), asked outside
-   * the lock so a dialog left open blocks nothing. The write happens under the store's lock, as
+   * the lock so a dialog left open blocks nothing. While that question is open any other call, a
+   * removal included, is `busy`, with no dialog and no write. The write happens under the store's lock, as
    * recordMachine's does, spreading the entry, and only if the same hub (same device) is still active.
    */
   async function setDeskCommand(input) {
+    if (askingDesk) return no('busy')
     const given = isObject(input) ? input : {}
     const { id, command } = given
     if (typeof id !== 'string' || !HUB_ID.test(id) || typeof command !== 'string') return no('bad_request')
     if (command !== '' && !validDeskCommand(command)) return no('bad_command')
-    const before = await readStore()
-    if (before.state !== 'ok' || before.active === null || before.active.id !== id) return no('not_found')
-    if (command !== '') {
-      let saved = false
-      try {
-        saved = typeof confirmDeskCommand === 'function' && (await confirmDeskCommand(command)) === true
-      } catch {
-        saved = false
+    // claimed before the first await, so two calls racing the store read cannot both reach the dialog
+    const asking = command !== ''
+    if (asking) askingDesk = true
+    let before
+    try {
+      before = await readStore()
+      if (before.state !== 'ok' || before.active === null || before.active.id !== id) return no('not_found')
+      if (asking) {
+        let saved = false
+        try {
+          saved = typeof confirmDeskCommand === 'function' && (await confirmDeskCommand(command, before.active.label)) === true
+        } catch {
+          saved = false
+        }
+        if (!saved) return no('cancelled')
       }
-      if (!saved) return no('cancelled')
+    } finally {
+      if (asking) askingDesk = false
     }
     try {
       return await locked.mutate(async () => {

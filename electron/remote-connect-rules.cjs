@@ -37,8 +37,9 @@ const USER_ID = /^[1-9]\d{0,30}$/
 const PLACEHOLDER_LOGIN = 'tagged-devices'
 // #617 PR 4b: the Open desk command template, stored per hub (validDeskCommand)
 const DESK_COMMAND_MAX = 512
-// C0, DEL, C1 and the two Unicode line breaks: the template is one line with no control character
-const DESK_COMMAND_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/
+// Printable ASCII only (space to tilde), so the template is one line with no control, bidi, zero-width
+// or look-alike character, and the confirmation dialog shows exactly what will run.
+const DESK_COMMAND_TEXT = /^[\x20-\x7e]{1,512}$/
 const DESK_PLACEHOLDER = /\{(?:desk|attach)\}/g
 
 
@@ -299,13 +300,13 @@ function keychainReady(safeStorage, platform) {
 // ── remote-connect.json ────────────────────────────────────────────────────
 
 /**
- * #617 PR 4b: whether `text` is an Open desk command template: one line of 1 to 512 characters
- * with no control character, holding `{desk}` or `{attach}` at least once, and no other `{` or `}`
+ * #617 PR 4b: whether `text` is an Open desk command template: 1 to 512 printable ASCII characters
+ * (space to tilde, so one line and nothing the confirmation dialog could show differently), holding `{desk}` or `{attach}` at least once, and no other `{` or `}`
  * anywhere. electron/desk-open.cjs fills only a template that passes this, and the store reads a
  * stored one that fails it as none.
  */
 function validDeskCommand(text) {
-  if (typeof text !== 'string' || text.length < 1 || text.length > DESK_COMMAND_MAX || DESK_COMMAND_UNSAFE.test(text)) return false
+  if (typeof text !== 'string' || !DESK_COMMAND_TEXT.test(text)) return false
   const rest = text.replace(DESK_PLACEHOLDER, '')
   return rest !== text && !/[{}]/.test(rest)
 }

@@ -40,6 +40,7 @@ describe('validDeskCommand: the one rule for a stored or proposed template', () 
     '{desk}',
     'ssh -t studio {attach} # {desk}',
     `ssh -t studio {attach}${' '.repeat(DESK_COMMAND_MAX - 'ssh -t studio {attach}'.length)}`,
+    'ssh -t "my studio" \'x\' $HOME `id` ; echo a | cat ~ \\ {attach}',
   ])('accepts %j', (text) => {
     expect(validDeskCommand(text)).toBe(true)
   })
@@ -58,6 +59,15 @@ describe('validDeskCommand: the one rule for a stored or proposed template', () 
     ['a C1 next-line', `{desk}${NEL}`],
     ['a line separator', `{desk}${LS}x`],
     ['a paragraph separator', `{desk}${PS}x`],
+    ['a right-to-left override (U+202E)', `{desk}${String.fromCharCode(0x202e)}`],
+    ['a left-to-right isolate (U+2066)', `{desk}${String.fromCharCode(0x2066)}`],
+    ['a zero-width space (U+200B)', `{desk}${String.fromCharCode(0x200b)}`],
+    ['a byte order mark (U+FEFF)', `${String.fromCharCode(0xfeff)}{desk}`],
+    ['a non-breaking space (U+00A0)', `mydesk${String.fromCharCode(0xa0)}{desk}`],
+    ['an ideographic space (U+3000)', `mydesk${String.fromCharCode(0x3000)}{desk}`],
+    ['a Cyrillic look-alike letter (U+0455)', `${String.fromCharCode(0x455)}sh {desk}`],
+    ['a lone surrogate', `{desk}${String.fromCharCode(0xd800)}`],
+    ['a high-surrogate and low-surrogate pair (an emoji)', '{desk} \u{1F600}'],
     ['the cut {host}', 'ssh -t {host} {attach}'],
     ['the cut {target}', 'tmux attach -t {target}'],
     ['a placeholder in capitals', 'mydesk {Desk}'],
@@ -70,6 +80,11 @@ describe('validDeskCommand: the one rule for a stored or proposed template', () 
     ['a brace expansion', 'echo {a,b} {desk}'],
   ])('refuses %s', (_label, text) => {
     expect(validDeskCommand(text)).toBe(false)
+  })
+
+  it('counts the length in printable ASCII characters, so the cap and the character set are one rule', () => {
+    expect(validDeskCommand(`{desk}${'x'.repeat(DESK_COMMAND_MAX - 6)}`)).toBe(true)
+    expect(validDeskCommand(`{desk}${'x'.repeat(DESK_COMMAND_MAX - 5)}`)).toBe(false)
   })
 
   it.each([null, undefined, 7, ['{desk}'], { toString: () => '{desk}' }])('refuses a value that is not text: %j', (value) => {
@@ -151,6 +166,19 @@ describe('deskConfirmation', () => {
     expect(deskConfirmation('mydesk studio {desk}')!.detail.split('\n')[0]).toBe('mydesk studio example-desk')
   })
 
+  it('names the hub when it has a usable label: the example, a blank line, then the sentence', () => {
+    const detail = deskConfirmation('mydesk studio {desk}', 'Studio Mac')!.detail
+    expect(detail.split('\n')).toEqual(['mydesk studio example-desk', '', 'It runs on this Mac, in your login shell, to open a desk on Studio Mac.'])
+  })
+
+  it.each([undefined, null, 7, '', 'a'.repeat(41), 'Studio\nMac', `Studio${String.fromCharCode(0x202e)}`, {}])('ends the sentence at the login shell for the label %j', (label) => {
+    expect(deskConfirmation('mydesk studio {desk}', label)!.detail).toBe('mydesk studio example-desk\n\nIt runs on this Mac, in your login shell.')
+  })
+
+  it('uses the label as text only: no placeholder in it is filled', () => {
+    expect(deskConfirmation('mydesk {desk}', '{desk} {attach}')!.detail.split('\n')[2]).toBe('It runs on this Mac, in your login shell, to open a desk on {desk} {attach}.')
+  })
+
   it('has nothing to show for an invalid command', () => {
     for (const command of ['', 'ssh studio', 'ssh {host}', 'a\n{desk}', 7]) expect(deskConfirmation(command)).toBeNull()
   })
@@ -158,7 +186,7 @@ describe('deskConfirmation', () => {
 
 // ── the login shell and the script ───────────────────────────────────────────────
 
-const SHELLS = '# List of acceptable shells\n\n/bin/bash\n/bin/csh\n/bin/sh\n/bin/zsh\n/opt/homebrew/bin/fish  \n'
+const SHELLS = '# List of acceptable shells\n\n/bin/bash\n/bin/csh\n/bin/tcsh\n/bin/sh\n/bin/zsh\n/opt/homebrew/bin/fish  \n'
 
 describe('loginShell', () => {
   it.each([
@@ -172,6 +200,9 @@ describe('loginShell', () => {
     ['a comment line', '# List of acceptable shells', '/bin/zsh'],
     ['nothing', null, '/bin/zsh'],
     ['an empty path', '', '/bin/zsh'],
+    ['a listed /bin/zsh', '/bin/zsh', '/bin/zsh'],
+    ['csh, which /etc/shells lists', '/bin/csh', '/bin/zsh'],
+    ['tcsh, which /etc/shells lists', '/bin/tcsh', '/bin/zsh'],
   ])('%s', (_label, shell, expected) => {
     expect(loginShell(shell, SHELLS)).toBe(expected)
   })
@@ -529,13 +560,26 @@ describe('createDeskOpen: each check, in order', () => {
 
   it('logs only the reason word: no host, session, desk or command', async () => {
     const r = rig()
-    await r.press([{ session: SESSION }], { trust: 'offline' })
-    await r.press([{ session: 'x y' }])
     r.state.rows = [{ session: SESSION, machine: 'laptop', desk: 'my-desk' }]
     await r.press()
     r.state.rows = [{ session: SESSION, machine: 'studio', desk: 'my-desk' }]
     await r.press()
-    expect(r.logs).toEqual(['desk-open: unavailable', 'desk-open: bad_request', 'desk-open: not_on_hub', 'desk-open: opened'])
+    expect(r.logs).toEqual(['desk-open: not_on_hub', 'desk-open: opened'])
+  })
+
+  it('logs nothing for the three refusals before the gesture check, however often a page calls', async () => {
+    const r = rig()
+    for (let i = 0; i < 5; i += 1) {
+      await r.press([{ session: SESSION }], { trust: 'offline' })
+      await r.press([{ session: 'x y' }])
+    }
+    r.state.input = false
+    for (let i = 0; i < 5; i += 1) expect(await r.desk.open(HUB_EVENT, [{ session: SESSION }])).toEqual({ ok: false, reason: 'no_gesture' })
+    expect(r.logs).toEqual([])
+    r.state.input = true
+    r.state.stored = null
+    expect(await r.press()).toEqual({ ok: false, reason: 'no_command' })
+    expect(r.logs).toEqual(['desk-open: no_command'])
   })
 })
 

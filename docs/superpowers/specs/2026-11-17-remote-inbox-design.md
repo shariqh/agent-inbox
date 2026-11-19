@@ -667,8 +667,9 @@ The version sentence in Settings is not built yet.)
 page sends a proposed `sshHost` and template; main shows the exact command, filled for an example
 desk, in a native `dialog.showMessageBox` ("Agent Inbox will run this in Terminal when you press
 Open desk"), and saves only if the owner confirms. The page can never set either silently. A
-template is one line of at most 512 characters with no control characters, and uses only these
-placeholders; any other `{…}` is refused:
+template is 1 to 512 printable ASCII characters (space to tilde), so one line with no control,
+bidirectional, zero-width or look-alike character, and the dialog shows exactly what will run. It
+uses only these placeholders; any other `{…}` is refused:
 
 | Placeholder | Becomes | For |
 |---|---|---|
@@ -696,7 +697,8 @@ again. Defaults: for a hub `ssh -t {host} {attach}`; for This Mac `tmux attach -
 4. It fills the template by the table. `{host}` needs `sshHost`, else `no_ssh_host`.
 5. It writes `#!/bin/sh` plus `exec <login shell> -l -i -c <quoted command>` through a
    `writeChatScript` generalised to a `desk-open/` folder beside the hub. The login shell is
-   `os.userInfo().shell` when it is absolute and listed in `/etc/shells`, else `/bin/zsh`.
+   `os.userInfo().shell` when it is absolute and listed in `/etc/shells`, else `/bin/zsh`; `csh`
+   and `tcsh` are never used, because they do not take `-l -i -c` together.
    **(My call:** `-i` as well as `-l`. A shell function is usually defined in `.zshrc`, which a
    login shell alone does not read.)
 6. It opens the script with `openInTerminal({ terminal, kind: 'script' })`, using Settings →

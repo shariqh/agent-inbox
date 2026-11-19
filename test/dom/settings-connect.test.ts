@@ -858,7 +858,8 @@ describe('the Open desk command', () => {
   })
 
   it.each([
-    ['bad_command', 'Use one line that contains {desk} or {attach}, and no other braces.'],
+    ['bad_command', 'Use one line of plain characters that contains {desk} or {attach}, and no other braces.'],
+    ['busy', 'Answer the question that is already open first.'],
     ['not_found', FALLBACK],
     ['write_failed', FALLBACK],
     ['failed', FALLBACK],

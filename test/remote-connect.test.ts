@@ -493,7 +493,7 @@ interface HarnessOptions {
   onReload?: () => void
   exists?: (path: string) => boolean
   // #617 PR 4b: the native confirmation of an Open desk command, driven by the test
-  confirmDeskCommand?: (command: string) => unknown
+  confirmDeskCommand?: (command: string, label: string) => unknown
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -1007,7 +1007,7 @@ describe('setDeskCommand', () => {
   it('never shows the dialog for an invalid command, a wrong id or a request that is not { id, command }', async () => {
     const confirm = vi.fn(() => true)
     const h = await connected({ confirmDeskCommand: confirm })
-    for (const command of ['ssh studio', 'ssh {host} {attach}', 'a {desk} }', 'a\n{desk}', 'x'.repeat(509) + '{desk}']) {
+    for (const command of ['ssh studio', 'ssh {host} {attach}', 'a {desk} }', 'a\n{desk}', 'x'.repeat(509) + '{desk}', `{desk}${String.fromCharCode(0x202e)}`, `{desk}${String.fromCharCode(0x455)}`]) {
       expect(await h.connect.setDeskCommand({ id: h.id, command }), command).toEqual({ ok: false, reason: 'bad_command' })
     }
     expect(await h.connect.setDeskCommand({ id: 'ffffffff', command: COMMAND })).toEqual({ ok: false, reason: 'not_found' })
@@ -1029,10 +1029,79 @@ describe('setDeskCommand', () => {
     expect(await pending).toEqual({ ok: false, reason: 'not_found' })
   })
 
+  it('names the stored hub’s label to the dialog', async () => {
+    const asked: Array<[string, string]> = []
+    const h = await connected({ confirmDeskCommand: (command, label) => { asked.push([command, label]); return true } })
+    await h.connect.setDeskCommand({ id: h.id, command: COMMAND })
+    expect(asked).toEqual([[COMMAND, readStore(h.filePath).hubs[h.id]!.label]])
+  })
+
+  it('answers busy to every other call while a confirmation is open, with no second dialog and no write', async () => {
+    let release!: (value: boolean) => void
+    const confirm = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve }))
+    const h = await connected({ confirmDeskCommand: confirm })
+    const first = h.connect.setDeskCommand({ id: h.id, command: COMMAND })
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    const before = readFileSync(h.filePath, 'utf8')
+    expect(await h.connect.setDeskCommand({ id: h.id, command: 'mydesk studio {desk}' })).toEqual({ ok: false, reason: 'busy' })
+    expect(await h.connect.setDeskCommand({ id: h.id, command: '' })).toEqual({ ok: false, reason: 'busy' })
+    expect(await h.connect.setDeskCommand({ id: h.id, command: COMMAND })).toEqual({ ok: false, reason: 'busy' })
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(readFileSync(h.filePath, 'utf8')).toBe(before)
+    release(true)
+    expect(await first).toEqual({ ok: true })
+    expect(readStore(h.filePath).hubs[h.id]!.deskCommand).toBe(COMMAND)
+  })
+
+  it('shows one dialog when two proposals start together', async () => {
+    const confirm = vi.fn(() => true)
+    const h = await connected({ confirmDeskCommand: confirm })
+    const answers = await Promise.all([
+      h.connect.setDeskCommand({ id: h.id, command: COMMAND }),
+      h.connect.setDeskCommand({ id: h.id, command: 'mydesk studio {desk}' }),
+    ])
+    expect(answers.filter((answer) => answer.ok)).toHaveLength(1)
+    expect(answers.filter((answer) => !answer.ok)).toEqual([{ ok: false, reason: 'busy' }])
+    expect(confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['saved', () => true, { ok: true }],
+    ['cancelled', () => false, { ok: false, reason: 'cancelled' }],
+    ['threw', () => { throw new Error('closed') }, { ok: false, reason: 'cancelled' }],
+  ])('takes a new call once the first dialog %s', async (_label, answer, expected) => {
+    let next: () => unknown = answer
+    const h = await connected({ confirmDeskCommand: () => next() })
+    expect(await h.connect.setDeskCommand({ id: h.id, command: COMMAND })).toEqual(expected)
+    next = () => true
+    expect(await h.connect.setDeskCommand({ id: h.id, command: 'mydesk studio {desk}' })).toEqual({ ok: true })
+    expect(readStore(h.filePath).hubs[h.id]!.deskCommand).toBe('mydesk studio {desk}')
+  })
+
+  it('takes a new call after a proposal for a hub that is not the active one', async () => {
+    const confirm = vi.fn(() => true)
+    const h = await connected({ confirmDeskCommand: confirm })
+    expect(await h.connect.setDeskCommand({ id: 'ffffffff', command: COMMAND })).toEqual({ ok: false, reason: 'not_found' })
+    expect(await h.connect.setDeskCommand({ id: h.id, command: COMMAND })).toEqual({ ok: true })
+  })
+
+  it('saves nothing when the same hub id is active but its device changed while the dialog was open', async () => {
+    let release!: (value: boolean) => void
+    const h = await connected({ confirmDeskCommand: () => new Promise<boolean>((resolve) => { release = resolve }) })
+    const pending = h.connect.setDeskCommand({ id: h.id, command: COMMAND })
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    const doc = readStore(h.filePath)
+    writeFileSync(h.filePath, JSON.stringify({ ...doc, hubs: { [h.id]: { ...doc.hubs[h.id], device: 'f'.repeat(16) } } }), { mode: 0o600 })
+    release(true)
+    expect(await pending).toEqual({ ok: false, reason: 'not_found' })
+    expect(readStore(h.filePath).hubs[h.id]!).not.toHaveProperty('deskCommand')
+  })
+
   it('reads a stored command that fails its rule as none, and the hub stays valid', async () => {
     const h = await connected()
     const doc = readStore(h.filePath)
-    for (const bad of ['ssh {host} {attach}', 'no placeholder', 'a\n{desk}', 7, '', 'x'.repeat(513)]) {
+    const refusedCharacters = [0x202e, 0x2066, 0x200b, 0xfeff, 0xa0, 0x3000, 0x455, 0xd800, 0x09, 0x0a, 0x7f].map((code) => `{desk}${String.fromCharCode(code)}`)
+    for (const bad of ['ssh {host} {attach}', 'no placeholder', 'a\n{desk}', 7, '', 'x'.repeat(513), ...refusedCharacters]) {
       writeFileSync(h.filePath, JSON.stringify({ ...doc, hubs: { [h.id]: { ...doc.hubs[h.id], deskCommand: bad } } }), { mode: 0o600 })
       const view = await h.connect.view()
       expect(view.problem, JSON.stringify(bad)).toBeNull()

@@ -45,7 +45,8 @@ const UNSAVED = 'This Mac has stopped using the other Mac’s Inbox, but couldn�
 const STILL_UNSAVED = 'This Mac still couldn’t save that it stopped using the other Mac’s Inbox. Try again in a moment.'
 // #617 PR 4b: the Open desk command (electron/remote-connect-rules.cjs validDeskCommand is the rule)
 const DESK_EXAMPLE = 'ssh -t my-mac {attach}'
-const BAD_DESK_COMMAND = 'Use one line that contains {desk} or {attach}, and no other braces.'
+const BAD_DESK_COMMAND = 'Use one line of plain characters that contains {desk} or {attach}, and no other braces.'
+const BUSY_DESK_COMMAND = 'Answer the question that is already open first.'
 
 // One sentence for every word connect() can answer (electron/remote-connect.d.cts, ConnectAnswer).
 // `failed` is also what the preload answers for any failed call, so it blames nothing in particular.
@@ -521,7 +522,7 @@ export function renderConnectSettings(host, {
     // cancelled in the dialog: nothing to say, and the field keeps what was typed
     if (answer !== null && typeof answer === 'object' && (answer.ok === true || answer.available === false)) deskSaid = ''
     else if (reason === 'cancelled') deskSaid = ''
-    else deskSaid = reason === 'bad_command' ? BAD_DESK_COMMAND : FALLBACK
+    else deskSaid = reason === 'bad_command' ? BAD_DESK_COMMAND : reason === 'busy' ? BUSY_DESK_COMMAND : FALLBACK
     await refresh()
     keepFocus(fallback())
   }

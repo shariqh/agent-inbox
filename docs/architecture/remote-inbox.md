@@ -1364,16 +1364,22 @@ is §3.4 of the spec, cut down: no `{host}` or `{target}`, no stored SSH host, n
 own sessions and nothing in the Chats tab.
 
 **The command.** One string per hub, `deskCommand` on the hub's entry in `remote-connect.json`.
-`validDeskCommand` (in `remote-connect-rules.cjs`) is its one rule: one line of 1 to 512 characters,
-no control character (C0, DEL, C1, U+2028, U+2029), `{desk}` or `{attach}` at least once, and no other
-`{` or `}` anywhere. Only the owned local page can propose one, through
+`validDeskCommand` (in `remote-connect-rules.cjs`) is its one rule: 1 to 512 printable ASCII
+characters (`/^[\x20-\x7e]{1,512}$/`, so one line and no control character), `{desk}` or `{attach}`
+at least once, and no other `{` or `}` anywhere. The command is plain ASCII on purpose: the
+confirmation dialog must show exactly what will run, and a bidirectional control, a zero-width
+character, a non-ASCII space or a look-alike letter could make the dialog read as something else. Only the owned local page can propose one, through
 `agentInboxConnect.setDeskCommand({ id, command })` and the `agent-inbox:connect-desk-command`
 channel (gated as the other connect channels are, with exactly those two keys). The controller's
 `setDeskCommand` removes the command for `''`, with no question. Any other text must pass the rule
 (`bad_command`) and `id` must be the stored active hub (`not_found`); then main shows
 `dialog.showMessageBox` on the app's window, a warning with Cancel as the default and the Escape
 answer: "Run this in your terminal when you press Open desk?", the command filled for the desk
-`example-desk`, and "It runs on this Mac, in your login shell." Only **Save** stores it, under the
+`example-desk`, a blank line, and "It runs on this Mac, in your login shell, to open a desk on
+<label>." (`<label>` is the stored active hub's label, passed to `confirmDeskCommand(command, label)`
+and shown as text only when it passes the device label rule; otherwise the sentence ends at "login
+shell."). One confirmation is open at a time: from the moment a proposal has passed its rule until its dialog settles, any other
+`setDeskCommand` call, a removal included, is `busy` with no dialog and no write. Only **Save** stores it, under the
 store's lock and spreading the entry as `recordMachine` does, and only if the same hub (same device)
 is still active after the dialog; anything else is `cancelled`. The dialog is injected into
 `createRemoteConnect` as `confirmDeskCommand`: without it nothing is stored. A saved or removed
@@ -1408,7 +1414,8 @@ controller's active hub). `open({ session })` runs these checks in order, each w
    (`not_on_hub`); with either missing the check passes.
 7. The filled command goes into a script: `#!/bin/sh`, a comment, and `exec '<login shell>' -l -i
    -c '<command>'`. The login shell is `os.userInfo().shell` when it is absolute, has no control
-   character and `/etc/shells` lists it, else `/bin/zsh`; `-i` because a shell function the
+   character and `/etc/shells` lists it, else `/bin/zsh` (`csh` and `tcsh`, by basename, are never used: they do not
+   accept `-l -i -c` together); `-i` because a shell function the
    template calls usually lives in `.zshrc`. The script is `desk-<16 hex>.command`, mode 0700, in a
    private 0700 `desk-open/` folder beside the local database (where `chat-resume/` is), written
    through chat resume's `writePrivateScript` with its own name pattern (`O_EXCL | O_NOFOLLOW`, a
@@ -1418,7 +1425,9 @@ controller's active hub). `open({ session })` runs these checks in order, each w
    `terminal_failed`; opened after falling back to Terminal is `{ ok: true, notice }`.
 
 Nothing from the hub but the pattern-checked desk reaches the command, and the script holds only the
-shell path and the filled command. A refusal logs only its word, a success `desk-open: opened`.
+shell path and the filled command. A refusal logs only its word, a success `desk-open: opened`; the
+refusals before the gesture check (`unavailable`, `bad_request`, `no_gesture`) log nothing, so a page
+calling in a loop writes no line per call.
 
 **On the page.** `public/desk-open.js` asks `available()` once per page load and again on each
 `onConnection`, and draws a button only where it said `{ open: true }`, for a row with a

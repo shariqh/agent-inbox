@@ -812,10 +812,10 @@ registerHubIpc({
 })
 
 // #617 PR 4b: the only way an Open desk command is stored. The exact command, filled for an example
-// desk, in a native dialog on the app's window; true only when the owner pressed Save (Cancel is the
+// desk and naming the hub, in a native dialog on the app's window; true only when the owner pressed Save (Cancel is the
 // default and the Escape answer).
-async function confirmDeskCommand(win, command) {
-  const text = deskConfirmation(command)
+async function confirmDeskCommand(win, command, label) {
+  const text = deskConfirmation(command, label)
   if (text === null) return false
   const options = { type: 'warning', message: text.message, detail: text.detail, buttons: text.buttons, defaultId: 1, cancelId: 1, noLink: true }
   const { response } = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
@@ -836,7 +836,7 @@ function hubChanged(win) {
 // After the window exists: the controller, the view, and what wakes the controller early.
 function startRemoteConnect(win) {
   if (process.platform !== 'darwin') return
-  remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload(), confirmDeskCommand: (command) => confirmDeskCommand(win, command) })
+  remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload(), confirmDeskCommand: (command, label) => confirmDeskCommand(win, command, label) })
   hubView = createHubView({
     window: win,
     session,

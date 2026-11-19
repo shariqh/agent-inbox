@@ -347,6 +347,9 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     expect(answer).toBe(false)
     expect(main.calls).toEqual(['dialog.showMessageBox'])
     main.calls.length = 0
+    expect(await (main.evaluate('confirmDeskCommand(globalThis.__mainIpcHarness.win, "ssh -t studio {attach}", "Studio Mac")') as Promise<unknown>)).toBe(false)
+    expect(main.calls).toEqual(['dialog.showMessageBox'])
+    main.calls.length = 0
     expect(await (main.evaluate('confirmDeskCommand(globalThis.__mainIpcHarness.win, "no placeholder")') as Promise<unknown>)).toBe(false)
     expect(main.calls).toEqual([])
   })
@@ -417,8 +420,8 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(desk).toContain("readShells: () => readFileSync('/etc/shells', 'utf8'),")
     const register = main.slice(main.indexOf('registerHubIpc({'), main.indexOf('})', main.indexOf('registerHubIpc({')))
     expect(register).toContain('deskOpen: deskOpenFor,')
-    const confirm = main.slice(main.indexOf('async function confirmDeskCommand(win, command) {'), main.indexOf('\n}\n', main.indexOf('async function confirmDeskCommand(win, command) {')))
-    expect(confirm).toContain('const text = deskConfirmation(command)')
+    const confirm = main.slice(main.indexOf('async function confirmDeskCommand(win, command, label) {'), main.indexOf('\n}\n', main.indexOf('async function confirmDeskCommand(win, command, label) {')))
+    expect(confirm).toContain('const text = deskConfirmation(command, label)')
     expect(confirm).toContain('if (text === null) return false')
     expect(confirm).toContain("const options = { type: 'warning', message: text.message, detail: text.detail, buttons: text.buttons, defaultId: 1, cancelId: 1, noLink: true }")
     expect(confirm).toContain('await dialog.showMessageBox(win, options)')
@@ -436,7 +439,7 @@ describe('electron/main.cjs wires the hub view (source)', () => {
   it('makes connect mode on macOS only, after the window exists, and starts it last', () => {
     expect(startRemote).toContain("if (process.platform !== 'darwin') return")
     // #617 PR 4b: the Open desk command is stored only through the native dialog on this window
-    expect(startRemote).toContain('remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload(), confirmDeskCommand: (command) => confirmDeskCommand(win, command) })')
+    expect(startRemote).toContain('remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload(), confirmDeskCommand: (command, label) => confirmDeskCommand(win, command, label) })')
     expect(startRemote).toContain("offlineFile: path.join(__dirname, 'remote-offline.html'),")
     expect(startRemote).toContain("preload: path.join(__dirname, 'remote-preload.cjs'),")
     // developer tools on the hub view are closed in a packaged app only

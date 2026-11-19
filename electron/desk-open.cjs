@@ -16,13 +16,14 @@
 // finds the session (`not_found`) and its pattern-checked desk (`no_desk`), the row's machine is the
 // hub's (`not_on_hub`), then fills the template, writes a private script (`failed`) and opens it in
 // Settings → Terminal's app (`terminal_failed`). Only the desk, after its pattern check, goes from
-// the hub into the command; nothing else the hub or its page says does.
+// the hub into the command; nothing else the hub or its page says does. A refusal logs its reason
+// word, except the first three, which come before the gesture check and so log nothing.
 //
 // Policy only, with every dependency injected, so test/desk-open.test.ts runs no terminal, no
 // fetch and no shell but the `sh` it parses quoting with.
 const { randomBytes: nodeRandomBytes } = require('node:crypto')
 const path = require('node:path')
-const { PLACE, discard, readJson, validDeskCommand } = require('./remote-connect-rules.cjs')
+const { PLACE, discard, isDeviceLabel, readJson, validDeskCommand } = require('./remote-connect-rules.cjs')
 const { shellWord, writePrivateScript } = require('./chat-resume.cjs')
 const { openInTerminal, terminalId, terminalName } = require('./terminal-launch.cjs')
 
@@ -40,6 +41,8 @@ const MINUTE_MS = 60_000
 const FALLBACK_SHELL = '/bin/zsh'
 // C0, DEL, C1 and the two Unicode line breaks: a shell path holding one is not used
 const SHELL_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/
+// shells that do not accept `-l -i -c` together: never used, even when /etc/shells lists them
+const UNSUPPORTED_SHELLS = new Set(['csh', 'tcsh'])
 const PLACEHOLDERS = /\{(desk|attach)\}/g
 const REASONS = Object.freeze([
   'unavailable', 'bad_request', 'no_gesture', 'busy', 'no_command', 'unreachable', 'not_found', 'no_desk', 'not_on_hub', 'failed', 'terminal_failed',
@@ -62,25 +65,31 @@ function fillDeskCommand(template, desk) {
   return template.replace(PLACEHOLDERS, (_match, name) => (name === 'desk' ? desk : attach))
 }
 
-/** The native confirmation's words for `command`, filled for the example desk; null for a command that fails its rule. */
-function deskConfirmation(command) {
+/**
+ * The native confirmation's words for `command`, filled for the example desk; null for a command that
+ * fails its rule. `label` is the hub's name on this Mac, shown as text only and only when it passes the
+ * store's label rule.
+ */
+function deskConfirmation(command, label) {
   const example = fillDeskCommand(command, EXAMPLE_DESK)
   if (example === null) return null
+  const where = isDeviceLabel(label) ? `, to open a desk on ${label}` : ''
   return {
     message: 'Run this in your terminal when you press Open desk?',
-    detail: `${example}\n\nIt runs on this Mac, in your login shell.`,
+    detail: `${example}\n\nIt runs on this Mac, in your login shell${where}.`,
     buttons: ['Save', 'Cancel'],
   }
 }
 
 /**
  * The shell the script runs the command in: `shell` when it is an absolute path with no control
- * character that `/etc/shells` (its text, `shells`) lists exactly, else /bin/zsh.
+ * character that `/etc/shells` (its text, `shells`) lists exactly, else /bin/zsh. `csh` and `tcsh`
+ * (by basename) are never used: they do not accept `-l -i -c` together.
  */
 function loginShell(shell, shells) {
   if (typeof shell !== 'string' || !path.posix.isAbsolute(shell) || SHELL_UNSAFE.test(shell) || typeof shells !== 'string') return FALLBACK_SHELL
   const listed = shells.split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('#'))
-  return listed.includes(shell) ? shell : FALLBACK_SHELL
+  return listed.includes(shell) && !UNSUPPORTED_SHELLS.has(path.posix.basename(shell)) ? shell : FALLBACK_SHELL
 }
 
 /**
@@ -169,6 +178,8 @@ function createDeskOpen(options) {
     log(`desk-open: ${reason}`)
     return { ok: false, reason }
   }
+  // the three refusals before the gesture check log nothing: a page calling in a loop must not write a line per call
+  const unlogged = (reason) => ({ ok: false, reason })
 
   function trusted(event) {
     const current = view()
@@ -261,16 +272,16 @@ function createDeskOpen(options) {
     /** The checks in order (see the head of this file); `{ ok: true, notice? }` or `{ ok: false, reason }`. */
     async open(event, args) {
       const current = platform === 'darwin' ? trusted(event) : null
-      if (current === null) return refused('unavailable')
+      if (current === null) return unlogged('unavailable')
       const session = deskRequest(args)
-      if (session === null) return refused('bad_request')
+      if (session === null) return unlogged('bad_request')
       let id = null
       try {
         id = current.takeGesture(event)
       } catch {
         id = null
       }
-      if (typeof id !== 'string') return refused('no_gesture')
+      if (typeof id !== 'string') return unlogged('no_gesture')
       const t = clock()
       if (inFlight || !mayOpen(t)) return refused('busy')
       inFlight = true

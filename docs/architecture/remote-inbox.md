@@ -36,7 +36,12 @@ paths:
   - "test/desk-open.test.ts"
   - "public/desk-open.js"
   - "test/dom/desk-open.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts,electron/attention-watch.cjs,test/attention-watch.test.ts,electron/desk-open.cjs,test/desk-open.test.ts,public/desk-open.js,test/dom/desk-open.test.ts"
+  - "src/remote-update.ts"
+  - "test/remote-update.test.ts"
+  - "test/remote-update-link.test.ts"
+  - "electron/hub-update.cjs"
+  - "test/hub-update.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts,electron/attention-watch.cjs,test/attention-watch.test.ts,electron/desk-open.cjs,test/desk-open.test.ts,public/desk-open.js,test/dom/desk-open.test.ts,src/remote-update.ts,test/remote-update.test.ts,test/remote-update-link.test.ts,electron/hub-update.cjs,test/hub-update.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -50,7 +55,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c, PR 4a, PR 4b)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c, PR 4a, PR 4b, #637)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -88,6 +93,10 @@ Later PRs add their files to the globs.
 - `electron/desk-open.cjs` (PR 4b): Open desk, a session's tmux desk on the hub opened in the
   connecting Mac's terminal, with its page part in `public/desk-open.js` and its command in
   Settings → Use another Mac's Inbox ("Open desk", below).
+- #637: updating the hub from the connecting Mac. On the hub, the viewer's relay
+  `src/remote-update.ts` and main's `electron/remote-update.cjs`; on the connecting Mac,
+  `electron/hub-update.cjs` and a block in `public/connect-settings.js` ("Updating the hub from
+  another Mac", below).
 
 ## What is not built yet
 
@@ -200,7 +209,9 @@ owner's paired device, by decision. Refused:
 `src/viewer-server.ts` adds to the loopback app, and fails until each new one is classified.
 Messaging a session is allowed: that is the owner's accepted risk (design §3.2).
 `/api/remote/pair` is not on the list: it is served by the guarded app itself and reached only
-through step 7.
+through step 7. Nor are `GET` and `POST /api/remote/update` (#637): they are `GUARDED_ROUTES`,
+served by the guarded app itself after every step of the gate, the device's included; step 9 lets
+exactly those two through besides `REMOTE_ROUTES`.
 
 The gate allows by concrete path, so the same test also asks Hono which handlers it would run for a
 sample path of each allowed pattern, on the app as the entry wraps it (`guardRemoteApp`): exactly the
@@ -1476,6 +1487,128 @@ order, the real private writer), `test/remote-connect.test.ts` (setting the comm
 members and reductions), `test/main-ipc.test.ts` (the channels' senders and main's wiring), and the
 DOM tests in `test/dom/desk-open.test.ts`, `agents-home.test.ts`, `dashboard-focus.test.ts` and
 `settings-connect.test.ts`.
+
+## Updating the hub from another Mac (#637)
+
+The hub is often a Mac nobody sits at. From the connecting Mac, Settings → Use another Mac's Inbox
+shows the hub's version and, when the hub's own update controller has verified a newer release, one
+button, **Update <label>**. The hub does the whole update itself, through the update controller it
+already has (`updates.md`): download, verify, install, restart. No schedule and no automatic install.
+
+**What a request may say.** Nothing. `POST /api/remote/update` carries no query and no body (the
+handler answers `400 { ok: false, reason: 'bad_request' }` for either); the hub installs only the
+release its own controller verified, never a version, URL or file from the caller.
+
+**The hub's viewer** (`src/remote-update.ts`). The remote entry relays; it decides nothing.
+
+- `GET /api/remote/update` and `POST /api/remote/update` are on the guarded app only, after the
+  whole gate: a paired device's secret (step 8), the hub's `Origin` on the POST (steps 5 and 6).
+  Step 8 now also notes which device matched (`remoteDeviceOf(incoming)`, kept in a `WeakMap` per
+  request, never answered or logged), so the relay knows who asked. Neither route exists on the
+  loopback app, so a process on the hub cannot start an update with a plain local request (it has
+  no device secret: the hub never stores one).
+- GET answers `{ current, status, newer, canStart, reason }`: what main last reported. Statuses:
+  `current`, `checking`, `available`, `downloading`, `installing`, `failed`. Reasons when
+  `canStart` is false: `setup_running`, `installing`, `not_here`, `nothing_newer`, `busy`, and the
+  viewer's own `not_ready` when main has not reported for 15 seconds (or ever). A GET also notes
+  that a device looked.
+- POST answers `202 { ok: true }` and records one request `{ id, device }` (16 random hex, the
+  device's id) when the report says `canStart`, and marks the hub as installing until main's next
+  report; a second press is `409 { ok: false, reason: 'installing' }`. Otherwise `409 { ok: false,
+  reason }` with the report's word.
+- `POST /api/remote-entry/update` on the loopback app, only with the owner token (as the code
+  route), is main's report: exactly those five keys, a start only with a newer version and no
+  reason, a refusal always with one, at most 1 KiB with its `Content-Length`; else 400. It answers
+  `{ request, looked }`: the request since the last report (handed out once) and whether a device
+  looked. A local process holding the owner token can drop a request or report a false state to
+  the viewer, but cannot start anything: main decides on its own state.
+
+**The hub's main** (`electron/remote-update.cjs`, made in `startRemoteEntry()` for the owned viewer
+on macOS). It reports every 3 seconds, and whenever the controller emits a state (`sendUpdateState`
+calls `remoteUpdate?.changed()` first), with the loopback `Origin` and the owner token.
+`updateSummary()` builds the report from the controller's state and main's own gates:
+
+- a start needs a verified release newer than the running app, `downloadable` and `installable`
+  (an installer registered and feasible here), `installPermitted` (the window holds the install
+  grant the local install needs, #216), and no agent setup, install or quit running;
+- `not_here` is the controller's own "cannot install from the app" (not in Applications,
+  translocated, read-only, another user's copy, a `.deb`, an arm64-only release on an Intel Mac, a
+  build with no controller such as a checkout); `busy` is a check or a download already running,
+  a quit, or a window that has lost its grant for a moment (a reload);
+- a remote update under way reads `installing` (or `downloading`) with `canStart: false`.
+
+On a request it computes the summary again, so a request the viewer let through is dropped when
+main cannot start now. Each request id is handled once. A start shows a native notification on the
+hub, "Agent Inbox is updating" / "<label> started the update to version <v>. Agent Inbox restarts
+by itself when it is ready." (`<label>` from `remote.json`'s devices by id, as text; "A paired Mac"
+when unknown; a click opens Settings → Updates). Then it runs the controller: `downloadNow()` when
+the release is not downloaded yet, then, only for a `verified` (or `install-failed`) state of
+exactly the release the device was shown, still `installPermitted`, with no setup or quit running,
+`installNow()`. The controller's own checks run again inside it (setup, newer, the rollback mark,
+feasibility), and its install ends in the restart it always asks for.
+
+A device's look may make the hub check for a release: when the answer says a device looked, the
+controller is idle, current, unverified or stale, and main has not started such a check in the last
+hour, it calls `checkNow()`. Automatic checks are off by default, so without this a hub nobody sits
+at would never know of a release. That check reads the signed manifest exactly as Check for
+Updates… does.
+
+**Unattended install.** Nothing on the remote path needs a person at the hub. The install IPC's
+"the page that asked" check (`canRunSetup`) is replaced by the same window grant it stands for
+(`installPermitted`), which the window holds while it shows the owned viewer, focused or not.
+`update-install-macos.cjs` mounts with `-nobrowse -noautoopen`, closes every tool's stdin so a
+licence prompt fails instead of waiting, runs `codesign` and `spctl` without a dialog, and its
+helper swaps the bundle and relaunches with `/usr/bin/open`; the update quit (`requestUpdateRestart`)
+returns from `before-quit` before the driven-sessions question. What tests cannot show: whether
+macOS asks anything when the helper replaces the bundle (App Management) on a Mac nobody is at; the
+local install takes the same path.
+
+**The connecting Mac's main** (`electron/hub-update.cjs`, made on first use once connect mode
+exists). Both requests go through `remoteConnect.hubFetch()` at `hubBase(id)`: the hub's origin
+only, the device header, no redirect, a timeout. The secret never reaches a page. `state(id)` and
+`start(id)` answer for the active hub only (`not_found` otherwise).
+
+- `start(id)` needs the connection `online` with a version (`offline` otherwise), posts with
+  `Origin: <hub origin>` and no body, and answers `{ ok: true }` on a 202, the hub's word on a 409,
+  `refused` on a 403, `unreachable` when the fetch fails, else `failed`. A start is remembered as
+  `{ from: <the connection's version>, to: <the newer version last shown>, at }`.
+- `state(id)` answers `{ ok, phase, version, status, newer, canStart, reason }`. Phases: `idle`
+  (the hub's report), `offline` (not online, nothing asked), `old_hub` (an online hub that answers
+  the route 403: older than this change), `unreadable`; and after a start: `updating` while the hub
+  reports a check, download or install, `restarting` while it does not answer (the connection is
+  kicked once, so it notices before its next 60-second probe) or the connection is not online,
+  `done` once the hub reports a version newer than `from`, `failed` when it is online on `from` and
+  no longer updating, and `not_back` when it has been away for 5 minutes since the start. A result
+  is forgotten 15 minutes after the start.
+- Channels: `agent-inbox:connect-hub-update` and `agent-inbox:connect-hub-update-start`, in
+  `registerHubIpc` behind the same `owned` check as the other connect channels, with exactly one
+  hub id (8 lowercase hex) as the only argument. The bridge's new members are
+  `agentInboxConnect.hubUpdate(id)` and `updateHub(id)`, which check that argument and rebuild each
+  answer field by field (a version must be three numbers; an unknown phase is refused whole).
+
+**Settings on the connecting Mac.** Between the connected Mac's controls and Open desk: "<label>
+runs Agent Inbox <version>.", one status line, and **Update <label>** only while the hub may start
+(`idle` or `failed` with `canStart`). One sentence per refusal word, per phase and per start
+refusal; while a start is asked the line says "Asking <label> to update…" and the button is
+disabled. While an update is followed (`updating`, `restarting`, or a check, download or install
+the hub reports), the section asks again every 5 seconds; it also asks after every connection
+change and when Settings opens. The label is the other Mac's text, set as text only.
+
+**Version skew.** A hub older than this change has no route: the connecting Mac offers nothing and
+says "<label> runs an older Agent Inbox that can't be updated from here. Update it once on <label>:
+Agent Inbox → Check for Updates…". A connecting Mac older than the hub never asks.
+
+Tests: `test/remote-update.test.ts` (the relay, main's report route, and both routes through the
+real gate and listener: refusals by device, `Origin`, query and body, and no route on the loopback
+app), `test/remote-routes.test.ts` (the guarded routes' Hono chains), `test/remote-update-link.test.ts`
+(the summary for each controller state and gate, and main's link against the real relay through
+`app.request`), `test/remote-entry-ipc.test.ts` (main's block: the link's options, its stop on quit,
+the notification), `test/hub-update.test.ts`, `test/hub-view.test.ts` and `test/main-ipc.test.ts`
+(the channels), `test/remote-preload.test.ts` (the bridge), and `test/dom/settings-connect.test.ts`.
+
+Not checked without the real app: an update started from the connecting Mac end to end, the native
+notification, macOS's behaviour while the bundle is replaced with nobody at the hub, and how long
+the connecting Mac takes to see the hub again.
 
 ## Checked against real Tailscale Serve
 

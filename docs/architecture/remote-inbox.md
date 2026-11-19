@@ -1496,17 +1496,26 @@ button, **Update <label>**. The hub does the whole update itself, through the up
 already has (`updates.md`): download, verify, install, restart. No schedule and no automatic install.
 
 **What a request may say.** Nothing. `POST /api/remote/update` carries no query and no body (the
-handler answers `400 { ok: false, reason: 'bad_request' }` for either); the hub installs only the
-release its own controller verified, never a version, URL or file from the caller.
+handler answers `400 { ok: false, reason: 'bad_request' }` for either, and for a
+`Transfer-Encoding` header); the hub installs only the release its own controller verified, never a
+version, URL or file from the caller. Because the request names nothing, the hub installs the newest
+release its controller has verified when the request arrives. That can be newer than the release the
+connecting Mac's page last showed; the hub's notification and the connecting Mac's status line name
+the version actually being installed.
 
 **The hub's viewer** (`src/remote-update.ts`). The remote entry relays; it decides nothing.
 
 - `GET /api/remote/update` and `POST /api/remote/update` are on the guarded app only, after the
   whole gate: a paired device's secret (step 8), the hub's `Origin` on the POST (steps 5 and 6).
   Step 8 now also notes which device matched (`remoteDeviceOf(incoming)`, kept in a `WeakMap` per
-  request, never answered or logged), so the relay knows who asked. Neither route exists on the
-  loopback app, so a process on the hub cannot start an update with a plain local request (it has
-  no device secret: the hub never stores one).
+  request, never answered or logged), so the relay knows who asked; each handler also refuses by
+  itself (403) when the request carries no matched device. Neither route exists on the loopback
+  app, so a process on the hub cannot start an update with a plain local request (it has no device
+  secret: the hub never stores one). That is not a wall against a local process, which can read the
+  owner token (`GET /api/owner`), ask for a pairing code, pair itself as a device through the
+  entry, and then do whatever a paired device can, now including starting an update. That is true
+  of every remote route and is not new with this change; what it can cause here is the install of
+  the hub's own verified release.
 - GET answers `{ current, status, newer, canStart, reason }`: what main last reported. Statuses:
   `current`, `checking`, `available`, `downloading`, `installing`, `failed`. Reasons when
   `canStart` is false: `setup_running`, `installing`, `not_here`, `nothing_newer`, `busy`, and the
@@ -1521,11 +1530,18 @@ release its own controller verified, never a version, URL or file from the calle
   reason, a refusal always with one, at most 1 KiB with its `Content-Length`; else 400. It answers
   `{ request, looked }`: the request since the last report (handed out once) and whether a device
   looked. A local process holding the owner token can drop a request or report a false state to
-  the viewer, but cannot start anything: main decides on its own state.
+  the viewer, and (as above) can pair itself as a device and then ask for an update, but the report
+  route itself starts nothing: main decides on its own state, and installs only the release its own
+  controller verified.
 
 **The hub's main** (`electron/remote-update.cjs`, made in `startRemoteEntry()` for the owned viewer
 on macOS). It reports every 3 seconds, and whenever the controller emits a state (`sendUpdateState`
-calls `remoteUpdate?.changed()` first), with the loopback `Origin` and the owner token.
+calls `remoteUpdate?.changed()` first), with the loopback `Origin` and the owner token, `redirect:
+'error'`, and only while this Mac shares its Inbox: the link asks `shared()` before every report
+(a gate that throws, or none, counts as not shared). Main answers it from `remoteShared`, set by
+`watchRemoteEntry`'s `onView` from the same `panel.get()` read every 5 seconds: the remote entry is
+on and has at least one paired device. Turning shared on reports at once; turning it off needs
+nothing, because the viewer answers `not_ready` once reports stop.
 `updateSummary()` builds the report from the controller's state and main's own gates:
 
 - a start needs a verified release newer than the running app, `downloadable` and `installable`
@@ -1543,8 +1559,9 @@ hub, "Agent Inbox is updating" / "<label> started the update to version <v>. Age
 by itself when it is ready." (`<label>` from `remote.json`'s devices by id, as text; "A paired Mac"
 when unknown; a click opens Settings → Updates). Then it runs the controller: `downloadNow()` when
 the release is not downloaded yet, then, only for a `verified` (or `install-failed`) state of
-exactly the release the device was shown, still `installPermitted`, with no setup or quit running,
-`installNow()`. The controller's own checks run again inside it (setup, newer, the rollback mark,
+the release main started with (the one its summary named when the request arrived: a download that
+ends on a different release is not installed), still `installPermitted`, with no setup or quit
+running, `installNow()`. The controller's own checks run again inside it (setup, newer, the rollback mark,
 feasibility), and its install ends in the restart it always asks for.
 
 A device's look may make the hub check for a release: when the answer says a device looked, the
@@ -1574,7 +1591,10 @@ only, the device header, no redirect, a timeout. The secret never reaches a page
   `{ from: <the connection's version>, to: <the newer version last shown>, at }`.
 - `state(id)` answers `{ ok, phase, version, status, newer, canStart, reason }`. Phases: `idle`
   (the hub's report), `offline` (not online, nothing asked), `old_hub` (an online hub that answers
-  the route 403: older than this change), `unreadable`; and after a start: `updating` while the hub
+  the route 403 and whose probed version is a valid version older than 2.15.0,
+  `UPDATE_ROUTES_FROM`), `refused` (any other 403: this Mac was removed from the hub's list, or its
+  login or host changed; the connection is asked to check the hub again, once per run of refusals),
+  `unreadable`; and after a start: `updating` while the hub
   reports a check, download or install, `restarting` while it does not answer (the connection is
   kicked once, so it notices before its next 60-second probe) or the connection is not online,
   `done` once the hub reports a version newer than `from`, `failed` when it is online on `from` and
@@ -1594,9 +1614,12 @@ disabled. While an update is followed (`updating`, `restarting`, or a check, dow
 the hub reports), the section asks again every 5 seconds; it also asks after every connection
 change and when Settings opens. The label is the other Mac's text, set as text only.
 
-**Version skew.** A hub older than this change has no route: the connecting Mac offers nothing and
-says "<label> runs an older Agent Inbox that can't be updated from here. Update it once on <label>:
-Agent Inbox → Check for Updates…". A connecting Mac older than the hub never asks.
+**Version skew.** A hub older than this change (the routes exist from 2.15.0) has no route: the
+connecting Mac offers nothing and says "<label> runs an older Agent Inbox that can't be updated from
+here. Update it once on <label>: Agent Inbox → Check for Updates…". A 403 from a hub that is not
+older says "<label> didn't accept this Mac's request. Check that this Mac is still listed under
+Settings → Other devices on <label>." (also when a start answers `refused`). A connecting Mac older
+than the hub never asks.
 
 Tests: `test/remote-update.test.ts` (the relay, main's report route, and both routes through the
 real gate and listener: refusals by device, `Origin`, query and body, and no route on the loopback

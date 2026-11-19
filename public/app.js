@@ -6383,6 +6383,10 @@ function initAgentSelect() {
 
 // which content panel is visible; the tab strip drives this in Task 8
 function showPanel(id) {
+  if (id !== 'setup') {
+    settingsFromHub = false
+    settingsFocusWhenUncovered = null
+  }
   const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   const panel = id === 'agent' ? 'agentPage' : id
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== panel
@@ -6413,23 +6417,70 @@ function settingsOpen() {
   return !document.getElementById('setup').hidden
 }
 
-function closeSettings({ restoreFocus = false } = {}) {
+// #617: Settings… was chosen while another Mac's Inbox was on top, so main brought This Mac's page
+// forward to show them. Closing them (the shortcut, the gear, Escape) shows that Inbox again. Going
+// anywhere else on this page, or that Inbox coming back on top by another way, forgets it.
+let settingsFromHub = false
+// What gets the keyboard once the strip no longer covers this page. When main's message arrives the
+// page is still inert under the strip, and focus() on an inert element does nothing; the strip
+// uncovers it a moment later, when main's answer to view() comes back (installHubStrip, onShowing).
+let settingsFocusWhenUncovered = null
+
+// no scroll: Settings left open underneath stay where the person had them
+function focusForSettings(element) {
+  element.tabIndex = -1
+  element.focus({ preventScroll: true })
+  settingsFocusWhenUncovered = element
+}
+
+async function showHubAgain() {
+  const api = window.agentInboxConnect
+  if (!api || typeof api.view !== 'function' || typeof api.show !== 'function') return
+  try {
+    const view = await api.view()
+    const hub = view !== null && typeof view === 'object' && view.available === true ? view.hub : null
+    if (hub !== null && typeof hub === 'object' && typeof hub.id === 'string') await api.show(hub.id)
+  } catch {
+    // This Mac stays on screen
+  }
+}
+
+// `back`: this close is the person closing Settings, not a move to somewhere else on this page
+function closeSettings({ restoreFocus = false, back = false } = {}) {
   if (!settingsOpen()) return false
+  const toHub = back && settingsFromHub
   selectTab(activeTab)
   if (restoreFocus) document.getElementById('gear').focus()
+  if (toHub) void showHubAgain()
   return true
 }
 
-function toggleSettings() {
-  if (!closeSettings()) showPanel('setup')
+// `fromHub` is exactly true only from main (electron/setup-preload.cjs); a click passes its event
+function toggleSettings(fromHub) {
+  if (fromHub === true) {
+    // never a toggle: Settings left open under the other Mac's Inbox would close, and say nothing
+    if (!settingsOpen()) showPanel('setup')
+    settingsFromHub = true
+    // the keyboard was in the other Mac's view: it comes to Settings
+    focusForSettings(document.getElementById('setup'))
+    return
+  }
+  if (!closeSettings({ back: true })) showPanel('setup')
 }
 
-function openUpdates() {
+// `fromHub` as for toggleSettings: Check for Updates… chosen while another Mac's Inbox was on top
+function openUpdates(fromHub) {
   if (!settingsOpen()) showPanel('setup')
+  if (fromHub === true) settingsFromHub = true
   const section = document.getElementById('updates-settings')
-  if (!section) return
+  if (!section) {
+    if (fromHub === true) focusForSettings(document.getElementById('setup'))
+    return
+  }
   section.scrollIntoView({ block: 'center' })
   section.focus()
+  // under the strip that focus() did nothing: again once the page is uncovered
+  if (fromHub === true) settingsFocusWhenUncovered = section
   window.agentInboxUpdates?.check?.().catch(() => {})
 }
 
@@ -10214,6 +10265,12 @@ function initKeys() {
   })
   document.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return
+    // a held Settings shortcut acts once: each repeat is cancelled, wherever it is aimed, or the
+    // app menu's Settings… would act on it and close what the first press opened
+    if (e.repeat && e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault()
+      return
+    }
     if (e.repeat && !['j', 'k', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
     const t = e.target
     const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
@@ -10265,7 +10322,7 @@ function initKeys() {
     // actual lightbox) wins via keyAction's own ladder below (deckOpen is
     // checked first, ahead of 'expanded'/clearSelection). The session panel is
     // its own Esc consumer (its keydown stops propagation).
-    if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true })) {
+    if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true, back: true })) {
       e.preventDefault()
       e.stopImmediatePropagation()
       return
@@ -11744,7 +11801,19 @@ async function renderSetup() {
 // (public/hub-mode.js) and calls no route the hub's remote entry refuses. Made before renderSetup.
 const hubMode = installHubMode()
 // This Mac's own page draws whose Inbox is on screen while another Mac's is shown over it.
-installHubStrip()
+installHubStrip({
+  onShowing: (id) => {
+    const waiting = settingsFocusWhenUncovered
+    settingsFocusWhenUncovered = null
+    if (id !== null) {
+      // the other Mac's Inbox is on top again by another way: closing Settings no longer goes back
+      settingsFromHub = false
+      return
+    }
+    // once: later answers leave the keyboard where the person has put it
+    if (waiting !== null && waiting.isConnected && settingsOpen()) waiting.focus({ preventScroll: true })
+  },
+})
 
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the

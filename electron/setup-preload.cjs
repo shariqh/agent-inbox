@@ -29,9 +29,11 @@ contextBridge.exposeInMainWorld('agentInboxSetup', {
   install(target) {
     return ipcRenderer.invoke('agent-inbox:install', target)
   },
+  // The callback hears whether Settings… was chosen while another Mac's Inbox was on top (#617):
+  // exactly `true` from main says so, anything else is false.
   onToggleSettings(callback) {
     if (typeof callback !== 'function') return () => {}
-    const listener = () => callback()
+    const listener = (_event, fromHub) => callback(fromHub === true)
     ipcRenderer.on('agent-inbox:toggle-settings', listener)
     return () => ipcRenderer.removeListener('agent-inbox:toggle-settings', listener)
   },
@@ -657,9 +659,10 @@ if (updatesAvailable) {
       ipcRenderer.on('agent-inbox:update-state-changed', listener)
       return () => ipcRenderer.removeListener('agent-inbox:update-state-changed', listener)
     },
+    // as onToggleSettings: the callback hears whether another Mac's Inbox was on top (#617)
     onOpenUpdates(callback) {
       if (typeof callback !== 'function') return () => {}
-      const listener = () => callback()
+      const listener = (_event, fromHub) => callback(fromHub === true)
       ipcRenderer.on('agent-inbox:open-updates', listener)
       return () => ipcRenderer.removeListener('agent-inbox:open-updates', listener)
     },

@@ -60,11 +60,12 @@ const runTimers = async () => {
   for (const t of due) t.fn()
   await flush()
 }
-function install(api: ReturnType<typeof connectBridge> | null, desk: unknown = localDesk()) {
+function install(api: ReturnType<typeof connectBridge> | null, desk: unknown = localDesk(), onShowing?: (id: string | null) => void) {
   const handle = installHubStrip({
     connect: () => api as never,
     desk: () => desk as never,
     documentRef: document,
+    ...(onShowing === undefined ? {} : { onShowing }),
     setTimeout: (fn: () => void, ms: number) => { const t = { fn, ms, cleared: false }; timers.push(t); return t },
     clearTimeout: (t: unknown) => { if (t) (t as { cleared: boolean }).cleared = true },
   })
@@ -110,6 +111,36 @@ describe('the strip that says whose Inbox is on screen', () => {
     expect(strip()).toBeNull()
     expect(document.body.innerHTML).toBe(before)
     expect(document.body.className).toBe('')
+  })
+
+  // #617: the page forgets "go back to the other Mac's Inbox when Settings close" once that Inbox is on top again
+  it('says which Inbox is on top at each answer from main, and nothing for an answer that is not one', async () => {
+    const seen: Array<string | null> = []
+    // whether the page was still covered when the listener heard: This Mac is told only once it is not
+    const covered: boolean[] = []
+    const api = connectBridge(view(null))
+    install(api, localDesk(), (id) => { seen.push(id); covered.push(document.querySelector('main')!.hasAttribute('inert')) })
+    await flush()
+    expect(seen).toEqual([null])
+    api.set(view(ID))
+    await flush()
+    api.set(view(null))
+    await flush()
+    expect(seen).toEqual([null, ID, null])
+    expect(covered).toEqual([false, true, false])
+    // a stored Mac that is not the one named as showing is This Mac on top
+    api.set(view('ffffffff'))
+    await flush()
+    expect(seen).toEqual([null, ID, null, null])
+    api.set(OFF as never)
+    await flush()
+    expect(seen).toEqual([null, ID, null, null])
+    // a listener that throws changes nothing about the strip
+    uninstall?.()
+    const again = connectBridge(view(ID))
+    install(again, localDesk(), () => { throw new Error('boom') })
+    await flush()
+    expect(strip()).not.toBeNull()
   })
 
   it('is drawn while the other Mac’s Inbox is on screen: whose, its status, and This Mac', async () => {
@@ -298,6 +329,38 @@ describe('the strip that says whose Inbox is on screen', () => {
       await flush()
       document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true, cancelable: true }))
       expect(seen).toEqual(['keydown e', 'keydown e'])
+    } finally {
+      document.removeEventListener('keydown', pageKeys, true)
+      document.removeEventListener('keydown', pageKeys)
+    }
+  })
+
+  // #617: the Settings shortcut is the app menu's. Kept from the hidden page's own handler, but not
+  // cancelled, so the menu item acts on it wherever the keyboard happens to be.
+  it('leaves the Settings shortcut to the app menu: the page never sees it, and it is not cancelled', async () => {
+    const seen: string[] = []
+    const pageKeys = (event: KeyboardEvent) => seen.push(`${event.type} ${event.key}`)
+    document.addEventListener('keydown', pageKeys, true)
+    document.addEventListener('keydown', pageKeys)
+    try {
+      install(connectBridge(view(ID)))
+      await flush()
+      for (const target of [document.body, document.getElementById('hidden-control')!, back()!]) {
+        const event = new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true })
+        target.dispatchEvent(event)
+        expect(event.defaultPrevented).toBe(false)
+      }
+      // anything that is not exactly the menu item's key is still stopped and cancelled: Ctrl+, (the
+      // menu's key is Cmd+, on a Mac, so nothing would act on it), a held key, other modifiers
+      for (const init of [{}, { ctrlKey: true }, { metaKey: true, ctrlKey: true }, { metaKey: true, repeat: true }, { metaKey: true, shiftKey: true }, { metaKey: true, altKey: true }]) {
+        const event = new KeyboardEvent('keydown', { key: ',', bubbles: true, cancelable: true, ...init })
+        document.body.dispatchEvent(event)
+        expect(event.defaultPrevented, JSON.stringify(init)).toBe(true)
+      }
+      const up = new KeyboardEvent('keyup', { key: ',', metaKey: true, bubbles: true, cancelable: true })
+      document.body.dispatchEvent(up)
+      expect(up.defaultPrevented).toBe(true)
+      expect(seen).toEqual([])
     } finally {
       document.removeEventListener('keydown', pageKeys, true)
       document.removeEventListener('keydown', pageKeys)

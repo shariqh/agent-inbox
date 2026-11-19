@@ -16,12 +16,20 @@ afterEach(() => removeScratchDirs())
 
 // Runs the real preload against a fake `electron`, so its checks are exercised
 // rather than pinned as text.
-function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown) {
+function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown, argv: string[] = []) {
   const exposed: Record<string, unknown> = {}
   const invoke = vi.fn(async (channel: string, ...args: unknown[]) => answer(channel, ...args))
+  const heard: Array<{ channel: string; listener: (...args: unknown[]) => void }> = []
   const electron = {
     contextBridge: { exposeInMainWorld: (name: string, api: unknown) => { exposed[name] = api } },
-    ipcRenderer: { invoke, on: () => {}, removeListener: () => {} },
+    ipcRenderer: {
+      invoke,
+      on: (channel: string, listener: (...args: unknown[]) => void) => { heard.push({ channel, listener }) },
+      removeListener: (channel: string, listener: (...args: unknown[]) => void) => {
+        const at = heard.findIndex((entry) => entry.channel === channel && entry.listener === listener)
+        if (at !== -1) heard.splice(at, 1)
+      },
+    },
   }
   const factory = vm.runInThisContext(
     `(function (require, process) {\n${read('electron/setup-preload.cjs')}\n})`,
@@ -30,9 +38,51 @@ function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown) {
   factory((id) => {
     if (id !== 'electron') throw new Error(`unexpected require ${id}`)
     return electron
-  }, { argv: [] })
-  return { links: exposed.agentInboxLinks as LinksBridge, settings: exposed.agentInboxLinkSettings as SettingsBridge, invoke }
+  }, { argv })
+  return { links: exposed.agentInboxLinks as LinksBridge, settings: exposed.agentInboxLinkSettings as SettingsBridge, invoke, exposed, heard }
 }
+
+// #617: Settings… chosen while another Mac's Inbox was on top says so, as exactly `true`
+describe('the Settings toggle from the app menu', () => {
+  it('passes the page only whether the hub was on top, as a boolean', () => {
+    const { exposed, heard } = loadPreload(() => null)
+    const setup = exposed.agentInboxSetup as { onToggleSettings(callback: unknown): () => void }
+    const got: unknown[][] = []
+    const off = setup.onToggleSettings((...args: unknown[]) => { got.push(args) })
+    const toggles = heard.filter((entry) => entry.channel === 'agent-inbox:toggle-settings')
+    expect(toggles).toHaveLength(1)
+    const send = (...args: unknown[]) => toggles[0]!.listener({ sender: 'event' }, ...args)
+    send(true)
+    send(false)
+    send()
+    send('true')
+    send(1)
+    send({ fromHub: true })
+    send(true, 'extra')
+    expect(got).toEqual([[true], [false], [false], [false], [false], [false], [true]])
+    off()
+    expect(heard.filter((entry) => entry.channel === 'agent-inbox:toggle-settings')).toHaveLength(0)
+    expect(setup.onToggleSettings('not a function')()).toBeUndefined()
+  })
+
+  it('Check for Updates… passes the page the same boolean', () => {
+    const { exposed, heard } = loadPreload(() => null, ['--agent-inbox-updates=1'])
+    const updates = exposed.agentInboxUpdates as { onOpenUpdates(callback: unknown): () => void }
+    const got: unknown[][] = []
+    const off = updates.onOpenUpdates((...args: unknown[]) => { got.push(args) })
+    const opens = heard.filter((entry) => entry.channel === 'agent-inbox:open-updates')
+    expect(opens).toHaveLength(1)
+    const send = (...args: unknown[]) => opens[0]!.listener({ sender: 'event' }, ...args)
+    send(true)
+    send(false)
+    send()
+    send('true')
+    send({ fromHub: true })
+    expect(got).toEqual([[true], [false], [false], [false], [false]])
+    off()
+    expect(heard.filter((entry) => entry.channel === 'agent-inbox:open-updates')).toHaveLength(0)
+  })
+})
 
 describe('the link bridge (issue #300)', () => {
   it('is one method that passes a fresh, well-formed request to one channel', async () => {

@@ -620,7 +620,7 @@ describe('Electron updater integration', () => {
     )
 
     expect(main).toContain("label: 'Check for Updates…'")
-    expect(main).toContain("win.webContents.send('agent-inbox:open-updates')")
+    expect(main).toContain("win.webContents.send('agent-inbox:open-updates', fromHub)")
     expect(updateMenu).not.toContain('toggle-settings')
     expect(main).toContain('validateReleaseUrl(')
     expect(main).toContain('shell.openExternal(releaseUrl)')

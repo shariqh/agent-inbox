@@ -162,6 +162,8 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
   const hubContents = { id: 8, isDestroyed: () => false }
   const stranger = { id: 99, isDestroyed: () => false }
   const shown: unknown[] = []
+  // the hub the fake view says is on top; null is This Mac
+  const onTop: { value: string | null } = { value: null }
   const retried: unknown[] = []
 
   beforeAll(() => {
@@ -190,7 +192,7 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
       },
       hub: {
         trusts: (event: unknown) => trustedDeskSender(event, { webContents: hubContents }, HUB_ORIGIN, OFFLINE_URL),
-        current: () => null,
+        current: () => onTop.value,
         show: (id: unknown) => { shown.push(id); return { ok: true, showing: id } },
         retry: async () => { retried.push(1); return { ok: true } },
         // no gesture in this harness: an open from the hub's page stops at the gesture check
@@ -303,12 +305,45 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
   it('Check for Updates… and an update notification bring This Mac forward first (openUpdatesWindow)', () => {
     const calls: string[] = []
     const shownBefore = shown.length
-    const target = { isDestroyed: () => false, isMinimized: () => false, show: () => calls.push('show'), focus: () => calls.push('focus'), webContents: { isDestroyed: () => false, send: (channel: string) => calls.push(channel) } }
+    const target = { isDestroyed: () => false, isMinimized: () => false, show: () => calls.push('show'), focus: () => calls.push('focus'), webContents: { isDestroyed: () => false, send: (...sent: unknown[]) => calls.push(sent.join(' ')) } }
     ;(globalThis as Record<string, unknown>).__updatesTarget = target
-    main.evaluate('openUpdatesWindow(globalThis.__updatesTarget)')
-    delete (globalThis as Record<string, unknown>).__updatesTarget
-    expect(shown.slice(shownBefore)).toEqual([null])
-    expect(calls).toEqual(['show', 'focus', 'agent-inbox:open-updates'])
+    try {
+      main.evaluate('openUpdatesWindow(globalThis.__updatesTarget)')
+      // with the hub on top the page hears so, and shows the hub again when Settings close
+      onTop.value = ID
+      main.evaluate('openUpdatesWindow(globalThis.__updatesTarget)')
+    } finally {
+      onTop.value = null
+      delete (globalThis as Record<string, unknown>).__updatesTarget
+    }
+    expect(shown.slice(shownBefore)).toEqual([null, null])
+    expect(calls).toEqual(['show', 'focus', 'agent-inbox:open-updates false', 'show', 'focus', 'agent-inbox:open-updates true'])
+    shown.length = shownBefore
+  })
+
+  it('Settings… brings This Mac forward, then tells its page whether the hub was on top (showSettings)', () => {
+    const sent: unknown[][] = []
+    const shownBefore = shown.length
+    const target = { isDestroyed: () => false, webContents: { send: (...args: unknown[]) => { sent.push([...args, `after ${shown.length - shownBefore} show`]) } } }
+    const closed = { isDestroyed: () => true, webContents: { send: (...args: unknown[]) => { sent.push(args) } } }
+    ;(globalThis as Record<string, unknown>).__settingsTarget = target
+    ;(globalThis as Record<string, unknown>).__settingsClosed = closed
+    try {
+      onTop.value = ID
+      main.evaluate('showSettings(globalThis.__settingsTarget)')
+      onTop.value = null
+      main.evaluate('showSettings(globalThis.__settingsTarget)')
+      main.evaluate('showSettings(globalThis.__settingsClosed)')
+    } finally {
+      onTop.value = null
+      delete (globalThis as Record<string, unknown>).__settingsTarget
+      delete (globalThis as Record<string, unknown>).__settingsClosed
+    }
+    expect(shown.slice(shownBefore)).toEqual([null, null, null])
+    expect(sent).toEqual([
+      ['agent-inbox:toggle-settings', true, 'after 1 show'],
+      ['agent-inbox:toggle-settings', false, 'after 2 show'],
+    ])
     shown.length = shownBefore
   })
 
@@ -433,7 +468,21 @@ describe('electron/main.cjs wires the hub view (source)', () => {
 
   it('requires the two modules by destructuring, so the dead-module guard sees them', () => {
     expect(main).toContain("const { createRemoteConnect } = require('./remote-connect.cjs')")
-    expect(main).toContain("const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')")
+    expect(main).toContain("const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')")
+  })
+
+  // #635: quitting with the hub's Inbox on top and opening the app again showed This Mac
+  it('stores whose Inbox the person chose, and restores the hub’s at start from the file alone', () => {
+    const view = main.slice(main.indexOf('hubView = createHubView({'), main.indexOf('const lostHub = createLostHubNotice({'))
+    expect(view).toContain('onChosen: (id, shown) => { void remoteConnect?.setShown(id, shown) },')
+    const restore = startRemote.indexOf('remoteConnect.storedHub().then((hub) => {')
+    expect(restore).toBeGreaterThan(-1)
+    expect(startRemote.slice(restore)).toContain('if (hub?.shown === true) hubView?.restore(hub.id)')
+    // asked before the controller starts, so the wish is there when the first view is built
+    expect(restore).toBeLessThan(startRemote.indexOf('remoteConnect.start()'))
+    // nothing else restores, and nothing at start asks for more than the file
+    expect(main.split('hubView?.restore(').length - 1).toBe(1)
+    expect(startRemote.slice(restore, startRemote.indexOf('remoteConnect.start()'))).not.toMatch(/safeStorage|view\(\)/)
   })
 
   it('makes connect mode on macOS only, after the window exists, and starts it last', () => {
@@ -478,14 +527,24 @@ describe('electron/main.cjs wires the hub view (source)', () => {
 
   it('shows This Mac before Settings… and Check for Updates…, and adds the hub pair to the View menu', () => {
     const menu = main.slice(main.indexOf('function installApplicationMenu(win)'), main.indexOf('function initializeUpdateController()'))
-    const settingsClick = menu.slice(menu.indexOf("label: 'Settings…'"))
-    expect(settingsClick.indexOf('hubView?.show(null)')).toBeGreaterThan(-1)
-    expect(settingsClick.indexOf('hubView?.show(null)')).toBeLessThan(settingsClick.indexOf("win.webContents.send('agent-inbox:toggle-settings')"))
+    // Settings… goes through showSettings: openSettings (hub-view.cjs, tested there) shows This Mac
+    // first, then the page hears whether the hub was on top
+    const settingsClick = menu.slice(menu.indexOf("label: 'Settings…'"), menu.indexOf('const hubItems ='))
+    expect(settingsClick).toContain('showSettings(win)')
+    expect(settingsClick).not.toContain('toggle-settings')
+    const showSettings = main.slice(main.indexOf('function showSettings(win)'), main.indexOf('function installApplicationMenu(win)'))
+    expect(showSettings).toContain('openSettings(hubView, (fromHub) => {')
+    expect(showSettings).toContain("if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings', fromHub)")
+    // the same thing for the shortcut pressed in the hub view, which never reaches the menu
+    const view = main.slice(main.indexOf('hubView = createHubView({'), main.indexOf('const lostHub = createLostHubNotice({'))
+    expect(view).toContain('onSettingsKey: () => showSettings(win),')
+    expect(main.split("'agent-inbox:toggle-settings'").length - 1).toBe(1)
     // Check for Updates… goes through openUpdatesWindow, which shows This Mac first (tested above)
     const updatesClick = menu.slice(menu.indexOf("label: 'Check for Updates…'"), menu.indexOf('const settings = {'))
     expect(updatesClick).toContain('openUpdatesWindow(win)')
     // #617 PR 3c: offered only while the hub may be shown, and only through the one guard (show)
-    expect(menu).toContain('hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })')
+    // #635: the View menu's pair is the person's choice of Inbox, so it is remembered
+    expect(menu).toContain('hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id, true) })')
     // the zoom items lay the hub view out again, at the local page's new zoom
     expect(menu).toContain('...zoomMenuItems({ focused: () => webContents.getFocusedWebContents() ?? win.webContents, after: () => hubView?.layout() })')
     expect(menu).not.toContain("{ role: 'zoomIn' }")
@@ -532,6 +591,6 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(apply.indexOf('hubView?.ownerChanged()')).toBeGreaterThan(apply.indexOf('fileLinkWebContentsId = files ? setupWindowWebContentsId : null'))
     // nothing else in main shows a hub: every path is hubView.show(id), behind mayShow
     // (#617 PR 4a: the hub watch's notification click and the lost-hub notice's click are two more, by id)
-    expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id', 'id', 'id'])
+    expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id', 'id', 'id, true'])
   })
 })

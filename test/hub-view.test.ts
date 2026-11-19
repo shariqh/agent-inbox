@@ -19,7 +19,7 @@ import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const {
   CONNECT_CHANNELS, DESK_CHANNELS, HUB_STRIP_HEIGHT, allowNavigation, insetFor, zoomMenuItems, allowPermission, createHubView, deskConnection, hubMenuItems, mayOpenExternally,
-  partitionFor, registerHubIpc, sendHeaders, trustedDeskSender, watchOnline, windowTitle,
+  openSettings, partitionFor, registerHubIpc, sendHeaders, trustedDeskSender, watchOnline, windowTitle,
 } = hubViewModule
 const { createRemoteConnect } = remoteConnect
 const { createDeskOpen } = deskOpenModule
@@ -423,7 +423,7 @@ const settle = async () => {
 const hubState = (state: 'online' | 'retrying' | 'refused', reason: string | null = null, extra: Partial<Conn> = {}): Conn =>
   ({ mode: 'hub', id: ID, label: 'studio', state, reason, version: '2.12.0', ...extra }) as Conn
 
-interface WorldOptions { owned?: boolean; noGate?: boolean; now?: () => number; origin?: string; isPackaged?: boolean; partitions?: () => string[]; stored?: string | null; problem?: string }
+interface WorldOptions { owned?: boolean; noGate?: boolean; now?: () => number; origin?: string; isPackaged?: boolean; partitions?: () => string[]; stored?: string | null; problem?: string; onSettingsKey?: () => void; onChosen?: (id: string, shown: boolean) => void }
 
 function world(options: WorldOptions = {}) {
   const electron = fakeElectron()
@@ -435,6 +435,7 @@ function world(options: WorldOptions = {}) {
   const opened: string[] = []
   const changes = vi.fn()
   const clock = { t: 5_000_000 }
+  const chosen: Array<[string, boolean]> = []
   const hub = createHubView({
     window: electron.window,
     session: electron.session,
@@ -451,11 +452,13 @@ function world(options: WorldOptions = {}) {
     // #617 PR 3c: whether this window's page is the one the app owns, so it can draw the strip
     ...(options.noGate ? {} : { mayShow: () => gate.owned }),
     backgroundColor: () => '#101214',
+    ...(options.onSettingsKey === undefined ? {} : { onSettingsKey: options.onSettingsKey }),
+    onChosen: options.onChosen ?? ((id: string, shown: boolean) => { chosen.push([id, shown]) }),
   })
   const view = () => electron.views.at(-1)!
   const contents = () => view().webContents
   const ses = () => electron.sessions.get(`persist:hub-${ID}`)!
-  return { ...electron, connect, hub, opened, changes, clock, view, contents, ses, timers, gate }
+  return { ...electron, connect, hub, opened, changes, clock, view, contents, ses, timers, gate, chosen }
 }
 
 /** An Electron navigation event: the details object with preventDefault. */
@@ -463,6 +466,294 @@ const navEvent = (url: string, isMainFrame = true) => {
   const event = { url, isMainFrame, defaultPrevented: false, preventDefault() { event.defaultPrevented = true } }
   return event
 }
+
+// The Settings shortcut pressed while the hub's page has the keyboard. The page would handle it
+// itself only when focus is not on a button or a link, and the Settings… menu item got it otherwise,
+// so one key did two different things. Main takes it before the page and before the menu.
+describe('createHubView: the Settings shortcut pressed in the hub view', () => {
+  const press = (input: Record<string, unknown> = {}) => {
+    const event = { defaultPrevented: false, preventDefault() { event.defaultPrevented = true } }
+    return { event, input: { type: 'keyDown', key: ',', meta: true, control: false, alt: false, shift: false, isAutoRepeat: false, ...input } }
+  }
+  async function shownWith(onSettingsKey: () => void) {
+    const w = world({ onSettingsKey })
+    w.connect.set(hubState('online'))
+    await settle()
+    w.hub.show(ID)
+    return w
+  }
+
+  it('is taken from the page and the menu, and handed to onSettingsKey once', async () => {
+    const asked = vi.fn()
+    const w = await shownWith(asked)
+    for (const input of [{ meta: true }, { meta: false, control: true }]) {
+      const { event, input: sent } = press(input)
+      w.contents().emit('before-input-event', event, sent)
+      expect(event.defaultPrevented, JSON.stringify(input)).toBe(true)
+    }
+    expect(asked).toHaveBeenCalledTimes(2)
+    expect(asked.mock.calls).toEqual([[], []])
+  })
+
+  it('a held key is kept from the page but asks only once', async () => {
+    const asked = vi.fn()
+    const w = await shownWith(asked)
+    const first = press()
+    w.contents().emit('before-input-event', first.event, first.input)
+    const held = press({ isAutoRepeat: true })
+    w.contents().emit('before-input-event', held.event, held.input)
+    expect(held.event.defaultPrevented).toBe(true)
+    expect(asked).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['a comma alone', { meta: false }],
+    ['with Shift', { shift: true }],
+    ['with Option', { alt: true }],
+    ['another key', { key: '.' }],
+    ['the key going up', { type: 'keyUp' }],
+    ['a key that is not text', { key: 7 }],
+  ])('leaves %s to the page', async (_name, input) => {
+    const asked = vi.fn()
+    const w = await shownWith(asked)
+    const { event, input: sent } = press(input)
+    w.contents().emit('before-input-event', event, sent)
+    expect(event.defaultPrevented).toBe(false)
+    expect(asked).not.toHaveBeenCalled()
+  })
+
+  it('still counts as input, and a caller that throws or was not given stops nothing', async () => {
+    const w = await shownWith(() => { throw new Error('boom') })
+    w.contents().focused = true
+    const { event, input } = press()
+    expect(() => w.contents().emit('before-input-event', event, input)).not.toThrow()
+    expect(event.defaultPrevented).toBe(true)
+    const nav = navEvent('https://elsewhere.example.com/a')
+    w.contents().emit('will-navigate', nav, nav.url)
+    expect(w.opened).toEqual(['https://elsewhere.example.com/a'])
+    // no onSettingsKey at all: the key is still kept from the page, so it never does the page's own thing
+    const bare = world()
+    bare.connect.set(hubState('online'))
+    await settle()
+    const again = press()
+    expect(() => bare.contents().emit('before-input-event', again.event, again.input)).not.toThrow()
+    expect(again.event.defaultPrevented).toBe(true)
+    // an input with nothing in it (as the older tests send) is only counted
+    expect(() => bare.contents().emit('before-input-event', {}, { type: 'keyDown' })).not.toThrow()
+    expect(() => bare.contents().emit('before-input-event', {}, undefined)).not.toThrow()
+  })
+})
+
+// #635: quitting with another Mac's Inbox on top and opening the app again showed This Mac. What the
+// person chose is reported through onChosen (main stores it with the connection), and restore(id)
+// puts that Inbox on top again once its view exists.
+describe('createHubView: the Inbox that was on top when the app last quit', () => {
+  it('restore(id) before the view exists puts the hub on top as soon as it is built, with no show()', async () => {
+    const w = world()
+    w.hub.restore(ID)
+    expect(w.hub.current()).toBeNull()
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.current()).toBe(ID)
+    expect(w.view().visible).toBe(true)
+    expect(w.contents().loads).toEqual([`${ORIGIN}/`])
+    expect(w.changes).toHaveBeenCalled()
+    // it was stored already: nothing is written again
+    expect(w.chosen).toEqual([])
+  })
+
+  it('restore(id) after the view was built puts it on top at once', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.current()).toBeNull()
+    const before = w.changes.mock.calls.length
+    w.hub.restore(ID)
+    expect(w.hub.current()).toBe(ID)
+    expect(w.view().visible).toBe(true)
+    expect(w.changes.mock.calls.length).toBeGreaterThan(before)
+  })
+
+  it('a hub out of reach at start comes back with its offline page', async () => {
+    const w = world()
+    w.hub.restore(ID)
+    w.connect.set(hubState('retrying', 'unreachable'))
+    await settle()
+    expect(w.hub.current()).toBe(ID)
+    expect(w.contents().loads).toEqual([OFFLINE_URL])
+  })
+
+  it('waits until this window’s page is the one the app owns', async () => {
+    const w = world({ owned: false })
+    w.hub.restore(ID)
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.current()).toBeNull()
+    w.gate.owned = true
+    w.hub.ownerChanged()
+    expect(w.hub.current()).toBe(ID)
+    expect(w.view().visible).toBe(true)
+  })
+
+  it('gives way to anything shown first: Settings… or This Mac before the view is ready', async () => {
+    for (const chosen of [false, true]) {
+      const w = world()
+      w.hub.restore(ID)
+      w.hub.show(null, chosen)
+      w.connect.set(hubState('online'))
+      await settle()
+      expect(w.hub.current(), String(chosen)).toBeNull()
+      expect(w.view().visible).toBe(false)
+      // Settings… leaves what is stored alone; This Mac chosen is stored
+      expect(w.chosen).toEqual(chosen ? [[ID, false]] : [])
+    }
+  })
+
+  it('is given up after a minute, so a hub that is slow to appear never jumps on top later', async () => {
+    const w = world({ owned: false })
+    w.hub.restore(ID)
+    w.connect.set(hubState('online'))
+    await settle()
+    w.clock.t += 60_001
+    w.gate.owned = true
+    w.hub.ownerChanged()
+    expect(w.hub.current()).toBeNull()
+    // and exactly at a minute it still holds
+    const on = world({ owned: false })
+    on.hub.restore(ID)
+    on.connect.set(hubState('online'))
+    await settle()
+    on.clock.t += 60_000
+    on.gate.owned = true
+    on.hub.ownerChanged()
+    expect(on.hub.current()).toBe(ID)
+  })
+
+  it('ignores an id that is not the stored hub’s or not an id, and a restore after something was shown', async () => {
+    for (const id of ['ffffffff', 'nope', '', null, 7, undefined]) {
+      const w = world()
+      w.hub.restore(id as never)
+      w.connect.set(hubState('online'))
+      await settle()
+      expect(w.hub.current(), String(id)).toBeNull()
+    }
+    const late = world()
+    late.connect.set(hubState('online'))
+    await settle()
+    late.hub.show(ID)
+    late.hub.show(null)
+    late.hub.restore(ID)
+    expect(late.hub.current()).toBeNull()
+  })
+
+  it('a wish for another hub than the one whose view exists changes nothing and tells nobody', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    const told = w.changes.mock.calls.length
+    const log = w.log.length
+    w.hub.restore('ffffffff')
+    expect(w.hub.current()).toBeNull()
+    expect(w.changes.mock.calls.length).toBe(told)
+    expect(w.log.length).toBe(log)
+    // and the built view's own hub can still be shown the ordinary way
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+  })
+
+  it('a destroyed view restores nothing', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    w.hub.destroy()
+    expect(() => w.hub.restore(ID)).not.toThrow()
+    expect(w.hub.current()).toBeNull()
+  })
+})
+
+describe('createHubView: what the person chose is reported once per change', () => {
+  async function built(options: WorldOptions = {}) {
+    const w = world(options)
+    w.connect.set(hubState('online'))
+    await settle()
+    return w
+  }
+
+  it('the hub on top is reported; This Mac only when it was chosen (the View menu, the strip)', async () => {
+    const w = await built()
+    w.hub.show(ID)
+    w.hub.show(ID)
+    expect(w.chosen).toEqual([[ID, true]])
+    // Settings…, Check for Updates… and a notification click bring This Mac forward without choosing it
+    w.hub.show(null)
+    w.hub.show(null, false)
+    expect(w.chosen).toEqual([[ID, true]])
+    w.hub.show(ID)
+    expect(w.chosen).toEqual([[ID, true]])
+    w.hub.show(null, true)
+    w.hub.show(null, true)
+    expect(w.chosen).toEqual([[ID, true], [ID, false]])
+    w.hub.show(ID, true)
+    expect(w.chosen).toEqual([[ID, true], [ID, false], [ID, true]])
+    // only exactly true is a choice
+    w.hub.show(null, 'yes' as never)
+    w.hub.show(null, 1 as never)
+    expect(w.chosen).toHaveLength(3)
+  })
+
+  it('a restored hub reports nothing until the choice changes', async () => {
+    const w = world()
+    w.hub.restore(ID)
+    w.connect.set(hubState('online'))
+    await settle()
+    w.hub.show(ID)
+    expect(w.chosen).toEqual([])
+    w.hub.show(null, true)
+    expect(w.chosen).toEqual([[ID, false]])
+  })
+
+  it('a hub that could not be shown is not reported, nor This Mac with no hub at all', async () => {
+    const w = world({ owned: false })
+    w.connect.set(hubState('online'))
+    await settle()
+    expect(w.hub.show(ID)).toEqual({ ok: false, reason: 'not_owned' })
+    expect(w.chosen).toEqual([])
+    const none = world()
+    none.hub.show(null, true)
+    expect(none.chosen).toEqual([])
+  })
+
+  it('a listener that throws, or none, stops nothing', async () => {
+    const w = await built({ onChosen: () => { throw new Error('boom') } })
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+    expect(w.hub.show(null, true)).toEqual({ ok: true, showing: null })
+  })
+})
+
+describe('openSettings: Settings… and the Settings shortcut', () => {
+  it('reads whether the hub is on top before This Mac comes forward, then tells the page', () => {
+    const log: string[] = []
+    const view = {
+      on: ID as string | null,
+      current() { log.push('current'); return view.on },
+      show(id: string | null) { log.push(`show ${id}`); view.on = id; return { ok: true } },
+    }
+    const sent: boolean[] = []
+    openSettings(view as never, (fromHub: boolean) => { log.push('send'); sent.push(fromHub) })
+    expect(log).toEqual(['current', 'show null', 'send'])
+    expect(sent).toEqual([true])
+    // This Mac was already on top: a plain toggle
+    openSettings(view as never, (fromHub: boolean) => { sent.push(fromHub) })
+    expect(sent).toEqual([true, false])
+  })
+
+  it('with no hub view (not macOS) it only tells the page, and a view that throws changes nothing', () => {
+    const sent: boolean[] = []
+    openSettings(null as never, (fromHub: boolean) => { sent.push(fromHub) })
+    openSettings(undefined as never, (fromHub: boolean) => { sent.push(fromHub) })
+    openSettings({ current() { throw new Error('gone') }, show() { throw new Error('gone') } } as never, (fromHub: boolean) => { sent.push(fromHub) })
+    expect(sent).toEqual([false, false, false])
+  })
+})
 
 describe('createHubView: the view and its session', () => {
   it('sets the session up before anything loads: direct proxy, header handler, permissions, downloads', async () => {
@@ -1282,12 +1573,13 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
   const settled = vi.fn(async () => {})
   const isOwned = vi.fn((event: { sender: unknown }) => (options.owned ?? true) && event.sender === owner)
   const shows: unknown[] = []
+  const chosenArgs: unknown[] = []
   const retries: unknown[] = []
   const pageChanges: unknown[] = []
   const hubView = options.hubView === undefined
     ? {
         trusts: (event: unknown) => trustedDeskSender(event, { webContents: hubContents }, ORIGIN, OFFLINE_URL),
-        show: (id: unknown) => { shows.push(id); return { ok: true, showing: id } },
+        show: (id: unknown, chosen: unknown) => { shows.push(id); chosenArgs.push(chosen); return { ok: true, showing: id } },
         current: () => null,
         retry: async () => { retries.push(1); return { ok: true } },
         cleared: async () => {},
@@ -1308,7 +1600,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
   const hubEvent = { sender: hubContents, senderFrame: { url: `${ORIGIN}/`, parent: null } }
   const offlineEvent = { sender: hubContents, senderFrame: { url: OFFLINE_URL, parent: null } }
   const call = (channel: string, event: unknown, ...args: unknown[]) => handlers.get(channel)!(event, ...args)
-  return { handlers, call, local, hubEvent, offlineEvent, owner, hubContents, settled, isOwned, shows, retries, connect, pageChanges }
+  return { handlers, call, local, hubEvent, offlineEvent, owner, hubContents, settled, isOwned, shows, chosenArgs, retries, connect, pageChanges }
 }
 
 const UNAVAILABLE = { available: false }
@@ -1473,6 +1765,8 @@ describe('registerHubIpc', () => {
     expect(await w.call(CONNECT_CHANNELS.show, w.local, null)).toEqual({ ok: true, showing: null })
     expect(await w.call(CONNECT_CHANNELS.show, w.local, ID)).toEqual({ ok: true, showing: ID })
     expect(w.shows).toEqual([null, ID])
+    // #635: the page's own show is the person's choice (the strip's This Mac), so it is remembered
+    expect(w.chosenArgs).toEqual([true, true])
     const none = ipcWorld({ hubView: null })
     expect(await none.call(CONNECT_CHANNELS.show, none.local, null)).toEqual(UNAVAILABLE)
   })

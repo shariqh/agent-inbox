@@ -20,6 +20,8 @@ export interface StoredHub {
   id: string; origin: string; label: string; node: string; machine: string | null; device: string; secret: string
   /** #617 PR 4b: the Open desk command template when one is stored and valid, else null */
   deskCommand: string | null
+  /** #635: this hub's Inbox was the one the person had on top when the app last ran. */
+  shown: boolean
 }
 /**
  * #617 PR 4b: one line of 1 to 512 characters, no control character, `{desk}` or `{attach}` at least

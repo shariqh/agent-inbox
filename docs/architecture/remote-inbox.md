@@ -1050,6 +1050,36 @@ or from `agentInboxConnect.show`. An id other than the active hub's is refused. 
 Mac first. The window title is `Agent Inbox — <label>` while the
 hub's view is on top. Focus moves to the view that comes forward.
 
+**Settings… while the hub is on top.** Settings is on This Mac's page, so **Settings…** and
+**Check for Updates…** bring that page forward (`showSettings` and `openUpdatesWindow` in
+`main.cjs`, both through `openSettings` in `hub-view.cjs`) and send their message
+(`agent-inbox:toggle-settings`, `agent-inbox:open-updates`) with `true` when the hub was on top.
+The page then opens Settings instead of toggling them, gives them the keyboard, and closing them
+with the shortcut, the gear or Escape calls `agentInboxConnect.show` with the id of the hub that
+`view()` names then, so the hub's Inbox is on top again. Choosing a tab or a project on This Mac's
+page, or the hub coming back on top by another way, forgets that.
+
+Cmd+, does this wherever the keyboard is. In the hub's view, `before-input-event` takes the
+shortcut (Cmd+, and also Ctrl+,, which the hub's page would otherwise handle itself) before the
+hub's page and before the menu, and calls `showSettings`. On This Mac's page under the strip, the
+strip stops Cmd+, without cancelling it, so the menu item acts. A held key acts once: the hub view
+and the page cancel its repeats. Before this, the hub's page handled the key itself unless a
+button or link had focus, and the menu item toggled This Mac's Settings, which closed them when
+they had been left open underneath.
+
+**After a restart (#635).** Whose Inbox the person chose is stored with the connection:
+`shown: true` on the hub's entry in `remote-connect.json` (`remoteConnect.setShown`, written only
+when it changes, read back by `storedHub()` with no Keychain). The hub view reports it through
+`onChosen`. The hub's Inbox on top always counts. This Mac counts only when the person picked it:
+the View menu's **This Mac** and the strip's, which arrive as `show(null, true)`. So
+**Settings…**, **Check for Updates…** and a click on one of This Mac's notifications leave what is
+stored alone, and an update's restart comes back to the hub. At start, main reads `storedHub()`
+and calls `hubView.restore(id)` when it says `shown`. The view then comes on top by itself as soon
+as it exists and this window's page is the owned one, with the hub's page or, when the hub is out
+of reach, the offline page. Any `show(null)` before that gives the restore up, and so does a
+minute passing (`RESTORE_WINDOW_MS`), so a view that is slow to appear never jumps over what the
+person is doing.
+
 Since PR 3c, the hub's view is on top only while this window's own page can draw the strip, and
 `current()` names a hub only when its view really is on top:
 

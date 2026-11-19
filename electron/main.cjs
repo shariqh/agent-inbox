@@ -44,7 +44,7 @@ const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
 const { createRemoteConnect } = require('./remote-connect.cjs')
-const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
+const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
 const { createDeskOpen, deskConfirmation } = require('./desk-open.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
@@ -202,12 +202,14 @@ function validateReleaseUrl(value, version) {
 
 function openUpdatesWindow(win) {
   if (win.isDestroyed() || win.webContents.isDestroyed()) return
-  // Settings → Updates is on This Mac's page: bring it forward over the hub view (#617 PR 3b)
-  hubView?.show(null)
-  if (win.isMinimized()) win.restore()
-  win.show()
-  win.focus()
-  win.webContents.send('agent-inbox:open-updates')
+  // Settings → Updates is on This Mac's page: it comes forward over the hub view (#617 PR 3b), and
+  // hears whether the hub was on top, so closing Settings shows the hub again (as showSettings)
+  openSettings(hubView, (fromHub) => {
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+    win.webContents.send('agent-inbox:open-updates', fromHub)
+  })
 }
 
 ipcMain.handle('agent-inbox:update-state', (event, ...args) => {
@@ -853,6 +855,10 @@ function startRemoteConnect(win) {
     mayShow: () => fileLinkWebContentsId !== null && fileLinkWebContentsId === win.webContents.id,
     backgroundColor: themeBackgroundColor,
     readPartitions: () => readdirSync(path.join(app.getPath('userData'), 'Partitions')),
+    // the Settings shortcut pressed in the hub view never reaches the menu: the same thing from here
+    onSettingsKey: () => showSettings(win),
+    // #635: whose Inbox the person chose is stored with the connection, for the next start
+    onChosen: (id, shown) => { void remoteConnect?.setShown(id, shown) },
   })
   // #617 PR 4a: one notice when the hub stays out of reach; its click shows the hub's offline page
   const lostHub = createLostHubNotice({
@@ -884,6 +890,11 @@ function startRemoteConnect(win) {
   powerMonitor.on('resume', woke)
   powerMonitor.on('unlock-screen', woke)
   watchOnline({ isOnline: () => net.isOnline(), onBack: () => { lostHub.awake(); kick() } })
+  // #635: the Inbox that was on top when the app last quit comes back once its view is ready. Read
+  // from the file alone: no Keychain, nothing sent
+  remoteConnect.storedHub().then((hub) => {
+    if (hub?.shown === true) hubView?.restore(hub.id)
+  }).catch(() => {})
   remoteConnect.start()
 }
 
@@ -1292,6 +1303,15 @@ function createWindow() {
 
 nativeTheme.on('updated', () => syncThemeChrome())
 
+// Settings…, from the menu or from the shortcut pressed in the hub view (#617). Settings is on This
+// Mac's page, so it comes forward first. The page hears whether the hub was on top: then it opens
+// Settings instead of toggling them, and shows the hub again when they are closed.
+function showSettings(win) {
+  openSettings(hubView, (fromHub) => {
+    if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings', fromHub)
+  })
+}
+
 function installApplicationMenu(win) {
   // both live on This Mac's page, so it comes forward first (#617 PR 3b; openUpdatesWindow does it for updates)
   const updates = {
@@ -1305,13 +1325,12 @@ function installApplicationMenu(win) {
     label: 'Settings…',
     accelerator: 'CommandOrControl+,',
     click() {
-      hubView?.show(null)
-      if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings')
+      showSettings(win)
     },
   }
   // #617 PR 3b: This Mac and <the hub's label>, a radio pair, only while a hub exists; PR 3c: and only
   // while it may be shown (this window's page is the owned one, which draws the strip)
-  const hubItems = hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })
+  const hubItems = hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id, true) })
   const viewMenu = hubItems.length === 0
     ? { role: 'viewMenu' }
     : {

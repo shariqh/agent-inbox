@@ -270,7 +270,7 @@ n=0; while :; do sleep 1; n=$((n + 1)); [ "$n" -lt "\${FAKE_WAIT_LIMIT_S:-120}" 
     expect(main).toContain('nodeIntegration: false')
     expect(main).toContain("preload: path.join(__dirname, 'setup-preload.cjs')")
     expect(main).toContain("accelerator: 'CommandOrControl+,'")
-    expect(main).toContain("win.webContents.send('agent-inbox:toggle-settings')")
+    expect(main).toContain("win.webContents.send('agent-inbox:toggle-settings', fromHub)")
     expect(main).toContain('const setupWindowWebContentsId = win.webContents.id')
     expect(main).toContain('setupInstallWebContentsId = setup ? setupWindowWebContentsId : null')
     expect(preload).toContain("contextBridge.exposeInMainWorld('agentInboxSetup'")

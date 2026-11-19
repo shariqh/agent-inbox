@@ -64,6 +64,11 @@ describe('updateSummary: what a paired device may see, and whether it may start'
     expect(updateSummary({ ...base, state: state('downloading', { available: offer() }), running: true })).toMatchObject({ status: 'downloading', reason: 'installing' })
   })
 
+  it('never throws on a running version that is not three numbers: nothing is newer than it', () => {
+    expect(updateSummary({ ...base, version: 'dev', state: state('available', { currentVersion: 'dev', available: offer() }) }))
+      .toEqual({ current: 'dev', status: 'current', newer: null, canStart: false, reason: 'nothing_newer' })
+  })
+
   it('says not_here for a build with no update controller, on the app\'s own version', () => {
     expect(updateSummary({ ...base, version: '2.14.1', state: null })).toEqual({ current: '2.14.1', status: 'current', newer: null, canStart: false, reason: 'not_here' })
   })

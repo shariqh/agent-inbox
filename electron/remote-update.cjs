@@ -22,6 +22,7 @@ const DEVICE_ID = /^[0-9a-f]{16}$/
 const CHECKABLE = new Set(['idle', 'current', 'unverified', 'stale'])
 
 function isNewer(candidate, current) {
+  if (typeof candidate !== 'string' || typeof current !== 'string' || !VERSION.test(candidate) || !VERSION.test(current)) return false
   const left = VERSION.exec(candidate).slice(1).map(BigInt)
   const right = VERSION.exec(current).slice(1).map(BigInt)
   for (let index = 0; index < 3; index += 1) {

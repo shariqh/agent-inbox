@@ -711,6 +711,18 @@ session has a desk. Jump to session keeps its meaning, which is to show the card
 terminal. The button shows only when `agentInboxDesk.available()` says `open`; elsewhere Copy
 attach command stands in.
 
+**(As built in PR 4b:** cut down from the above. There is no `{host}` placeholder and no `sshHost`:
+the owner types the host into the command. There is no `{target}`: the placeholders are exactly
+`{desk}` and `{attach}`. There is no Open desk for This Mac's own sessions (its `available()` stays
+`{ open: false }`, no template is stored under `local`, and Copy attach command stays there), and
+no button in the Chats tab: it is on the session card, the Quiet row and the session panel of the
+hub's page shown on the connecting Mac. The page names only `session`, any session id rather than
+only a UUID, since cards also use keys such as `launch:<id>`; the refusal for another machine is
+`not_on_hub`, and it passes when either machine is unknown. The command is stored per hub as
+`deskCommand` in `remote-connect.json`, set from Settings → Use another Mac's Inbox, and stored only
+after the native dialog's Save. Architecture notes: `docs/architecture/remote-inbox.md`, "Open
+desk".)
+
 ### 3.5 Coming back by itself
 
 The hub app opens at login, and its viewer reads `remote.json` at start and reopens the remote

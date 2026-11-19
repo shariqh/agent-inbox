@@ -421,7 +421,8 @@ contextBridge.exposeInMainWorld('agentInboxChats', {
 })
 
 // #617 PR 3b: the same `agentInboxDesk` the hub view has, answering for This Mac. No IPC: the
-// local page is This Mac, and the terminal action is a later PR.
+// local page is This Mac. #617 PR 4b: Open desk is offered only in the hub's page, so here
+// `available()` stays `{ open: false }` and there is no `open`.
 contextBridge.exposeInMainWorld('agentInboxDesk', {
   available() {
     return Promise.resolve({ open: false })
@@ -456,6 +457,8 @@ function connectHub(value) {
     machine: shortTextOf(value.machine, 64),
     state: CONNECT_STATES.has(value.state) ? value.state : null,
     reason: wordOf(value.reason),
+    // #617 PR 4b: the saved Open desk command, shown in Settings on this Mac
+    deskCommand: shortTextOf(value.deskCommand, 512),
   }
 }
 
@@ -501,6 +504,16 @@ contextBridge.exposeInMainWorld('agentInboxConnect', {
   forget(...args) {
     if (args.length !== 1 || typeof args[0] !== 'string' || args[0].length > 64) return Promise.resolve(connectOff())
     return connectCall(connectResult, 'agent-inbox:connect-forget', args[0])
+  },
+  // #617 PR 4b: { id, command }, exactly, as a fresh copy. '' removes the command; any other text
+  // main checks, then shows in a native dialog, and saves only when the owner presses Save there.
+  setDeskCommand(...args) {
+    const given = args[0]
+    if (args.length !== 1 || !isPlainObject(given)) return Promise.resolve(connectOff())
+    const keys = Object.keys(given)
+    if (keys.length !== 2 || !keys.includes('id') || !keys.includes('command') ||
+        typeof given.id !== 'string' || given.id.length > 64 || typeof given.command !== 'string' || given.command.length > 4096) return Promise.resolve(connectOff())
+    return connectCall(connectResult, 'agent-inbox:connect-desk-command', { id: given.id, command: given.command })
   },
   // which view is on top: a hub's id, or null for This Mac
   show(...args) {

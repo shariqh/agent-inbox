@@ -50,6 +50,9 @@ const PRESSES = new Set(['mouseDown', 'mouseUp', 'rawKeyDown', 'keyDown', 'keyUp
 const DESK_CHANNELS = Object.freeze({
   connection: 'agent-inbox:desk-connection',
   retry: 'agent-inbox:desk-retry',
+  // #617 PR 4b: Open desk, from the hub's own page only (electron/desk-open.cjs)
+  available: 'agent-inbox:desk-available',
+  open: 'agent-inbox:desk-open',
   // main to the hub view only, with nothing in it: the preload asks `connection` again
   changed: 'agent-inbox:desk-changed',
 })
@@ -58,6 +61,8 @@ const CONNECT_CHANNELS = Object.freeze({
   connect: 'agent-inbox:connect-connect',
   forget: 'agent-inbox:connect-forget',
   show: 'agent-inbox:connect-show',
+  // #617 PR 4b: the Open desk command, proposed by the owned local page; main confirms it natively
+  deskCommand: 'agent-inbox:connect-desk-command',
   // main to the owned local page only, with nothing in it
   changed: 'agent-inbox:connect-changed',
 })
@@ -753,6 +758,25 @@ function createHubView(options) {
       }
       return { ok: true }
     },
+    /**
+     * #617 PR 4b: Open desk's gesture check. The hub's id only when `event` comes from the active
+     * view's top frame on the hub's page (trusts() says `'hub'`), that view is focused and its last
+     * key press or click is under 5 seconds old; that input is then used up, as maybeOpen uses it, so
+     * one input opens one desk. Anything else is null and uses nothing up.
+     */
+    takeGesture(event) {
+      const entry = active
+      if (destroyed || entry === null || trustedDeskSender(event, entry.view, entry.origin, offlineUrl) !== 'hub') return null
+      let focused = false
+      try {
+        focused = entry.contents.isFocused()
+      } catch {
+        focused = false
+      }
+      if (!mayOpenExternally({ focused, lastInputAt: entry.lastInputAt, now: clock() })) return null
+      entry.lastInputAt = null
+      return entry.id
+    },
     /** Resolves when the partitions being cleared are cleared, or after 5 seconds. */
     cleared: () => Promise.all([...clears]).then(() => undefined),
     trusts: (event) => (active === null ? null : trustedDeskSender(event, active.view, active.origin, offlineUrl)),
@@ -764,6 +788,16 @@ function createHubView(options) {
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype
 const shortText = (value, max) => typeof value === 'string' && value.length <= max
 const CONNECT_KEYS = new Set(['address', 'code', 'replace'])
+
+/** #617 PR 4b: `{ id, command }` rebuilt from exactly one plain object with exactly those two keys, both text; else null. */
+function deskCommandInput(args) {
+  if (args.length !== 1 || !isPlainObject(args[0])) return null
+  const given = args[0]
+  const keys = Object.keys(given)
+  if (keys.length !== 2 || !keys.includes('id') || !keys.includes('command')) return null
+  if (!shortText(given.id, 64) || !shortText(given.command, 4096)) return null
+  return { id: given.id, command: given.command }
+}
 
 /** `{ address, code, replace }` rebuilt from exactly one plain object with those keys and types, else null. */
 function connectInput(args) {
@@ -781,9 +815,12 @@ function connectInput(args) {
  * count and types checked again here; any other sender, and every sender off macOS (no
  * controller), gets `{ available: false }`. `agentInboxDesk` (desk-*) answers only the hub view's
  * top frame on the hub origin or the offline file, checked on every call; retry only the offline
- * file.
+ * file. #617 PR 4b: desk-available and desk-open answer only the top frame on the hub's own page
+ * (never the offline file), and pass the call to `deskOpen()` (electron/desk-open.cjs), which checks
+ * the sender again; connect-desk-command proposes the Open desk command, which main stores only
+ * after its native confirmation.
  */
-function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView }) {
+function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen = () => null }) {
   function owned(channel, read, call) {
     ipcMain.handle(channel, async (event, ...args) => {
       const input = read(args)
@@ -808,6 +845,37 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView }) {
   owned(CONNECT_CHANNELS.show, (args) => (args.length === 1 && (args[0] === null || shortText(args[0], 64)) ? { id: args[0] } : null), (_controller, { id }) => {
     const view = hubView()
     return view === null ? { ...UNAVAILABLE } : view.show(id)
+  })
+  owned(CONNECT_CHANNELS.deskCommand, deskCommandInput, (controller, input) => controller.setDeskCommand(input))
+
+  // the hub's own page only: the offline file, the local page and a sub-frame get nothing
+  const deskFor = (event) => {
+    try {
+      const view = hubView()
+      const desk = deskOpen()
+      return view !== null && desk !== null && view.trusts(event) === 'hub' ? desk : null
+    } catch {
+      return null
+    }
+  }
+  ipcMain.handle(DESK_CHANNELS.available, async (event, ...args) => {
+    const desk = args.length === 0 ? deskFor(event) : null
+    if (desk === null) return { open: false }
+    try {
+      const answer = await desk.available(event, args)
+      return { open: answer?.open === true }
+    } catch {
+      return { open: false }
+    }
+  })
+  ipcMain.handle(DESK_CHANNELS.open, async (event, ...args) => {
+    const desk = deskFor(event)
+    if (desk === null) return { ok: false, reason: 'unavailable' }
+    try {
+      return await desk.open(event, args)
+    } catch {
+      return { ok: false, reason: 'failed' }
+    }
   })
 
   ipcMain.handle(DESK_CHANNELS.connection, (event, ...args) => {

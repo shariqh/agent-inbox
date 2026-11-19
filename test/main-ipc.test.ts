@@ -88,9 +88,14 @@ const CHANNELS: Record<string, { allows: 'local page only' | 'hub view'; args: u
   'agent-inbox:connect-connect': { allows: 'local page only', args: [{ address: 'hub.example.ts.net', code: '7K3QX-9M2PD' }] },
   'agent-inbox:connect-forget': { allows: 'local page only', args: [ID] },
   'agent-inbox:connect-show': { allows: 'local page only', args: [ID] },
-  // the only two the hub view may use: its connection (label, state, version) and Retry from the offline file
+  // #617 PR 4b: the Open desk command, proposed by the owned local page only
+  'agent-inbox:connect-desk-command': { allows: 'local page only', args: [{ id: ID, command: 'ssh -t studio {attach}' }] },
+  // the only four the hub view may use: its connection (label, state, version), Retry from the offline
+  // file, and (#617 PR 4b) Open desk from the hub's own page
   'agent-inbox:desk-connection': { allows: 'hub view', args: [] },
   'agent-inbox:desk-retry': { allows: 'hub view', args: [] },
+  'agent-inbox:desk-available': { allows: 'hub view', args: [] },
+  'agent-inbox:desk-open': { allows: 'hub view', args: [{ session: 'session-1' }] },
 }
 
 /** An object that records every method called on it and answers each with `answer`. */
@@ -178,12 +183,18 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
         connect: async () => { main.calls.push('remoteConnect.connect'); return { ok: false, reason: 'refused' } },
         forget: async () => { main.calls.push('remoteConnect.forget'); return { ok: true } },
         connection: () => ({ mode: 'hub', id: ID, label: 'studio', state: 'online', reason: null, version: '2.12.0' }),
+        // #617 PR 4b: Open desk reads the stored hub and its base; it never gets as far as a fetch here
+        storedHub: async () => ({ id: ID, machine: 'studio', deskCommand: 'ssh -t studio {attach}' }),
+        hubBase: (id: unknown) => (id === ID ? `${HUB_ORIGIN}/` : null),
+        hubFetch: () => async () => { main.calls.push('remoteConnect.hubFetch'); return new Response('[]') },
       },
       hub: {
         trusts: (event: unknown) => trustedDeskSender(event, { webContents: hubContents }, HUB_ORIGIN, OFFLINE_URL),
         current: () => null,
         show: (id: unknown) => { shown.push(id); return { ok: true, showing: id } },
         retry: async () => { retried.push(1); return { ok: true } },
+        // no gesture in this harness: an open from the hub's page stops at the gesture check
+        takeGesture: () => null,
       },
     }
     ;(globalThis as Record<string, unknown>).__mainIpcHarness = harness
@@ -313,6 +324,32 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     expect(await retry(e.hubOffline)).toEqual({ ok: true })
     expect(retried).toEqual([1])
   })
+
+  // #617 PR 4b
+  it('Open desk answers the hub view’s top frame on the hub’s own page only: never the offline file, a sub-frame or the local page', async () => {
+    const e = events()
+    const available = main.handlers.get('agent-inbox:desk-available')!
+    const open = main.handlers.get('agent-inbox:desk-open')!
+    main.calls.length = 0
+    expect(await available(e.hub)).toEqual({ open: true })
+    expect(await available(e.hub, 'extra')).toEqual({ open: false })
+    expect(await open(e.hub, { session: 'session-1' })).toEqual({ ok: false, reason: 'no_gesture' })
+    for (const refused of [e.local, e.stranger, e.hubAsLocal, e.hubOffline, e.hubSubFrame, e.localSubFrame]) {
+      expect(await available(refused)).toEqual({ open: false })
+      expect(await open(refused, { session: 'session-1' })).toEqual({ ok: false, reason: 'unavailable' })
+    }
+    expect(main.calls).toEqual([])
+  })
+
+  it('the Open desk command dialog is native, on the window, Cancel by default, and saves only on Save', async () => {
+    main.calls.length = 0
+    const answer = await (main.evaluate('confirmDeskCommand(globalThis.__mainIpcHarness.win, "ssh -t studio {attach}")') as Promise<unknown>)
+    expect(answer).toBe(false)
+    expect(main.calls).toEqual(['dialog.showMessageBox'])
+    main.calls.length = 0
+    expect(await (main.evaluate('confirmDeskCommand(globalThis.__mainIpcHarness.win, "no placeholder")') as Promise<unknown>)).toBe(false)
+    expect(main.calls).toEqual([])
+  })
 })
 
 describe('electron/main.cjs never hands the hub view a grant (source)', () => {
@@ -364,6 +401,31 @@ describe('no IPC handler is registered any other way (source)', () => {
 
 describe('electron/main.cjs wires the hub view (source)', () => {
   const main = read('electron/main.cjs')
+
+  // #617 PR 4b
+  it('wires Open desk: the hub fetch, the stored hub, its own script folder, the terminal runner and the dialog', () => {
+    expect(main).toContain("const { createDeskOpen, deskConfirmation } = require('./desk-open.cjs')")
+    const desk = main.slice(main.indexOf('const deskOpenFor = () =>'), main.indexOf('registerHubIpc({'))
+    expect(desk).toContain('storedHub: () => remoteConnect.storedHub(),')
+    // the hub's activity is read through the hub fetch only: its origin, the device header, no redirect
+    expect(desk).toContain('hubFetch: () => remoteConnect.hubFetch(),')
+    expect(desk).toContain('hubBase: (id) => remoteConnect.hubBase(id),')
+    expect(desk).not.toMatch(/\bfetch\(/)
+    expect(desk).toContain("scriptDir: path.join(path.dirname(launchHubPath()), 'desk-open'),")
+    expect(desk).toContain('terminal: { read: () => linkPrefs().readTerminal(), run: runTerminalCommand },')
+    expect(desk).toContain('userShell: () => os.userInfo().shell,')
+    expect(desk).toContain("readShells: () => readFileSync('/etc/shells', 'utf8'),")
+    const register = main.slice(main.indexOf('registerHubIpc({'), main.indexOf('})', main.indexOf('registerHubIpc({')))
+    expect(register).toContain('deskOpen: deskOpenFor,')
+    const confirm = main.slice(main.indexOf('async function confirmDeskCommand(win, command) {'), main.indexOf('\n}\n', main.indexOf('async function confirmDeskCommand(win, command) {')))
+    expect(confirm).toContain('const text = deskConfirmation(command)')
+    expect(confirm).toContain('if (text === null) return false')
+    expect(confirm).toContain("const options = { type: 'warning', message: text.message, detail: text.detail, buttons: text.buttons, defaultId: 1, cancelId: 1, noLink: true }")
+    expect(confirm).toContain('await dialog.showMessageBox(win, options)')
+    expect(confirm).toContain('return response === 0')
+    // the controller is the only caller of the dialog, and only through its option
+    expect(main.match(/confirmDeskCommand\(/g)).toHaveLength(2)
+  })
   const startRemote = main.slice(main.indexOf('function startRemoteConnect(win)'), main.indexOf('\n}\n', main.indexOf('function startRemoteConnect(win)')))
 
   it('requires the two modules by destructuring, so the dead-module guard sees them', () => {
@@ -373,7 +435,8 @@ describe('electron/main.cjs wires the hub view (source)', () => {
 
   it('makes connect mode on macOS only, after the window exists, and starts it last', () => {
     expect(startRemote).toContain("if (process.platform !== 'darwin') return")
-    expect(startRemote).toContain('remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload() })')
+    // #617 PR 4b: the Open desk command is stored only through the native dialog on this window
+    expect(startRemote).toContain('remoteConnect = createRemoteConnect({ app, safeStorage, onReload: () => hubView?.reload(), confirmDeskCommand: (command) => confirmDeskCommand(win, command) })')
     expect(startRemote).toContain("offlineFile: path.join(__dirname, 'remote-offline.html'),")
     expect(startRemote).toContain("preload: path.join(__dirname, 'remote-preload.cjs'),")
     // developer tools on the hub view are closed in a packaged app only

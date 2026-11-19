@@ -110,12 +110,12 @@ function fakeController(initial: ReturnType<typeof state>) {
   return controller
 }
 
-function setup(initial = state('available', { available: offer() }), extra: { setupRunning?: () => boolean; quitting?: () => boolean } = {}) {
+function setup(initial = state('available', { available: offer() }), extra: { setupRunning?: () => boolean; quitting?: () => boolean; shared?: () => boolean } = {}) {
   const clock = { now: 1_000_000 }
   const relay = createRemoteUpdate({ version: '2.14.1', now: () => clock.now })
   const viewer = new Hono()
   viewer.post('/api/remote-entry/update', remoteUpdateReportRoute(relay, OWNER_TOKEN))
-  const sent: Array<{ url: string; headers: Record<string, string> }> = []
+  const sent: Array<{ url: string; headers: Record<string, string>; redirect: RequestRedirect | undefined }> = []
   const controller = fakeController(initial)
   const notices: unknown[] = []
   const link = createRemoteUpdateLink({
@@ -125,11 +125,12 @@ function setup(initial = state('available', { available: offer() }), extra: { se
     ownerToken: OWNER_TOKEN,
     fetch: async (url: string, init: RequestInit) => {
       const headers = Object.fromEntries(new Headers(init.headers).entries())
-      sent.push({ url, headers })
+      sent.push({ url, headers, redirect: init.redirect })
       // as Node's fetch sends a string body: with its length
       const body = String(init.body)
       return viewer.request(new URL(url).pathname, { ...init, headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, body })
     },
+    shared: extra.shared ?? (() => true),
     setupRunning: extra.setupRunning ?? (() => false),
     quitting: extra.quitting ?? (() => false),
     deviceLabel: async (id: string) => (id === LAPTOP ? 'laptop' : null),
@@ -158,7 +159,7 @@ describe('createRemoteUpdateLink: main and its viewer', () => {
     const cleared: unknown[] = []
     const link = createRemoteUpdateLink({
       controller: () => null, version: '2.14.1', base: BASE, ownerToken: OWNER_TOKEN, fetch: async () => new Response('null', { status: 500 }),
-      setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {},
+      shared: () => true, setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {},
       setInterval: (fn: () => void, ms: number) => { timers.push({ fn, ms }); return 7 }, clearInterval: (id: unknown) => cleared.push(id),
     })
     link.start()
@@ -225,7 +226,7 @@ describe('createRemoteUpdateLink: main and its viewer', () => {
     expect(controller.calls).toEqual(['downloadNow'])
   })
 
-  it('does not install a different release than the one the device was shown', async () => {
+  it('does not install a download that ends on a different release than the one main started with', async () => {
     const { relay, controller, link } = setup()
     controller.downloadResult = state('verified', { available: offer({ version: '2.16.0' }) })
     await link.sync()
@@ -233,6 +234,31 @@ describe('createRemoteUpdateLink: main and its viewer', () => {
     await link.sync()
     await link.settled()
     expect(controller.calls).toEqual(['downloadNow'])
+  })
+
+  // the request names nothing: the hub installs the newest release its own controller has verified
+  // when the request arrives, which can be newer than what the connecting Mac's page last showed
+  it('installs the release its controller verified when the request arrives, and the notice names that one', async () => {
+    const { relay, controller, link, notices } = setup()
+    await link.sync()
+    // the device was shown 2.15.0 ...
+    expect(relay.get()).toMatchObject({ newer: '2.15.0', canStart: true })
+    // ... the press reaches the viewer before main reports again ...
+    expect(relay.start(LAPTOP)).toEqual({ ok: true })
+    // ... and the controller has meanwhile verified 2.16.0
+    controller.downloadResult = state('verified', { available: offer({ version: '2.16.0' }) })
+    controller.set(state('available', { available: offer({ version: '2.16.0' }) }))
+    const installed: unknown[] = []
+    const install = controller.installNow.getMockImplementation()!
+    controller.installNow.mockImplementation(async () => {
+      installed.push((controller.getState() as unknown as { available: { version: string } }).available.version)
+      return install()
+    })
+    await link.sync()
+    await link.settled()
+    expect(controller.calls).toEqual(['downloadNow', 'installNow'])
+    expect(installed).toEqual(['2.16.0'])
+    expect(notices).toEqual([{ label: 'laptop', version: '2.16.0' }])
   })
 
   it('does not install while the window may not install (the grant the local install needs)', async () => {
@@ -270,7 +296,7 @@ describe('createRemoteUpdateLink: main and its viewer', () => {
     const replay = createRemoteUpdateLink({
       controller: () => controller, version: '2.14.1', base: BASE, ownerToken: OWNER_TOKEN,
       fetch: async () => new Response(JSON.stringify(answers.shift()), { status: 200 }),
-      setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
+      shared: () => true, setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
     })
     void link
     await replay.sync()
@@ -289,7 +315,7 @@ describe('createRemoteUpdateLink: main and its viewer', () => {
     const link = createRemoteUpdateLink({
       controller: () => controller, version: '2.14.1', base: BASE, ownerToken: OWNER_TOKEN,
       fetch: async () => { fetches += 1; return new Response(JSON.stringify({ request: { id: '00000000000000aa', device: LAPTOP }, looked: false })) },
-      setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
+      shared: () => true, setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
     })
     await link.sync()
     expect(fetches).toBe(2)
@@ -328,11 +354,116 @@ describe('createRemoteUpdateLink: main and its viewer', () => {
     }
   })
 
+  // a redirect must not carry the owner token anywhere else
+  it('sends its report with redirect: error', async () => {
+    const { link, sent } = setup()
+    await link.sync()
+    expect(sent.map((one) => one.redirect)).toEqual(['error'])
+  })
+
+  // the guard in maybeCheck: a check must not run beside a remote update's own download
+  it('does not check for a release while its own remote update is running', async () => {
+    const { relay, controller, link } = setup()
+    let finish!: () => void
+    const held = new Promise<void>((resolve) => { finish = resolve })
+    controller.downloadNow.mockImplementation(async () => {
+      controller.calls.push('downloadNow')
+      // the controller's state reads as one a look may check, while main's download is still running
+      controller.set(state('stale'))
+      await held
+      return controller.set(state('verified', { available: offer() }))
+    })
+    await link.sync()
+    relay.start(LAPTOP)
+    await link.sync()
+    relay.get()
+    await link.sync()
+    expect(controller.calls).toEqual(['downloadNow'])
+    finish()
+    await link.settled()
+    expect(controller.calls).toEqual(['downloadNow', 'installNow'])
+  })
+
   it('never rejects: a viewer that is down is retried at the next report', async () => {
     const link = createRemoteUpdateLink({
       controller: () => null, version: '2.14.1', base: BASE, ownerToken: OWNER_TOKEN, fetch: async () => { throw new Error('ECONNREFUSED') },
-      setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
+      shared: () => true, setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
     })
     await expect(link.sync()).resolves.toBeUndefined()
+  })
+})
+
+// the report loop runs only while this Mac shares its Inbox with a paired device (#637, fix round)
+describe('createRemoteUpdateLink: only while this Mac shares its Inbox', () => {
+  it('sends nothing at all while not shared: not on a tick, not on a change of the controller, not on a sync', async () => {
+    let shared = false
+    const { controller, link, sent } = setup(undefined, { shared: () => shared })
+    link.start()
+    link.changed()
+    controller.set(state('available', { available: offer() }))
+    controller.set(state('checking'))
+    await link.sync()
+    expect(sent).toEqual([])
+    shared = true
+    await link.sync()
+    expect(sent).toHaveLength(1)
+  })
+
+  it('never builds a summary or asks the controller for a look while not shared', async () => {
+    const calls: string[] = []
+    const link = createRemoteUpdateLink({
+      controller: () => { calls.push('controller'); return null }, version: '2.14.1', base: BASE, ownerToken: OWNER_TOKEN,
+      fetch: async () => { calls.push('fetch'); return new Response('null', { status: 500 }) },
+      shared: () => false, setupRunning: () => { calls.push('setupRunning'); return false }, quitting: () => false,
+      deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
+    })
+    await link.sync()
+    expect(calls).toEqual([])
+  })
+
+  it('reports at once, on the next change or sync, when it turns shared', async () => {
+    let shared = false
+    const { relay, link, sent } = setup(undefined, { shared: () => shared })
+    await link.sync()
+    expect(sent).toHaveLength(0)
+    expect(relay.summary()).toMatchObject({ reason: 'not_ready' })
+    shared = true
+    link.changed()
+    await link.settled()
+    await link.sync()
+    expect(relay.summary()).toEqual({ current: '2.14.1', status: 'available', newer: '2.15.0', canStart: true, reason: null })
+  })
+
+  it('counts a gate that throws, or no gate at all, as not shared', async () => {
+    for (const shared of [() => { throw new Error('no panel') }, undefined]) {
+      const fetch = vi.fn(async () => new Response('null', { status: 500 }))
+      const link = createRemoteUpdateLink({
+        controller: () => null, version: '2.14.1', base: BASE, ownerToken: OWNER_TOKEN, fetch, ...(shared ? { shared } : {}),
+        setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
+      })
+      link.start()
+      await link.sync()
+      expect(fetch).not.toHaveBeenCalled()
+    }
+  })
+
+  it('still handles a request and a look while shared, and stops handling once not shared again', async () => {
+    let shared = true
+    const { relay, controller, link, sent } = setup(state('idle'), { shared: () => shared })
+    await link.sync()
+    relay.get()
+    await link.sync()
+    expect(controller.calls).toEqual(['checkNow'])
+    controller.set(state('available', { available: offer() }))
+    await link.sync()
+    expect(relay.start(LAPTOP)).toEqual({ ok: true })
+    await link.sync()
+    await link.settled()
+    expect(controller.calls).toEqual(['checkNow', 'downloadNow', 'installNow'])
+    const before = sent.length
+    shared = false
+    await link.sync()
+    controller.set(state('available', { available: offer() }))
+    expect(sent).toHaveLength(before)
   })
 })

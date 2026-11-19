@@ -123,6 +123,8 @@ export function stopRemoteEntry(
 export function watchRemoteEntry(options: {
   panel: { get(): Promise<unknown> }
   changed: () => void
+  /** hears every view read (#637) */
+  onView?: (view: unknown) => void
   setInterval?: (fn: () => void, ms: number) => unknown
   clearInterval?: (handle: unknown) => void
 }): { stop(): void }

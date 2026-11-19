@@ -714,6 +714,10 @@ let remoteEntryQuitting = false
 // viewer's remote entry (electron/remote-update.cjs, src/remote-update.ts). Made with the controller.
 const { createRemoteUpdateLink } = require('./remote-update.cjs')
 let remoteUpdate = null
+// #637: true while this Mac's remote entry is on and has a paired device (read from the watch's own
+// get() every 5 seconds); the update link reports to the viewer only then
+let remoteShared = false
+const remoteSharedOf = (view) => view?.enabled === true && Array.isArray(view.devices) && view.devices.length > 0
 // the notifications' words: the table Settings → Other devices shows (public/remote-words.js)
 const remoteWords = import(pathToFileURL(path.join(REPO_ROOT, 'public', 'remote-words.js')).href)
 remoteWords.catch(() => {})
@@ -768,7 +772,16 @@ function startRemoteEntry() {
   })
   remoteNotifier.started()
   remoteEntry.start()
-  remoteWatch = watchRemoteEntry({ panel: remotePanel, changed: remoteEntryChanged })
+  remoteWatch = watchRemoteEntry({
+    panel: remotePanel,
+    changed: remoteEntryChanged,
+    onView: (view) => {
+      const was = remoteShared
+      remoteShared = remoteSharedOf(view)
+      // turning shared on reports at once; turning it off needs nothing: the viewer answers not_ready
+      if (remoteShared && !was) remoteUpdate?.changed()
+    },
+  })
   // #637: the update a paired Mac may start runs this app's own controller, gated as the local install is
   const entry = remoteEntry
   remoteUpdate = createRemoteUpdateLink({
@@ -776,6 +789,7 @@ function startRemoteEntry() {
     version: app.getVersion(),
     base: URL_BASE,
     ownerToken: OWNER_TOKEN,
+    shared: () => remoteShared,
     setupRunning: () => installGate.running(),
     quitting: () => installGate.quitting(),
     deviceLabel: async (id) => (await entry.view()).devices.find((device) => device.id === id)?.label ?? null,

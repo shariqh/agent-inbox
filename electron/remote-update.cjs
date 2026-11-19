@@ -10,6 +10,10 @@
 // controller: the download of the release that controller verified, then its install, which ends in
 // the restart the controller asks for. Nothing here names a version, URL or file the caller chose.
 //
+// Main reports only while this Mac shares its Inbox and has a paired device (`shared()`): for anyone
+// else no timer tick, no controller change and no look builds a summary or sends anything, and the
+// viewer answers `not_ready` by itself.
+//
 // Architecture notes: docs/architecture/remote-inbox.md ("Updating the hub from another Mac").
 
 const REPORT_EVERY_MS = 3_000
@@ -74,7 +78,8 @@ function readAnswer(value) {
 
 /**
  * Main's link to its viewer for the hub's update. `controller()` answers the update controller or
- * null; `setupRunning()` and `quitting()` are main's install gate; `deviceLabel(id)` the paired
+ * null; `shared()` is true while this Mac's remote entry is on and has a paired device (a gate that
+ * throws, or none, counts as not shared); `setupRunning()` and `quitting()` are main's install gate; `deviceLabel(id)` the paired
  * device's label (display text only), or null; `notify({ label, version })` the hub's own notice that
  * a device started an update. No operation rejects.
  */
@@ -93,6 +98,13 @@ function createRemoteUpdateLink(options) {
   let lastRequest = null
   let lastCheck = -Infinity
 
+  const isShared = () => {
+    try {
+      return typeof options.shared === 'function' && options.shared() === true
+    } catch {
+      return false
+    }
+  }
   const ask = (gate) => {
     try {
       return Boolean(gate())
@@ -121,6 +133,7 @@ function createRemoteUpdateLink(options) {
   }
 
   async function report() {
+    if (!isShared()) return null
     try {
       const response = await fetchImpl(url, {
         method: 'POST',
@@ -140,7 +153,7 @@ function createRemoteUpdateLink(options) {
     let state = update.getState()
     if (state.status === 'available' || state.status === 'download-failed') state = await update.downloadNow()
     if (state.status !== 'verified' && state.status !== 'install-failed') return
-    // exactly the release the device was shown, still installable on a window that may install it
+    // the release main started with, still installable on a window that may install it
     if (state.available?.version !== version || state.available?.installPermitted !== true) return
     if (ask(options.setupRunning) || ask(options.quitting)) return
     await update.installNow()

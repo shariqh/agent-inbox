@@ -43,6 +43,8 @@ export function createRemoteUpdateLink(options: {
   base: string
   ownerToken: string
   fetch?: (url: string, init: RequestInit) => Promise<Response>
+  /** true while this Mac's remote entry is on with a paired device; none, or one that throws, is not shared */
+  shared?: () => boolean
   setupRunning: () => boolean
   quitting: () => boolean
   deviceLabel: (id: string) => Promise<string | null> | string | null

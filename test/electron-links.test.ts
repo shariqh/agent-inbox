@@ -16,7 +16,7 @@ afterEach(() => removeScratchDirs())
 
 // Runs the real preload against a fake `electron`, so its checks are exercised
 // rather than pinned as text.
-function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown) {
+function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown, argv: string[] = []) {
   const exposed: Record<string, unknown> = {}
   const invoke = vi.fn(async (channel: string, ...args: unknown[]) => answer(channel, ...args))
   const heard: Array<{ channel: string; listener: (...args: unknown[]) => void }> = []
@@ -38,7 +38,7 @@ function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown) {
   factory((id) => {
     if (id !== 'electron') throw new Error(`unexpected require ${id}`)
     return electron
-  }, { argv: [] })
+  }, { argv })
   return { links: exposed.agentInboxLinks as LinksBridge, settings: exposed.agentInboxLinkSettings as SettingsBridge, invoke, exposed, heard }
 }
 
@@ -63,6 +63,24 @@ describe('the Settings toggle from the app menu', () => {
     off()
     expect(heard.filter((entry) => entry.channel === 'agent-inbox:toggle-settings')).toHaveLength(0)
     expect(setup.onToggleSettings('not a function')()).toBeUndefined()
+  })
+
+  it('Check for Updates… passes the page the same boolean', () => {
+    const { exposed, heard } = loadPreload(() => null, ['--agent-inbox-updates=1'])
+    const updates = exposed.agentInboxUpdates as { onOpenUpdates(callback: unknown): () => void }
+    const got: unknown[][] = []
+    const off = updates.onOpenUpdates((...args: unknown[]) => { got.push(args) })
+    const opens = heard.filter((entry) => entry.channel === 'agent-inbox:open-updates')
+    expect(opens).toHaveLength(1)
+    const send = (...args: unknown[]) => opens[0]!.listener({ sender: 'event' }, ...args)
+    send(true)
+    send(false)
+    send()
+    send('true')
+    send({ fromHub: true })
+    expect(got).toEqual([[true], [false], [false], [false], [false]])
+    off()
+    expect(heard.filter((entry) => entry.channel === 'agent-inbox:open-updates')).toHaveLength(0)
   })
 })
 

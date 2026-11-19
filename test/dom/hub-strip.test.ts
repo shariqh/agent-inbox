@@ -342,15 +342,14 @@ describe('the strip that says whose Inbox is on screen', () => {
     try {
       install(connectBridge(view(ID)))
       await flush()
-      for (const init of [{ metaKey: true }, { ctrlKey: true }]) {
-        for (const target of [document.body, document.getElementById('hidden-control')!, back()!]) {
-          const event = new KeyboardEvent('keydown', { key: ',', bubbles: true, cancelable: true, ...init })
-          target.dispatchEvent(event)
-          expect(event.defaultPrevented, JSON.stringify(init)).toBe(false)
-        }
+      for (const target of [document.body, document.getElementById('hidden-control')!, back()!]) {
+        const event = new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true })
+        target.dispatchEvent(event)
+        expect(event.defaultPrevented).toBe(false)
       }
-      // anything that is not exactly the shortcut is still stopped and cancelled
-      for (const init of [{}, { metaKey: true, shiftKey: true }, { metaKey: true, altKey: true }]) {
+      // anything that is not exactly the menu item's key is still stopped and cancelled: Ctrl+, (the
+      // menu's key is Cmd+, on a Mac, so nothing would act on it), a held key, other modifiers
+      for (const init of [{}, { ctrlKey: true }, { metaKey: true, ctrlKey: true }, { metaKey: true, repeat: true }, { metaKey: true, shiftKey: true }, { metaKey: true, altKey: true }]) {
         const event = new KeyboardEvent('keydown', { key: ',', bubbles: true, cancelable: true, ...init })
         document.body.dispatchEvent(event)
         expect(event.defaultPrevented, JSON.stringify(init)).toBe(true)

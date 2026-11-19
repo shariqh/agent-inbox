@@ -14,7 +14,7 @@
 // While it shows, this Mac's page is hidden under the other Mac's view, so it acts only through the
 // strip: everything else on the page is `inert`, and every key aimed outside the strip is stopped
 // before any of the page's own handlers (Tab moves to This Mac). Both end the moment it goes. One key
-// is stopped but not cancelled: the Settings shortcut, which the app menu's Settings… then acts on.
+// is stopped but not cancelled: Cmd+, pressed once, which the app menu's Settings… then acts on.
 //
 // An answer that is not `available: true` (the preload turns every failed call into one) says
 // nothing about what is on top: the strip stays as it is and reads again, backing off, until main
@@ -29,9 +29,13 @@ export const HUB_STRIP_HEIGHT = 36
 const BACK_OFF = [1000, 2000, 4000, 8000, 15000, 30000]
 const KEY_EVENTS = ['keydown', 'keypress', 'keyup']
 
-/** Cmd+, or Ctrl+, going down with no Option or Shift: the page's own test for it (app.js, initKeys). */
+/**
+ * The Settings… menu item's key, pressed once: Cmd+, going down with no other modifier. The strip is
+ * drawn on a Mac only, where the menu item answers to Cmd and not to Ctrl, and a held key must not
+ * reach the menu again and again.
+ */
 const settingsShortcut = (event) =>
-  event.type === 'keydown' && event.key === ',' && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
+  event.type === 'keydown' && event.key === ',' && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.repeat
 
 export function installHubStrip({
   connect = () => globalThis.agentInboxConnect,
@@ -67,8 +71,8 @@ export function installHubStrip({
     event.stopImmediatePropagation()
     // inside the strip the browser's own action stays: Enter and Space press This Mac
     if (strip.contains(event.target)) return
-    // the Settings shortcut is the app menu's (Settings…): not cancelled, so the menu acts on it
-    // wherever the keyboard is, as it does from the other Mac's view (electron/hub-view.cjs)
+    // Cmd+, is the app menu's (Settings…): not cancelled, so the menu acts on it wherever the
+    // keyboard is, as main does when it is pressed in the other Mac's view (electron/hub-view.cjs)
     if (settingsShortcut(event)) return
     event.preventDefault()
     if (event.type === 'keydown' && event.key === 'Tab') back.focus({ preventScroll: true })

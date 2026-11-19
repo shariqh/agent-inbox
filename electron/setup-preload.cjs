@@ -659,9 +659,10 @@ if (updatesAvailable) {
       ipcRenderer.on('agent-inbox:update-state-changed', listener)
       return () => ipcRenderer.removeListener('agent-inbox:update-state-changed', listener)
     },
+    // as onToggleSettings: the callback hears whether another Mac's Inbox was on top (#617)
     onOpenUpdates(callback) {
       if (typeof callback !== 'function') return () => {}
-      const listener = () => callback()
+      const listener = (_event, fromHub) => callback(fromHub === true)
       ipcRenderer.on('agent-inbox:open-updates', listener)
       return () => ipcRenderer.removeListener('agent-inbox:open-updates', listener)
     },

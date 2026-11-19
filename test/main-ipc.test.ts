@@ -162,6 +162,8 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
   const hubContents = { id: 8, isDestroyed: () => false }
   const stranger = { id: 99, isDestroyed: () => false }
   const shown: unknown[] = []
+  // the hub the fake view says is on top; null is This Mac
+  const onTop: { value: string | null } = { value: null }
   const retried: unknown[] = []
 
   beforeAll(() => {
@@ -190,7 +192,7 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
       },
       hub: {
         trusts: (event: unknown) => trustedDeskSender(event, { webContents: hubContents }, HUB_ORIGIN, OFFLINE_URL),
-        current: () => null,
+        current: () => onTop.value,
         show: (id: unknown) => { shown.push(id); return { ok: true, showing: id } },
         retry: async () => { retried.push(1); return { ok: true } },
         // no gesture in this harness: an open from the hub's page stops at the gesture check
@@ -303,12 +305,45 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
   it('Check for Updates… and an update notification bring This Mac forward first (openUpdatesWindow)', () => {
     const calls: string[] = []
     const shownBefore = shown.length
-    const target = { isDestroyed: () => false, isMinimized: () => false, show: () => calls.push('show'), focus: () => calls.push('focus'), webContents: { isDestroyed: () => false, send: (channel: string) => calls.push(channel) } }
+    const target = { isDestroyed: () => false, isMinimized: () => false, show: () => calls.push('show'), focus: () => calls.push('focus'), webContents: { isDestroyed: () => false, send: (...sent: unknown[]) => calls.push(sent.join(' ')) } }
     ;(globalThis as Record<string, unknown>).__updatesTarget = target
-    main.evaluate('openUpdatesWindow(globalThis.__updatesTarget)')
-    delete (globalThis as Record<string, unknown>).__updatesTarget
-    expect(shown.slice(shownBefore)).toEqual([null])
-    expect(calls).toEqual(['show', 'focus', 'agent-inbox:open-updates'])
+    try {
+      main.evaluate('openUpdatesWindow(globalThis.__updatesTarget)')
+      // with the hub on top the page hears so, and shows the hub again when Settings close
+      onTop.value = ID
+      main.evaluate('openUpdatesWindow(globalThis.__updatesTarget)')
+    } finally {
+      onTop.value = null
+      delete (globalThis as Record<string, unknown>).__updatesTarget
+    }
+    expect(shown.slice(shownBefore)).toEqual([null, null])
+    expect(calls).toEqual(['show', 'focus', 'agent-inbox:open-updates false', 'show', 'focus', 'agent-inbox:open-updates true'])
+    shown.length = shownBefore
+  })
+
+  it('Settings… brings This Mac forward, then tells its page whether the hub was on top (showSettings)', () => {
+    const sent: unknown[][] = []
+    const shownBefore = shown.length
+    const target = { isDestroyed: () => false, webContents: { send: (...args: unknown[]) => { sent.push([...args, `after ${shown.length - shownBefore} show`]) } } }
+    const closed = { isDestroyed: () => true, webContents: { send: (...args: unknown[]) => { sent.push(args) } } }
+    ;(globalThis as Record<string, unknown>).__settingsTarget = target
+    ;(globalThis as Record<string, unknown>).__settingsClosed = closed
+    try {
+      onTop.value = ID
+      main.evaluate('showSettings(globalThis.__settingsTarget)')
+      onTop.value = null
+      main.evaluate('showSettings(globalThis.__settingsTarget)')
+      main.evaluate('showSettings(globalThis.__settingsClosed)')
+    } finally {
+      onTop.value = null
+      delete (globalThis as Record<string, unknown>).__settingsTarget
+      delete (globalThis as Record<string, unknown>).__settingsClosed
+    }
+    expect(shown.slice(shownBefore)).toEqual([null, null, null])
+    expect(sent).toEqual([
+      ['agent-inbox:toggle-settings', true, 'after 1 show'],
+      ['agent-inbox:toggle-settings', false, 'after 2 show'],
+    ])
     shown.length = shownBefore
   })
 

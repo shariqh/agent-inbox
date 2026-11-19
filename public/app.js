@@ -6447,13 +6447,17 @@ function toggleSettings(fromHub) {
     // never a toggle: Settings left open under the other Mac's Inbox would close, and say nothing
     if (!settingsOpen()) showPanel('setup')
     settingsFromHub = true
+    // the keyboard was in the other Mac's view: it comes to Settings, as on the keyboard's own way in
+    focusKeyboardPanel('setup')
     return
   }
   if (!closeSettings({ back: true })) showPanel('setup')
 }
 
-function openUpdates() {
+// `fromHub` as for toggleSettings: Check for Updates… chosen while another Mac's Inbox was on top
+function openUpdates(fromHub) {
   if (!settingsOpen()) showPanel('setup')
+  if (fromHub === true) settingsFromHub = true
   const section = document.getElementById('updates-settings')
   if (!section) return
   section.scrollIntoView({ block: 'center' })
@@ -10242,6 +10246,12 @@ function initKeys() {
   })
   document.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return
+    // a held Settings shortcut acts once: each repeat is cancelled, wherever it is aimed, or the
+    // app menu's Settings… would act on it and close what the first press opened
+    if (e.repeat && e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault()
+      return
+    }
     if (e.repeat && !['j', 'k', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
     const t = e.target
     const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)

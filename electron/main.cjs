@@ -202,12 +202,14 @@ function validateReleaseUrl(value, version) {
 
 function openUpdatesWindow(win) {
   if (win.isDestroyed() || win.webContents.isDestroyed()) return
-  // Settings → Updates is on This Mac's page: bring it forward over the hub view (#617 PR 3b)
-  hubView?.show(null)
-  if (win.isMinimized()) win.restore()
-  win.show()
-  win.focus()
-  win.webContents.send('agent-inbox:open-updates')
+  // Settings → Updates is on This Mac's page: it comes forward over the hub view (#617 PR 3b), and
+  // hears whether the hub was on top, so closing Settings shows the hub again (as showSettings)
+  openSettings(hubView, (fromHub) => {
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+    win.webContents.send('agent-inbox:open-updates', fromHub)
+  })
 }
 
 ipcMain.handle('agent-inbox:update-state', (event, ...args) => {

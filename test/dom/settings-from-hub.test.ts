@@ -56,16 +56,23 @@ describe('Settings… chosen while another Mac’s Inbox is on top', () => {
     Reflect.deleteProperty(window, 'agentInboxConnect')
     Reflect.deleteProperty(window, 'agentInboxDesk')
     Reflect.deleteProperty(window, 'agentInboxSetup')
+    Reflect.deleteProperty(window, 'agentInboxUpdates')
   })
 
   it('opens Settings rather than toggling them, and closing them shows that Inbox again', async () => {
     const api = connectBridge(view(null))
     let toggleFromAppMenu: (fromHub?: unknown) => void = () => {}
+    let updatesFromAppMenu: (fromHub?: unknown) => void = () => {}
     Object.defineProperty(window, 'agentInboxConnect', { configurable: true, value: api })
     Object.defineProperty(window, 'agentInboxDesk', { configurable: true, value: { connection: async () => ({ mode: 'local' }), onConnection: () => () => {} } })
     Object.defineProperty(window, 'agentInboxSetup', {
       configurable: true,
       value: { available: async () => false, onToggleSettings(toggle: (fromHub?: unknown) => void) { toggleFromAppMenu = toggle } },
+    })
+    // no update section is drawn (available: false); the bridge only hands over Check for Updates…
+    Object.defineProperty(window, 'agentInboxUpdates', {
+      configurable: true,
+      value: { available: false, onOpenUpdates(open: (fromHub?: unknown) => void) { updatesFromAppMenu = open; return () => {} } },
     })
     db = freshDb()
     upsertBoard(db, { project: 'alpha', stream: 'main', agent: 'copilot', title: 'release board', rows: [{ label: 'ship', status: 'tracked' }] })
@@ -141,6 +148,13 @@ describe('Settings… chosen while another Mac’s Inbox is on top', () => {
     await settle()
     expect(api.show).toHaveBeenCalledTimes(3)
 
+    // 6b. so is choosing a project in the sidebar
+    await settingsFromTheHub()
+    click(document.querySelector('#rail [data-project="alpha"]'))
+    await settle()
+    expect(settingsOpen()).toBe(false)
+    expect(api.show).toHaveBeenCalledTimes(3)
+
     // 7. the other Mac's Inbox came back on top by another way (the View menu), then This Mac was
     //    chosen on the strip: Settings still open there close onto This Mac
     await settingsFromTheHub()
@@ -172,5 +186,56 @@ describe('Settings… chosen while another Mac’s Inbox is on top', () => {
     await settle()
     expect(settingsOpen()).toBe(false)
     expect(api.show).toHaveBeenCalledTimes(3)
+
+    // 10. a held shortcut acts once: every repeat is cancelled, wherever it is aimed, so neither the
+    //     page nor the Settings… menu item closes what the first press opened
+    api.set(view(null))
+    await settle()
+    await settingsFromTheHub()
+    expect(settingsOpen()).toBe(true)
+    for (const target of [document.body, document.getElementById('gear')!]) {
+      const held = new KeyboardEvent('keydown', { key: ',', metaKey: true, repeat: true, bubbles: true, cancelable: true })
+      target.dispatchEvent(held)
+      expect(held.defaultPrevented).toBe(true)
+    }
+    await settle()
+    expect(settingsOpen()).toBe(true)
+    expect(api.show).toHaveBeenCalledTimes(3)
+    // the first press on a button is still left to the menu item, as before
+    const first = new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true })
+    document.getElementById('gear')!.dispatchEvent(first)
+    expect(first.defaultPrevented).toBe(false)
+    // Settings opened from the hub take the keyboard, so the next key is theirs
+    expect(document.activeElement).toBe(document.getElementById('setup'))
+    key('Escape')
+    await settle()
+    expect(api.show).toHaveBeenCalledTimes(4)
+
+    // 11. Check for Updates… from the hub is the same trip: closing Settings goes back
+    await settingsFromTheHub()
+    key('Escape')
+    await settle()
+    expect(api.show).toHaveBeenCalledTimes(5)
+    api.set(view(ID))
+    await settle()
+    api.set(view(null))
+    await settle()
+    updatesFromAppMenu(true)
+    await settle()
+    expect(settingsOpen()).toBe(true)
+    key(',', { metaKey: true })
+    await settle()
+    expect(settingsOpen()).toBe(false)
+    expect(api.show).toHaveBeenCalledTimes(6)
+    // and from This Mac itself it stays on This Mac
+    api.set(view(null))
+    await settle()
+    updatesFromAppMenu()
+    updatesFromAppMenu(false)
+    await settle()
+    expect(settingsOpen()).toBe(true)
+    key('Escape')
+    await settle()
+    expect(api.show).toHaveBeenCalledTimes(6)
   })
 })

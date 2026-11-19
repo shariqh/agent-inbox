@@ -25,7 +25,7 @@ import { HOST, LOGIN, ORIGIN, device, freePort, newSecret, setting, writeSetting
 import { removeScratchDirs, scratchDir } from './scratch.js'
 import { waitUntil } from './wait.js'
 
-const { badgeTotal, createAttentionWatch, createLostHubNotice, hubLive, lostHubText, sourceTitle } = attentionWatch
+const { badgeTotal, createAttentionWatch, createLostHubNotice, hubLive, lostHubText, sourceTitle, waitingHubFetch } = attentionWatch
 
 afterEach(() => removeScratchDirs())
 
@@ -296,6 +296,51 @@ describe('createAttentionWatch: the connected hub', () => {
     expect(w.made.at(-1)!.options.title).toBe('Agent Inbox · studio — waiting for agent')
   })
 
+  it('a hub that cannot be written to says so truthfully; This Mac keeps its wording', async () => {
+    const w = hubWatch()
+    await w.watch.poll()
+    ask(src.db, 'Ship it?', { options: OPTIONS })
+    await w.watch.poll()
+    src.state.failing = true
+    w.made[0]!.emit('action', { actionIndex: 0 })
+    await waitUntil(() => w.made.length === 2, 'the not-applied notice')
+    const answer = w.made[0]!.options.actions![0]!.text
+    expect(w.made[1]!.options.body).toBe(`“${answer}” was not saved on studio. Open Agent Inbox to answer it there.`)
+    src.state.failing = false
+    const named = hubWatch({ label: () => { throw new Error('no label') } })
+    await named.watch.poll()
+    ask(src.db, 'Another?', { options: OPTIONS })
+    await named.watch.poll()
+    src.state.failing = true
+    named.made[0]!.emit('action', { actionIndex: 0 })
+    await waitUntil(() => named.made.length === 2, 'the second not-applied notice')
+    expect(named.made[1]!.options.body).toContain('was not saved on another Mac.')
+  })
+
+  it('refuses to be made without its own fetch, and never reaches for the global one', () => {
+    const globalFetch = vi.spyOn(globalThis, 'fetch')
+    const n = notifications()
+    const make = (extra: Record<string, unknown>) => () => createAttentionWatch({
+      base: HUB_BASE, label: 'studio', show: () => {}, mods, Notification: n.Notification as never, retainer: n.retainer as never, logger: quiet, ...extra,
+    })
+    for (const bad of [{}, { fetchImpl: undefined }, { fetchImpl: null }, { fetchImpl: 'https://hub.example.ts.net/' }]) {
+      let message = ''
+      try {
+        make(bad)()
+      } catch (err) {
+        expect(err).toBeInstanceOf(TypeError)
+        message = (err as Error).message
+      }
+      expect(message).not.toBe('')
+      expect(message).not.toContain('hub.example.ts.net')
+      expect(message).not.toContain('studio')
+    }
+    expect(globalFetch).not.toHaveBeenCalled()
+    globalFetch.mockRestore()
+    // This Mac keeps its default
+    expect(() => createAttentionWatch({ base: LOCAL_BASE, label: null, show: () => {}, mods, Notification: n.Notification as never, retainer: n.retainer as never, logger: quiet })).not.toThrow()
+  })
+
   it('reads the label at each notification when it is a function', async () => {
     const name = { value: 'hub' }
     const w = hubWatch({ label: () => name.value })
@@ -388,6 +433,120 @@ describe('sourceTitle', () => {
 })
 
 // ── the dock badge ──────────────────────────────────────────────────────────────
+
+describe('waitingHubFetch', () => {
+  const refused = () => Object.assign(new Error('not the hub'), { code: 'not_hub_origin' })
+  const OK = new Response('ok')
+
+  function setup(first: () => Promise<Response> | Response | never, second: () => Promise<Response> | Response | never = () => OK) {
+    const order: string[] = []
+    const queue = [first, second]
+    const hubFetch = vi.fn(async (input: string, init?: RequestInit) => {
+      order.push(`fetch ${init?.method ?? 'GET'} ${input}`)
+      return (queue.shift() ?? second)()
+    })
+    const settle = { resolve: () => {} }
+    const recheck = vi.fn(() => {
+      order.push('recheck')
+      return new Promise<void>((resolve) => { settle.resolve = resolve })
+    })
+    const timers = new Map<number, { fn: () => void; ms: number }>()
+    let next = 1
+    const cleared: number[] = []
+    const send = waitingHubFetch(hubFetch as never, recheck, {
+      capMs: 7_000,
+      setTimeout: (fn: () => void, ms: number) => { const id = next++; timers.set(id, { fn, ms }); return id },
+      clearTimeout: (id: unknown) => { cleared.push(id as number); timers.delete(id as number) },
+    })
+    return { order, hubFetch, recheck, settle, timers, cleared, send }
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('a POST refused while the hub is checked again waits for the check and is sent once more', async () => {
+    const t = setup(() => { throw refused() })
+    const done = t.send('https://hub.example.ts.net/api/x', { method: 'post' })
+    await tick()
+    expect(t.order).toEqual(['fetch post https://hub.example.ts.net/api/x', 'recheck'])
+    expect(t.timers.size).toBe(1)
+    t.settle.resolve()
+    await expect(done).resolves.toBe(OK)
+    expect(t.order).toEqual(['fetch post https://hub.example.ts.net/api/x', 'recheck', 'fetch post https://hub.example.ts.net/api/x'])
+    expect(t.timers.size).toBe(0)
+    expect(t.cleared).toHaveLength(1)
+  })
+
+  it('its second refusal is thrown, and there is no third try', async () => {
+    const second = refused()
+    const t = setup(() => { throw refused() }, () => { throw second })
+    const done = t.send('https://hub.example.ts.net/api/x', { method: 'POST' })
+    await tick()
+    t.settle.resolve()
+    await expect(done).rejects.toBe(second)
+    expect(t.hubFetch).toHaveBeenCalledTimes(2)
+    expect(t.recheck).toHaveBeenCalledTimes(1)
+  })
+
+  it('a GET or HEAD refused the same way is thrown at once, and nothing is rechecked', async () => {
+    for (const init of [undefined, {}, { method: 'GET' }, { method: 'head' }]) {
+      const error = refused()
+      const t = setup(() => { throw error })
+      await expect(t.send('https://hub.example.ts.net/api/x', init)).rejects.toBe(error)
+      expect(t.recheck).not.toHaveBeenCalled()
+      expect(t.hubFetch).toHaveBeenCalledTimes(1)
+      expect(t.timers.size).toBe(0)
+    }
+  })
+
+  it('another error on a POST is thrown at once', async () => {
+    const error = Object.assign(new Error('nope'), { code: 'ECONNRESET' })
+    const t = setup(() => { throw error })
+    await expect(t.send('https://hub.example.ts.net/api/x', { method: 'POST' })).rejects.toBe(error)
+    const plain = new TypeError('fetch failed')
+    const u = setup(() => { throw plain })
+    await expect(u.send('https://hub.example.ts.net/api/x', { method: 'PUT' })).rejects.toBe(plain)
+    expect(t.recheck).not.toHaveBeenCalled()
+    expect(u.recheck).not.toHaveBeenCalled()
+    expect(t.hubFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a success is returned untouched and never rechecks', async () => {
+    const t = setup(() => OK)
+    await expect(t.send('https://hub.example.ts.net/api/x', { method: 'POST' })).resolves.toBe(OK)
+    expect(t.recheck).not.toHaveBeenCalled()
+  })
+
+  it('waits at most the cap when the check never settles, then sends once more', async () => {
+    const t = setup(() => { throw refused() })
+    const done = t.send('https://hub.example.ts.net/api/x', { method: 'POST' })
+    await tick()
+    expect(t.hubFetch).toHaveBeenCalledTimes(1)
+    expect([...t.timers.values()].map((timer) => timer.ms)).toEqual([7_000])
+    ;[...t.timers.values()][0]!.fn()
+    await expect(done).resolves.toBe(OK)
+    expect(t.hubFetch).toHaveBeenCalledTimes(2)
+    expect(t.recheck).toHaveBeenCalledTimes(1)
+  })
+
+  it('a check that rejects still leads to the one retry', async () => {
+    const t = setup(() => { throw refused() })
+    t.recheck.mockImplementationOnce(() => Promise.reject(new Error('probe failed')))
+    await expect(t.send('https://hub.example.ts.net/api/x', { method: 'POST' })).resolves.toBe(OK)
+    expect(t.hubFetch).toHaveBeenCalledTimes(2)
+    expect(t.recheck).toHaveBeenCalledTimes(1)
+    const throws = setup(() => { throw refused() })
+    throws.recheck.mockImplementationOnce(() => { throw new Error('sync failure') })
+    await expect(throws.send('https://hub.example.ts.net/api/x', { method: 'POST' })).resolves.toBe(OK)
+    expect(throws.hubFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses the real timers by default', async () => {
+    const hubFetch = vi.fn()
+      .mockRejectedValueOnce(refused())
+      .mockResolvedValueOnce(OK)
+    const send = waitingHubFetch(hubFetch as never, () => Promise.resolve())
+    await expect(send('https://hub.example.ts.net/api/x', { method: 'POST' })).resolves.toBe(OK)
+  })
+})
 
 describe('badgeTotal: the dock badge is the sum of the sources', () => {
   const online = { mode: 'hub', id: ID, label: 'studio', state: 'online', reason: null, version: '2.12.0' } as const
@@ -522,7 +681,10 @@ describe('createLostHubNotice', () => {
       title: "Agent Inbox — can't reach studio",
       body: "studio no longer accepts this Mac. Pair it again in Settings → Use another Mac's Inbox.",
     })
-    expect(lostHubText(hub('refused', 'node_changed')).body).toContain('no longer accepts this Mac')
+    // only the reason `refused` says so; any other refusal gets the keeps-trying wording
+    expect(lostHubText(hub('refused', 'node_changed')).body).toBe('New asks from studio will not show on this Mac until it is back. Agent Inbox keeps trying.')
+    expect(lostHubText(hub('refused', null)).body).toContain('keeps trying')
+    expect(lostHubText(hub('retrying', 'refused')).body).toContain('keeps trying')
   })
 
   it('never counts a stop (the app quitting)', () => {

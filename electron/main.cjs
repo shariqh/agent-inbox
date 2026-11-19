@@ -58,7 +58,7 @@ const { runOutcome } = require('./terminal-launch.cjs')
 const { defaultWindowSize } = require('./window-size.cjs')
 const { quitWhenRestartManagerAsks, setWindowsAppIdentity } = require('./windows-app.cjs')
 const { createNotificationRetainer, runWakeAdapter, wakeAdapterFromEnv, wakeAdapterPayload } = require('./reply-watch.cjs')
-const { badgeTotal, createAttentionWatch, createLostHubNotice, hubLive } = require('./attention-watch.cjs')
+const { badgeTotal, createAttentionWatch, createLostHubNotice, hubLive, waitingHubFetch } = require('./attention-watch.cjs')
 
 // Windows (#87): the per-user MSI's Start-menu shortcut carries this app's
 // AppUserModelID and toast activator CLSID; claim them before any window or
@@ -854,7 +854,7 @@ function startRemoteConnect(win) {
   }
   powerMonitor.on('resume', woke)
   powerMonitor.on('unlock-screen', woke)
-  watchOnline({ isOnline: () => net.isOnline(), onBack: kick })
+  watchOnline({ isOnline: () => net.isOnline(), onBack: () => { lostHub.awake(); kick() } })
   remoteConnect.start()
 }
 
@@ -882,8 +882,9 @@ function syncHubAttention(win, connection) {
     const entry = { id, base, count: 0, watch: null }
     entry.watch = createAttentionWatch({
       base,
-      // the hub's origin only, with the device header, no redirect and a timeout
-      fetchImpl: remoteConnect.hubFetch(),
+      // the hub's origin only, with the device header, no redirect and a timeout; an answer refused
+      // while the connection checks the hub again waits for that check and is sent once more
+      fetchImpl: waitingHubFetch(remoteConnect.hubFetch(), () => remoteConnect.tick()),
       // the stored label, read at each notification, as text only
       label: () => {
         const current = remoteConnect.connection()
@@ -904,6 +905,11 @@ function syncHubAttention(win, connection) {
       },
     })
     hubAttention = entry
+  }
+  // a hub that is not live counts 0 at once; one that is live is read now, not at the next interval
+  if (hubAttention !== null) {
+    if (hubAttentionLive()) hubAttention.watch.poll()
+    else hubAttention.count = 0
   }
   updateDockBadge()
 }

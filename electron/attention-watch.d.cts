@@ -57,6 +57,16 @@ export function badgeTotal(input: {
   canShow?: boolean
 }): number
 
+export function waitingHubFetch(
+  hubFetch: WatchFetch,
+  recheck: () => unknown,
+  options?: {
+    capMs?: number
+    setTimeout?: (fn: () => void, ms: number) => unknown
+    clearTimeout?: (handle: unknown) => void
+  },
+): WatchFetch
+
 export const LOST_HUB_AFTER_MS: number
 export function lostHubText(connection: Connection | null): { title: string; body: string }
 

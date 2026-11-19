@@ -389,7 +389,17 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(startRemote).toMatch(/const woke = \(\) => \{\s*lostHub\.awake\(\)\s*kick\(\)\s*\}/)
     expect(startRemote).toContain("powerMonitor.on('resume', woke)")
     expect(startRemote).toContain("powerMonitor.on('unlock-screen', woke)")
-    expect(startRemote).toContain('watchOnline({ isOnline: () => net.isOnline(), onBack: kick })')
+    // #617 PR 4a: the network coming back also restarts the lost-hub notice's 2 minutes
+    expect(startRemote).toContain('watchOnline({ isOnline: () => net.isOnline(), onBack: () => { lostHub.awake(); kick() } })')
+  })
+
+  it('wires the hub watch: its own waiting fetch, polled only while live, and a count of 0 while not live', () => {
+    // an answer refused while the connection checks the hub again waits for that check
+    expect(main).toContain('fetchImpl: waitingHubFetch(remoteConnect.hubFetch(), () => remoteConnect.tick()),')
+    expect(startRemote).toContain('if (hubAttentionLive()) hubAttention.watch.poll()')
+    const sync = main.slice(main.indexOf('function syncHubAttention(win, connection)'), main.indexOf('\n}\n', main.indexOf('function syncHubAttention(win, connection)')))
+    // after every connection change: a hub that is not live counts 0, a live one is read now
+    expect(sync).toMatch(/if \(hubAttention !== null\) \{\s*if \(hubAttentionLive\(\)\) hubAttention\.watch\.poll\(\)\s*else hubAttention\.count = 0\s*\}\s*updateDockBadge\(\)\s*$/)
   })
 
   it('stops the controller before quitting, and writes the hub partition’s storage on quit', () => {

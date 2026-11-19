@@ -1287,7 +1287,9 @@ response watch. The hub's record survives offline stretches of the same hub, so 
 while this Mac slept are announced once when the hub is back (one summary for several), and a new
 watch starts empty, so connecting announces nothing old. The wake adapter runs only for This Mac
 (the hub's own app runs its own); the "waiting for agent" reminder runs for both. A failed poll is
-quiet and retried at the next tick; the watch never kicks or probes the hub.
+quiet and retried at the next tick; the watch never kicks or probes the hub. The hub's watch polls
+at once when the connection becomes `online` (the 5-second interval stays beside it; the watch never
+overlaps itself).
 
 **Titles name the hub**: `Agent Inbox · <label> — needs you`, `… — <n> new need you`,
 `… — waiting for agent` (and its plural) and `… — Response not applied`, with the connection's
@@ -1296,7 +1298,14 @@ asks there are, never the hub's text, its host or its label.
 
 **Answer buttons** on a hub notification post through the same `hubFetch` to the hub's base, with
 the hub's origin as `Origin`; a refused row answer reads `<base>api/boards` through it too, as This
-Mac's does. An app launch's approval still gets no buttons.
+Mac's does. An app launch's approval still gets no buttons. Waking, unlocking or the network coming
+back makes the connection distrust the hub until its next check passes, and until then `hubFetch`
+refuses every request. A button pressed in that window would fail, so the hub watch's fetch is
+wrapped in `waitingHubFetch`: a request that changes something (not GET or HEAD) and is refused
+for that reason waits for the connection's check to finish, for at most 10 seconds, and is sent
+once more. Reads and every other error are never retried. A hub watch cannot be made without its own
+fetch. If the answer still cannot be saved, the "Response not applied" notice for a hub says it was
+not saved on the hub and to answer it there; This Mac's notice keeps its wording.
 
 **A click** on a hub notification shows the hub's view (`hubView.show(id)`), brings the window
 forward, and lands on the ask with `hubView.land(id, hash)`: it sets `location.hash` (JSON-quoted)
@@ -1307,15 +1316,17 @@ landing is queued.
 
 **The dock badge** is the sum of This Mac's last count and the hub's (`badgeTotal`), where the hub
 counts 0 while it is not `online`, while it cannot be shown, and once dropped. It is set whenever a
-count, the connection or what may be shown changes. A failed import of the shared attention modules
+count, the connection or what may be shown changes, and the hub's stored count is zeroed at each
+connection change while it is not live, so an old count cannot come back for a few seconds when the
+hub does. A failed import of the shared attention modules
 still sets it to 0 once, loudly.
 
 **One notice when the hub is lost** (`createLostHubNotice`): when the same hub has been continuously
 `retrying` or `refused` (never for the reason `stopped`, which is this app quitting) for 2 minutes of
 awake time while this Mac has a network, one notification says `Agent Inbox — can't reach <label>`.
-Its body says the hub no longer accepts this Mac when refused, and otherwise that new asks will not
-show until it is back. Waking or unlocking the Mac, and another hub, restart the 2 minutes; a wait
-that ends with no network starts over. It says nothing more until that hub has been online again,
+Its body says the hub no longer accepts this Mac only when it was refused for that reason, and
+otherwise that new asks will not show until it is back. Waking or unlocking the Mac, the network
+coming back, and another hub, restart the 2 minutes; a wait that ends with no network starts over. It says nothing more until that hub has been online again,
 and there is no "it is back" notice. Its click brings the window forward and shows the hub's view,
 whose offline page explains.
 

@@ -49,6 +49,40 @@ function hubLive(connection, id, canShow) {
     && typeof id === 'string' && connection.id === id && connection.state === 'online' && canShow === true
 }
 
+/**
+ * A hub's fetch that does not lose an answer to a check in progress. While the connection checks
+ * the hub again (after a wake, an unlock or the network coming back) its fetch refuses every
+ * request with an error whose `code` is `not_hub_origin`. A request that changes something (any
+ * method but GET and HEAD) that is refused that way waits for `recheck()` to settle (a rejection
+ * counts as settled), for at most `options.capMs` (10 seconds) of `options.setTimeout`'s time, and
+ * is sent exactly once more; whatever that gives is returned or thrown. Reads and every other error
+ * are thrown as they came, and `recheck` is called at most once per call, and only for that refusal.
+ */
+function waitingHubFetch(hubFetch, recheck, options = {}) {
+  const capMs = options.capMs ?? 10_000
+  const setTimeoutFn = options.setTimeout ?? setTimeout
+  const clearTimeoutFn = options.clearTimeout ?? clearTimeout
+  return async (input, init) => {
+    try {
+      return await hubFetch(input, init)
+    } catch (error) {
+      const method = String(init?.method ?? 'GET').toUpperCase()
+      if (error?.code !== 'not_hub_origin' || method === 'GET' || method === 'HEAD') throw error
+    }
+    let timer = null
+    await new Promise((resolve) => {
+      timer = setTimeoutFn(resolve, capMs)
+      Promise.resolve().then(recheck).then(resolve, resolve)
+    })
+    try {
+      if (timer !== null) clearTimeoutFn(timer)
+    } catch {
+      // already gone
+    }
+    return hubFetch(input, init)
+  }
+}
+
 const asCount = (value) => (Number.isSafeInteger(value) && value > 0 ? value : 0)
 
 /**
@@ -76,6 +110,10 @@ function badgeTotal({ local, hubs = [], connection = null, canShow = false }) {
  */
 function createAttentionWatch(options) {
   const { base, label = null, mods, Notification, retainer, show } = options
+  // a hub's requests may only go through its own fetch: never fall back to the global one
+  if (label !== null && typeof options.fetchImpl !== 'function') {
+    throw new TypeError('a hub attention watch needs its own fetchImpl')
+  }
   const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init))
   const onCount = typeof options.onCount === 'function' ? options.onCount : () => {}
   const now = options.now ?? Date.now
@@ -85,15 +123,16 @@ function createAttentionWatch(options) {
   const wake = !isHub && typeof options.wake === 'function' ? options.wake : null
   // a hub's label may be a function, read at each notification: the stored label can change while
   // the same hub stays connected (its machine name is recorded after the first answer)
-  const title = (text) => {
+  const hubName = () => {
     let name = label
     try {
       if (typeof label === 'function') name = label()
     } catch {
       name = null
     }
-    return isHub ? sourceTitle(typeof name === 'string' ? name : 'another Mac', text) : text
+    return typeof name === 'string' ? name : 'another Mac'
   }
+  const title = (text) => (isHub ? sourceTitle(hubName(), text) : text)
   // ids seen on the previous successful poll; null until the first one
   let known = null
   let polling = null
@@ -219,7 +258,9 @@ function createAttentionWatch(options) {
             if (supported()) {
               const failed = new Notification({
                 title: title('Agent Inbox — Response not applied'),
-                body: `“${answer}” was preserved here because the action changed. Open Agent Inbox to review it.`,
+                body: isHub
+                  ? `“${answer}” was not saved on ${hubName()}. Open Agent Inbox to answer it there.`
+                  : `“${answer}” was preserved here because the action changed. Open Agent Inbox to review it.`,
               })
               failed.on('click', open(hash))
               retainer.show(failed)
@@ -252,7 +293,7 @@ function lostHubText(connection) {
   const label = typeof connection?.label === 'string' ? connection.label : ''
   return {
     title: `Agent Inbox — can't reach ${label}`,
-    body: connection?.state === 'refused'
+    body: connection?.state === 'refused' && connection?.reason === 'refused'
       ? `${label} no longer accepts this Mac. Pair it again in Settings → Use another Mac's Inbox.`
       : `New asks from ${label} will not show on this Mac until it is back. Agent Inbox keeps trying.`,
   }
@@ -373,4 +414,5 @@ module.exports = {
   hubLive,
   lostHubText,
   sourceTitle,
+  waitingHubFetch,
 }

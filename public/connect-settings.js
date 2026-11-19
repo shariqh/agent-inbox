@@ -190,7 +190,7 @@ function updateSentence(update, name) {
     case 'done': return `${name} now runs Agent Inbox ${update.version}.`
     case 'failed': return `The update didn’t finish: ${name} still runs ${update.version ?? 'its old version'}. Open Settings → Updates on ${name} to see why.`
     case 'not_back': return `${name} hasn’t come back since the update started. Check that Mac: Agent Inbox may need to be opened there.`
-    case 'old_hub': return `${name} runs an older Agent Inbox that can’t be updated from here. Update it once on ${name}: Agent Inbox → Check for Updates….`
+    case 'old_hub': return `${name} runs an older Agent Inbox that can’t be updated from here. Update it once on ${name} itself, with Check for Updates… in its Agent Inbox menu.`
     case 'refused': return NOT_ACCEPTED(name)
     case 'unreadable': return `Agent Inbox couldn’t read ${name}’s updates.`
     default: return ''

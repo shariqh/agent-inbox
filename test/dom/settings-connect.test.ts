@@ -1004,7 +1004,7 @@ describe('the other Mac’s update', () => {
     ['done', answer({ phase: 'done', version: '2.15.0' }), 'MBP now runs Agent Inbox 2.15.0.', false],
     ['failed', answer({ phase: 'failed', status: 'failed', newer: '2.15.0', canStart: true, reason: null }), 'The update didn’t finish: MBP still runs 2.14.1. Open Settings → Updates on MBP to see why.', true],
     ['not_back', answer({ phase: 'not_back', status: null, reason: null }), 'MBP hasn’t come back since the update started. Check that Mac: Agent Inbox may need to be opened there.', false],
-    ['old_hub', answer({ phase: 'old_hub', status: null, reason: null }), 'MBP runs an older Agent Inbox that can’t be updated from here. Update it once on MBP: Agent Inbox → Check for Updates….', false],
+    ['old_hub', answer({ phase: 'old_hub', status: null, reason: null }), 'MBP runs an older Agent Inbox that can’t be updated from here. Update it once on MBP itself, with Check for Updates… in its Agent Inbox menu.', false],
     ['refused', answer({ phase: 'refused', status: null, reason: null }), 'MBP didn’t accept this Mac’s request. Check that this Mac is still listed under Settings → Other devices on MBP.', false],
     ['unreadable', answer({ phase: 'unreadable', status: null, reason: null }), 'Agent Inbox couldn’t read MBP’s updates.', false],
     ['offline', answer({ phase: 'offline', status: null, reason: null }), '', false],

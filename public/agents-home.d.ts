@@ -32,6 +32,8 @@ export interface AgentsHomeLaunches {
 
 export interface AgentsHomeDeps {
   doc?: Document
+  /** #617 PR 4b: Open desk (public/desk-open.js); a card shows its button only while `available()` says so */
+  deskOpen?: () => import('./desk-open.js').DeskOpen | null
   /**
    * The session panel (#454): a card's or row's click toggles it (no part); Enter and Open open it
    * at its head, Message, Transcript and Resume… at that part. `key` is a launch card's id, else

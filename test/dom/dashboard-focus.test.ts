@@ -865,3 +865,92 @@ describe('where a session runs, in the session panel (#617)', () => {
     expect(meta()).not.toContain('hub · api')
   })
 })
+
+// #617 PR 4b: Open desk in the session panel, on the hub's page shown from another Mac, where
+// agentInboxDesk.available() answers { open: true }. It sits before Copy attach command, which stays.
+describe('Open desk in the session panel (#617 PR 4b)', () => {
+  const placed = (d: Database.Database, session = 'mine') => {
+    work(d, session, 'Painting the panel', { machine: 'hub', pane: '%3' })
+    setActivityPlace(d, session, { desk: 'api', remote_session: 'session_abc123' })
+  }
+  const place = () => panel()!.querySelector<HTMLElement>('.sp-place')!
+  const labels = () => [...place().querySelectorAll('button')].map((el) => el.textContent)
+  function hubDesk(open = true) {
+    // every subscriber: the page's hub mode and Open desk each listen
+    const listeners = new Set<(value: unknown) => void>()
+    const desk = {
+      answer: { open },
+      available: vi.fn(async () => desk.answer),
+      open: vi.fn(async (_request: { session: string }): Promise<unknown> => ({ ok: true })),
+      // the hub's page: hub mode, as electron/remote-preload.cjs answers there
+      connection: vi.fn(async () => ({ mode: 'hub', label: 'studio', state: 'online', version: '2.13.0' })),
+      onConnection: vi.fn((callback: (value: unknown) => void) => { listeners.add(callback); return () => { listeners.delete(callback) } }),
+      emit: () => { for (const listener of [...listeners]) listener({ mode: 'hub', label: 'studio', state: 'online', version: '2.13.0' }) },
+    }
+    Object.defineProperty(window, 'agentInboxDesk', { configurable: true, value: desk })
+    return desk
+  }
+  afterEach(() => { Reflect.deleteProperty(window, 'agentInboxDesk') })
+
+  it('shows Open desk before Copy attach command where the page offers it, for a session with a desk', async () => {
+    const d = open()
+    placed(d)
+    work(d, 'bare', 'No desk here', { machine: 'hub' })
+    hubDesk()
+    await bootApp(d)
+    openCard('mine')
+    expect(labels()).toEqual(['Open desk', 'Copy attach command'])
+    openCard('bare')
+    expect(place().querySelector('button')).toBeNull()
+  })
+
+  it('shows no Open desk where available() says no, and adds it when a connection change says yes', async () => {
+    const d = open()
+    placed(d)
+    const desk = hubDesk(false)
+    await bootApp(d)
+    openCard('mine')
+    expect(labels()).toEqual(['Copy attach command'])
+    desk.answer = { open: true }
+    desk.emit()
+    await settle()
+    expect(labels()).toEqual(['Open desk', 'Copy attach command'])
+  })
+
+  it('a click sends the row’s session, disables the button while it runs, then says Opened', async () => {
+    const d = open()
+    placed(d)
+    const desk = hubDesk()
+    let release!: (value: unknown) => void
+    desk.open.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    await bootApp(d)
+    openCard('mine')
+    const button = () => place().querySelector<HTMLButtonElement>('.dash-focus-place-desk')!
+    click(button())
+    await settle()
+    expect(desk.open.mock.calls).toEqual([[{ session: 'mine' }]])
+    expect(button().disabled).toBe(true)
+    release({ ok: true })
+    await settle()
+    expect([button().disabled, button().textContent]).toEqual([false, 'Opened'])
+    // the panel stays open on its session
+    expect(panel()!.dataset.session).toBe('mine')
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(button().textContent).toBe('Open desk')
+  })
+
+  it('says a refusal in one sentence beside the button, for 6 seconds', async () => {
+    const d = open()
+    placed(d)
+    const desk = hubDesk()
+    desk.open.mockResolvedValue({ ok: false, reason: 'no_command' })
+    await bootApp(d)
+    openCard('mine')
+    click(place().querySelector('.dash-focus-place-desk'))
+    await settle()
+    const note = place().querySelector<HTMLElement>('.dash-focus-place-desk-note')!
+    expect([note.hidden, note.textContent]).toEqual([false, 'Set the Open desk command in Settings on this Mac first.'])
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect([note.hidden, note.textContent]).toEqual([true, ''])
+  })
+})

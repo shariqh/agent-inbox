@@ -11,7 +11,9 @@
 // - no Mac connected: Address, Code and Connect, with one line of help;
 // - connecting or disconnecting: every control disabled, and a line saying so;
 // - a refusal: one sentence per reason, saying what to do next, with Replace it where that helps;
-// - connected: "<label>'s Inbox", its address, its status, Show its Inbox and Disconnect.
+// - connected: "<label>'s Inbox", its address, its status, Show its Inbox and Disconnect, and
+//   (#617 PR 4b) the Open desk command: one text field, Save and Remove. Save only proposes it: main
+//   shows the command in a native dialog and stores it only when the owner presses Save there.
 //
 // The label comes from the other Mac: text it chose, set with textContent, never proof of
 // anything. Every string reaches the DOM as textContent.
@@ -41,6 +43,9 @@ const SHARING_SWITCH = 'Settings → Other devices → Let my other Macs use thi
 // forget() could not write the file: main answers no hub and the problem `forget_not_saved`
 const UNSAVED = 'This Mac has stopped using the other Mac’s Inbox, but couldn’t save that. Connecting a Mac will try again.'
 const STILL_UNSAVED = 'This Mac still couldn’t save that it stopped using the other Mac’s Inbox. Try again in a moment.'
+// #617 PR 4b: the Open desk command (electron/remote-connect-rules.cjs validDeskCommand is the rule)
+const DESK_EXAMPLE = 'ssh -t my-mac {attach}'
+const BAD_DESK_COMMAND = 'Use one line that contains {desk} or {attach}, and no other braces.'
 
 // One sentence for every word connect() can answer (electron/remote-connect.d.cts, ConnectAnswer).
 // `failed` is also what the preload answers for any failed call, so it blames nothing in particular.
@@ -222,7 +227,34 @@ export function renderConnectSettings(host, {
   const disconnect = button('connect-disconnect', 'Disconnect')
   const hubActions = make('div', 'connect-actions')
   hubActions.append(show, disconnect)
-  hubBlock.append(hubName, hubAddress, hubStatusLine, pairAgain, hubActions)
+
+  // #617 PR 4b: Open desk's command, under the connected Mac's controls
+  const deskBlock = make('div', 'connect-desk')
+  deskBlock.id = 'connect-desk'
+  const deskHelp = make('p', 'setup-hint')
+  deskHelp.id = 'connect-desk-help'
+  const deskExample = make('p', 'setup-hint connect-desk-example', 'For example: ')
+  deskExample.id = 'connect-desk-example'
+  deskExample.append(make('code', '', DESK_EXAMPLE))
+  const deskInput = make('input')
+  deskInput.maxLength = 512
+  deskInput.placeholder = DESK_EXAMPLE
+  const deskSave = make('button', 'connect-primary', 'Save')
+  deskSave.type = 'submit'
+  deskSave.id = 'connect-desk-save'
+  const deskRemove = button('connect-desk-remove', 'Remove')
+  const deskForm = make('form', 'connect-form connect-desk-form')
+  deskForm.id = 'connect-desk-form'
+  deskForm.noValidate = true
+  deskForm.append(field('connect-desk-command', 'Command', deskInput), deskSave, deskRemove)
+  const deskSaved = make('p', 'setup-hint')
+  deskSaved.id = 'connect-desk-saved'
+  const deskMessage = make('p', 'connect-message')
+  deskMessage.id = 'connect-desk-message'
+  deskMessage.setAttribute('role', 'status')
+  deskMessage.setAttribute('aria-live', 'polite')
+  deskBlock.append(make('h4', '', 'Open desk'), deskHelp, deskExample, deskForm, deskSaved, deskMessage)
+  hubBlock.append(hubName, hubAddress, hubStatusLine, pairAgain, hubActions, deskBlock)
 
   const busyLine = make('p', 'connect-busy')
   busyLine.id = 'connect-busy'
@@ -258,6 +290,11 @@ export function renderConnectSettings(host, {
   let offered = null // { reason, address, code, label } after a refusal Replace can get past
   let confirming = null // null | 'replace' | 'disconnect'
   let reads = 0
+  // #617 PR 4b: the Open desk command's own state: a save or remove in flight, its sentence, and the
+  // saved command last put in the field, so a repaint never replaces what the owner is typing
+  let deskBusy = false
+  let deskSaid = ''
+  let deskShown // undefined until the field first shows a hub's command
 
   const connected = () => Boolean(view && view.available === true && view.hub)
 
@@ -285,7 +322,21 @@ export function renderConnectSettings(host, {
       const refused = hub.state === 'refused'
       pairAgain.textContent = refused ? `To pair again: press Disconnect, then connect with a new code from ${hub.label}.` : ''
       pairAgain.hidden = !refused
+      const saved = typeof hub.deskCommand === 'string' && hub.deskCommand !== '' ? hub.deskCommand : null
+      deskHelp.textContent = `The command this Mac runs in your terminal to open a session’s desk on ${hub.label}. Write {desk} where the desk’s name goes, or {attach} for the whole tmux attach command.`
+      if (saved !== deskShown) {
+        deskInput.value = saved ?? ''
+        deskShown = saved
+      }
+      deskRemove.hidden = saved === null
+      deskSaved.textContent = saved === null ? '' : `Open desk appears on each session in ${hub.label}’s Inbox.`
+      deskSaved.hidden = saved === null
+    } else {
+      deskShown = undefined
+      deskSaid = ''
     }
+    deskMessage.textContent = deskSaid
+    deskMessage.hidden = deskSaid === ''
     form.hidden = !showForm
 
     busyLine.textContent = busy === 'connect' ? 'Connecting…' : busy === 'forget' ? 'Disconnecting…' : ''
@@ -306,6 +357,7 @@ export function renderConnectSettings(host, {
       confirmYes.textContent = 'Disconnect'
     }
     for (const control of section.querySelectorAll('input, button')) control.disabled = busy !== null
+    if (deskBusy) for (const control of deskBlock.querySelectorAll('input, button')) control.disabled = true
   }
 
   // A focused control that the paint hid or disabled (focus may then fall to the body) leaves focus on
@@ -451,6 +503,36 @@ export function renderConnectSettings(host, {
       })
     }
   })
+  // #617 PR 4b: Save proposes the typed command and Remove sends ''; main answers after its dialog
+  async function sendDeskCommand(command, fallback) {
+    if (!connected() || busy !== null || deskBusy || typeof api.setDeskCommand !== 'function') return
+    const id = view.hub.id
+    deskBusy = true
+    deskSaid = ''
+    paint()
+    let answer
+    try {
+      answer = await api.setDeskCommand({ id, command })
+    } catch {
+      answer = null
+    }
+    deskBusy = false
+    const reason = answer !== null && typeof answer === 'object' && answer.ok === false ? answer.reason : null
+    // cancelled in the dialog: nothing to say, and the field keeps what was typed
+    if (answer !== null && typeof answer === 'object' && (answer.ok === true || answer.available === false)) deskSaid = ''
+    else if (reason === 'cancelled') deskSaid = ''
+    else deskSaid = reason === 'bad_command' ? BAD_DESK_COMMAND : FALLBACK
+    await refresh()
+    keepFocus(fallback())
+  }
+  deskForm.addEventListener('submit', (event) => {
+    event.preventDefault()
+    void sendDeskCommand(deskInput.value, () => deskInput)
+  })
+  deskRemove.addEventListener('click', () => {
+    void sendDeskCommand('', () => deskInput)
+  })
+
   show.addEventListener('click', async () => {
     if (!connected() || busy !== null) return
     const hub = view.hub
@@ -494,6 +576,7 @@ export function renderConnectSettings(host, {
         offered = null
         confirming = null
       }
+      if (!deskBusy) deskSaid = ''
       return refresh()
     }
     await refresh()

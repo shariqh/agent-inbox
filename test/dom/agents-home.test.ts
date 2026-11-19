@@ -4,7 +4,7 @@
 // one card or row per session, always on. It reads nothing new (the page makes
 // exactly the requests it made before) and never feeds attention: the human's
 // attention surfaces read the same with it drawn.
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, recordActivityCall, setActivityPlace, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
 import { advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
@@ -362,5 +362,117 @@ describe('where a session runs, on the card (#617)', () => {
     expect(card('session:b')!.querySelector('.sc-place')).toBeNull()
     expect(card('session:c')!.querySelector('.sc-place')?.textContent).toBe('hub · api')
     expect(document.querySelector('[data-session-card] img, [data-session-card] b')).toBeNull()
+  })
+})
+
+// #617 PR 4b: Open desk on a card and on a Quiet row, on the hub's page shown from another Mac, where
+// agentInboxDesk.available() answers { open: true }; only for a session with a desk. Its click opens
+// the desk and never the card's panel.
+describe('Open desk on a card (#617 PR 4b)', () => {
+  function hubDesk(open = true) {
+    const desk = {
+      available: vi.fn(async () => ({ open })),
+      open: vi.fn(async (_request: { session: string }): Promise<unknown> => ({ ok: true })),
+      connection: vi.fn(async () => ({ mode: 'hub', label: 'studio', state: 'online', version: '2.13.0' })),
+      onConnection: vi.fn(() => () => {}),
+    }
+    Object.defineProperty(window, 'agentInboxDesk', { configurable: true, value: desk })
+    return desk
+  }
+  afterEach(() => { Reflect.deleteProperty(window, 'agentInboxDesk') })
+  const work = (d: Database.Database, session: string, place: { machine?: string } = {}) => {
+    upsertActivity(d, { session, agent: 'claude-code', project: 'alpha', stream: 'main', doing: 'Painting', ...place })
+    recordActivityCall(d, session)
+  }
+  const idle = (d: Database.Database, session: string, place: { machine?: string } = {}) => {
+    upsertActivity(d, { session, agent: 'claude-code', project: 'alpha', stream: 'main', doing: 'open', idle: true, claim: false, ...place })
+  }
+  const deskButton = (id: string) => card(id)?.querySelector<HTMLButtonElement>('.desk-open-button') ?? null
+  const panelOpen = () => document.querySelector<HTMLElement>('#dashboard .dash-focus')?.dataset.session ?? null
+
+  it('shows Open desk beside the place for a session with a desk, and not for one without', async () => {
+    db = freshDb()
+    work(db, 'p', { machine: 'hub' })
+    work(db, 'm', { machine: 'hub' })
+    setActivityPlace(db, 'p', { desk: 'api', remote_session: null })
+    hubDesk()
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    const button = deskButton('session:p')!
+    expect([button.textContent, button.type, button.tabIndex]).toEqual(['Open desk', 'button', 0])
+    expect(button.closest('.sc-where')?.querySelector('.sc-place')?.textContent).toBe('hub · api')
+    expect(deskButton('session:m')).toBeNull()
+  })
+
+  it('shows none where available() says no: This Mac’s page and a page with no command saved', async () => {
+    db = freshDb()
+    work(db, 'p', { machine: 'hub' })
+    setActivityPlace(db, 'p', { desk: 'api', remote_session: null })
+    hubDesk(false)
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    expect(card('session:p')!.querySelector('.sc-place')?.textContent).toBe('hub · api')
+    expect(card('session:p')!.querySelector('.desk-open')).toBeNull()
+  })
+
+  it('a click opens the desk with the row’s session and leaves the card’s panel closed; Enter on the button does the same', async () => {
+    db = freshDb()
+    work(db, 'p', { machine: 'hub' })
+    setActivityPlace(db, 'p', { desk: 'api', remote_session: null })
+    const desk = hubDesk()
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    const before = panelOpen()
+    click(deskButton('session:p'))
+    await settle()
+    expect(desk.open.mock.calls).toEqual([[{ session: 'p' }]])
+    expect(panelOpen()).toBe(before)
+    expect(deskButton('session:p')!.textContent).toBe('Opened')
+    // the keyboard reaches it as any button: focus, then Enter (a button's Enter is its click)
+    await vi.advanceTimersByTimeAsync(2_000)
+    const button = deskButton('session:p')!
+    button.focus()
+    expect(document.activeElement).toBe(button)
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(panelOpen()).toBe(before)
+  })
+
+  it('on a Quiet row: the button follows the place, and its click opens no panel', async () => {
+    db = freshDb()
+    idle(db, 'q', { machine: 'hub' })
+    setActivityPlace(db, 'q', { desk: 'api', remote_session: null })
+    const desk = hubDesk()
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    const caption = card('session:q')!.querySelector<HTMLElement>('.qt-caption')!
+    expect([...caption.children].map((el) => el.classList[0])).toEqual(['sc-asking', 'sc-doing', 'sc-place', 'desk-open'])
+    const before = panelOpen()
+    click(caption.querySelector('.desk-open-button'))
+    await settle()
+    expect(desk.open.mock.calls).toEqual([[{ session: 'q' }]])
+    expect(panelOpen()).toBe(before)
+    // a desk that goes away takes its button with it
+    setActivityPlace(db, 'q', { desk: null, remote_session: null })
+    await pollTick()
+    await settle()
+    expect(card('session:q')!.querySelector('.desk-open')).toBeNull()
+  })
+
+  it('says a refusal beside the button, as text', async () => {
+    db = freshDb()
+    work(db, 'p', { machine: 'hub' })
+    setActivityPlace(db, 'p', { desk: 'api', remote_session: null })
+    const desk = hubDesk()
+    desk.open.mockResolvedValue({ ok: false, reason: 'not_on_hub' })
+    await bootApp(db)
+    await pollTick()
+    await settle()
+    click(deskButton('session:p'))
+    await settle()
+    expect(card('session:p')!.querySelector('.desk-open-note')?.textContent).toBe('That session runs on a different machine.')
   })
 })

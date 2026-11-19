@@ -20,6 +20,7 @@ import { groupCards, laneCounts, laneOf, messageHint, sessionCards, splitLanes }
 import { forgettable } from './launches.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
 import { placeLine } from './place.js'
+import { deskSession } from './desk-open.js'
 import { installMeshAgents } from './mesh-section.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
@@ -304,6 +305,12 @@ export function installAgentsHome(deps) {
     return ask
   }
 
+  // #617 PR 4b: the session Open desk would open for this card, or '' when the page does not offer it
+  function deskFor(card) {
+    const desk = deps.deskOpen?.() ?? null
+    return desk !== null && desk.available() === true ? deskSession(card.row) : ''
+  }
+
   function worktreeKept(card) {
     const launch = card.launch
     return launch?.status === 'ended' && typeof launch.worktree_path === 'string' && launch.worktree_path !== '' && !launch.worktree_removed_at
@@ -412,12 +419,20 @@ export function installAgentsHome(deps) {
     const where = el.querySelector('.sc-where')
     // #617: where it runs ("machine · desk"), first; a row with none of the fields adds nothing, not even to the key
     const place = placeLine(card.row)
-    rebuild(where, JSON.stringify(place ? [card.worktree, busy && card.plan, hint, place] : [card.worktree, busy && card.plan, hint]), () => {
+    // #617 PR 4b: Open desk beside it, only where the page offers it (the hub's page, shown from
+    // another Mac) and only for a row with a desk; nothing at all, not even in the key, elsewhere
+    const desk = deskFor(card)
+    const key = place ? [card.worktree, busy && card.plan, hint, place] : [card.worktree, busy && card.plan, hint]
+    rebuild(where, JSON.stringify(desk ? [...key, ['desk', desk]] : key), () => {
       const parts = []
       if (place) {
         const mark = make('span', 'sc-place', place)
         mark.title = place
         parts.push(mark)
+      }
+      if (desk) {
+        const control = deps.deskOpen?.()?.control(doc, card.row)
+        if (control) parts.push(control)
       }
       if (card.worktree) parts.push(make('span', 'sc-worktree', card.worktree))
       if (busy && card.plan) {
@@ -533,6 +548,14 @@ export function installAgentsHome(deps) {
     } else {
       setText(mark, place)
       if (mark.title !== place) mark.title = place
+    }
+    // #617 PR 4b: Open desk after it, kept across paints while it is for the same session
+    const desk = deskFor(card)
+    const control = caption.querySelector('.desk-open')
+    if (control && control.dataset.deskSession !== desk) control.remove()
+    if (desk && !caption.querySelector('.desk-open')) {
+      const added = deps.deskOpen?.()?.control(doc, card.row)
+      if (added) caption.append(added)
     }
     const hint = card.launch ? '' : messageHint(card.row)
     paintActions(el.querySelector('.sc-actions'), card, actionsOf(card, granted, { open: true, hint }))

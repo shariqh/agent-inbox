@@ -16,7 +16,7 @@ const ID = '0123abcd'
 const ORIGIN = 'https://mbp.example.ts.net'
 
 type State = 'online' | 'retrying' | 'refused' | null
-interface Hub { id: string; label: string; origin: string; machine: string | null; state: State; reason: string | null }
+interface Hub { id: string; label: string; origin: string; machine: string | null; state: State; reason: string | null; deskCommand?: string | null }
 interface View { available: boolean; keychain?: boolean; hub?: Hub | null; problem?: string | null; showing?: string | null }
 
 const hub = (state: State = 'online', reason: string | null = null, extra: Partial<Hub> = {}): Hub =>
@@ -32,6 +32,8 @@ function connectBridge(start: View = NONE) {
     connect: vi.fn(async (_input: { address: string; code: string; replace?: boolean }): Promise<Record<string, unknown>> => ({ ok: false, reason: 'failed' })),
     forget: vi.fn(async (_id: string): Promise<Record<string, unknown>> => ({ ok: true })),
     show: vi.fn(async (id: string | null): Promise<Record<string, unknown>> => ({ ok: true, showing: id })),
+    // #617 PR 4b: main's answer after its own native dialog
+    setDeskCommand: vi.fn(async (_input: { id: string; command: string }): Promise<Record<string, unknown>> => ({ ok: true })),
     onChange: vi.fn((callback: () => void) => {
       listeners.add(callback)
       return () => listeners.delete(callback)
@@ -742,7 +744,9 @@ describe('what it draws', () => {
     expect(document.querySelectorAll('#connect-settings').length).toBe(1)
     const section = $('connect-settings')!
     expect(section.querySelectorAll('h3').length).toBe(1)
-    expect(section.querySelectorAll('form').length).toBe(1)
+    // the connect form, and (#617 PR 4b) the Open desk command's
+    expect(section.querySelectorAll('form').length).toBe(2)
+    expect(section.querySelectorAll('#connect-form, #connect-desk-form').length).toBe(2)
     expect(section.querySelectorAll('#connect-show').length).toBe(1)
     expect(api.onChange).toHaveBeenCalledTimes(1)
     expect(text('connect-hub-status')).toBe('Online')
@@ -776,6 +780,143 @@ describe('what it draws', () => {
     answers[0]!(NONE)
     await flush()
     expect(text('connect-hub-name')).toBe('MBP’s Inbox')
+  })
+})
+
+// ── the Open desk command (#617 PR 4b) ──────────────────────────────────────
+
+describe('the Open desk command', () => {
+  const COMMAND = 'ssh -t studio {attach}'
+  const saveDesk = () => $('connect-desk-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  const deskValue = () => $<HTMLInputElement>('connect-desk-command')!.value
+
+  it('is drawn only while a Mac is connected, under its controls', async () => {
+    const api = connectBridge()
+    draw(api)
+    await flush()
+    expect(shown('connect-desk')).toBe(false)
+    api.set({ ...NONE, hub: hub('online') })
+    await flush()
+    expect(shown('connect-desk')).toBe(true)
+    expect($('connect-hub')!.lastElementChild).toBe($('connect-desk'))
+    api.set({ ...NONE, hub: hub('refused', 'refused') })
+    await flush()
+    expect(shown('connect-desk')).toBe(true)
+  })
+
+  it('with none saved: the heading, the sentence with the label, the example, an empty field, Save and no Remove', async () => {
+    draw(connectBridge({ ...NONE, hub: hub('online') }))
+    await flush()
+    const block = $('connect-desk')!
+    expect(block.querySelector('h4')?.textContent).toBe('Open desk')
+    expect(text('connect-desk-help')).toBe('The command this Mac runs in your terminal to open a session’s desk on MBP. Write {desk} where the desk’s name goes, or {attach} for the whole tmux attach command.')
+    expect(text('connect-desk-example')).toBe('For example: ssh -t my-mac {attach}')
+    expect(deskValue()).toBe('')
+    expect(shown('connect-desk-save')).toBe(true)
+    expect(shown('connect-desk-remove')).toBe(false)
+    expect(shown('connect-desk-saved')).toBe(false)
+    expect(shown('connect-desk-message')).toBe(false)
+    expect(block.querySelector('label')?.htmlFor).toBe('connect-desk-command')
+  })
+
+  it('with one saved: it is in the field, Remove shows, and one line says where Open desk appears', async () => {
+    draw(connectBridge({ ...NONE, hub: hub('online', null, { deskCommand: COMMAND }) }))
+    await flush()
+    expect(deskValue()).toBe(COMMAND)
+    expect(shown('connect-desk-remove')).toBe(true)
+    expect(text('connect-desk-saved')).toBe('Open desk appears on each session in MBP’s Inbox.')
+  })
+
+  it('Save proposes exactly { id, command } to main, which asks in its own dialog; a save shows as saved', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.setDeskCommand.mockImplementation(async (input) => {
+      api.quietly({ ...NONE, hub: hub('online', null, { deskCommand: input.command }) })
+      return { ok: true }
+    })
+    draw(api)
+    await flush()
+    type('connect-desk-command', COMMAND)
+    saveDesk()
+    await flush()
+    expect(api.setDeskCommand.mock.calls).toEqual([[{ id: ID, command: COMMAND }]])
+    expect(deskValue()).toBe(COMMAND)
+    expect(text('connect-desk-saved')).toBe('Open desk appears on each session in MBP’s Inbox.')
+    expect(shown('connect-desk-message')).toBe(false)
+  })
+
+  it('cancelled in the dialog: says nothing and keeps what was typed', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.setDeskCommand.mockResolvedValue({ ok: false, reason: 'cancelled' })
+    draw(api)
+    await flush()
+    type('connect-desk-command', 'mydesk studio {desk}')
+    saveDesk()
+    await flush()
+    expect(deskValue()).toBe('mydesk studio {desk}')
+    expect(shown('connect-desk-message')).toBe(false)
+    expect(shown('connect-desk-saved')).toBe(false)
+  })
+
+  it.each([
+    ['bad_command', 'Use one line that contains {desk} or {attach}, and no other braces.'],
+    ['not_found', FALLBACK],
+    ['write_failed', FALLBACK],
+    ['failed', FALLBACK],
+  ])('a refusal %s says its sentence and keeps what was typed', async (reason, sentence) => {
+    const api = connectBridge({ ...NONE, hub: hub('online') })
+    api.setDeskCommand.mockResolvedValue({ ok: false, reason })
+    draw(api)
+    await flush()
+    type('connect-desk-command', 'ssh {host} {attach}')
+    saveDesk()
+    await flush()
+    expect(text('connect-desk-message')).toBe(sentence)
+    expect(deskValue()).toBe('ssh {host} {attach}')
+  })
+
+  it('Remove sends an empty command, and the field empties once main says it is gone', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online', null, { deskCommand: COMMAND }) })
+    api.setDeskCommand.mockImplementation(async () => {
+      api.quietly({ ...NONE, hub: hub('online', null, { deskCommand: null }) })
+      return { ok: true }
+    })
+    draw(api)
+    await flush()
+    press('connect-desk-remove')
+    await flush()
+    expect(api.setDeskCommand.mock.calls).toEqual([[{ id: ID, command: '' }]])
+    expect(deskValue()).toBe('')
+    expect(shown('connect-desk-remove')).toBe(false)
+    expect(shown('connect-desk-saved')).toBe(false)
+  })
+
+  it('disables its controls while main asks, and a change from main never replaces what is being typed', async () => {
+    const api = connectBridge({ ...NONE, hub: hub('online', null, { deskCommand: COMMAND }) })
+    let release!: (value: Record<string, unknown>) => void
+    api.setDeskCommand.mockImplementation(() => new Promise((resolve) => { release = resolve }))
+    draw(api)
+    await flush()
+    type('connect-desk-command', 'mydesk studio {desk}')
+    api.set({ ...NONE, hub: hub('retrying', 'unreachable', { deskCommand: COMMAND }) })
+    await flush()
+    expect(deskValue()).toBe('mydesk studio {desk}')
+    saveDesk()
+    await flush()
+    expect([$<HTMLInputElement>('connect-desk-command')!.disabled, $<HTMLButtonElement>('connect-desk-save')!.disabled, $<HTMLButtonElement>('connect-desk-remove')!.disabled])
+      .toEqual([true, true, true])
+    release({ ok: false, reason: 'cancelled' })
+    await flush()
+    expect([$<HTMLInputElement>('connect-desk-command')!.disabled, $<HTMLButtonElement>('connect-desk-save')!.disabled]).toEqual([false, false])
+    expect(deskValue()).toBe('mydesk studio {desk}')
+  })
+
+  it('sets the label and the command as text', async () => {
+    const hostile = '<img src=x onerror=alert(1)>'
+    draw(connectBridge({ ...NONE, hub: hub('online', null, { label: hostile, deskCommand: `${hostile} {desk}` }) }))
+    await flush()
+    expect($('connect-desk')!.querySelector('img')).toBeNull()
+    expect(text('connect-desk-saved')).toBe(`Open desk appears on each session in ${hostile}’s Inbox.`)
+    expect(deskValue()).toBe(`${hostile} {desk}`)
   })
 })
 

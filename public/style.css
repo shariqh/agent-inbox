@@ -2397,6 +2397,15 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .sc-where { display: flex; min-width: 0; align-items: center; gap: 8px; overflow: hidden; color: var(--app-muted); font-size: 11.5px; white-space: nowrap; }
 .sc-worktree { flex: none; }
 .sc-place { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* #617 PR 4b: Open desk beside the place, on the hub's page shown from another Mac; a refusal's
+   sentence may wrap the line for its 6 seconds rather than be cut off */
+.desk-open { display: inline-flex; flex: none; align-items: baseline; gap: var(--sp-2); min-width: 0; }
+.desk-open-button { flex: none; padding: 0; border: 0; background: transparent; color: var(--app-accent); font: inherit; font-weight: 650; white-space: nowrap; cursor: pointer; }
+.desk-open-button:hover { text-decoration: underline; }
+.desk-open-button:disabled { opacity: .45; cursor: default; }
+.desk-open-button:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
+.desk-open-note { color: var(--app-text-soft); white-space: normal; }
+.sc-where:has(.desk-open-note:not([hidden])) { flex-wrap: wrap; white-space: normal; }
 .sc-branch { color: var(--app-text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 /* dashboard lanes design §3.3: the card counts its asks; the asks themselves are in Needs you */
 .sc-asking { align-self: flex-start; padding: var(--sp-1) var(--sp-2); border: 0; border-radius: 999px; background: color-mix(in srgb, var(--app-attention) 14%, transparent); color: var(--app-attention); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; }
@@ -3270,6 +3279,10 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 .connect-form, .connect-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-2) var(--sp-3); }
 .connect-form { margin: var(--sp-2) 0; }
 .connect-actions { margin-top: var(--sp-2); }
+.connect-desk { margin-top: var(--sp-4); }
+.connect-desk h4 { margin: 0 0 var(--sp-1); font-size: var(--fs-body); }
+.connect-desk-example code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+#connect-desk-command { width: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .connect-settings [hidden] { display: none; }
 .connect-field { display: grid; gap: var(--sp-1); }
 .connect-field label { color: var(--app-text-soft); font-size: var(--fs-meta); }

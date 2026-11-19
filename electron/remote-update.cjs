@@ -145,13 +145,14 @@ function createRemoteUpdateLink(options) {
     await update.installNow()
   }
 
+  /** True for a request not seen before, whether or not it starts anything. */
   function begin(request) {
-    if (request.id === lastRequest) return
+    if (request.id === lastRequest) return false
     lastRequest = request.id
     // main's own state decides, whatever the viewer let through
     const asked = summary()
     const update = current()
-    if (!asked.canStart || update === null) return
+    if (!asked.canStart || update === null) return true
     running = run(update, asked.newer).catch(() => {}).finally(() => {
       running = null
       changed()
@@ -161,6 +162,7 @@ function createRemoteUpdateLink(options) {
       .catch(() => null)
       .then((label) => options.notify({ label: typeof label === 'string' ? label : null, version: asked.newer }))
       .catch(() => {})
+    return true
   }
 
   function maybeCheck() {
@@ -181,8 +183,12 @@ function createRemoteUpdateLink(options) {
       do {
         again = false
         const answer = await report()
-        if (answer?.request) begin(answer.request)
-        else if (answer?.looked) maybeCheck()
+        if (answer?.request) {
+          // the viewer says "installing" since a new request: it hears main's own answer at once
+          if (begin(answer.request)) again = true
+        } else if (answer?.looked) {
+          maybeCheck()
+        }
       } while (again)
     })().catch(() => {}).finally(() => {
       reporting = null

@@ -278,6 +278,22 @@ describe('createRemoteUpdateLink: main and its viewer', () => {
     expect(controller.calls).toEqual(['downloadNow', 'installNow'])
   })
 
+  it('reports once more right after a new request, and never loops on a request it has seen', async () => {
+    const controller = fakeController(state('current'))
+    let fetches = 0
+    const link = createRemoteUpdateLink({
+      controller: () => controller, version: '2.14.1', base: BASE, ownerToken: OWNER_TOKEN,
+      fetch: async () => { fetches += 1; return new Response(JSON.stringify({ request: { id: '00000000000000aa', device: LAPTOP }, looked: false })) },
+      setupRunning: () => false, quitting: () => false, deviceLabel: async () => null, notify: () => {}, setInterval: () => 0, clearInterval: () => {},
+    })
+    await link.sync()
+    expect(fetches).toBe(2)
+    await link.sync()
+    expect(fetches).toBe(3)
+    // nothing newer here: the request starts nothing
+    expect(controller.calls).toEqual([])
+  })
+
   it('checks for a release when a device looked and nothing newer is known, at most once an hour', async () => {
     const { relay, controller, link, clock } = setup(state('idle'))
     await link.sync()

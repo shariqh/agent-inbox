@@ -90,6 +90,9 @@ const CHANNELS: Record<string, { allows: 'local page only' | 'hub view'; args: u
   'agent-inbox:connect-show': { allows: 'local page only', args: [ID] },
   // #617 PR 4b: the Open desk command, proposed by the owned local page only
   'agent-inbox:connect-desk-command': { allows: 'local page only', args: [{ id: ID, command: 'ssh -t studio {attach}' }] },
+  // #637: the hub's update, read and started by the owned local page only
+  'agent-inbox:connect-hub-update': { allows: 'local page only', args: [ID] },
+  'agent-inbox:connect-hub-update-start': { allows: 'local page only', args: [ID] },
   // the only four the hub view may use: its connection (label, state, version), Retry from the offline
   // file, and (#617 PR 4b) Open desk from the hub's own page
   'agent-inbox:desk-connection': { allows: 'hub view', args: [] },
@@ -278,6 +281,8 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     ['agent-inbox:chat-resume-available', []],
     ['agent-inbox:connect-view', []],
     ['agent-inbox:connect-show', [null]],
+    // #637: the harness's hub is online and its fetch answers an empty list, which reads as unreadable
+    ['agent-inbox:connect-hub-update', [ID]],
     ['agent-inbox:remote-entry', []],
   ])('%s does answer the owned local page, so the comparison above is meaningful', async (channel, args) => {
     const handler = main.handlers.get(channel)!
@@ -455,6 +460,10 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(desk).toContain("readShells: () => readFileSync('/etc/shells', 'utf8'),")
     const register = main.slice(main.indexOf('registerHubIpc({'), main.indexOf('})', main.indexOf('registerHubIpc({')))
     expect(register).toContain('deskOpen: deskOpenFor,')
+    // #637: the hub's update goes through the connection controller's hub fetch, never its own fetch
+    expect(register).toContain('hubUpdate: hubUpdateFor,')
+    expect(main).toContain('const hubUpdateFor = () => (remoteConnect === null ? null : (hubUpdate ??= createHubUpdate({ connect: () => remoteConnect })))')
+    expect(read('electron/hub-update.cjs')).not.toMatch(/\bfetch\(|globalThis\.fetch|safeStorage|deviceHeaderFor/)
     const confirm = main.slice(main.indexOf('async function confirmDeskCommand(win, command, label) {'), main.indexOf('\n}\n', main.indexOf('async function confirmDeskCommand(win, command, label) {')))
     expect(confirm).toContain('const text = deskConfirmation(command, label)')
     expect(confirm).toContain('if (text === null) return false')

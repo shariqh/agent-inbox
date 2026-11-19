@@ -1566,7 +1566,7 @@ function realConnect(confirmDeskCommand?: (command: string) => boolean) {
   })
 }
 
-function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | null; owned?: boolean; hubView?: unknown; deskOpen?: unknown } = {}) {
+function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | null; owned?: boolean; hubView?: unknown; deskOpen?: unknown; hubUpdate?: unknown } = {}) {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const owner = { id: 7 }
   const hubContents = { id: 8, isDestroyed: () => false }
@@ -1595,6 +1595,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
     connect: () => connect,
     hubView: () => hubView as never,
     ...(options.deskOpen === undefined ? {} : { deskOpen: () => options.deskOpen as never }),
+    ...(options.hubUpdate === undefined ? {} : { hubUpdate: () => options.hubUpdate as never }),
   })
   const local = { sender: owner, senderFrame: { url: 'http://127.0.0.1:4319/', parent: null } }
   const hubEvent = { sender: hubContents, senderFrame: { url: `${ORIGIN}/`, parent: null } }
@@ -1611,10 +1612,37 @@ describe('registerHubIpc', () => {
     // #617 PR 4b: desk-available, desk-open and connect-desk-command added deliberately
     expect([...w.handlers.keys()].sort()).toEqual([
       CONNECT_CHANNELS.connect, CONNECT_CHANNELS.forget, CONNECT_CHANNELS.show, CONNECT_CHANNELS.view, CONNECT_CHANNELS.deskCommand,
+      CONNECT_CHANNELS.hubUpdate, CONNECT_CHANNELS.hubUpdateStart,
       DESK_CHANNELS.connection, DESK_CHANNELS.retry, DESK_CHANNELS.available, DESK_CHANNELS.open,
     ].sort())
     expect([DESK_CHANNELS.available, DESK_CHANNELS.open, CONNECT_CHANNELS.deskCommand])
       .toEqual(['agent-inbox:desk-available', 'agent-inbox:desk-open', 'agent-inbox:connect-desk-command'])
+    // #637: added deliberately
+    expect([CONNECT_CHANNELS.hubUpdate, CONNECT_CHANNELS.hubUpdateStart]).toEqual(['agent-inbox:connect-hub-update', 'agent-inbox:connect-hub-update-start'])
+  })
+
+  // #637
+  it('connect-hub-update and connect-hub-update-start answer the owned local page only, with exactly one hub id', async () => {
+    const seen: string[] = []
+    const hubUpdate = {
+      state: async (id: string) => { seen.push(`state ${id}`); return { ok: true, phase: 'idle' } },
+      start: async (id: string) => { seen.push(`start ${id}`); return { ok: true } },
+    }
+    const w = ipcWorld({ hubUpdate })
+    expect(await w.call(CONNECT_CHANNELS.hubUpdate, w.local, '0123abcd')).toEqual({ ok: true, phase: 'idle' })
+    expect(await w.call(CONNECT_CHANNELS.hubUpdateStart, w.local, '0123abcd')).toEqual({ ok: true })
+    const stranger = { sender: { id: 99 }, senderFrame: { url: 'http://127.0.0.1:4319/', parent: null } }
+    for (const channel of [CONNECT_CHANNELS.hubUpdate, CONNECT_CHANNELS.hubUpdateStart]) {
+      for (const event of [w.hubEvent, w.offlineEvent, stranger]) expect(await w.call(channel, event, '0123abcd')).toEqual(UNAVAILABLE)
+      for (const args of [[], ['0123ABCD'], ['0123abcd', 'extra'], [{ id: '0123abcd' }], ['2.15.0'], [null]]) {
+        expect(await w.call(channel, w.local, ...args), JSON.stringify(args)).toEqual(UNAVAILABLE)
+      }
+    }
+    expect(seen).toEqual(['state 0123abcd', 'start 0123abcd'])
+    // without the module (off macOS, or before the controller exists) both answer unavailable
+    const bare = ipcWorld()
+    expect(await bare.call(CONNECT_CHANNELS.hubUpdate, bare.local, '0123abcd')).toEqual(UNAVAILABLE)
+    expect(await bare.call(CONNECT_CHANNELS.hubUpdateStart, bare.local, '0123abcd')).toEqual(UNAVAILABLE)
   })
 
   // #617 PR 4b

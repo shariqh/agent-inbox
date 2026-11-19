@@ -66,6 +66,9 @@ const CONNECT_CHANNELS = Object.freeze({
   show: 'agent-inbox:connect-show',
   // #617 PR 4b: the Open desk command, proposed by the owned local page; main confirms it natively
   deskCommand: 'agent-inbox:connect-desk-command',
+  // #637: the hub's update as the owned local page shows it, and the request to start it (electron/hub-update.cjs)
+  hubUpdate: 'agent-inbox:connect-hub-update',
+  hubUpdateStart: 'agent-inbox:connect-hub-update-start',
   // main to the owned local page only, with nothing in it
   changed: 'agent-inbox:connect-changed',
 })
@@ -933,7 +936,7 @@ function connectInput(args) {
  * the sender again; connect-desk-command proposes the Open desk command, which main stores only
  * after its native confirmation.
  */
-function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen = () => null }) {
+function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen = () => null, hubUpdate = () => null }) {
   function owned(channel, read, call) {
     ipcMain.handle(channel, async (event, ...args) => {
       const input = read(args)
@@ -972,6 +975,15 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen 
     }
     return result
   })
+
+  // #637: one hub id, the active hub's; the request names nothing else
+  const hubIdInput = (args) => (args.length === 1 && typeof args[0] === 'string' && HUB_ID.test(args[0]) ? args[0] : null)
+  for (const [channel, call] of [[CONNECT_CHANNELS.hubUpdate, 'state'], [CONNECT_CHANNELS.hubUpdateStart, 'start']]) {
+    owned(channel, hubIdInput, (_controller, id) => {
+      const update = hubUpdate()
+      return update === null ? { ...UNAVAILABLE } : update[call](id)
+    })
+  }
 
   // the hub's own page only: the offline file, the local page and a sub-frame get nothing
   const deskFor = (event) => {

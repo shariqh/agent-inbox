@@ -46,6 +46,7 @@ const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
 const { createRemoteConnect } = require('./remote-connect.cjs')
 const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
 const { createDeskOpen, deskConfirmation } = require('./desk-open.cjs')
+const { createHubUpdate } = require('./hub-update.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -837,6 +838,10 @@ const deskOpenFor = () => (remoteConnect === null || hubView === null ? null : (
   readShells: () => readFileSync('/etc/shells', 'utf8'),
   log: (line) => console.log(`[agent-inbox] ${line}`),
 })))
+// #637: the hub's update, read and started through the connection's hub fetch only (macOS: made once
+// the controller exists)
+let hubUpdate = null
+const hubUpdateFor = () => (remoteConnect === null ? null : (hubUpdate ??= createHubUpdate({ connect: () => remoteConnect })))
 registerHubIpc({
   ipcMain,
   settled: () => installBinding?.settled() ?? Promise.resolve(),
@@ -844,6 +849,7 @@ registerHubIpc({
   connect: () => remoteConnect,
   hubView: () => hubView,
   deskOpen: deskOpenFor,
+  hubUpdate: hubUpdateFor,
 })
 
 // #617 PR 4b: the only way an Open desk command is stored. The exact command, filled for an example

@@ -3,6 +3,7 @@
 // the .cjs.
 import type { Connection, RemoteConnect } from './remote-connect.cjs'
 import type { DeskOpen } from './desk-open.cjs'
+import type { HubUpdate } from './hub-update.cjs'
 
 export const INPUT_WINDOW_MS: 5000
 /** How long after `restore(id)` the hub may still be put on top by itself (#635). */
@@ -27,6 +28,8 @@ export const CONNECT_CHANNELS: Readonly<{
   view: 'agent-inbox:connect-view'; connect: 'agent-inbox:connect-connect'; forget: 'agent-inbox:connect-forget'; show: 'agent-inbox:connect-show'
   /** #617 PR 4b */
   deskCommand: 'agent-inbox:connect-desk-command'
+  /** #637 */
+  hubUpdate: 'agent-inbox:connect-hub-update'; hubUpdateStart: 'agent-inbox:connect-hub-update-start'
   changed: 'agent-inbox:connect-changed'
 }>
 
@@ -154,5 +157,7 @@ export interface HubIpcOptions {
   hubView: () => HubView | null
   /** #617 PR 4b: Open desk's handler (electron/desk-open.cjs), or null; null when left out. */
   deskOpen?: () => DeskOpen | null
+  /** #637: the hub's update (electron/hub-update.cjs), or null; null when left out. */
+  hubUpdate?: () => HubUpdate | null
 }
 export function registerHubIpc(options: HubIpcOptions): void

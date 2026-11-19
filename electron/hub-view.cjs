@@ -788,7 +788,6 @@ function createHubView(options) {
           return { ok: false, reason: 'not_ready' }
         }
         showing = id
-        wish = null
         report(id, true)
       }
       place()

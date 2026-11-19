@@ -116,8 +116,10 @@ describe('the strip that says whose Inbox is on screen', () => {
   // #617: the page forgets "go back to the other Mac's Inbox when Settings close" once that Inbox is on top again
   it('says which Inbox is on top at each answer from main, and nothing for an answer that is not one', async () => {
     const seen: Array<string | null> = []
+    // whether the page was still covered when the listener heard: This Mac is told only once it is not
+    const covered: boolean[] = []
     const api = connectBridge(view(null))
-    install(api, localDesk(), (id) => { seen.push(id) })
+    install(api, localDesk(), (id) => { seen.push(id); covered.push(document.querySelector('main')!.hasAttribute('inert')) })
     await flush()
     expect(seen).toEqual([null])
     api.set(view(ID))
@@ -125,6 +127,7 @@ describe('the strip that says whose Inbox is on screen', () => {
     api.set(view(null))
     await flush()
     expect(seen).toEqual([null, ID, null])
+    expect(covered).toEqual([false, true, false])
     // a stored Mac that is not the one named as showing is This Mac on top
     api.set(view('ffffffff'))
     await flush()

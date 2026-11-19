@@ -79,22 +79,44 @@ describe('Settings… chosen while another Mac’s Inbox is on top', () => {
     await bootApp(db, { viewer: { setupInfoPath: '/nonexistent/setup-info.json', stamp: async () => null as never } })
     await settle()
 
+    // Chromium ignores focus() on an inert element, and jsdom does not: record whether Settings
+    // were still under the strip's cover each time they were given the keyboard
+    const focusedFree: boolean[] = []
+    const realFocus = HTMLElement.prototype.focus
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, ...args: unknown[]) {
+      if (this.id === 'setup') focusedFree.push(this.closest('[inert]') === null)
+      return realFocus.apply(this, args as never)
+    })
+    const scrolled = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+
     // what main does for Settings… while the hub is on top: This Mac comes forward, then the page is told
     const settingsFromTheHub = async () => {
       api.set(view(ID))
       await settle()
       expect(strip()).not.toBeNull()
+      // main's order: show(null) tells the page, which asks view() again, and the toggle message
+      // arrives before that answer, while the strip still covers the page
       api.set(view(null))
+      toggleFromAppMenu(true)
+      expect(strip()).not.toBeNull()
       await settle()
       expect(strip()).toBeNull()
-      toggleFromAppMenu(true)
-      await settle()
     }
 
     // 1. Settings were closed: they open, and nothing is shown yet
     await settingsFromTheHub()
     expect(settingsOpen()).toBe(true)
     expect(api.show).not.toHaveBeenCalled()
+    // they get the keyboard once the page is no longer covered, not before
+    expect(focusedFree.at(-1)).toBe(true)
+    expect(document.activeElement).toBe(document.getElementById('setup'))
+    // once: a later answer from main does not take the keyboard back from what the person is on
+    document.getElementById('gear')!.focus()
+    const focusesBefore = focusedFree.length
+    api.set(view(null))
+    await settle()
+    expect(focusedFree).toHaveLength(focusesBefore)
+    expect(document.activeElement).toBe(document.getElementById('gear'))
 
     // 2. the shortcut closes them and the other Mac's Inbox is on top again
     key(',', { metaKey: true })
@@ -108,10 +130,14 @@ describe('Settings… chosen while another Mac’s Inbox is on top', () => {
     await settle()
     click(document.getElementById('gear'))
     expect(settingsOpen()).toBe(true)
+    // (the window was scrolled down in them: it stays where it is)
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 240 })
     await settingsFromTheHub()
     expect(settingsOpen()).toBe(true)
     await settingsFromTheHub()
     expect(settingsOpen()).toBe(true)
+    expect(scrolled).not.toHaveBeenCalled()
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 0 })
     // Escape closes them and goes back too
     key('Escape')
     await settle()

@@ -11,6 +11,7 @@
 // The peer list is shaped like a real `tailscale status --json` (Tailscale 1.102.4): hundreds of
 // tagged peers with `Tags` and another user's `UserID`, and one user peer with no `Tags` key.
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import fsPromises from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import remoteConnect from '../electron/remote-connect.cjs'
@@ -1205,6 +1206,54 @@ describe('setShown', () => {
     const again = await h.connect.connect({ address: HOST, code: CODE })
     expect((await h.connect.storedHub())?.shown).toBe(false)
     expect(readStore(h.filePath).hubs[idOf(again).id]!).not.toHaveProperty('shown')
+  })
+
+  it('writes under the store’s lock: a forget that starts while it is writing waits, and the hub stays forgotten', async () => {
+    let armed = false
+    let reached!: () => void
+    const atRename = new Promise<void>((resolve) => { reached = resolve })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    // the real file system, except that one rename onto the store waits for the test
+    const fsImpl = new Proxy(fsPromises, {
+      get(target, prop, receiver) {
+        if (prop !== 'rename') return Reflect.get(target, prop, receiver)
+        return async (from: string, to: string) => {
+          if (armed && to.endsWith('remote-connect.json')) {
+            armed = false
+            reached()
+            await gate
+          }
+          return target.rename(from, to)
+        }
+      },
+    })
+    const h = await connected({ fsImpl })
+    armed = true
+    const shown = h.connect.setShown(h.id, true)
+    // it has read the store, hub and all, and is about to write it back
+    await atRename
+    const forgotten = h.connect.forget(h.id)
+    // long enough for a forget that did not wait to finish, and so be overwritten
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    release()
+    expect(await shown).toEqual({ ok: true })
+    expect(await forgotten).toMatchObject({ ok: true })
+    expect(await h.connect.storedHub()).toBeNull()
+    expect(readStore(h.filePath).hubs).not.toHaveProperty(h.id)
+  })
+
+  it('answers too_large rather than write a file the next read would refuse', async () => {
+    const h = harness()
+    const base = { schema: 1, active: ID_A, hubs: { [ID_A]: entry() } }
+    const size = (doc: unknown) => Buffer.byteLength(JSON.stringify(doc, null, 2))
+    // four bytes under the limit: `"shown": true` does not fit
+    const doc = { ...base, pad: 'x'.repeat(64 * 1024 - size({ ...base, pad: '' }) - 4) }
+    writeStore(h.filePath, JSON.stringify(doc, null, 2))
+    expect(await h.connect.storedHub()).toMatchObject({ id: ID_A, shown: false })
+    const before = readFileSync(h.filePath, 'utf8')
+    expect(await h.connect.setShown(ID_A, true)).toEqual({ ok: false, reason: 'too_large' })
+    expect(readFileSync(h.filePath, 'utf8')).toBe(before)
   })
 
   it('never rejects: a file system that fails answers write_failed or not_found', async () => {

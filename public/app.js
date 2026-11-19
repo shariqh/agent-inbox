@@ -6383,7 +6383,10 @@ function initAgentSelect() {
 
 // which content panel is visible; the tab strip drives this in Task 8
 function showPanel(id) {
-  if (id !== 'setup') settingsFromHub = false
+  if (id !== 'setup') {
+    settingsFromHub = false
+    settingsFocusWhenUncovered = null
+  }
   const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   const panel = id === 'agent' ? 'agentPage' : id
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== panel
@@ -6418,6 +6421,17 @@ function settingsOpen() {
 // forward to show them. Closing them (the shortcut, the gear, Escape) shows that Inbox again. Going
 // anywhere else on this page, or that Inbox coming back on top by another way, forgets it.
 let settingsFromHub = false
+// What gets the keyboard once the strip no longer covers this page. When main's message arrives the
+// page is still inert under the strip, and focus() on an inert element does nothing; the strip
+// uncovers it a moment later, when main's answer to view() comes back (installHubStrip, onShowing).
+let settingsFocusWhenUncovered = null
+
+// no scroll: Settings left open underneath stay where the person had them
+function focusForSettings(element) {
+  element.tabIndex = -1
+  element.focus({ preventScroll: true })
+  settingsFocusWhenUncovered = element
+}
 
 async function showHubAgain() {
   const api = window.agentInboxConnect
@@ -6447,8 +6461,8 @@ function toggleSettings(fromHub) {
     // never a toggle: Settings left open under the other Mac's Inbox would close, and say nothing
     if (!settingsOpen()) showPanel('setup')
     settingsFromHub = true
-    // the keyboard was in the other Mac's view: it comes to Settings, as on the keyboard's own way in
-    focusKeyboardPanel('setup')
+    // the keyboard was in the other Mac's view: it comes to Settings
+    focusForSettings(document.getElementById('setup'))
     return
   }
   if (!closeSettings({ back: true })) showPanel('setup')
@@ -6459,9 +6473,14 @@ function openUpdates(fromHub) {
   if (!settingsOpen()) showPanel('setup')
   if (fromHub === true) settingsFromHub = true
   const section = document.getElementById('updates-settings')
-  if (!section) return
+  if (!section) {
+    if (fromHub === true) focusForSettings(document.getElementById('setup'))
+    return
+  }
   section.scrollIntoView({ block: 'center' })
   section.focus()
+  // under the strip that focus() did nothing: again once the page is uncovered
+  if (fromHub === true) settingsFocusWhenUncovered = section
   window.agentInboxUpdates?.check?.().catch(() => {})
 }
 
@@ -11782,7 +11801,19 @@ async function renderSetup() {
 // (public/hub-mode.js) and calls no route the hub's remote entry refuses. Made before renderSetup.
 const hubMode = installHubMode()
 // This Mac's own page draws whose Inbox is on screen while another Mac's is shown over it.
-installHubStrip({ onShowing: (id) => { if (id !== null) settingsFromHub = false } })
+installHubStrip({
+  onShowing: (id) => {
+    const waiting = settingsFocusWhenUncovered
+    settingsFocusWhenUncovered = null
+    if (id !== null) {
+      // the other Mac's Inbox is on top again by another way: closing Settings no longer goes back
+      settingsFromHub = false
+      return
+    }
+    // once: later answers leave the keyboard where the person has put it
+    if (waiting !== null && waiting.isConnected && settingsOpen()) waiting.focus({ preventScroll: true })
+  },
+})
 
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the

@@ -646,6 +646,20 @@ describe('createHubView: the Inbox that was on top when the app last quit', () =
     expect(late.hub.current()).toBeNull()
   })
 
+  it('a wish for another hub than the one whose view exists changes nothing and tells nobody', async () => {
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    const told = w.changes.mock.calls.length
+    const log = w.log.length
+    w.hub.restore('ffffffff')
+    expect(w.hub.current()).toBeNull()
+    expect(w.changes.mock.calls.length).toBe(told)
+    expect(w.log.length).toBe(log)
+    // and the built view's own hub can still be shown the ordinary way
+    expect(w.hub.show(ID)).toEqual({ ok: true, showing: ID })
+  })
+
   it('a destroyed view restores nothing', async () => {
     const w = world()
     w.connect.set(hubState('online'))

@@ -43,7 +43,8 @@ export function installHubStrip({
   documentRef = globalThis.document,
   setTimeout: later = (fn, ms) => globalThis.setTimeout(fn, ms),
   clearTimeout: cancel = (handle) => globalThis.clearTimeout(handle),
-  // told at each answer from main which Inbox is on top: the stored Mac's id, or null for This Mac
+  // told at each answer from main which Inbox is on top, after the page was covered or uncovered
+  // for it: the stored Mac's id, or null for This Mac
   onShowing = null,
 } = {}) {
   const api = connect()
@@ -130,21 +131,22 @@ export function installHubStrip({
   function paint(view) {
     const hub = view.hub
     const showing = hub && typeof view.showing === 'string' && view.showing === hub.id ? hub : null
+    if (showing === null) {
+      if (strip !== null) strip.remove()
+      uncover()
+    } else {
+      if (strip === null) build()
+      title.textContent = `Showing ${showing.label}’s Inbox`
+      word.textContent = stateWord(showing)
+      if (documentRef.body.firstElementChild !== strip) documentRef.body.prepend(strip)
+      cover()
+    }
+    // told last: for This Mac the page is no longer inert by now, so the listener may give it the keyboard
     try {
       if (typeof onShowing === 'function') onShowing(showing === null ? null : showing.id)
     } catch {
       // the strip is drawn whatever the listener does
     }
-    if (showing === null) {
-      if (strip !== null) strip.remove()
-      uncover()
-      return
-    }
-    if (strip === null) build()
-    title.textContent = `Showing ${showing.label}’s Inbox`
-    word.textContent = stateWord(showing)
-    if (documentRef.body.firstElementChild !== strip) documentRef.body.prepend(strip)
-    cover()
   }
 
   function readAgain() {

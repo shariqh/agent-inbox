@@ -98,8 +98,8 @@ function scriptName(tool, id, random) {
   return `${tool}-${id}-${random}.command`
 }
 
-// Old scripts of ours only: lstat, so a link or a folder is never followed or removed.
-function sweepScripts(dir, nowMs) {
+// Old scripts of ours only, by `pattern`: lstat, so a link or a folder is never followed or removed.
+function sweepScripts(dir, nowMs, pattern = SCRIPT_NAME) {
   let names = []
   try {
     names = fs.readdirSync(dir)
@@ -107,7 +107,7 @@ function sweepScripts(dir, nowMs) {
     return
   }
   for (const name of names) {
-    if (!SCRIPT_NAME.test(name)) continue
+    if (!pattern.test(name)) continue
     const file = path.join(dir, name)
     try {
       const stat = fs.lstatSync(file)
@@ -119,13 +119,15 @@ function sweepScripts(dir, nowMs) {
 }
 
 /**
- * Writes `text` to a new file `name` in `dir` and returns its path, or null. The
- * folder is made 0700 and must be a real directory this user owns (a wider mode
- * is tightened); the file is created with O_EXCL and O_NOFOLLOW at 0700, so an
- * existing name or a link is never written through. Old scripts are swept first.
+ * Writes `text` to a new file `name` in `dir` and returns its path, or null. `name` must match
+ * `pattern`, and only names matching `pattern` are swept. The folder is made 0700 and must be a
+ * real directory this user owns (a wider mode is tightened); the file is created with O_EXCL and
+ * O_NOFOLLOW at 0700, so an existing name or a link is never written through. Old scripts are
+ * swept first. #617 PR 4b: shared with Open desk (electron/desk-open.cjs), which passes its own
+ * pattern, so the two never sweep each other's files.
  */
-function writeChatScript({ dir, name, text, now = Date.now }) {
-  if (!path.isAbsolute(dir) || typeof name !== 'string' || !SCRIPT_NAME.test(name)) return null
+function writePrivateScript({ dir, name, text, pattern, now = Date.now }) {
+  if (!(pattern instanceof RegExp) || typeof dir !== 'string' || !path.isAbsolute(dir) || typeof name !== 'string' || !pattern.test(name)) return null
   let fd = null
   const file = path.join(dir, name)
   try {
@@ -134,7 +136,7 @@ function writeChatScript({ dir, name, text, now = Date.now }) {
     if (!folder.isDirectory() || folder.isSymbolicLink()) return null
     if (typeof process.getuid === 'function' && folder.uid !== process.getuid()) return null
     if ((folder.mode & 0o777) !== 0o700) fs.chmodSync(dir, 0o700)
-    sweepScripts(dir, now())
+    sweepScripts(dir, now(), pattern)
     const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants
     fd = fs.openSync(file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o700)
     fs.fchmodSync(fd, 0o700)
@@ -148,6 +150,11 @@ function writeChatScript({ dir, name, text, now = Date.now }) {
     }
     return null
   }
+}
+
+/** A chat resume script, by writePrivateScript with this module's own name pattern. */
+function writeChatScript({ dir, name, text, now = Date.now }) {
+  return writePrivateScript({ dir, name, text, pattern: SCRIPT_NAME, now })
 }
 
 /**
@@ -277,5 +284,5 @@ function registerChatResumeIpc({ ipcMain, platform, settled, isOwned, chatResume
 
 module.exports = {
   CHANNELS, CHAT_ID, CHAT_TOOLS, REOPEN_MS, SCRIPT_KEEP_MS, UNSAFE_PATH,
-  chatResumeRequest, holdsChat, chatResumeScript, createChatResume, registerChatResumeIpc, scriptName, writeChatScript,
+  chatResumeRequest, holdsChat, chatResumeScript, createChatResume, registerChatResumeIpc, scriptName, shellWord, writeChatScript, writePrivateScript,
 }

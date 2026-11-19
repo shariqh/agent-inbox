@@ -100,6 +100,8 @@ export interface HubView {
    * Else null, and nothing is used up.
    */
   takeGesture(event: unknown): string | null
+  /** #617 PR 4b: sends the hub's page the empty change message, so it asks again (after the Open desk command changed). */
+  pageChanged(): void
 }
 
 export interface HubViewOptions {

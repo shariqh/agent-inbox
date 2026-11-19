@@ -648,6 +648,21 @@ describe('createHubView: what the view shows', () => {
     expect(w.contents().loads).toEqual([`${ORIGIN}/`, OFFLINE_URL])
   })
 
+  // #617 PR 4b
+  it('pageChanged() tells the page with the same empty message, and does nothing with no view', async () => {
+    const empty = world()
+    expect(() => empty.hub.pageChanged()).not.toThrow()
+    const w = world()
+    w.connect.set(hubState('online'))
+    await settle()
+    const before = w.contents().sent.length
+    w.hub.pageChanged()
+    expect(w.contents().sent.slice(before)).toEqual([[DESK_CHANNELS.changed]])
+    w.hub.destroy()
+    w.hub.pageChanged()
+    expect(w.contents().sent.length).toBe(before + 1)
+  })
+
   it('tells the page on every change, with nothing in the message', async () => {
     const w = world()
     w.connect.set(hubState('online'))
@@ -1268,6 +1283,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
   const isOwned = vi.fn((event: { sender: unknown }) => (options.owned ?? true) && event.sender === owner)
   const shows: unknown[] = []
   const retries: unknown[] = []
+  const pageChanges: unknown[] = []
   const hubView = options.hubView === undefined
     ? {
         trusts: (event: unknown) => trustedDeskSender(event, { webContents: hubContents }, ORIGIN, OFFLINE_URL),
@@ -1276,6 +1292,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
         retry: async () => { retries.push(1); return { ok: true } },
         cleared: async () => {},
         takeGesture: () => null,
+        pageChanged: () => { pageChanges.push(1) },
       }
     : options.hubView
   const connect = options.connect === undefined ? realConnect() : options.connect
@@ -1291,7 +1308,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
   const hubEvent = { sender: hubContents, senderFrame: { url: `${ORIGIN}/`, parent: null } }
   const offlineEvent = { sender: hubContents, senderFrame: { url: OFFLINE_URL, parent: null } }
   const call = (channel: string, event: unknown, ...args: unknown[]) => handlers.get(channel)!(event, ...args)
-  return { handlers, call, local, hubEvent, offlineEvent, owner, hubContents, settled, isOwned, shows, retries, connect }
+  return { handlers, call, local, hubEvent, offlineEvent, owner, hubContents, settled, isOwned, shows, retries, connect, pageChanges }
 }
 
 const UNAVAILABLE = { available: false }
@@ -1384,8 +1401,21 @@ describe('registerHubIpc', () => {
       expect((await w.connect!.view()).hub?.deskCommand).toBeNull()
       expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x {desk} }' })).toEqual({ ok: false, reason: 'bad_command' })
       expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: 'ffffffff', command: 'x {desk}' })).toEqual({ ok: false, reason: 'not_found' })
+      expect(w.pageChanges).toEqual([])
       expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x {desk}' })).toEqual({ ok: true })
       expect((await w.call(CONNECT_CHANNELS.view, w.local) as { hub: { deskCommand: unknown } }).hub.deskCommand).toBe('x {desk}')
+      // the hub's page is told once per saved change, so it asks available() again without a reload
+      expect(w.pageChanges).toEqual([1])
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: '' })).toEqual({ ok: true })
+      expect(w.pageChanges).toEqual([1, 1])
+    })
+
+    it('a cancelled or refused command tells the hub’s page nothing', async () => {
+      const w = ipcWorld({ connect: realConnect(() => false) })
+      const connected = await w.connect!.connect({ address: HOST, code: '7K3QX-9M2PD' }) as { id: string }
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x {desk}' })).toEqual({ ok: false, reason: 'cancelled' })
+      expect(await w.call(CONNECT_CHANNELS.deskCommand, w.local, { id: connected.id, command: 'x' })).toEqual({ ok: false, reason: 'bad_command' })
+      expect(w.pageChanges).toEqual([])
     })
   })
 

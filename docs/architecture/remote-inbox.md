@@ -1376,8 +1376,9 @@ answer: "Run this in your terminal when you press Open desk?", the command fille
 `example-desk`, and "It runs on this Mac, in your login shell." Only **Save** stores it, under the
 store's lock and spreading the entry as `recordMachine` does, and only if the same hub (same device)
 is still active after the dialog; anything else is `cancelled`. The dialog is injected into
-`createRemoteConnect` as `confirmDeskCommand`: without it nothing is stored. A new pairing writes a
-new entry, without a command. `view().hub.deskCommand` shows the valid stored one to Settings; it
+`createRemoteConnect` as `confirmDeskCommand`: without it nothing is stored. A saved or removed
+command sends the hub's page the empty change message (`hubView.pageChanged()`), so a page already
+loaded asks `available()` again. A new pairing writes a new entry, without a command. `view().hub.deskCommand` shows the valid stored one to Settings; it
 never goes to the hub or its page.
 
 **Filling.** `fillDeskCommand(template, desk)` in `desk-open.cjs`. `{desk}` becomes the desk name,

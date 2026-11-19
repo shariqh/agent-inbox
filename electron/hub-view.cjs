@@ -777,6 +777,15 @@ function createHubView(options) {
       entry.lastInputAt = null
       return entry.id
     },
+    /**
+     * #617 PR 4b: tells the hub's page that something it asks about changed, with nothing in the
+     * message (the preload asks again through its checked channels), as a connection change does.
+     * Main calls it after the Open desk command was saved or removed, so a page already loaded
+     * learns whether to offer Open desk without a reload.
+     */
+    pageChanged() {
+      if (!destroyed && active !== null) tellPage(active)
+    },
     /** Resolves when the partitions being cleared are cleared, or after 5 seconds. */
     cleared: () => Promise.all([...clears]).then(() => undefined),
     trusts: (event) => (active === null ? null : trustedDeskSender(event, active.view, active.origin, offlineUrl)),
@@ -846,7 +855,18 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen 
     const view = hubView()
     return view === null ? { ...UNAVAILABLE } : view.show(id)
   })
-  owned(CONNECT_CHANNELS.deskCommand, deskCommandInput, (controller, input) => controller.setDeskCommand(input))
+  // a saved or removed command changes what the hub's page may offer: it is told, and asks again
+  owned(CONNECT_CHANNELS.deskCommand, deskCommandInput, async (controller, input) => {
+    const result = await controller.setDeskCommand(input)
+    if (result?.ok === true) {
+      try {
+        hubView()?.pageChanged?.()
+      } catch {
+        // a page that is going away asks again when it loads
+      }
+    }
+    return result
+  })
 
   // the hub's own page only: the offline file, the local page and a sub-frame get nothing
   const deskFor = (event) => {

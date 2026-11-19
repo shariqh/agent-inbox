@@ -665,12 +665,40 @@ function createRemoteConnect(options = {}) {
     }
   }
 
-  /** #617 PR 4b: the stored active hub's id, machine and valid Open desk command, read from the file: no Keychain, nothing sent. */
+  /**
+   * #635: remembers whether the hub's Inbox was the one the person had on top, so the next start can
+   * show it again. `id` must be the stored active hub (`not_found`). Written only when it changes, as
+   * `shown: true` on the hub's entry or no `shown` at all, under the store's lock. No Keychain,
+   * nothing sent; a forgotten or replaced hub takes it along with its entry.
+   */
+  async function setShown(id, shown) {
+    if (typeof id !== 'string' || !HUB_ID.test(id) || typeof shown !== 'boolean') return no('bad_request')
+    try {
+      return await locked.mutate(async () => {
+        const read = await readStore()
+        if (read.state !== 'ok' || read.active === null || read.active.id !== id) return no('not_found')
+        if (read.active.shown === shown) return { ok: true }
+        const { shown: _dropped, ...rest } = read.doc.hubs[id]
+        const entry = shown ? { ...rest, shown: true } : rest
+        const doc = { ...read.doc, hubs: { ...read.doc.hubs, [id]: entry } }
+        if (Buffer.byteLength(JSON.stringify(doc, null, 2)) > FILE_MAX) return no('too_large')
+        await locked.atomicWrite(doc)
+        return { ok: true }
+      })
+    } catch {
+      return no('write_failed')
+    }
+  }
+
+  /**
+   * The stored active hub's id, machine, valid Open desk command (#617 PR 4b) and whether its Inbox
+   * was the one on top (#635), read from the file: no Keychain, nothing sent.
+   */
   async function storedHub() {
     await locked.settled()
     const read = await readStore()
     const entry = read.state === 'ok' ? read.active : null
-    return entry === null ? null : { id: entry.id, machine: entry.machine, deskCommand: entry.deskCommand }
+    return entry === null ? null : { id: entry.id, machine: entry.machine, deskCommand: entry.deskCommand, shown: entry.shown }
   }
 
   /** The probes that are due, one after another, never two at once; a kick during one runs another after it. */
@@ -766,6 +794,7 @@ function createRemoteConnect(options = {}) {
     probeHub: safe(() => (stopped ? { ...STOPPED } : serial(probeActive)), failed),
     view: safe(view, () => ({ available: false, keychain: false, hub: null, problem: 'unreadable' })),
     setDeskCommand: safe(setDeskCommand, () => ({ ok: false, reason: 'write_failed' })),
+    setShown: safe(setShown, () => ({ ok: false, reason: 'write_failed' })),
     storedHub: safe(storedHub, null),
     connection: () => ({ ...current }),
     onConnection,

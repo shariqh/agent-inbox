@@ -125,8 +125,13 @@ export interface RemoteConnect {
    * any other valid command is stored only after confirmDeskCommand answered true; while that question is open every other call answers `busy`.
    */
   setDeskCommand(input: unknown): Promise<DeskCommandAnswer>
-  /** #617 PR 4b: the stored active hub's id, machine and valid Open desk command, from the file; null for none. */
-  storedHub(): Promise<{ id: string; machine: string | null; deskCommand: string | null } | null>
+  /**
+   * #635: remembers whether the stored active hub's Inbox was the one the person had on top. Written
+   * only when it changes; no Keychain, nothing sent.
+   */
+  setShown(id: string, shown: boolean): Promise<{ ok: true } | { ok: false; reason: 'bad_request' | 'not_found' | 'too_large' | 'write_failed' }>
+  /** The stored active hub's id, machine, valid Open desk command and whether its Inbox was on top (#635), from the file; null for none. */
+  storedHub(): Promise<{ id: string; machine: string | null; deskCommand: string | null; shown: boolean } | null>
   connection(): Connection
   /** Called with the new answer each time it changes; returns the unsubscribe function. */
   onConnection(callback: unknown): () => void

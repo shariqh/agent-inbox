@@ -471,6 +471,20 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(main).toContain("const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')")
   })
 
+  // #635: quitting with the hub's Inbox on top and opening the app again showed This Mac
+  it('stores whose Inbox the person chose, and restores the hub’s at start from the file alone', () => {
+    const view = main.slice(main.indexOf('hubView = createHubView({'), main.indexOf('const lostHub = createLostHubNotice({'))
+    expect(view).toContain('onChosen: (id, shown) => { void remoteConnect?.setShown(id, shown) },')
+    const restore = startRemote.indexOf('remoteConnect.storedHub().then((hub) => {')
+    expect(restore).toBeGreaterThan(-1)
+    expect(startRemote.slice(restore)).toContain('if (hub?.shown === true) hubView?.restore(hub.id)')
+    // asked before the controller starts, so the wish is there when the first view is built
+    expect(restore).toBeLessThan(startRemote.indexOf('remoteConnect.start()'))
+    // nothing else restores, and nothing at start asks for more than the file
+    expect(main.split('hubView?.restore(').length - 1).toBe(1)
+    expect(startRemote.slice(restore, startRemote.indexOf('remoteConnect.start()'))).not.toMatch(/safeStorage|view\(\)/)
+  })
+
   it('makes connect mode on macOS only, after the window exists, and starts it last', () => {
     expect(startRemote).toContain("if (process.platform !== 'darwin') return")
     // #617 PR 4b: the Open desk command is stored only through the native dialog on this window
@@ -529,7 +543,8 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     const updatesClick = menu.slice(menu.indexOf("label: 'Check for Updates…'"), menu.indexOf('const settings = {'))
     expect(updatesClick).toContain('openUpdatesWindow(win)')
     // #617 PR 3c: offered only while the hub may be shown, and only through the one guard (show)
-    expect(menu).toContain('hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })')
+    // #635: the View menu's pair is the person's choice of Inbox, so it is remembered
+    expect(menu).toContain('hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id, true) })')
     // the zoom items lay the hub view out again, at the local page's new zoom
     expect(menu).toContain('...zoomMenuItems({ focused: () => webContents.getFocusedWebContents() ?? win.webContents, after: () => hubView?.layout() })')
     expect(menu).not.toContain("{ role: 'zoomIn' }")
@@ -576,6 +591,6 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(apply.indexOf('hubView?.ownerChanged()')).toBeGreaterThan(apply.indexOf('fileLinkWebContentsId = files ? setupWindowWebContentsId : null'))
     // nothing else in main shows a hub: every path is hubView.show(id), behind mayShow
     // (#617 PR 4a: the hub watch's notification click and the lost-hub notice's click are two more, by id)
-    expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id', 'id', 'id'])
+    expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id', 'id', 'id, true'])
   })
 })

@@ -338,6 +338,8 @@ function activeOf(doc) {
     id: doc.active, origin: entry.origin, label: entry.label, node: entry.node, machine: entry.machine ?? null, device: entry.device, secret: entry.secret,
     // #617 PR 4b: a stored command that fails its rule is never run nor shown as saved
     deskCommand: validDeskCommand(entry.deskCommand) ? entry.deskCommand : null,
+    // #635: this hub's Inbox was the one the person had on top; only exactly `true` says so
+    shown: entry.shown === true,
   }
 }
 

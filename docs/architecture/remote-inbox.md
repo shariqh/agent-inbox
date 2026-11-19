@@ -1067,6 +1067,19 @@ and the page cancel its repeats. Before this, the hub's page handled the key its
 button or link had focus, and the menu item toggled This Mac's Settings, which closed them when
 they had been left open underneath.
 
+**After a restart (#635).** Whose Inbox the person chose is stored with the connection:
+`shown: true` on the hub's entry in `remote-connect.json` (`remoteConnect.setShown`, written only
+when it changes, read back by `storedHub()` with no Keychain). The hub view reports it through
+`onChosen`. The hub's Inbox on top always counts. This Mac counts only when the person picked it:
+the View menu's **This Mac** and the strip's, which arrive as `show(null, true)`. So
+**Settings…**, **Check for Updates…** and a click on one of This Mac's notifications leave what is
+stored alone, and an update's restart comes back to the hub. At start, main reads `storedHub()`
+and calls `hubView.restore(id)` when it says `shown`. The view then comes on top by itself as soon
+as it exists and this window's page is the owned one, with the hub's page or, when the hub is out
+of reach, the offline page. Any `show(null)` before that gives the restore up, and so does a
+minute passing (`RESTORE_WINDOW_MS`), so a view that is slow to appear never jumps over what the
+person is doing.
+
 Since PR 3c, the hub's view is on top only while this window's own page can draw the strip, and
 `current()` names a hub only when its view really is on top:
 

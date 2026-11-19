@@ -980,7 +980,7 @@ describe('setDeskCommand', () => {
     expect(asked).toEqual([COMMAND])
     expect(readStore(h.filePath).hubs[h.id]!.deskCommand).toBe(COMMAND)
     expect((await h.connect.view()).hub?.deskCommand).toBe(COMMAND)
-    expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: COMMAND })
+    expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: COMMAND, shown: false })
   })
 
   it('stores nothing when the dialog is cancelled, throws, answers something that is not true, or is not there', async () => {
@@ -1001,7 +1001,7 @@ describe('setDeskCommand', () => {
     expect(await h.connect.setDeskCommand({ id: h.id, command: '' })).toEqual({ ok: true })
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(readStore(h.filePath).hubs[h.id]!).not.toHaveProperty('deskCommand')
-    expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: null })
+    expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: null, shown: false })
   })
 
   it('never shows the dialog for an invalid command, a wrong id or a request that is not { id, command }', async () => {
@@ -1106,7 +1106,7 @@ describe('setDeskCommand', () => {
       const view = await h.connect.view()
       expect(view.problem, JSON.stringify(bad)).toBeNull()
       expect(view.hub).toMatchObject({ id: h.id, deskCommand: null })
-      expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: null })
+      expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: null, shown: false })
     }
   })
 
@@ -1130,6 +1130,89 @@ describe('setDeskCommand', () => {
     const id = idOf(again).id
     expect(readStore(h.filePath).hubs[id]!).not.toHaveProperty('deskCommand')
     expect((await h.connect.view()).hub?.deskCommand).toBeNull()
+  })
+})
+
+// #635: which Inbox the person had on top is stored with the connection, so the next start shows it again
+describe('setShown', () => {
+  it('stores that the hub’s Inbox was on top, and storedHub() says so; choosing This Mac removes it', async () => {
+    const h = await connected()
+    expect(readStore(h.filePath).hubs[h.id]!).not.toHaveProperty('shown')
+    expect((await h.connect.storedHub())?.shown).toBe(false)
+    expect(await h.connect.setShown(h.id, true)).toEqual({ ok: true })
+    expect(readStore(h.filePath).hubs[h.id]!.shown).toBe(true)
+    expect(await h.connect.storedHub()).toEqual({ id: h.id, machine: 'studio', deskCommand: null, shown: true })
+    expect(await h.connect.setShown(h.id, false)).toEqual({ ok: true })
+    expect(readStore(h.filePath).hubs[h.id]!).not.toHaveProperty('shown')
+    expect((await h.connect.storedHub())?.shown).toBe(false)
+  })
+
+  it('keeps everything else in the entry, and a later command keeps it', async () => {
+    const h = await connected({ confirmDeskCommand: () => true })
+    await h.connect.setDeskCommand({ id: h.id, command: 'ssh -t studio {attach}' })
+    const before = readStore(h.filePath)
+    await h.connect.setShown(h.id, true)
+    expect(readStore(h.filePath)).toEqual({ ...before, hubs: { [h.id]: { ...before.hubs[h.id]!, shown: true } } })
+    await h.connect.setDeskCommand({ id: h.id, command: '' })
+    expect(readStore(h.filePath).hubs[h.id]!.shown).toBe(true)
+    // the page-visible view never carries it
+    expect((await h.connect.view()).hub).not.toHaveProperty('shown')
+  })
+
+  it('writes nothing when nothing changes', async () => {
+    const h = await connected()
+    const text = () => readFileSync(h.filePath, 'utf8')
+    const stamp = () => statSync(h.filePath, { bigint: true }).mtimeNs
+    const [first, at] = [text(), stamp()]
+    expect(await h.connect.setShown(h.id, false)).toEqual({ ok: true })
+    expect([text(), stamp()]).toEqual([first, at])
+    await h.connect.setShown(h.id, true)
+    const [second, then] = [text(), stamp()]
+    expect(await h.connect.setShown(h.id, true)).toEqual({ ok: true })
+    expect([text(), stamp()]).toEqual([second, then])
+  })
+
+  it('answers not_found for another hub or none, and bad_request for anything that is not (id, boolean)', async () => {
+    const h = await connected()
+    const before = readFileSync(h.filePath, 'utf8')
+    expect(await h.connect.setShown(ID_B, true)).toEqual({ ok: false, reason: 'not_found' })
+    for (const args of [[h.id, 'yes'], [h.id, 1], [h.id], [null, true], ['nope', true], [7, true], []]) {
+      expect(await (h.connect.setShown as (...given: unknown[]) => Promise<unknown>)(...args), JSON.stringify(args)).toEqual({ ok: false, reason: 'bad_request' })
+    }
+    expect(readFileSync(h.filePath, 'utf8')).toBe(before)
+    const empty = harness()
+    expect(await empty.connect.setShown(ID_A, true)).toEqual({ ok: false, reason: 'not_found' })
+    expect(await empty.connect.storedHub()).toBeNull()
+  })
+
+  it('reads only exactly true from the file, and asks the Keychain for nothing', async () => {
+    for (const [stored, shown] of [[true, true], ['true', false], [1, false], [null, false], [{}, false]] as const) {
+      const h = harness()
+      writeStore(h.filePath, { schema: 1, active: ID_A, hubs: { [ID_A]: entry({ shown: stored }) } })
+      expect((await h.connect.storedHub())?.shown, JSON.stringify(stored)).toBe(shown)
+      expect(await h.connect.setShown(ID_A, true)).toEqual({ ok: true })
+      expect(await h.connect.setShown(ID_A, false)).toEqual({ ok: true })
+      expect(h.safeStorage.calls).toEqual({ encrypt: 0, decrypt: 0 })
+      expect(h.fetch.calls).toHaveLength(0)
+    }
+  })
+
+  it('a forgotten hub takes it along, and a new pairing starts without it', async () => {
+    const h = await connected()
+    await h.connect.setShown(h.id, true)
+    expect(await h.connect.forget(h.id)).toMatchObject({ ok: true })
+    expect(await h.connect.storedHub()).toBeNull()
+    const again = await h.connect.connect({ address: HOST, code: CODE })
+    expect((await h.connect.storedHub())?.shown).toBe(false)
+    expect(readStore(h.filePath).hubs[idOf(again).id]!).not.toHaveProperty('shown')
+  })
+
+  it('never rejects: a file system that fails answers write_failed or not_found', async () => {
+    const fsImpl = new Proxy({}, { get: () => async () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }) } })
+    const h = harness({ fsImpl })
+    const answer = await h.connect.setShown(ID_A, true)
+    expect(answer.ok).toBe(false)
+    expect(['write_failed', 'not_found']).toContain((answer as { reason: string }).reason)
   })
 })
 

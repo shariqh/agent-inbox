@@ -20,6 +20,9 @@ const { pathToFileURL } = require('node:url')
 const { DEVICE_HEADER, hubHref } = require('./remote-connect.cjs')
 
 const HUB_ID = /^[0-9a-f]{8}$/
+// how long after restore(id) the hub may still be put on top by itself (#635): a view that takes
+// longer to appear than this would jump over whatever the person is doing by then
+const RESTORE_WINDOW_MS = 60_000
 const DEVICE_HEADER_NAME = DEVICE_HEADER.toLowerCase()
 const INPUT_WINDOW_MS = 5_000
 const ONLINE_EVERY_MS = 10_000
@@ -307,6 +310,14 @@ function createHubView(options) {
   // the hub being made: its id, while its origin is read and its session set up
   let pending = null
   let showing = null
+  // #635: the hub to put on top by itself once its view exists and may be shown (the Inbox that was
+  // on top when the app last quit), and until when; given up by any show(null), and after the window
+  let wish = null
+  let wishUntil = 0
+  // a show() was asked in this run: a restore that arrives after it does nothing
+  let moved = false
+  // what was last reported through onChosen, as `<hub id>:<shown>`, so each change is reported once
+  let reported = null
   let destroyed = false
   let epoch = 0
   // the session of the last view, kept after the window closes so will-quit can write it
@@ -332,6 +343,31 @@ function createHubView(options) {
     } catch {
       // a listener that throws stops nothing
     }
+  }
+
+  /** #635: tells the caller (main stores it with the connection) whose Inbox the person has chosen, once per change. */
+  function report(hubId, shown) {
+    const key = `${hubId}:${shown}`
+    if (reported === key) return
+    reported = key
+    try {
+      options.onChosen?.(hubId, shown)
+    } catch {
+      // what is on top does not depend on it being stored
+    }
+  }
+
+  /** #635: the wish, when its hub's view exists, may be shown, and the window has not passed. Sets `showing`; the caller places and tells. */
+  function granted() {
+    if (wish === null || destroyed) return false
+    if (!(clock() <= wishUntil)) {
+      wish = null
+      return false
+    }
+    if (active === null || active.id !== wish || !mayShow()) return false
+    showing = wish
+    wish = null
+    return true
   }
 
   async function configure(ses, origin) {
@@ -543,6 +579,8 @@ function createHubView(options) {
     pending = null
     kept = ses
     win.contentView.addChildView(view)
+    // #635: the Inbox that was on top when the app last quit is on top from the view's first moment
+    granted()
     layout()
     place()
     render(connect.connection())
@@ -722,10 +760,20 @@ function createHubView(options) {
   sweep().catch(() => {})
 
   return Object.freeze({
-    show(id) {
+    /**
+     * `chosen` (#635): exactly true when the person picked this Inbox (the View menu, the strip's
+     * This Mac). The hub on top is always reported through onChosen; This Mac only when chosen, so
+     * Settings…, Check for Updates… and a notification click leave what is stored alone.
+     */
+    show(id, chosen = false) {
       if (destroyed) return { ok: false, reason: 'destroyed' }
+      moved = true
       if (id === null) {
+        // the hub This Mac was picked over: the connection's, or the one still waiting to be restored
+        const over = activeHub(connect.connection())?.id ?? wish
         showing = null
+        wish = null
+        if (chosen === true && over !== null) report(over, false)
       } else {
         if (typeof id !== 'string' || !HUB_ID.test(id)) return { ok: false, reason: 'bad_id' }
         const hub = activeHub(connect.connection())
@@ -740,10 +788,27 @@ function createHubView(options) {
           return { ok: false, reason: 'not_ready' }
         }
         showing = id
+        wish = null
+        report(id, true)
       }
       place()
       changed()
       return { ok: true, showing }
+    },
+    /**
+     * #635: puts this hub's Inbox on top by itself once its view exists and may be shown, within a
+     * minute. For the start of the app only: after any show() in this run it does nothing. The
+     * caller read from the store that this Inbox was on top, so nothing is reported for it.
+     */
+    restore(id) {
+      if (destroyed || moved || typeof id !== 'string' || !HUB_ID.test(id)) return
+      wish = id
+      wishUntil = clock() + RESTORE_WINDOW_MS
+      reported = `${id}:true`
+      if (granted()) {
+        place()
+        changed()
+      }
     },
     /** The hub whose view is really on top, else null: never one being built or rebuilt. */
     current: () => (showing !== null && active !== null && active.id === showing ? showing : null),
@@ -756,6 +821,8 @@ function createHubView(options) {
         showing = null
         place()
       }
+      // #635: the page became the owned one after the view was built
+      if (granted()) place()
       changed()
     },
     reload() {
@@ -891,7 +958,8 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen 
   })
   owned(CONNECT_CHANNELS.show, (args) => (args.length === 1 && (args[0] === null || shortText(args[0], 64)) ? { id: args[0] } : null), (_controller, { id }) => {
     const view = hubView()
-    return view === null ? { ...UNAVAILABLE } : view.show(id)
+    // #635: the page's own show is the person's choice (the strip's This Mac), so it is remembered
+    return view === null ? { ...UNAVAILABLE } : view.show(id, true)
   })
   // a saved or removed command changes what the hub's page may offer: it is told, and asks again
   owned(CONNECT_CHANNELS.deskCommand, deskCommandInput, async (controller, input) => {
@@ -955,6 +1023,7 @@ module.exports = {
   DESK_CHANNELS,
   HUB_STRIP_HEIGHT,
   INPUT_WINDOW_MS,
+  RESTORE_WINDOW_MS,
   insetFor,
   allowNavigation,
   allowPermission,

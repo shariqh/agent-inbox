@@ -5,6 +5,8 @@ import type { Connection, RemoteConnect } from './remote-connect.cjs'
 import type { DeskOpen } from './desk-open.cjs'
 
 export const INPUT_WINDOW_MS: 5000
+/** How long after `restore(id)` the hub may still be put on top by itself (#635). */
+export const RESTORE_WINDOW_MS: 60000
 /** #617 PR 3c: the strip's height in the local page's CSS pixels; the view starts insetFor(zoom) window pixels below the top. */
 export const HUB_STRIP_HEIGHT: 36
 /** The view's top inset in window pixels: HUB_STRIP_HEIGHT times the local page's zoom factor, rounded (1 for a bad factor). */
@@ -76,7 +78,12 @@ export interface HubView {
    * window's page is not the one the app owns, so it could not draw the strip. `not_ready`: no view
    * exists or is being built for it (one is started).
    */
-  show(id: unknown): { ok: true; showing: string | null } | { ok: false; reason: 'bad_id' | 'not_found' | 'destroyed' | 'busy' | 'not_owned' | 'not_ready' }
+  show(id: unknown, chosen?: boolean): { ok: true; showing: string | null } | { ok: false; reason: 'bad_id' | 'not_found' | 'destroyed' | 'busy' | 'not_owned' | 'not_ready' }
+  /**
+   * #635: puts this hub's Inbox on top by itself once its view exists and may be shown, within
+   * RESTORE_WINDOW_MS. For the start of the app: after any show() in this run it does nothing.
+   */
+  restore(id: unknown): void
   /** The id of the hub whose view is really on top, or null: never one being built. */
   current(): string | null
   /** Whether the hub may be shown now: `mayShow()`. */
@@ -134,6 +141,8 @@ export interface HubViewOptions {
   backgroundColor?: () => string
   /** The Settings shortcut (Cmd+, or Ctrl+,) pressed in the hub view: it reaches neither the hub's page nor the menu. */
   onSettingsKey?: () => void
+  /** #635: whose Inbox the person has chosen, once per change: the hub on top (true), or This Mac picked over it (false). */
+  onChosen?: (hubId: string, shown: boolean) => void
 }
 export function createHubView(options: HubViewOptions): HubView
 

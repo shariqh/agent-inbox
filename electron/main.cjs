@@ -857,6 +857,8 @@ function startRemoteConnect(win) {
     readPartitions: () => readdirSync(path.join(app.getPath('userData'), 'Partitions')),
     // the Settings shortcut pressed in the hub view never reaches the menu: the same thing from here
     onSettingsKey: () => showSettings(win),
+    // #635: whose Inbox the person chose is stored with the connection, for the next start
+    onChosen: (id, shown) => { void remoteConnect?.setShown(id, shown) },
   })
   // #617 PR 4a: one notice when the hub stays out of reach; its click shows the hub's offline page
   const lostHub = createLostHubNotice({
@@ -888,6 +890,11 @@ function startRemoteConnect(win) {
   powerMonitor.on('resume', woke)
   powerMonitor.on('unlock-screen', woke)
   watchOnline({ isOnline: () => net.isOnline(), onBack: () => { lostHub.awake(); kick() } })
+  // #635: the Inbox that was on top when the app last quit comes back once its view is ready. Read
+  // from the file alone: no Keychain, nothing sent
+  remoteConnect.storedHub().then((hub) => {
+    if (hub?.shown === true) hubView?.restore(hub.id)
+  }).catch(() => {})
   remoteConnect.start()
 }
 
@@ -1323,7 +1330,7 @@ function installApplicationMenu(win) {
   }
   // #617 PR 3b: This Mac and <the hub's label>, a radio pair, only while a hub exists; PR 3c: and only
   // while it may be shown (this window's page is the owned one, which draws the strip)
-  const hubItems = hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id) })
+  const hubItems = hubMenuItems({ connection: hubView?.canShow() ? remoteConnect?.connection() : null, showing: hubView?.current() ?? null, show: (id) => hubView?.show(id, true) })
   const viewMenu = hubItems.length === 0
     ? { role: 'viewMenu' }
     : {

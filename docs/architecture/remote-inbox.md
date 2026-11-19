@@ -1050,6 +1050,18 @@ or from `agentInboxConnect.show`. An id other than the active hub's is refused. 
 Mac first. The window title is `Agent Inbox — <label>` while the
 hub's view is on top. Focus moves to the view that comes forward.
 
+**Settings… while the hub is on top.** Settings is on This Mac's page, so **Settings…** brings that
+page forward (`showSettings` in `main.cjs`, `openSettings` in `hub-view.cjs`) and sends
+`agent-inbox:toggle-settings` with `true` when the hub was on top. The page then opens Settings
+instead of toggling them, and closing them with the shortcut, the gear or Escape calls
+`agentInboxConnect.show(<hub id>)`, so the hub's Inbox is on top again. Choosing a tab or a project
+on This Mac's page, or the hub coming back on top by another way, forgets that. The shortcut
+(Cmd+, or Ctrl+,) does this wherever the keyboard is: in the hub's view, `before-input-event` takes
+it before the hub's page and before the menu and calls `showSettings`; on This Mac's page under the
+strip, the strip stops it without cancelling it, so the menu item acts. Before this, the hub's page
+handled the key itself unless a button or link had focus, and the menu item toggled This Mac's
+Settings, which closed them when they had been left open underneath.
+
 Since PR 3c, the hub's view is on top only while this window's own page can draw the strip, and
 `current()` names a hub only when its view really is on top:
 

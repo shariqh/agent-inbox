@@ -44,7 +44,7 @@ const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
 const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
 const { createRemoteConnect } = require('./remote-connect.cjs')
-const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
+const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
 const { createDeskOpen, deskConfirmation } = require('./desk-open.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
@@ -853,6 +853,8 @@ function startRemoteConnect(win) {
     mayShow: () => fileLinkWebContentsId !== null && fileLinkWebContentsId === win.webContents.id,
     backgroundColor: themeBackgroundColor,
     readPartitions: () => readdirSync(path.join(app.getPath('userData'), 'Partitions')),
+    // the Settings shortcut pressed in the hub view never reaches the menu: the same thing from here
+    onSettingsKey: () => showSettings(win),
   })
   // #617 PR 4a: one notice when the hub stays out of reach; its click shows the hub's offline page
   const lostHub = createLostHubNotice({
@@ -1292,6 +1294,15 @@ function createWindow() {
 
 nativeTheme.on('updated', () => syncThemeChrome())
 
+// Settings…, from the menu or from the shortcut pressed in the hub view (#617). Settings is on This
+// Mac's page, so it comes forward first. The page hears whether the hub was on top: then it opens
+// Settings instead of toggling them, and shows the hub again when they are closed.
+function showSettings(win) {
+  openSettings(hubView, (fromHub) => {
+    if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings', fromHub)
+  })
+}
+
 function installApplicationMenu(win) {
   // both live on This Mac's page, so it comes forward first (#617 PR 3b; openUpdatesWindow does it for updates)
   const updates = {
@@ -1305,8 +1316,7 @@ function installApplicationMenu(win) {
     label: 'Settings…',
     accelerator: 'CommandOrControl+,',
     click() {
-      hubView?.show(null)
-      if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings')
+      showSettings(win)
     },
   }
   // #617 PR 3b: This Mac and <the hub's label>, a radio pair, only while a hub exists; PR 3c: and only

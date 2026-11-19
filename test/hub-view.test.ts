@@ -19,7 +19,7 @@ import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const {
   CONNECT_CHANNELS, DESK_CHANNELS, HUB_STRIP_HEIGHT, allowNavigation, insetFor, zoomMenuItems, allowPermission, createHubView, deskConnection, hubMenuItems, mayOpenExternally,
-  partitionFor, registerHubIpc, sendHeaders, trustedDeskSender, watchOnline, windowTitle,
+  openSettings, partitionFor, registerHubIpc, sendHeaders, trustedDeskSender, watchOnline, windowTitle,
 } = hubViewModule
 const { createRemoteConnect } = remoteConnect
 const { createDeskOpen } = deskOpenModule
@@ -423,7 +423,7 @@ const settle = async () => {
 const hubState = (state: 'online' | 'retrying' | 'refused', reason: string | null = null, extra: Partial<Conn> = {}): Conn =>
   ({ mode: 'hub', id: ID, label: 'studio', state, reason, version: '2.12.0', ...extra }) as Conn
 
-interface WorldOptions { owned?: boolean; noGate?: boolean; now?: () => number; origin?: string; isPackaged?: boolean; partitions?: () => string[]; stored?: string | null; problem?: string }
+interface WorldOptions { owned?: boolean; noGate?: boolean; now?: () => number; origin?: string; isPackaged?: boolean; partitions?: () => string[]; stored?: string | null; problem?: string; onSettingsKey?: () => void }
 
 function world(options: WorldOptions = {}) {
   const electron = fakeElectron()
@@ -451,6 +451,7 @@ function world(options: WorldOptions = {}) {
     // #617 PR 3c: whether this window's page is the one the app owns, so it can draw the strip
     ...(options.noGate ? {} : { mayShow: () => gate.owned }),
     backgroundColor: () => '#101214',
+    ...(options.onSettingsKey === undefined ? {} : { onSettingsKey: options.onSettingsKey }),
   })
   const view = () => electron.views.at(-1)!
   const contents = () => view().webContents
@@ -463,6 +464,109 @@ const navEvent = (url: string, isMainFrame = true) => {
   const event = { url, isMainFrame, defaultPrevented: false, preventDefault() { event.defaultPrevented = true } }
   return event
 }
+
+// The Settings shortcut pressed while the hub's page has the keyboard. The page would handle it
+// itself only when focus is not on a button or a link, and the Settings… menu item got it otherwise,
+// so one key did two different things. Main takes it before the page and before the menu.
+describe('createHubView: the Settings shortcut pressed in the hub view', () => {
+  const press = (input: Record<string, unknown> = {}) => {
+    const event = { defaultPrevented: false, preventDefault() { event.defaultPrevented = true } }
+    return { event, input: { type: 'keyDown', key: ',', meta: true, control: false, alt: false, shift: false, isAutoRepeat: false, ...input } }
+  }
+  async function shownWith(onSettingsKey: () => void) {
+    const w = world({ onSettingsKey })
+    w.connect.set(hubState('online'))
+    await settle()
+    w.hub.show(ID)
+    return w
+  }
+
+  it('is taken from the page and the menu, and handed to onSettingsKey once', async () => {
+    const asked = vi.fn()
+    const w = await shownWith(asked)
+    for (const input of [{ meta: true }, { meta: false, control: true }]) {
+      const { event, input: sent } = press(input)
+      w.contents().emit('before-input-event', event, sent)
+      expect(event.defaultPrevented, JSON.stringify(input)).toBe(true)
+    }
+    expect(asked).toHaveBeenCalledTimes(2)
+    expect(asked.mock.calls).toEqual([[], []])
+  })
+
+  it('a held key is kept from the page but asks only once', async () => {
+    const asked = vi.fn()
+    const w = await shownWith(asked)
+    const first = press()
+    w.contents().emit('before-input-event', first.event, first.input)
+    const held = press({ isAutoRepeat: true })
+    w.contents().emit('before-input-event', held.event, held.input)
+    expect(held.event.defaultPrevented).toBe(true)
+    expect(asked).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['a comma alone', { meta: false }],
+    ['with Shift', { shift: true }],
+    ['with Option', { alt: true }],
+    ['another key', { key: '.' }],
+    ['the key going up', { type: 'keyUp' }],
+    ['a key that is not text', { key: 7 }],
+  ])('leaves %s to the page', async (_name, input) => {
+    const asked = vi.fn()
+    const w = await shownWith(asked)
+    const { event, input: sent } = press(input)
+    w.contents().emit('before-input-event', event, sent)
+    expect(event.defaultPrevented).toBe(false)
+    expect(asked).not.toHaveBeenCalled()
+  })
+
+  it('still counts as input, and a caller that throws or was not given stops nothing', async () => {
+    const w = await shownWith(() => { throw new Error('boom') })
+    w.contents().focused = true
+    const { event, input } = press()
+    expect(() => w.contents().emit('before-input-event', event, input)).not.toThrow()
+    expect(event.defaultPrevented).toBe(true)
+    const nav = navEvent('https://elsewhere.example.com/a')
+    w.contents().emit('will-navigate', nav, nav.url)
+    expect(w.opened).toEqual(['https://elsewhere.example.com/a'])
+    // no onSettingsKey at all: the key is still kept from the page, so it never does the page's own thing
+    const bare = world()
+    bare.connect.set(hubState('online'))
+    await settle()
+    const again = press()
+    expect(() => bare.contents().emit('before-input-event', again.event, again.input)).not.toThrow()
+    expect(again.event.defaultPrevented).toBe(true)
+    // an input with nothing in it (as the older tests send) is only counted
+    expect(() => bare.contents().emit('before-input-event', {}, { type: 'keyDown' })).not.toThrow()
+    expect(() => bare.contents().emit('before-input-event', {}, undefined)).not.toThrow()
+  })
+})
+
+describe('openSettings: Settings… and the Settings shortcut', () => {
+  it('reads whether the hub is on top before This Mac comes forward, then tells the page', () => {
+    const log: string[] = []
+    const view = {
+      on: ID as string | null,
+      current() { log.push('current'); return view.on },
+      show(id: string | null) { log.push(`show ${id}`); view.on = id; return { ok: true } },
+    }
+    const sent: boolean[] = []
+    openSettings(view as never, (fromHub: boolean) => { log.push('send'); sent.push(fromHub) })
+    expect(log).toEqual(['current', 'show null', 'send'])
+    expect(sent).toEqual([true])
+    // This Mac was already on top: a plain toggle
+    openSettings(view as never, (fromHub: boolean) => { sent.push(fromHub) })
+    expect(sent).toEqual([true, false])
+  })
+
+  it('with no hub view (not macOS) it only tells the page, and a view that throws changes nothing', () => {
+    const sent: boolean[] = []
+    openSettings(null as never, (fromHub: boolean) => { sent.push(fromHub) })
+    openSettings(undefined as never, (fromHub: boolean) => { sent.push(fromHub) })
+    openSettings({ current() { throw new Error('gone') }, show() { throw new Error('gone') } } as never, (fromHub: boolean) => { sent.push(fromHub) })
+    expect(sent).toEqual([false, false, false])
+  })
+})
 
 describe('createHubView: the view and its session', () => {
   it('sets the session up before anything loads: direct proxy, header handler, permissions, downloads', async () => {

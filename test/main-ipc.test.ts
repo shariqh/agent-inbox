@@ -433,7 +433,7 @@ describe('electron/main.cjs wires the hub view (source)', () => {
 
   it('requires the two modules by destructuring, so the dead-module guard sees them', () => {
     expect(main).toContain("const { createRemoteConnect } = require('./remote-connect.cjs')")
-    expect(main).toContain("const { CONNECT_CHANNELS, createHubView, hubMenuItems, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')")
+    expect(main).toContain("const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')")
   })
 
   it('makes connect mode on macOS only, after the window exists, and starts it last', () => {
@@ -478,9 +478,18 @@ describe('electron/main.cjs wires the hub view (source)', () => {
 
   it('shows This Mac before Settings… and Check for Updates…, and adds the hub pair to the View menu', () => {
     const menu = main.slice(main.indexOf('function installApplicationMenu(win)'), main.indexOf('function initializeUpdateController()'))
-    const settingsClick = menu.slice(menu.indexOf("label: 'Settings…'"))
-    expect(settingsClick.indexOf('hubView?.show(null)')).toBeGreaterThan(-1)
-    expect(settingsClick.indexOf('hubView?.show(null)')).toBeLessThan(settingsClick.indexOf("win.webContents.send('agent-inbox:toggle-settings')"))
+    // Settings… goes through showSettings: openSettings (hub-view.cjs, tested there) shows This Mac
+    // first, then the page hears whether the hub was on top
+    const settingsClick = menu.slice(menu.indexOf("label: 'Settings…'"), menu.indexOf('const hubItems ='))
+    expect(settingsClick).toContain('showSettings(win)')
+    expect(settingsClick).not.toContain('toggle-settings')
+    const showSettings = main.slice(main.indexOf('function showSettings(win)'), main.indexOf('function installApplicationMenu(win)'))
+    expect(showSettings).toContain('openSettings(hubView, (fromHub) => {')
+    expect(showSettings).toContain("if (!win.isDestroyed()) win.webContents.send('agent-inbox:toggle-settings', fromHub)")
+    // the same thing for the shortcut pressed in the hub view, which never reaches the menu
+    const view = main.slice(main.indexOf('hubView = createHubView({'), main.indexOf('const lostHub = createLostHubNotice({'))
+    expect(view).toContain('onSettingsKey: () => showSettings(win),')
+    expect(main.split("'agent-inbox:toggle-settings'").length - 1).toBe(1)
     // Check for Updates… goes through openUpdatesWindow, which shows This Mac first (tested above)
     const updatesClick = menu.slice(menu.indexOf("label: 'Check for Updates…'"), menu.indexOf('const settings = {'))
     expect(updatesClick).toContain('openUpdatesWindow(win)')

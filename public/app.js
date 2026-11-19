@@ -6383,6 +6383,7 @@ function initAgentSelect() {
 
 // which content panel is visible; the tab strip drives this in Task 8
 function showPanel(id) {
+  if (id !== 'setup') settingsFromHub = false
   const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   const panel = id === 'agent' ? 'agentPage' : id
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== panel
@@ -6413,15 +6414,42 @@ function settingsOpen() {
   return !document.getElementById('setup').hidden
 }
 
-function closeSettings({ restoreFocus = false } = {}) {
+// #617: Settings… was chosen while another Mac's Inbox was on top, so main brought This Mac's page
+// forward to show them. Closing them (the shortcut, the gear, Escape) shows that Inbox again. Going
+// anywhere else on this page, or that Inbox coming back on top by another way, forgets it.
+let settingsFromHub = false
+
+async function showHubAgain() {
+  const api = window.agentInboxConnect
+  if (!api || typeof api.view !== 'function' || typeof api.show !== 'function') return
+  try {
+    const view = await api.view()
+    const hub = view !== null && typeof view === 'object' && view.available === true ? view.hub : null
+    if (hub !== null && typeof hub === 'object' && typeof hub.id === 'string') await api.show(hub.id)
+  } catch {
+    // This Mac stays on screen
+  }
+}
+
+// `back`: this close is the person closing Settings, not a move to somewhere else on this page
+function closeSettings({ restoreFocus = false, back = false } = {}) {
   if (!settingsOpen()) return false
+  const toHub = back && settingsFromHub
   selectTab(activeTab)
   if (restoreFocus) document.getElementById('gear').focus()
+  if (toHub) void showHubAgain()
   return true
 }
 
-function toggleSettings() {
-  if (!closeSettings()) showPanel('setup')
+// `fromHub` is exactly true only from main (electron/setup-preload.cjs); a click passes its event
+function toggleSettings(fromHub) {
+  if (fromHub === true) {
+    // never a toggle: Settings left open under the other Mac's Inbox would close, and say nothing
+    if (!settingsOpen()) showPanel('setup')
+    settingsFromHub = true
+    return
+  }
+  if (!closeSettings({ back: true })) showPanel('setup')
 }
 
 function openUpdates() {
@@ -10265,7 +10293,7 @@ function initKeys() {
     // actual lightbox) wins via keyAction's own ladder below (deckOpen is
     // checked first, ahead of 'expanded'/clearSelection). The session panel is
     // its own Esc consumer (its keydown stops propagation).
-    if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true })) {
+    if (e.key === 'Escape' && !triageDeck && closeSettings({ restoreFocus: true, back: true })) {
       e.preventDefault()
       e.stopImmediatePropagation()
       return
@@ -11744,7 +11772,7 @@ async function renderSetup() {
 // (public/hub-mode.js) and calls no route the hub's remote entry refuses. Made before renderSetup.
 const hubMode = installHubMode()
 // This Mac's own page draws whose Inbox is on screen while another Mac's is shown over it.
-installHubStrip()
+installHubStrip({ onShowing: (id) => { if (id !== null) settingsFromHub = false } })
 
 // ── init ────────────────────────────────────────────────────────────────────
 // Canonical order for the finished app; later tasks add their one line at the

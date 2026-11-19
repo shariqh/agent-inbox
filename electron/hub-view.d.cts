@@ -52,6 +52,15 @@ export function windowTitle(connection: Connection | null | undefined, showing: 
 export interface HubMenuItem { label: string; type: 'radio'; checked: boolean; click: () => void }
 /** The View menu's This Mac and <label> pair, or none with no hub. */
 export function hubMenuItems(input: { connection: Connection | null | undefined; showing: string | null; show: (id: string | null) => unknown }): HubMenuItem[]
+
+/**
+ * What Settings… does, from the menu or from the shortcut pressed in the hub view: This Mac comes
+ * forward, and `send` hears whether the hub was on top before it did.
+ */
+export function openSettings(
+  hubView: { current(): string | null; show(id: string | null): unknown } | null | undefined,
+  send: (fromHub: boolean) => void,
+): void
 /** Calls `onBack` when `isOnline()` turns from false to true, read every `intervalMs` (10 s by default). */
 export function watchOnline(input: {
   isOnline: () => boolean
@@ -123,6 +132,8 @@ export interface HubViewOptions {
   mayShow?: () => boolean
   /** The view's opaque background, set before it is added (this window's own). */
   backgroundColor?: () => string
+  /** The Settings shortcut (Cmd+, or Ctrl+,) pressed in the hub view: it reaches neither the hub's page nor the menu. */
+  onSettingsKey?: () => void
 }
 export function createHubView(options: HubViewOptions): HubView
 

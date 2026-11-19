@@ -169,6 +169,33 @@ function windowTitle(connection, showing) {
   return hub !== null && showing === hub.id ? `Agent Inbox — ${hub.label}` : 'Agent Inbox'
 }
 
+/**
+ * The Settings shortcut as the page reads it (public/app.js, initKeys): Cmd+, or Ctrl+, going down,
+ * with no Option or Shift. Pressed in the hub view it must not reach the hub's page, which would open
+ * its own short Settings unless a button or link had focus, when the Settings… menu item got it
+ * instead: one key, two results.
+ */
+function settingsKey(input) {
+  return input !== null && typeof input === 'object' && input.type === 'keyDown' && input.key === ',' &&
+    (input.meta === true || input.control === true) && input.alt !== true && input.shift !== true
+}
+
+/**
+ * What Settings… does, from the menu or from the shortcut pressed in the hub view. Settings is on
+ * This Mac's page, so that page comes forward. `send(fromHub)` tells it whether the hub was on top:
+ * then it opens Settings instead of toggling them, and shows the hub again when they are closed.
+ */
+function openSettings(hubView, send) {
+  let fromHub = false
+  try {
+    fromHub = (hubView?.current() ?? null) !== null
+    hubView?.show(null)
+  } catch {
+    fromHub = false
+  }
+  send(fromHub)
+}
+
 /** The View menu's This Mac and <label> items, a radio pair, only while a hub exists. */
 function hubMenuItems({ connection, showing, show }) {
   const hub = activeHub(connection)
@@ -260,6 +287,8 @@ function createHubView(options) {
   const isPackaged = options.isPackaged !== false
   const readPartitions = options.readPartitions ?? (() => [])
   const setTimeoutFn = options.setTimeout ?? setTimeout
+  // the Settings shortcut pressed in the hub view: main does what the Settings… menu item does
+  const onSettingsKey = typeof options.onSettingsKey === 'function' ? options.onSettingsKey : null
   // #617 PR 3c: the one guard every way of showing the hub goes through. True only while this
   // window's page is the one the app owns, which alone hears agentInboxConnect and draws the strip;
   // false by default, so a caller that does not say never shows the hub.
@@ -381,8 +410,17 @@ function createHubView(options) {
     contents.on('will-navigate', (event) => guard(entry, event, true))
     contents.on('will-frame-navigate', (event) => guard(entry, event, event?.isMainFrame === true))
     contents.on('will-redirect', (event) => guard(entry, event, event?.isMainFrame === true))
-    contents.on('before-input-event', () => {
+    contents.on('before-input-event', (event, input) => {
       entry.lastInputAt = clock()
+      // the Settings shortcut never reaches the hub's page or the menu: one press, one result
+      if (!settingsKey(input)) return
+      try {
+        event.preventDefault()
+        // a held key repeats: kept from the page too, asked once
+        if (input.isAutoRepeat !== true) onSettingsKey?.()
+      } catch {
+        // the key is still kept from the page
+      }
     })
     contents.on('input-event', (_event, input) => {
       if (PRESSES.has(input?.type)) entry.lastInputAt = clock()
@@ -924,6 +962,7 @@ module.exports = {
   deskConnection,
   hubMenuItems,
   mayOpenExternally,
+  openSettings,
   partitionFor,
   registerHubIpc,
   sendHeaders,

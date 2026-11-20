@@ -56,6 +56,9 @@ const DESK_CHANNELS = Object.freeze({
   // #617 PR 4b: Open desk, from the hub's own page only (electron/desk-open.cjs)
   available: 'agent-inbox:desk-available',
   open: 'agent-inbox:desk-open',
+  // #634: a card's file, opened as a copy on this Mac, from the hub's own page only (electron/hub-files.cjs)
+  filesAvailable: 'agent-inbox:desk-files-available',
+  openFile: 'agent-inbox:desk-open-file',
   // main to the hub view only, with nothing in it: the preload asks `connection` again
   changed: 'agent-inbox:desk-changed',
 })
@@ -934,9 +937,10 @@ function connectInput(args) {
  * file. #617 PR 4b: desk-available and desk-open answer only the top frame on the hub's own page
  * (never the offline file), and pass the call to `deskOpen()` (electron/desk-open.cjs), which checks
  * the sender again; connect-desk-command proposes the Open desk command, which main stores only
- * after its native confirmation.
+ * after its native confirmation. #634: desk-files-available and desk-open-file the same way, passed to
+ * `hubFiles()` (electron/hub-files.cjs).
  */
-function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen = () => null, hubUpdate = () => null }) {
+function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen = () => null, hubUpdate = () => null, hubFiles = () => null }) {
   function owned(channel, read, call) {
     ipcMain.handle(channel, async (event, ...args) => {
       const input = read(args)
@@ -1010,6 +1014,36 @@ function registerHubIpc({ ipcMain, settled, isOwned, connect, hubView, deskOpen 
     if (desk === null) return { ok: false, reason: 'unavailable' }
     try {
       return await desk.open(event, args)
+    } catch {
+      return { ok: false, reason: 'failed' }
+    }
+  })
+
+  // #634: the same sender rule as Open desk; the handler checks it again
+  const filesFor = (event) => {
+    try {
+      const view = hubView()
+      const files = hubFiles()
+      return view !== null && files !== null && view.trusts(event) === 'hub' ? files : null
+    } catch {
+      return null
+    }
+  }
+  ipcMain.handle(DESK_CHANNELS.filesAvailable, async (event, ...args) => {
+    const files = args.length === 0 ? filesFor(event) : null
+    if (files === null) return { files: false }
+    try {
+      const answer = await files.available(event, args)
+      return { files: answer?.files === true }
+    } catch {
+      return { files: false }
+    }
+  })
+  ipcMain.handle(DESK_CHANNELS.openFile, async (event, ...args) => {
+    const files = filesFor(event)
+    if (files === null) return { ok: false, reason: 'unavailable' }
+    try {
+      return await files.open(event, args)
     } catch {
       return { ok: false, reason: 'failed' }
     }

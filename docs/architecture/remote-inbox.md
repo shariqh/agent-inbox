@@ -41,7 +41,13 @@ paths:
   - "test/remote-update-link.test.ts"
   - "electron/hub-update.cjs"
   - "test/hub-update.test.ts"
-applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts,electron/attention-watch.cjs,test/attention-watch.test.ts,electron/desk-open.cjs,test/desk-open.test.ts,public/desk-open.js,test/dom/desk-open.test.ts,src/remote-update.ts,test/remote-update.test.ts,test/remote-update-link.test.ts,electron/hub-update.cjs,test/hub-update.test.ts"
+  - "src/remote-file.ts"
+  - "test/remote-file.test.ts"
+  - "electron/hub-files.cjs"
+  - "test/hub-files.test.ts"
+  - "public/hub-files.js"
+  - "test/dom/hub-files.test.ts"
+applyTo: "src/viewer-remote.ts,src/remote-pair.ts,test/viewer-remote.test.ts,test/remote-routes.test.ts,test/remote-setting.test.ts,test/remote-pair.test.ts,electron/remote-*.cjs,test/serve-state.test.ts,test/remote-entry-settings.test.ts,test/remote-entry-restart.test.ts,test/remote-connect.test.ts,electron/hub-view.cjs,electron/remote-offline.*,test/hub-view.test.ts,test/remote-preload.test.ts,test/remote-offline.test.ts,test/main-ipc.test.ts,test/remote-entry-ipc.test.ts,test/remote-words.test.ts,public/remote-settings.js,public/remote-words.js,test/dom/settings-remote.test.ts,public/connect-settings.js,public/hub-strip.js,public/hub-mode.js,test/dom/settings-connect.test.ts,test/dom/hub-strip.test.ts,test/dom/hub-strip-keys.test.ts,test/dom/hub-strip-deck-keys.test.ts,test/dom/hub-mode.test.ts,electron/attention-watch.cjs,test/attention-watch.test.ts,electron/desk-open.cjs,test/desk-open.test.ts,public/desk-open.js,test/dom/desk-open.test.ts,src/remote-update.ts,test/remote-update.test.ts,test/remote-update-link.test.ts,electron/hub-update.cjs,test/hub-update.test.ts,src/remote-file.ts,test/remote-file.test.ts,electron/hub-files.cjs,test/hub-files.test.ts,public/hub-files.js,test/dom/hub-files.test.ts"
 ---
 
 # Remote entry: one Inbox from every device (#617)
@@ -55,7 +61,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 `paths`/`applyTo` globs above; anyone else should read it before changing the remote entry.
 Later PRs add their files to the globs.
 
-## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c, PR 4a, PR 4b, #637)
+## What is built (PR 2a, PR 2b, PR 2c, PR 2d, PR 2e, PR 3a, PR 3b, PR 3c, PR 4a, PR 4b, #637, #634)
 
 - `src/viewer-remote.ts`: the setting reader, the gate, the allowlist and the listener.
 - `src/remote-pair.ts` (PR 2b): the pairing code, `POST /api/remote/pair` and the device write,
@@ -97,6 +103,9 @@ Later PRs add their files to the globs.
   `src/remote-update.ts` and main's `electron/remote-update.cjs`; on the connecting Mac,
   `electron/hub-update.cjs` and a block in `public/connect-settings.js` ("Updating the hub from
   another Mac", below).
+- #634: opening a card's file from the connecting Mac. On the hub, the read-only route
+  `src/remote-file.ts`; on the connecting Mac, `electron/hub-files.cjs` and the page's
+  `public/hub-files.js` ("Opening a card's files from another Mac", below).
 
 ## What is not built yet
 
@@ -211,7 +220,8 @@ Messaging a session is allowed: that is the owner's accepted risk (design §3.2)
 `/api/remote/pair` is not on the list: it is served by the guarded app itself and reached only
 through step 7. Nor are `GET` and `POST /api/remote/update` (#637): they are `GUARDED_ROUTES`,
 served by the guarded app itself after every step of the gate, the device's included; step 9 lets
-exactly those two through besides `REMOTE_ROUTES`.
+exactly those through besides `REMOTE_ROUTES`. #634 adds a third, `GET /api/remote/file`, the same
+way (below).
 
 The gate allows by concrete path, so the same test also asks Hono which handlers it would run for a
 sample path of each allowed pattern, on the app as the entry wraps it (`guardRemoteApp`): exactly the
@@ -1632,6 +1642,185 @@ the notification), `test/hub-update.test.ts`, `test/hub-view.test.ts` and `test/
 Not checked without the real app: an update started from the connecting Mac end to end, the native
 notification, macOS's behaviour while the bundle is replaced with nobody at the hub, and how long
 the connecting Mac takes to see the hub again.
+
+## Opening a card's files from another Mac (#634)
+
+A card's file links name paths on the hub, which do not exist on the connecting Mac. There, a
+listed document in a card's Links strip gets **Open a copy on this Mac** beside **Copy path**: main
+fetches the file from the hub, saves a private copy and opens it with the person's default app. No
+preview in the app, no editing, no upload; the text of items and plan rows only, never a message or
+a row's earlier steps. Both Macs need this release: the hub serves the route and draws the
+button, the connecting app fetches.
+
+**The hub's route** (`src/remote-file.ts`). `GET /api/remote/file` is a `GUARDED_ROUTES` entry,
+served by the guarded app after the whole gate (a paired device's secret, step 8), never by the
+wrapped app and not on the loopback app. It is the first route that returns file contents. The
+handler refuses a request with no matched device (403), a `HEAD`, a body, or any other method, and
+then checks in order, each refusal `{ ok: false, reason }` with one word and nothing else:
+
+1. `bad_request` (400): the raw target is exactly the path and a query of exactly `kind` (`item`
+   or `row`), `id` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`) and `path`, each once, in any order. `path`
+   is canonical unpadded base64url of strict UTF-8, because the gate refuses `%` anywhere in a
+   target, so a path with a space or a non-ASCII letter could not travel as plain text. The decoded
+   path is absolute (`/…`) or `~/…`, at most 4,096 characters, with no control character and no
+   empty, `.` or `..` segment. Nothing is decoded further: `%2e` is three characters of a name.
+2. `not_linked` (404): the entity exists (`getItem`, or `getBoardRowWithPlan`, a new reader for a
+   row of an active or archived plan with its plan: every plan the remote routes show) and its card
+   draws the path as a file link. "Linked" has no rule of its own: the hub runs the page's scanner,
+   `cardLinks` from `public/link-strip.js` (the Links strip's model, which reads the card's
+   agent-written fields through `public/structured-text.js` and `public/links.js`), on the item
+   against itself or the row against its plan, with no link index, and accepts the request only
+   when its path is exactly the `path` of one of the found links of kind `file` that is absolute or
+   starts with `~/`. A repo-relative link (one that needs the card's recorded folder) is not served.
+   The fields are an item's title, detail, context, next step, impact, next-after, outcome, option
+   labels and details; a row's label, note and the same others; never a reply, an annotation or a
+   row's history. An unknown entity reads the same as an unlinked path. A `~/…` path is the hub
+   user's home (`os.homedir()` in `src/viewer-server.ts`). The scanner is imported by
+   `src/remote-file.ts` only, which `src/viewer-remote.ts` and `src/viewer-server.ts` reach and the
+   stdio MCP server never does (`test/prstate.test.ts`), so that server's import graph is unchanged.
+   What the scanner turns into an absolute or `~/` file link is therefore what a paired device may
+   ask for: a path that starts with `~/` or with `/` and one of the roots `Applications`, `Library`,
+   `Network`, `System`, `Users`, `Volumes`, `etc`, `home`, `media`, `mnt`, `nix`, `opt`, `private`,
+   `root`, `snap`, `srv`, `tmp`, `usr`, `var` or `workspaces`; made of letters, digits, combining
+   marks, `.`, `_`, `~`, `@`, `%`, `+`, `-` and `/`; after the start of the text, whitespace or one of
+   `` ( [ { " ' ` « “ ‘ , ; = ``; ending at the end, whitespace, a closing mark, or a sentence mark
+   (`. , ; : ! ? …`) followed by one of those, with trailing dots dropped and an optional
+   `:line`, `:line:column` or `:line-line` after it; in plain text, backticks or a Markdown link
+   target, never in a fenced block, glued to a word, in angle brackets or as a `file://` URL.
+3. `not_a_document` (415): the path is under `~/` or one of the allowed roots (`ALLOWED_ROOTS`:
+   `/Users/`, `/tmp/`, `/private/tmp/`, `/var/folders/`, `/private/var/folders/`), so
+   system locations (`/etc`, `/private/etc`, `/Library`, `/System`, `/Applications`, `/usr`, `/opt`,
+   the rest of `/var`) and volumes (`/Volumes`: a path on a network or removable volume can hang the
+   hub's viewer, which serves everything else) stay on the hub, and such a link keeps Copy path and
+   the line that it opens only on the other Mac; its name ends in one of `.md .markdown .txt .log .json .yaml .yml
+   .csv .tsv .pdf .png .jpg .jpeg .gif .webp`, compared without case (a name that is only an
+   extension is not one); and no segment of the path starts with `.`: a hidden file or folder
+   (`~/.ssh`, `~/.config`, `.git/…`, `.env.json`) stays on the hub. The route's own form rule has
+   already refused an empty, `.` or `..` segment.
+4. The file (`openLinkedFile`): `realpath` resolves every link (a missing or looping one is
+   `not_found`, 404; any other error `unreadable`, 422); the resolved path must again be under an
+   allowed root or the hub user's real home folder (so `/tmp/x.md`, which resolves to
+   `/private/tmp/x.md`, is served, and a link in the home folder to `/etc/…` is not) and have no
+   hidden segment, else it is `not_found`, the word a missing target gets, so a refusal never says
+   whether a target outside the rule exists; inside the rule its name must again be listed
+   (`not_a_document`). It is then opened with `O_NONBLOCK` and, on macOS, `O_NOFOLLOW_ANY` (value
+   `0x20000000`, not in `fs.constants`; the kernel refuses it together with `O_NOFOLLOW`, so it
+   replaces it), which fails with `ELOOP` on a link in ANY component of the resolved path: a folder
+   swapped for a link after the check (possible in world-writable places such as `/tmp`) is
+   `not_found` instead of widening what is served. Other platforms keep `O_NOFOLLOW` (the last
+   component only); the remote entry runs on macOS only. Type and size come from `fstat` on the
+   opened descriptor alone: a regular file (`not_found`: a folder, a pipe) of at most 25 MB
+   (`too_large`, 413). The earlier `lstat` and the device-and-inode comparison are gone: every rule
+   is on the resolved path string, so another regular file at that same path cannot change an
+   outcome, and a link at the path fails the open.
+
+At most two files are served at once by a hub (`FILE_SLOTS`). Right after the request's form is
+accepted, a third answers `busy` (429) before the card or the file system is read. A slot is held
+while the file is open and given back when the response ends, the reader cancels, the client
+disconnects, or 120 seconds after the response started (`FILE_TIME_MS`), when the stream is
+destroyed, the socket cut and the descriptor closed. The connecting Mac passes the hub's `busy` on
+as its own word, so the page shows its existing "One moment" sentence.
+
+Only after steps 1 to 3 does the route touch the file system, so no answer says whether a path
+outside the rule exists. Nothing is logged and nothing is written on the hub.
+
+The answer is `200` with `Content-Type: application/octet-stream`, `Content-Disposition: attachment;
+filename="<name>"` (the path's last segment in ASCII letters, digits, `.`, `_` and `-`, no leading
+dot, at most 120 characters), `Content-Length` (the size `fstat` gave), `X-Content-Type-Options:
+nosniff` and `Cache-Control: no-store`, plus the gate's own headers and marker. The body is streamed
+in 64 KiB reads from fixed positions (`fileStream`). Before the chunk that completes the length goes
+out, one more byte is asked for: a file that grew, like one that shrank or failed to read, errors
+the stream with fewer bytes sent than promised, and the route destroys the socket, so the client
+sees the response cut off. So a file that grows while read fails whether or not it passes 25 MB.
+
+**The connecting Mac's main** (`electron/hub-files.cjs`, made on first use once the connection
+controller and the hub view exist, macOS only). The hub's page asks through two new members of the
+sealed view's bridge, `agentInboxDesk.filesAvailable()` and `agentInboxDesk.openFile({ kind, id,
+path })` (`electron/remote-preload.cjs`; the preload checks the shape and rebuilds every answer), on
+the channels `agent-inbox:desk-files-available` and `agent-inbox:desk-open-file`, which
+`registerHubIpc` answers only for the hub view's top frame on the hub's own page, as Open desk's.
+`filesAvailable()` is `{ files: true }` for that frame, on macOS, while the connection has a hub
+base. `openFile` runs these checks in order:
+
+1. The sender (`unavailable`), then the request is exactly `{ kind, id, path }` with a path by the
+   hub's form rule (`bad_request`), then the hub's own document rule: `~/` or an allowed root, a
+   listed name and no hidden segment (`not_a_document`). None of these use a press or log anything.
+2. A fresh key press or click in the view, used up by this open (`no_gesture`), as Open desk's.
+3. At most one open a second and twenty a minute, never two at once (`busy`).
+4. Day-old copies are swept (below). Main fetches `<hub>/api/remote/file?kind=…&id=…&path=<base64url>`
+   through `remoteConnect.hubFetch()` only, with a 60-second `timeoutMs` (the hub fetch now takes a
+   caller's longer timeout, up to 2 minutes; 5 seconds stays the default). A failed fetch, or an
+   answer without the remote entry's marker, is `unreachable`. A 403 is `old_hub` when the
+   connection's probed version is older than 2.16.0 (`FILES_FROM`), else `refused`. Any other
+   non-200 passes on the hub's word when it is one of its seven (the six refusals and `busy`), else `failed`.
+5. A 200 must be exactly `application/octet-stream` with a decimal `Content-Length` (`failed`) of
+   at most 25 MB (`too_large`). The copy's name is the path's last segment with every separator,
+   `:`, control or format character (a right-to-left override, a zero-width space) and line
+   separator as `_`, no leading dot, at most 120 characters and 240 UTF-8 bytes, ending in a listed
+   extension; the hub's `Content-Disposition` is never read. It goes to
+   `hub-files/<hub id>/<first 16 hex of the path's SHA-256>/<name>` beside the local database:
+   each folder made 0700 (a link or another user's folder is `failed`, a wider mode tightened), the
+   body written to `.<16 random hex>.part` created with `O_EXCL | O_NOFOLLOW` at 0600, counted
+   against the length as it arrives (longer, shorter or broken off is `failed`, and the partial file
+   is removed), then renamed over `<name>`, which replaces an earlier copy (or a link there) without
+   following it.
+6. The final name's extension is checked once more, and the copy is opened through
+   `openHubCopy` in `electron/link-open.cjs`, main's one place that opens files: it resolves the
+   hub-files folder and the copy, and opens with `shell.openPath` only a regular file whose real
+   path is inside that folder and whose name has a listed extension; otherwise it answers `outside`,
+   `not_file` or `type`, and a default app that does not open it is `failed`. Any of these is
+   `open_failed`. Main passes it only the folder and `shell`; `test/electron-links.test.ts` still
+   finds no `shell.openPath` in main.
+
+Nothing from the hub is run, and nothing whose extension is off the list is opened. Copies older than
+24 hours are swept at the start of every open, as desk scripts are before every write: only regular
+files in folders of the two hex patterns, through `lstat`, and folders left empty. A refusal logs its
+word, a success `hub-files: opened`; the three refusals before the gesture check log nothing.
+
+**On the page** (`public/hub-files.js`). The page asks `filesAvailable()` once per load and on each
+`onConnection`; the answer is a frame input, so the next poll repaints. Where it is yes, a file chip
+in a card's Links strip and in the session panel's (`linkStripHtml`'s new `hubFiles` option, which
+draws a file chip's group for the item or row whose card links it, from the chip's own escaped
+markup) becomes a group: the chip (whose click still copies the path), **Copy path**, and either
+**Open a copy on this Mac** with a status line, or the line "This file opens only on the other
+Mac." The button shows for exactly the links the hub accepts on form (`hubFileListed`: the hub's
+form rule, `~/` or an allowed root, a listed name, no hidden segment), and main asks for exactly
+those. Each side keeps the roots and the extensions in one list (`ALLOWED_ROOTS` and
+`DOCUMENT_EXTENSIONS` in `src/remote-file.ts` and `electron/hub-files.cjs`, `HUB_FILE_ROOTS` and
+`HUB_FILE_EXTENSIONS` in `public/hub-files.js`), and tests compare them; one test feeds the same
+texts, system locations included, through the page's, main's and the hub's rules and compares the sets.
+On the card's path only `~/` stands for the home: an absolute path to a home outside the listed roots
+(a Linux `/home/…`) is not served, so all three sides can decide alike without knowing the hub's home. A repo-relative
+file keeps today's chip. While an open runs the button is disabled; then it says "Opened" for 1.5 seconds, or one
+sentence per reason word sits beside it for 6 seconds, as text. The words for an older hub say to
+update it once on that Mac (Agent Inbox → Check for Updates…), in a sentence of their own. On This
+Mac's page and in a browser nothing changes: This Mac's `agentInboxDesk` has no `filesAvailable`. An
+older connecting app has no such member either, so a new hub's page shows what it shows today; an
+older hub's page has no button.
+
+Tests: `test/remote-file.test.ts` (the request and path rules, and what the scanner links, as
+tables with hostile inputs, the one rule on three sides, the file checks with links, folders, pipes, a swap between the check and the open, the
+stream's size held while reading, and the route through the real gate and listener),
+`test/remote-routes.test.ts` (the guarded route's Hono chain), `test/hub-files.test.ts` (each check
+in order, the copy's name, the real private writer, the sweep, and `openHubCopy` with a path outside
+the folder, a link inside it that points outside, an unlisted extension and a directory), `test/remote-connect.test.ts` (the
+longer timeout), `test/hub-view.test.ts`, `test/main-ipc.test.ts` and `test/remote-preload.test.ts`
+(the channels and the bridge), and the DOM tests in `test/dom/hub-files.test.ts` and
+`test/dom/card-links.test.ts`.
+
+Known limits, accepted:
+
+- A hard link to a file is that file: the resolved path is the link's own name, so a visible listed
+  name that is a hard link to a file elsewhere serves it.
+- Any key press or click in the hub's view counts as the press for an open (as for Open desk).
+- Each request scans the card's text again, so a very large card costs the hub time.
+- A fetched copy opens in whatever application the connecting Mac uses for its type.
+- The file-system calls on the hub are synchronous (`realpath`, `open`, `fstat`), so a slow file
+  system holds the hub's viewer for as long as it takes; reads in the stream are asynchronous.
+
+Not checked without the real app: a file fetched over the tailnet and opened in its default app,
+the time a large file takes over Tailscale (the 60-second limit), and how macOS treats a copy the
+app wrote (it is not quarantined: the app writes it itself).
 
 ## Checked against real Tailscale Serve
 

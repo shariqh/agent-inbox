@@ -1,4 +1,5 @@
 import { serveStatic } from '@hono/node-server/serve-static'
+import { homedir } from 'node:os'
 import { openDb } from './store.js'
 import { createViewer } from './viewer.js'
 import { startGithubPoller } from './issue-poller.js'
@@ -6,6 +7,7 @@ import { startLocalViewer } from './viewer-network.js'
 import { remoteDir, startRemoteEntry } from './viewer-remote.js'
 import { remoteCodeRoute } from './remote-pair.js'
 import { createRemoteUpdate, remoteUpdateReportRoute } from './remote-update.js'
+import { linkedFiles } from './remote-file.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 import { meshDir } from './mesh-config.js'
 import { meshAgents } from './mesh-agents.js'
@@ -31,10 +33,12 @@ startGithubPoller(db)
 // twice is safe. The entry copies the app's routes when it starts: add nothing to it after.
 // #637: what a paired device may see of this hub's update, and its request to start it, relayed to
 // the desktop app's main, which reports here (src/remote-update.ts)
+// #634: a file a card links, read-only, for a paired device: the card's file links from this database,
+// `~/` under this user's home (src/remote-file.ts)
 const update = createRemoteUpdate({ version: AGENT_INBOX_VERSION })
 const remoteApp = createViewer(db, { mesh })
 remoteApp.get('/*', serveStatic({ root: './public' }))
-const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update })
+const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update, files: { linked: linkedFiles(db), home: homedir() } })
 // loopback only, and never on the remote allowlist: counts since start, no login or secret
 app.get('/api/remote-entry', (c) => c.json(remote.status()))
 // loopback only, and only for the desktop app that started this viewer with an owner token: a

@@ -38,6 +38,8 @@ const DEVICE_HEADER = 'X-Agent-Inbox-Device'
 const SCHEMA = 1
 const FILE_MAX = 64 * 1024
 const FETCH_TIMEOUT_MS = 5_000
+// #634: the longest timeout a caller of hubFetch may ask for (a card's file, up to 25 MB)
+const FETCH_TIMEOUT_MAX_MS = 120_000
 const PAIR_BODY_MAX = 1024
 const FIRST_RETRY_MS = 2_000
 const MAX_RETRY_MS = 60_000
@@ -324,7 +326,11 @@ function createRemoteConnect(options = {}) {
 
   const refusal = (word) => Object.assign(new Error(word === 'redirect' ? 'the hub answered with a redirect' : 'not the hub origin'), { code: word })
 
-  /** A fetch for main's own requests to the hub: its origin only, the device header, no redirect, a timeout. */
+  /**
+   * A fetch for main's own requests to the hub: its origin only, the device header, no redirect, a
+   * timeout. The timeout is 5 seconds; #634: a caller may ask for a longer one with `timeoutMs`, up to
+   * 2 minutes, for the whole request and its body.
+   */
   function hubFetch() {
     return async (input, init = {}) => {
       const decided = decide(input)
@@ -332,7 +338,9 @@ function createRemoteConnect(options = {}) {
       const given = isObject(init) ? init : {}
       const headers = new Headers(given.headers)
       headers.set(DEVICE_HEADER, decided.value)
-      const signals = [AbortSignal.timeout(FETCH_TIMEOUT_MS)]
+      const asked = given.timeoutMs
+      const timeout = Number.isSafeInteger(asked) && asked > FETCH_TIMEOUT_MS && asked <= FETCH_TIMEOUT_MAX_MS ? asked : FETCH_TIMEOUT_MS
+      const signals = [AbortSignal.timeout(timeout)]
       if (given.signal instanceof AbortSignal) signals.push(given.signal)
       const request = { method: typeof given.method === 'string' ? given.method : 'GET', headers, redirect: 'error', signal: AbortSignal.any(signals) }
       if (given.body !== undefined) request.body = given.body

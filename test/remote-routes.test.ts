@@ -121,8 +121,9 @@ describe('REMOTE_ROUTES', () => {
     expect(added.sort()).toEqual([...LOOPBACK_ONLY.keys()].sort())
   })
 
+  // #634: and the file route, GET only
   it('lists the guarded app\'s own update routes apart (#637): never createViewer\'s, never on REMOTE_ROUTES', () => {
-    expect(GUARDED_ROUTES.map((r) => key(r.method, r.path))).toEqual(['GET /api/remote/update', 'POST /api/remote/update'])
+    expect(GUARDED_ROUTES.map((r) => key(r.method, r.path))).toEqual(['GET /api/remote/update', 'POST /api/remote/update', 'GET /api/remote/file'])
     for (const route of GUARDED_ROUTES) expect(remoteRouteAllowed(route.method, route.path)).toBe(false)
   })
 
@@ -150,15 +151,17 @@ const samplePath = (pattern: string) => pattern.replace(/:[A-Za-z]+/g, 'sample0'
 
 const pairHandler: Handler = (c) => c.text('pair')
 const updateHandlers: { get: Handler; post: Handler } = { get: (c) => c.text('update'), post: (c) => c.text('start') }
+const fileHandler: Handler = (c) => c.text('file')
 
 function chainProblems(app: Hono, gate: MiddlewareHandler): string[] {
-  const guarded = guardRemoteApp(app, gate, pairHandler, updateHandlers) as unknown as Hono<never>
+  const guarded = guardRemoteApp(app, gate, pairHandler, updateHandlers, fileHandler) as unknown as Hono<never>
   const problems: string[] = []
-  // #637: the update routes, the same way: the gate, then the guarded app's own handler, which answers
+  // #637: the update routes, the same way: the gate, then the guarded app's own handler, which answers;
+  // #634: the file route too
   for (const route of GUARDED_ROUTES) {
     const chain = runChain(guarded, route.method, route.path)
     const got = chain.map((r) => `${r.method} ${r.path}`)
-    const own = route.method === 'GET' ? updateHandlers.get : updateHandlers.post
+    const own = route.path === '/api/remote/file' ? fileHandler : route.method === 'GET' ? updateHandlers.get : updateHandlers.post
     if (got[0] !== 'ALL /*' || got[1] !== `${route.method} ${route.path}` || chain[0]!.handler !== gate || chain[1]!.handler !== own) {
       problems.push(`${route.method} ${route.path}: ${got.join(', ')}`)
     }
@@ -242,7 +245,7 @@ describe('the remote app', () => {
     expect(server).toContain([
       'const remoteApp = createViewer(db, { mesh })',
       "remoteApp.get('/*', serveStatic({ root: './public' }))",
-      'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update })',
+      'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update, files: { linked: linkedFiles(db), home: homedir() } })',
     ].join('\n'))
     // Hono copies the routes when the entry wraps the app: anything added to it later is never served
     expect(server.match(/\bremoteApp\b/g)).toHaveLength(3)

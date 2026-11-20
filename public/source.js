@@ -361,26 +361,32 @@ const COPY_ICON = '<svg class="link-action-icon" viewBox="0 0 16 16" aria-hidden
 // In the desktop app (`actions`), a file chip also offers Reveal and Copy path:
 // two buttons carrying the same escaped path, never an href. A repo-relative
 // file (#324) carries its repository folder beside it on all three.
-function fileChipHtml(link, inner, actions, copyFiles) {
+// #634: in another Mac's Inbox, `hubFile(link, { chip, copy })` may draw an
+// absolute file's chip with Copy path and "Open a copy on this Mac" around this
+// escaped markup (public/hub-files.js, hubFileGroupHtml); '' or null keeps it.
+function fileChipHtml(link, inner, actions, copyFiles, hubFile) {
   const path = esc(link.path)
   const root = rootAttr(link.root)
   const shown = rootedFile(link.root) ? repoFilePath(link.root, link.path) : link.path
   const chip = `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${path}"${root}` +
     ` title="${esc(fileTitle(shown, link.title, copyFiles))}">${inner}</button>`
+  const copy = `<button type="button" class="link-file-action" data-link-action="copy" data-link-path="${path}"${root}` +
+    ` title="Copy path" aria-label="${esc(`Copy path: ${link.label}`)}">${COPY_ICON}</button>`
+  const hub = !rootedFile(link.root) && typeof hubFile === 'function' ? hubFile(link, { chip, copy }) : null
+  if (typeof hub === 'string' && hub !== '') return hub
   if (!actions || typeof actions.reveal !== 'string') return chip
   return `<span class="link-file" role="group" aria-label="${esc(`File ${link.label}`)}">${chip}` +
     `<button type="button" class="link-file-action" data-link-action="reveal" data-link-path="${path}"${root}` +
     ` title="${esc(actions.reveal)}" aria-label="${esc(`${actions.reveal}: ${link.label}`)}">${REVEAL_ICON}</button>` +
-    `<button type="button" class="link-file-action" data-link-action="copy" data-link-path="${path}"${root}` +
-    ` title="Copy path" aria-label="${esc(`Copy path: ${link.label}`)}">${COPY_ICON}</button></span>`
+    `${copy}</span>`
 }
 
-function linkChipHtml(link, actions, copyFiles) {
+function linkChipHtml(link, actions, copyFiles, hubFile) {
   if (!link || !Object.hasOwn(LINK_KINDS, link.kind)) return ''
   const inner = `<span class="link-kind">${esc(LINK_KINDS[link.kind])}</span> <span class="link-label">${esc(link.label)}</span>`
   if (link.kind === 'file') {
     if (typeof link.path !== 'string' || !link.path) return ''
-    return fileChipHtml(link, inner, actions, copyFiles)
+    return fileChipHtml(link, inner, actions, copyFiles, hubFile)
   }
   if (!safeHttpUrl(link.url)) return ''
   return chipHtml(link.url, 'link', inner, link.title || '', true, `data-link-kind="${esc(link.kind)}"`)
@@ -390,9 +396,10 @@ function linkChipHtml(link, actions, copyFiles) {
 // link the card's text shows, the item's own PR and issue first, each with
 // its kind and a short label; past the first few, a "+N more" disclosure whose
 // open state the caller keeps by `key` across rebuilds. `copyFiles`: a file
-// chip's click copies its path here (see fileLinkHtml).
-export function linkStripHtml(links, { key = '', open = false, actions = null, copyFiles = false } = {}) {
-  const chips = (Array.isArray(links) ? links : []).map((link) => linkChipHtml(link, actions, copyFiles)).filter(Boolean)
+// chip's click copies its path here (see fileLinkHtml). `hubFiles` (#634): in
+// another Mac's Inbox, draws a file chip's group from its escaped parts (see fileChipHtml).
+export function linkStripHtml(links, { key = '', open = false, actions = null, copyFiles = false, hubFiles = null } = {}) {
+  const chips = (Array.isArray(links) ? links : []).map((link) => linkChipHtml(link, actions, copyFiles, hubFiles)).filter(Boolean)
   if (!chips.length) return ''
   const rest = chips.slice(STRIP_VISIBLE)
   const more = rest.length

@@ -46,11 +46,11 @@ const HOSTILE = {
 }
 
 describe('remote-preload.cjs: the hub view’s only bridge', () => {
-  it('exposes exactly agentInboxDesk, with exactly its five members, and requires only electron', () => {
+  it('exposes exactly agentInboxDesk, with exactly its seven members, and requires only electron', () => {
     const { exposed, required } = loadPreload('electron/remote-preload.cjs', () => null)
     expect(Object.keys(exposed)).toEqual(['agentInboxDesk'])
-    // #617 PR 4b: `open` added deliberately, for Open desk
-    expect(Object.keys(exposed.agentInboxDesk as object).sort()).toEqual(['available', 'connection', 'onConnection', 'open', 'retry'])
+    // #617 PR 4b: `open` added deliberately, for Open desk; #634: `filesAvailable` and `openFile`, for a card's files
+    expect(Object.keys(exposed.agentInboxDesk as object).sort()).toEqual(['available', 'connection', 'filesAvailable', 'onConnection', 'open', 'openFile', 'retry'])
     expect(required).toEqual(['electron'])
   })
 
@@ -115,6 +115,66 @@ describe('remote-preload.cjs: the hub view’s only bridge', () => {
   ])('open() reduces %s', async (_label, value, expected) => {
     const { exposed } = loadPreload('electron/remote-preload.cjs', () => value)
     expect(await (exposed.agentInboxDesk as Bridge).open!({ session: 'abc' })).toEqual(expected)
+  })
+
+  // #634
+  it('filesAvailable() asks main, and passes on only whether files may open here', async () => {
+    const yes = loadPreload('electron/remote-preload.cjs', () => ({ files: true, dir: '/Users/x/hub-files' }))
+    const desk = yes.exposed.agentInboxDesk as Bridge
+    expect(await desk.filesAvailable!()).toEqual({ files: true })
+    expect(yes.invoke.mock.calls).toEqual([['agent-inbox:desk-files-available']])
+    expect(await desk.filesAvailable!('extra')).toEqual({ files: false })
+    expect(yes.invoke).toHaveBeenCalledTimes(1)
+    for (const answer of [{ files: 'yes' }, { open: true }, null, [true], { files: 1 }]) {
+      expect(await (loadPreload('electron/remote-preload.cjs', () => answer).exposed.agentInboxDesk as Bridge).filesAvailable!()).toEqual({ files: false })
+    }
+    const failing = loadPreload('electron/remote-preload.cjs', () => { throw new Error('gone') })
+    expect(await (failing.exposed.agentInboxDesk as Bridge).filesAvailable!()).toEqual({ files: false })
+  })
+
+  it('openFile() sends a fresh { kind, id, path } and nothing else', async () => {
+    const { exposed, invoke } = loadPreload('electron/remote-preload.cjs', () => ({ ok: true, file: '/Users/x/hub-files/spec.md' }))
+    const desk = exposed.agentInboxDesk as Bridge
+    const given = { kind: 'item', id: '6f1c2d3e-4a5b-4c6d-8e7f-001122334455', path: '/Users/owner/docs/spec.md' }
+    expect(await desk.openFile!(given)).toEqual({ ok: true })
+    expect(await desk.openFile!({ path: '~/notes/ü.txt', kind: 'row', id: 'r1' })).toEqual({ ok: true })
+    expect(invoke.mock.calls).toEqual([
+      ['agent-inbox:desk-open-file', { kind: 'item', id: '6f1c2d3e-4a5b-4c6d-8e7f-001122334455', path: '/Users/owner/docs/spec.md' }],
+      ['agent-inbox:desk-open-file', { kind: 'row', id: 'r1', path: '~/notes/ü.txt' }],
+    ])
+    expect(invoke.mock.calls[0]![1]).not.toBe(given)
+  })
+
+  it.each([
+    ['nothing', []],
+    ['two arguments', [{ kind: 'item', id: 'i1', path: '/a/b.md' }, 'extra']],
+    ['a string', ['/a/b.md']],
+    ['null', [null]],
+    ['an extra key', [{ kind: 'item', id: 'i1', path: '/a/b.md', root: '/a' }]],
+    ['a missing key', [{ kind: 'item', path: '/a/b.md' }]],
+    ['another kind', [{ kind: 'message', id: 'i1', path: '/a/b.md' }]],
+    ['an id with a slash', [{ kind: 'item', id: 'a/b', path: '/a/b.md' }]],
+    ['a path that is not text', [{ kind: 'item', id: 'i1', path: 7 }]],
+    ['an empty path', [{ kind: 'item', id: 'i1', path: '' }]],
+    ['a path with a control character', [{ kind: 'item', id: 'i1', path: '/a/b\u0000.md' }]],
+    ['a path over 4,096 characters', [{ kind: 'item', id: 'i1', path: `/${'a'.repeat(4096)}.md` }]],
+  ])('openFile() refuses %s itself, without asking main', async (_label, args) => {
+    const { exposed, invoke } = loadPreload('electron/remote-preload.cjs', () => ({ ok: true }))
+    expect(await (exposed.agentInboxDesk as Bridge).openFile!(...args)).toEqual({ ok: false, reason: 'bad_request' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('openFile() passes each fixed word on, and anything else, or a main that throws, reads as failed', async () => {
+    for (const reason of ['unavailable', 'bad_request', 'no_gesture', 'busy', 'unreachable', 'old_hub', 'refused', 'not_linked', 'not_a_document', 'too_large', 'not_found', 'unreadable', 'failed', 'open_failed']) {
+      const { exposed } = loadPreload('electron/remote-preload.cjs', () => ({ ok: false, reason, file: '/x' }))
+      expect(await (exposed.agentInboxDesk as Bridge).openFile!({ kind: 'item', id: 'i1', path: '/a/b.md' })).toEqual({ ok: false, reason })
+    }
+    for (const value of [{ ok: false, reason: 'no_desk' }, { ok: 'yes' }, null]) {
+      const { exposed } = loadPreload('electron/remote-preload.cjs', () => value)
+      expect(await (exposed.agentInboxDesk as Bridge).openFile!({ kind: 'item', id: 'i1', path: '/a/b.md' })).toEqual({ ok: false, reason: 'failed' })
+    }
+    const failing = loadPreload('electron/remote-preload.cjs', () => { throw new Error('gone') })
+    expect(await (failing.exposed.agentInboxDesk as Bridge).openFile!({ kind: 'item', id: 'i1', path: '/a/b.md' })).toEqual({ ok: false, reason: 'failed' })
   })
 
   it('open() passes each fixed refusal word on, and a main that throws reads as failed', async () => {
@@ -217,11 +277,12 @@ describe('remote-preload.cjs: the hub view’s only bridge', () => {
     expect(await (failing.exposed.agentInboxDesk as Bridge).retry!()).toEqual({ ok: false })
   })
 
-  it('names no channel but its own four and the change message', () => {
+  it('names no channel but its own six and the change message', () => {
     const source = read('electron/remote-preload.cjs')
-    expect([...new Set([...source.matchAll(/'agent-inbox:[a-z-]+'/g)].map((m) => m[0]))].sort()).toEqual(
-      ["'agent-inbox:desk-available'", "'agent-inbox:desk-changed'", "'agent-inbox:desk-connection'", "'agent-inbox:desk-open'", "'agent-inbox:desk-retry'"],
-    )
+    expect([...new Set([...source.matchAll(/'agent-inbox:[a-z-]+'/g)].map((m) => m[0]))].sort()).toEqual([
+      "'agent-inbox:desk-available'", "'agent-inbox:desk-changed'", "'agent-inbox:desk-connection'", "'agent-inbox:desk-files-available'",
+      "'agent-inbox:desk-open'", "'agent-inbox:desk-open-file'", "'agent-inbox:desk-retry'",
+    ])
     expect(source.match(/exposeInMainWorld\(/g)).toHaveLength(1)
   })
 })

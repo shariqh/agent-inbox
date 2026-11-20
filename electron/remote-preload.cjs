@@ -1,6 +1,7 @@
 'use strict'
 // The ONLY preload of the hub view (#617, PR 3b): the page there comes from another Mac, so it
-// gets one object, `agentInboxDesk`, and nothing else of this app. It runs sandboxed and requires
+// gets one object, `agentInboxDesk`, and nothing else of this app. #634: `filesAvailable` and
+// `openFile`, for a card's file opened as a copy on this Mac. It runs sandboxed and requires
 // nothing but `electron`. Every answer is rebuilt field by field from what main sends, so an
 // unexpected field never crosses. Main answers only this view's top frame on the hub's origin (or
 // the offline file), checked on every call (electron/hub-view.cjs, registerHubIpc).
@@ -15,6 +16,13 @@ const DESK_REASONS = new Set([
   'unavailable', 'bad_request', 'no_gesture', 'busy', 'no_command', 'unreachable', 'not_found', 'no_desk', 'not_on_hub', 'failed', 'terminal_failed',
 ])
 const BAD_REQUEST = Object.freeze({ ok: false, reason: 'bad_request' })
+// #634: a card's file. The entity ids a page may name (electron/hub-files.cjs ENTITY_ID), and the
+// fixed words main may answer; main checks the path itself
+const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+const FILE_REASONS = new Set([
+  'unavailable', 'bad_request', 'no_gesture', 'busy', 'unreachable', 'old_hub', 'refused',
+  'not_linked', 'not_a_document', 'too_large', 'not_found', 'unreadable', 'failed', 'open_failed',
+])
 
 const text = (value, max) => typeof value === 'string' && value.length >= 1 && Array.from(value).length <= max && !CONTROL.test(value)
 
@@ -42,6 +50,17 @@ function deskSession(args) {
   return typeof given.session === 'string' && SESSION.test(given.session) ? given.session : null
 }
 
+/** `{ kind, id, path }` from exactly one plain object with exactly those keys: item or row, an entity id, a path of 1 to 4,096 characters with no control character; else null. */
+function fileRequest(args) {
+  if (args.length !== 1) return null
+  const given = args[0]
+  if (given === null || typeof given !== 'object' || Array.isArray(given)) return null
+  if (Object.keys(given).sort().join(',') !== 'id,kind,path') return null
+  const { kind, id, path } = given
+  if ((kind !== 'item' && kind !== 'row') || typeof id !== 'string' || !ENTITY_ID.test(id)) return null
+  return typeof path === 'string' && path.length >= 1 && path.length <= 4096 && !CONTROL.test(path) ? { kind, id, path } : null
+}
+
 /** `{ ok: true, notice? }` or `{ ok: false, reason }` with a fixed word, from main's answer; nothing else crosses. */
 function openOf(value) {
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
@@ -66,6 +85,25 @@ contextBridge.exposeInMainWorld('agentInboxDesk', {
     const session = deskSession(args)
     if (session === null) return Promise.resolve({ ...BAD_REQUEST })
     return ipcRenderer.invoke('agent-inbox:desk-open', { session }).then(openOf, () => ({ ok: false, reason: 'failed' }))
+  },
+  // #634: whether a card's file may open here as a copy; main says yes only on the hub's own page, on macOS
+  filesAvailable(...args) {
+    if (args.length !== 0) return Promise.resolve({ files: false })
+    return ipcRenderer.invoke('agent-inbox:desk-files-available').then(
+      (value) => ({ files: value !== null && typeof value === 'object' && value.files === true }),
+      () => ({ files: false }),
+    )
+  },
+  // #634: { kind, id, path } and nothing else, sent as a fresh copy; main fetches the file from the hub itself
+  openFile(...args) {
+    const request = fileRequest(args)
+    if (request === null) return Promise.resolve({ ...BAD_REQUEST })
+    return ipcRenderer.invoke('agent-inbox:desk-open-file', request).then(
+      (value) => (value !== null && typeof value === 'object' && !Array.isArray(value) && value.ok === true ? { ok: true }
+        : value !== null && typeof value === 'object' && value.ok === false && FILE_REASONS.has(value.reason) ? { ok: false, reason: value.reason }
+          : { ok: false, reason: 'failed' }),
+      () => ({ ok: false, reason: 'failed' }),
+    )
   },
   connection(...args) {
     if (args.length !== 0) return Promise.resolve(null)

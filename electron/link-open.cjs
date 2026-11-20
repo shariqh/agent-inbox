@@ -511,6 +511,43 @@ async function openLinkRequest(raw, { shell, homeDir, fsp, execFileImpl, filesPe
   }
 }
 
+// #634: the document types a fetched copy of a hub's file may be (src/remote-file.ts DOCUMENT_EXTENSIONS,
+// compared in test/hub-files.test.ts).
+const HUB_COPY_EXTENSIONS = Object.freeze([
+  '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
+])
+
+// #634: the one way main opens a copy of a hub's file (electron/hub-files.cjs), with its default app.
+// Only a regular file whose real path is inside `dir` (the hub-files folder, also resolved) and whose
+// name has a listed extension; else `{ ok: false, reason }`: `outside`, `not_file`, `type`, or
+// `failed` when the default app did not open it. Never rejects.
+async function openHubCopy(file, { dir, shell, fsp = fs.promises } = {}) {
+  try {
+    if (typeof file !== 'string' || typeof dir !== 'string' || !path.isAbsolute(file) || !path.isAbsolute(dir)) return { ok: false, reason: 'outside' }
+    let folder
+    let resolved
+    try {
+      folder = await fsp.realpath(dir)
+    } catch {
+      return { ok: false, reason: 'outside' }
+    }
+    try {
+      resolved = await fsp.realpath(file)
+    } catch {
+      // a link inside the folder that points at nothing is not a file either
+      return { ok: false, reason: 'not_file' }
+    }
+    if (resolved === folder || !isWithin(folder, resolved)) return { ok: false, reason: 'outside' }
+    const stats = await fsp.lstat(resolved)
+    if (!stats.isFile()) return { ok: false, reason: 'not_file' }
+    if (!HUB_COPY_EXTENSIONS.includes(path.extname(resolved).toLowerCase()) || path.basename(resolved).startsWith('.')) return { ok: false, reason: 'type' }
+    const error = await shell.openPath(resolved)
+    return error ? { ok: false, reason: 'failed' } : { ok: true }
+  } catch {
+    return { ok: false, reason: 'failed' }
+  }
+}
+
 // The update channel's sender check: the exact webContents of the app's one
 // viewer window, still alive, whose sending frame is on the viewer's origin. A
 // link request must also come from that window's top frame. This is all a web
@@ -529,6 +566,7 @@ function isTrustedLinkSender({ sender, senderFrame, window, viewerUrl }) {
 }
 
 module.exports = {
+  HUB_COPY_EXTENSIONS,
   appBundlePath,
   blockedFileName,
   externalWebUrl,
@@ -539,6 +577,7 @@ module.exports = {
   joinRepoPath,
   launchableApp,
   normalizeLocalPath,
+  openHubCopy,
   openableFileName,
   openLinkRequest,
   openWebLink,

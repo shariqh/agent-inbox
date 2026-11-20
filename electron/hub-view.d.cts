@@ -3,6 +3,7 @@
 // the .cjs.
 import type { Connection, RemoteConnect } from './remote-connect.cjs'
 import type { DeskOpen } from './desk-open.cjs'
+import type { HubFiles } from './hub-files.cjs'
 import type { HubUpdate } from './hub-update.cjs'
 
 export const INPUT_WINDOW_MS: 5000
@@ -22,6 +23,7 @@ export const DESK_CHANNELS: Readonly<{
   connection: 'agent-inbox:desk-connection'; retry: 'agent-inbox:desk-retry'
   /** #617 PR 4b */
   available: 'agent-inbox:desk-available'; open: 'agent-inbox:desk-open'
+  filesAvailable: 'agent-inbox:desk-files-available'; openFile: 'agent-inbox:desk-open-file'
   changed: 'agent-inbox:desk-changed'
 }>
 export const CONNECT_CHANNELS: Readonly<{
@@ -159,5 +161,7 @@ export interface HubIpcOptions {
   deskOpen?: () => DeskOpen | null
   /** #637: the hub's update (electron/hub-update.cjs), or null; null when left out. */
   hubUpdate?: () => HubUpdate | null
+  /** #634: a card's files, opened as copies here (electron/hub-files.cjs), or null; null when left out. */
+  hubFiles?: () => HubFiles | null
 }
 export function registerHubIpc(options: HubIpcOptions): void

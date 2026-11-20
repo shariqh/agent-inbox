@@ -754,7 +754,8 @@ describe('the poller runs in the viewer process only', () => {
   // #617: the remote entry (a second loopback listener for paired devices) is viewer-process-only too
   it('the remote entry never enters the stdio MCP import graph, and only the viewer process starts it', () => {
     // PR 2b: pairing (codes, device secrets, the remote.json write) is viewer-process-only too
-    for (const remote of ['src/viewer-remote.ts', 'src/remote-pair.ts']) {
+    // #634: the file route, which reads files a card links, is viewer-process-only too
+    for (const remote of ['src/viewer-remote.ts', 'src/remote-pair.ts', 'src/remote-file.ts']) {
       expect(STDIO_GRAPH).not.toContain(remote)
       for (const file of STDIO_GRAPH) {
         expect(specifiers(read(file)).map((spec) => resolveSpec(file, spec)), `${file} pulls ${remote} into MCP`)

@@ -18,7 +18,7 @@ import { startLocalViewer } from '../src/viewer-network.js'
 import { GUARDED_ROUTES, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import {
-  DOCUMENT_EXTENSIONS, FILE_MAX, FILE_PATH, attachmentName, documentName, entityTexts, fileStream, linkedPathForm, linkedTexts,
+  DOCUMENT_EXTENSIONS, FILE_MAX, FILE_PATH, documentName, entityTexts, fileStream, linkedPathForm, linkedTexts,
   linksPath, openLinkedFile, readFileQuery, remoteFileRoute,
 } from '../src/remote-file.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
@@ -377,18 +377,6 @@ describe('fileStream: the size held while reading', () => {
   })
 })
 
-describe('attachmentName', () => {
-  it.each([
-    ['/Users/owner/docs/spec.md', 'spec.md'],
-    ['~/notes/ü-plan.md', '_-plan.md'],
-    ['/Users/owner/My notes "draft".txt', 'My_notes__draft_.txt'],
-    ['/Users/owner/..hidden.md', 'hidden.md'],
-    [`/Users/owner/${'a'.repeat(300)}.md`, `${'a'.repeat(117)}.md`],
-  ])('%s is sent as %s', (path, name) => {
-    expect(attachmentName(path)).toBe(name)
-  })
-})
-
 // the handler by itself, behind a gate that is not the real one
 describe('remoteFileRoute: the handler on its own', () => {
   afterEach(() => removeScratchDirs())
@@ -410,6 +398,25 @@ describe('remoteFileRoute: the handler on its own', () => {
     expect(response.status).toBe(403)
     expect(await response.text()).toBe('Forbidden')
     expect(texts).not.toHaveBeenCalled()
+  })
+
+  // the name a download is offered under: ASCII letters, digits, `.`, `_` and `-`, no leading dot, at most 120 characters
+  it.each([
+    ['spec.md', 'spec.md'],
+    ['ü-plan.md', '_-plan.md'],
+    ['My notes "draft".txt', 'My_notes__draft_.txt'],
+    ['..hidden.md', 'hidden.md'],
+    [`${'a'.repeat(200)}.md`, `${'a'.repeat(117)}.md`],
+  ])('offers %s as %s', async (name, offered) => {
+    const dir = scratchDir('remote-file-name-')
+    writeFileSync(join(dir, name), 'x')
+    const app = new Hono()
+    app.get(FILE_PATH, remoteFileRoute({ texts: () => [join(dir, name)], deviceOf: () => '3f9c0a1b2d4e5f60', home: dir }))
+    const url = target('item', ITEM, join(dir, name))
+    const response = await app.request(url, { method: 'GET' }, { incoming: { url, headers: {} } })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-disposition')).toBe(`attachment; filename="${offered}"`)
+    await response.text()
   })
 
   it('refuses a request that carries a body', async () => {

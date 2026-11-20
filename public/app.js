@@ -65,7 +65,7 @@ import {
 } from '/source.js'
 import { attachCommand, claudeSessionUrl, placeLine } from '/place.js'
 import { OPEN_DESK, deskSession, installDeskOpen } from '/desk-open.js'
-import { hubFileEntity, installHubFiles } from '/hub-files.js'
+import { hubFileEntity, hubFileGroupHtml, installHubFiles } from '/hub-files.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
@@ -2271,6 +2271,11 @@ const deskOpen = installDeskOpen({
 const hubFiles = installHubFiles({ onChange: () => noteOutsideChange() })
 // the item or row a Links strip's file belongs to, while files open here; else no hub actions
 const hubFileOwner = (entity) => (hubFiles.available() ? (hubFileEntity(entity) ?? null) : null)
+// linkStripHtml's hubFiles option: a file chip's group for the entity `ownerOf(link)` names, if any
+const hubFileChips = (ownerOf) => (link, parts) => {
+  const entity = ownerOf(link)
+  return entity ? hubFileGroupHtml({ ...parts, link, entity }) : null
+}
 
 const agentsHome = installAgentsHome({
   deskOpen: () => deskOpen,
@@ -2880,7 +2885,7 @@ function renderDashFocus(aside, model, { forced = false } = {}) {
   const linksKey = `links:session:${card.id}`
   setFocusPart(aside, aside.querySelector('.dash-focus-links'), linkStripHtml([...links.values()], {
     key: linksKey, open: openContexts.has(linksKey), actions: linkFileActions(), copyFiles: fileLinksCopy(),
-    hubFiles: (link) => owners.get(link.key) ?? null,
+    hubFiles: hubFileChips((link) => owners.get(link.key) ?? null),
   }))
 }
 
@@ -4830,7 +4835,7 @@ function cardLinksHtml(entity, identity) {
   const key = `links:${entity.id}`
   const owner = hubFileOwner(entity)
   return linkStripHtml(cardLinks(entity, identity, linkIndex), {
-    key, open: openContexts.has(key), actions: linkFileActions(), copyFiles: fileLinksCopy(), hubFiles: owner ? () => owner : null,
+    key, open: openContexts.has(key), actions: linkFileActions(), copyFiles: fileLinksCopy(), hubFiles: owner ? hubFileChips(() => owner) : null,
   })
 }
 

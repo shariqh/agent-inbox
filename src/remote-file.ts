@@ -36,7 +36,6 @@ export const DOCUMENT_EXTENSIONS: readonly string[] = Object.freeze([
   '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
 ])
 export type FileRefusal = 'bad_request' | 'not_linked' | 'not_a_document' | 'too_large' | 'not_found' | 'unreadable'
-export const FILE_REFUSALS: readonly FileRefusal[] = Object.freeze(['bad_request', 'not_linked', 'not_a_document', 'too_large', 'not_found', 'unreadable'])
 
 export type FileKind = 'item' | 'row'
 export interface FileRequest {
@@ -294,7 +293,7 @@ export function fileStream(fd: number, size: number, opts: {
 }
 
 /** The name a download is offered under: the path's last segment in ASCII letters, digits, `.`, `_` and `-`, no leading dot, at most 120 characters with its extension kept. */
-export function attachmentName(path: string): string {
+function attachmentName(path: string): string {
   let name = lastSegment(path).replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '')
   if (name.length > NAME_MAX) {
     const dot = name.lastIndexOf('.')

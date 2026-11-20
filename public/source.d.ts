@@ -120,11 +120,12 @@ export function linkStripHtml(
   /**
    * `actions` (part 2): give each file chip Reveal and Copy path, naming Reveal as `actions.reveal`;
    * `copyFiles`: a file chip's click copies its path here, so its title says so;
-   * `hubFiles` (#634): in another Mac's Inbox, the item or row whose card links an absolute file, or null
+   * `hubFiles` (#634): in another Mac's Inbox, an absolute file chip's markup drawn from its escaped
+   * chip and Copy path button (public/hub-files.js hubFileGroupHtml); '' or null keeps the plain chip
    */
   opts?: {
     key?: string; open?: boolean; actions?: { reveal: string } | null; copyFiles?: boolean
-    hubFiles?: ((link: StripLink) => { kind: 'item' | 'row'; id: string } | null) | null
+    hubFiles?: ((link: StripLink, parts: { chip: string; copy: string }) => string | null) | null
   },
 ): string
 /** issue #588 — the repository and folder an entity's bare #N and repo-relative paths are read against */

@@ -7,7 +7,8 @@
 // bridge is a stub of electron/remote-preload.cjs's; nothing opens.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  HUB_FILE_EXTENSIONS, HUB_FILE_FALLBACK, HUB_FILE_REFUSALS, ONLY_THERE, OPEN_COPY, hubFileEntity, hubFileListed, hubFileRefusal, installHubFiles,
+  HUB_FILE_EXTENSIONS, HUB_FILE_FALLBACK, HUB_FILE_REFUSALS, ONLY_THERE, OPEN_COPY, hubFileEntity, hubFileGroupHtml, hubFileListed, hubFileRefusal,
+  installHubFiles,
 } from '../../public/hub-files.js'
 import { linkStripHtml } from '../../public/source.js'
 
@@ -29,6 +30,10 @@ function hubDesk(files = true) {
   }
   return desk
 }
+
+// what app.js passes linkStripHtml: the group for one entity, or null
+const groupFor = (entity: { kind: string; id: string } | null) => (link: { path?: string; label: string }, parts: { chip: string; copy: string }) =>
+  (entity ? hubFileGroupHtml({ ...parts, link: link as { path: string; label: string }, entity }) : null)
 
 const flush = async () => {
   for (let i = 0; i < 6; i += 1) await Promise.resolve()
@@ -80,7 +85,7 @@ describe('the Links strip in another Mac\'s Inbox', () => {
   const entity = { kind: 'item' as const, id: ITEM.id }
 
   it('gives a listed file Copy path and Open a copy on this Mac, carrying the entity and the path', () => {
-    document.body.innerHTML = linkStripHtml([SPEC], { copyFiles: true, hubFiles: () => entity })
+    document.body.innerHTML = linkStripHtml([SPEC], { copyFiles: true, hubFiles: groupFor(entity) })
     const open = document.querySelector<HTMLButtonElement>('[data-hub-file-open]')!
     expect(open.textContent).toBe(OPEN_COPY)
     expect(open.dataset).toMatchObject({ hubFileKind: 'item', hubFileId: ITEM.id, hubFilePath: SPEC.path })
@@ -91,7 +96,7 @@ describe('the Links strip in another Mac\'s Inbox', () => {
   })
 
   it('gives any other file Copy path and one line saying it opens only on the other Mac', () => {
-    document.body.innerHTML = linkStripHtml([SCRIPT], { copyFiles: true, hubFiles: () => entity })
+    document.body.innerHTML = linkStripHtml([SCRIPT], { copyFiles: true, hubFiles: groupFor(entity) })
     expect(document.querySelector('[data-hub-file-open]')).toBeNull()
     expect(document.querySelector('[data-link-action="copy"]')).not.toBeNull()
     expect(document.querySelector('.hub-file-only')?.textContent).toBe(ONLY_THERE)
@@ -100,8 +105,8 @@ describe('the Links strip in another Mac\'s Inbox', () => {
   it('keeps today\'s chip for a repo-relative file, for a link with no entity, and without the option', () => {
     const relative = { ...SPEC, key: 'file:/repo/docs/spec.md', path: 'docs/spec.md', root: '/repo' }
     for (const html of [
-      linkStripHtml([relative], { copyFiles: true, hubFiles: () => entity }),
-      linkStripHtml([SPEC], { copyFiles: true, hubFiles: () => null }),
+      linkStripHtml([relative], { copyFiles: true, hubFiles: groupFor(entity) }),
+      linkStripHtml([SPEC], { copyFiles: true, hubFiles: groupFor(null) }),
       linkStripHtml([SPEC], { copyFiles: true }),
     ]) {
       document.body.innerHTML = html
@@ -113,7 +118,7 @@ describe('the Links strip in another Mac\'s Inbox', () => {
 
   it('escapes the path and the entity: nothing in them becomes markup', () => {
     const hostile = { ...SPEC, path: '/Users/owner/"><img src=x onerror=alert(1)>.md', label: '<b>x</b>.md' }
-    document.body.innerHTML = linkStripHtml([hostile], { copyFiles: true, hubFiles: () => ({ kind: 'item', id: ITEM.id }) })
+    document.body.innerHTML = linkStripHtml([hostile], { copyFiles: true, hubFiles: groupFor({ kind: 'item', id: ITEM.id }) })
     expect(document.querySelector('img, b')).toBeNull()
     expect(document.querySelector<HTMLElement>('[data-hub-file-open]')!.dataset.hubFilePath).toBe(hostile.path)
   })
@@ -149,7 +154,7 @@ describe('installHubFiles', () => {
   })
 
   const strip = () => {
-    document.body.innerHTML = linkStripHtml([SPEC], { copyFiles: true, hubFiles: () => ({ kind: 'item', id: ITEM.id }) })
+    document.body.innerHTML = linkStripHtml([SPEC], { copyFiles: true, hubFiles: groupFor({ kind: 'item', id: ITEM.id }) })
     return {
       button: document.querySelector<HTMLButtonElement>('[data-hub-file-open]')!,
       note: document.querySelector<HTMLElement>('.hub-file-note')!,

@@ -6,14 +6,16 @@
 // opener is recorded). Fixtures are synthetic (hub.example.ts.net, studio).
 import { createHash } from 'node:crypto'
 import {
-  existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, utimesSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs'
 import { readFileSync as readText } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import hubFilesModule from '../electron/hub-files.cjs'
+import linkOpenModule from '../electron/link-open.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
+const { HUB_COPY_EXTENSIONS, openHubCopy } = linkOpenModule
 const { DOCUMENT_EXTENSIONS, FILES_FROM, FILE_MAX, KEEP_MS, REASONS, copyName, createHubFiles, fileRequest, servablePath } = hubFilesModule
 
 afterEach(() => {
@@ -38,7 +40,7 @@ const fileResponse = (body: string, headers: Record<string, string> = {}) => new
 const refusalResponse = (status: number, reason: string, marked = true) =>
   new Response(JSON.stringify({ ok: false, reason }), { status, headers: { 'content-type': 'application/json', ...(marked ? MARKER : {}) } })
 
-function harness(options: { platform?: string; version?: string | null; respond?: (url: string) => Response | Promise<Response>; openPath?: (file: string) => Promise<string> } = {}) {
+function harness(options: { platform?: string; version?: string | null; respond?: (url: string) => Response | Promise<Response>; openCopy?: (file: string) => Promise<{ ok: boolean; reason?: string }> } = {}) {
   const dir = join(scratchDir('hub-files-'), 'hub-files')
   const calls: Array<{ url: string; init: Record<string, unknown> }> = []
   const opened: string[] = []
@@ -70,7 +72,7 @@ function harness(options: { platform?: string; version?: string | null; respond?
     hubView: () => view,
     connect: () => connectValue,
     dir,
-    openPath: options.openPath ?? (async (file: string) => { opened.push(file); return '' }),
+    openCopy: options.openCopy ?? (async (file: string) => { opened.push(file); return { ok: true } }),
     now: () => clock.now,
     log: (line: string) => logs.push(line),
   })
@@ -361,10 +363,10 @@ describe('createHubFiles: each check, in order', () => {
   })
 
   it('8. a copy that cannot be opened is open_failed', async () => {
-    const h = harness({ openPath: async () => 'No application knows how to open this file.' })
+    const h = harness({ openCopy: async () => ({ ok: false, reason: 'failed' }) })
     h.press()
     expect(await h.open()).toEqual({ ok: false, reason: 'open_failed' })
-    const throwing = harness({ openPath: async () => { throw new Error('gone') } })
+    const throwing = harness({ openCopy: async () => { throw new Error('gone') } })
     throwing.press()
     expect(await throwing.open()).toEqual({ ok: false, reason: 'open_failed' })
   })
@@ -489,5 +491,62 @@ describe('the source', () => {
     expect(source).not.toMatch(/\bfetch\(/)
     expect(source).not.toMatch(/child_process|require\('electron'\)|\beval\b|new Function/)
     expect(source).toContain('hubFetch()')
+  })
+})
+
+// ── the opener, in electron/link-open.cjs ─────────────────────────────────────
+
+describe('openHubCopy: the one opener for a fetched copy (electron/link-open.cjs)', () => {
+  const setup = () => {
+    const root = scratchDir('hub-copy-')
+    const dir = join(root, 'hub-files')
+    const copy = join(dir, HUB, key(SPEC))
+    mkdirSync(copy, { recursive: true, mode: 0o700 })
+    writeFileSync(join(copy, 'spec.md'), '# spec')
+    const opened: string[] = []
+    const shell = { openPath: async (file: string) => { opened.push(file); return '' } }
+    return { root, dir, copy, opened, shell }
+  }
+
+  it('opens a regular listed file inside the hub-files folder', async () => {
+    const { dir, copy, opened, shell } = setup()
+    expect(await openHubCopy(join(copy, 'spec.md'), { dir, shell })).toEqual({ ok: true })
+    expect(opened).toEqual([join(copy, 'spec.md')].map((file) => realpathSync(file)))
+  })
+
+  it('refuses a path outside the folder, a link inside it that points outside, an unlisted extension and a directory', async () => {
+    const { root, dir, copy, opened, shell } = setup()
+    writeFileSync(join(root, 'outside.md'), 'x')
+    symlinkSync(join(root, 'outside.md'), join(copy, 'escape.md'))
+    writeFileSync(join(copy, 'page.html'), '<p>')
+    mkdirSync(join(copy, 'folder.md'))
+    writeFileSync(join(root, 'hub-files-evil.md'), 'x')
+    expect(await openHubCopy(join(root, 'outside.md'), { dir, shell })).toEqual({ ok: false, reason: 'outside' })
+    // a sibling folder whose name starts with the folder's name is still outside
+    expect(await openHubCopy(join(root, 'hub-files-evil.md'), { dir, shell })).toEqual({ ok: false, reason: 'outside' })
+    expect(await openHubCopy(join(copy, 'escape.md'), { dir, shell })).toEqual({ ok: false, reason: 'outside' })
+    expect(await openHubCopy(join(copy, 'page.html'), { dir, shell })).toEqual({ ok: false, reason: 'type' })
+    expect(await openHubCopy(join(copy, 'folder.md'), { dir, shell })).toEqual({ ok: false, reason: 'not_file' })
+    expect(await openHubCopy(join(copy, 'missing.md'), { dir, shell })).toEqual({ ok: false, reason: 'not_file' })
+    expect(await openHubCopy(dir, { dir, shell })).toEqual({ ok: false, reason: 'outside' })
+    expect(await openHubCopy('spec.md', { dir, shell })).toEqual({ ok: false, reason: 'outside' })
+    expect(opened).toEqual([])
+  })
+
+  it('reads a folder that is itself reached through a link at its real place', async () => {
+    const { root, dir, copy, opened, shell } = setup()
+    symlinkSync(dir, join(root, 'via'))
+    expect(await openHubCopy(join(root, 'via', HUB, key(SPEC), 'spec.md'), { dir, shell })).toEqual({ ok: true })
+    expect(opened).toEqual([realpathSync(join(copy, 'spec.md'))])
+  })
+
+  it('says failed when the default app does not open it, or the shell throws', async () => {
+    const { dir, copy } = setup()
+    expect(await openHubCopy(join(copy, 'spec.md'), { dir, shell: { openPath: async () => 'No application' } })).toEqual({ ok: false, reason: 'failed' })
+    expect(await openHubCopy(join(copy, 'spec.md'), { dir, shell: { openPath: async () => { throw new Error('x') } } })).toEqual({ ok: false, reason: 'failed' })
+  })
+
+  it('lists the same extensions as the hub', () => {
+    expect([...HUB_COPY_EXTENSIONS]).toEqual([...DOCUMENT_EXTENSIONS])
   })
 })

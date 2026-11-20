@@ -47,8 +47,8 @@ export function createHubFiles(options: {
   } | null
   /** the hub-files folder beside the local database */
   dir: string
-  /** Electron's shell.openPath: '' when the file opened, else an error message */
-  openPath: (file: string) => Promise<string>
+  /** electron/link-open.cjs openHubCopy for this folder: `{ ok: true }` when the copy opened */
+  openCopy: (file: string) => Promise<{ ok: boolean; reason?: string }>
   now?: () => number
   randomBytes?: (size: number) => Uint8Array
   log?: (line: string) => void

@@ -349,13 +349,7 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
   })
 
   it('never opens a file any other way', () => {
-    // #634: the one exception, by decision: a private copy of a hub's file that electron/hub-files.cjs
-    // fetched, saved under hub-files/ with a listed document extension and checked again, opened with
-    // its default app (test/hub-files.test.ts). Nothing the page names is opened through it.
-    const hubCopy = 'openPath: (file) => shell.openPath(file),'
-    expect(main.split(hubCopy)).toHaveLength(2)
-    expect(main.slice(main.indexOf('const hubFilesFor = () =>'), main.indexOf('registerHubIpc({'))).toContain(hubCopy)
-    expect(main.replace(hubCopy, '')).not.toMatch(/shell\.(openPath|showItemInFolder)\(/)
+    expect(main).not.toMatch(/shell\.(openPath|showItemInFolder)\(/)
     expect(read('electron/setup-preload.cjs')).not.toMatch(/require\('(?!electron')/)
   })
 })

@@ -495,12 +495,14 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(main.match(/confirmDeskCommand\(/g)).toHaveLength(2)
   })
   // #634
-  it('wires a card\u2019s files: the connection\u2019s hub fetch, its own folder beside the local database, and shell.openPath', () => {
+  it('wires a card\u2019s files: the connection\u2019s hub fetch, its own folder beside the local database, and link-open\u2019s opener', () => {
     expect(main).toContain("const { createHubFiles } = require('./hub-files.cjs')")
     const files = main.slice(main.indexOf('const hubFilesFor = () =>'), main.indexOf('registerHubIpc({'))
     expect(files).toContain('connect: () => remoteConnect,')
-    expect(files).toContain("dir: path.join(path.dirname(launchHubPath()), 'hub-files'),")
-    expect(files).toContain('openPath: (file) => shell.openPath(file),')
+    expect(files).toContain("const dir = path.join(path.dirname(launchHubPath()), 'hub-files')")
+    // the copy opens only through link-open.cjs's opener, held to that same folder
+    expect(files).toContain('openCopy: (file) => openHubCopy(file, { dir, shell }),')
+    expect(files).not.toMatch(/shell\.openPath/)
     expect(files).not.toMatch(/\bfetch\(|safeStorage|deviceHeaderFor/)
     const register = main.slice(main.indexOf('registerHubIpc({'), main.indexOf('})', main.indexOf('registerHubIpc({')))
     expect(register).toContain('hubFiles: hubFilesFor,')

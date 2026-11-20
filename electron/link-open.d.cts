@@ -103,3 +103,14 @@ export function isTrustedLinkSender(input: {
   window: { isDestroyed(): boolean; webContents: { isDestroyed(): boolean } } | null | undefined
   viewerUrl: string
 }): boolean
+
+/** #634: the document types a fetched copy of a hub's file may be, lowercase with the dot. */
+export const HUB_COPY_EXTENSIONS: readonly string[]
+/**
+ * #634: opens a fetched copy with its default app, only when its real path is a regular file inside
+ * `dir` (resolved too) with a listed extension; else why not. Never rejects.
+ */
+export function openHubCopy(
+  file: string,
+  opts: { dir: string; shell: { openPath(file: string): Promise<string> }; fsp?: typeof import('node:fs').promises },
+): Promise<{ ok: true } | { ok: false; reason: 'outside' | 'not_file' | 'type' | 'failed' }>

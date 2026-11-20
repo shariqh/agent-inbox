@@ -18,7 +18,7 @@
 // the local database (folders 0700, the file 0600, written to a new name created exclusively without
 // following a link, then renamed into place), whose name is the path's own last segment, cleaned,
 // with a listed extension (`failed`), and the copy is opened with the person's default app
-// (`open_failed`). Nothing from the hub is ever run, its headers never name the copy, and nothing
+// (`open_failed`) through electron/link-open.cjs openHubCopy, main's one opener. Nothing from the hub is ever run, its headers never name the copy, and nothing
 // whose extension is not on the list is opened. Copies older than a day are swept at the start of
 // each open. A refusal logs its reason word, except the first three, which come before the gesture
 // check and so log nothing.
@@ -255,11 +255,12 @@ async function writeCopy({ folder, name, response, size, random }) {
 /**
  * Main's handler for the two file channels. Every dependency is an option: `platform`, `hubView()`
  * (its `trusts(event)` and `takeGesture(event)`), `connect()` (the connection controller: its
- * `connection()`, `hubBase(id)` and `hubFetch()`), `dir` (the hub-files folder), `openPath(file)`
- * (Electron's shell.openPath: '' when opened), `now`, `randomBytes` and `log`. No method rejects.
+ * `connection()`, `hubBase(id)` and `hubFetch()`), `dir` (the hub-files folder), `openCopy(file)`
+ * (electron/link-open.cjs openHubCopy, which opens only a listed regular file inside that folder:
+ * `{ ok: true }` when opened), `now`, `randomBytes` and `log`. No method rejects.
  */
 function createHubFiles(options) {
-  const { platform, hubView, dir, openPath } = options
+  const { platform, hubView, dir, openCopy } = options
   const now = options.now ?? Date.now
   const randomBytes = options.randomBytes ?? nodeRandomBytes
   const log = (line) => {
@@ -387,11 +388,11 @@ function createHubFiles(options) {
     if (!documentName(path.basename(saved.file))) return refused('failed')
     let opened
     try {
-      opened = await openPath(saved.file)
+      opened = await openCopy(saved.file)
     } catch {
       opened = null
     }
-    if (opened !== '') return refused('open_failed')
+    if (!isObject(opened) || opened.ok !== true) return refused('open_failed')
     log('hub-files: opened')
     return { ok: true }
   }

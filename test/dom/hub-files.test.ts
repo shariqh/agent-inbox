@@ -8,7 +8,7 @@
 // bridge is a stub of electron/remote-preload.cjs's; nothing opens.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  HUB_FILE_EXTENSIONS, HUB_FILE_FALLBACK, HUB_FILE_REFUSALS, ONLY_THERE, OPEN_COPY, hubFileEntity, hubFileGroupHtml, hubFileListed, hubFileRefusal,
+  HUB_FILE_EXTENSIONS, HUB_FILE_FALLBACK, HUB_FILE_REFUSALS, ONLY_THERE, OPEN_COPY, hubFileEntity, hubFileGroupHtml, hubFileLinkAttrs, hubFileListed, hubFileRefusal,
   installHubFiles,
 } from '../../public/hub-files.js'
 import { initLinkOpening } from '../../public/link-open.js'
@@ -37,6 +37,9 @@ function hubDesk(files = true) {
 // what app.js passes linkStripHtml: the group for one entity, or null
 const groupFor = (entity: { kind: string; id: string } | null) => (link: { path?: string; label: string }, parts: { chip: (attrs?: string, title?: string | null) => string; copy: string }) =>
   (entity ? hubFileGroupHtml({ ...parts, link: link as { path: string; label: string }, entity }) : null)
+
+// what app.js's textContext hands the text renderer for the item or row that owns it
+const ownedBy = (entity: { kind: string; id: string } | null) => (entity ? (path: string) => hubFileLinkAttrs(path, entity) : null)
 
 const flush = async () => {
   for (let i = 0; i < 6; i += 1) await Promise.resolve()
@@ -171,7 +174,7 @@ describe('an inline file link in another Mac\'s Inbox', () => {
   const linkOf = () => document.querySelector<HTMLElement>('a[data-link-kind="file"]')!
 
   it('carries the entity and says Open a copy on this Mac in its title, beside its existing attributes', () => {
-    document.body.innerHTML = renderStructuredText(`Read ${SPEC.path} please`, { hubFile: entity })
+    document.body.innerHTML = renderStructuredText(`Read ${SPEC.path} please`, { hubFile: ownedBy(entity) })
     const link = linkOf()
     expect(link.dataset).toMatchObject({ hubFileKind: 'item', hubFileId: ITEM.id, linkKind: 'file', linkPath: SPEC.path })
     expect(link.title).toBe(`${OPEN_COPY}: ${SPEC.path}`)
@@ -182,8 +185,8 @@ describe('an inline file link in another Mac\'s Inbox', () => {
 
   it('does not, for an unlisted file, a repo-relative one, no owner, or a page with no hub files', () => {
     for (const [text, ctx] of [
-      [`Run ${SCRIPT.path}`, { hubFile: entity }],
-      ['Read docs/spec.md', { hubFile: entity, root: '/repo' }],
+      [`Run ${SCRIPT.path}`, { hubFile: ownedBy(entity) }],
+      ['Read docs/spec.md', { hubFile: ownedBy(entity), root: '/repo' }],
       [`Read ${SPEC.path}`, { hubFile: null }],
       [`Read ${SPEC.path}`, {}],
       [`Read ${SPEC.path}`, { copyFiles: true }],
@@ -197,10 +200,10 @@ describe('an inline file link in another Mac\'s Inbox', () => {
   })
 
   it('escapes what it writes, and writes no entity whose id is not one main accepts', () => {
-    document.body.innerHTML = fileLinkHtml('/Users/owner/"><img src=x>.md', '<b>a.md</b>', 'title', false, null, entity)
+    document.body.innerHTML = fileLinkHtml('/Users/owner/"><img src=x>.md', '<b>a.md</b>', 'title', false, null, ownedBy(entity))
     expect(document.querySelector('b, img')).toBeNull()
     expect(linkOf().dataset.linkPath).toBe('/Users/owner/"><img src=x>.md')
-    document.body.innerHTML = fileLinkHtml('/Users/owner/a.md', 'a.md', 'title', false, null, { kind: 'item', id: 'x"><i>' })
+    document.body.innerHTML = fileLinkHtml('/Users/owner/a.md', 'a.md', 'title', false, null, ownedBy({ kind: 'item', id: 'x"><i>' }))
     expect(document.querySelector('i')).toBeNull()
     expect(linkOf().hasAttribute('data-hub-file-id')).toBe(false)
   })
@@ -257,7 +260,7 @@ describe('installHubFiles', () => {
     const { files } = await ready()
     const entity = { kind: 'item' as const, id: ITEM.id }
     expect(files.request(chipFor(linkStripHtml([SPEC], { hubFiles: groupFor(entity) })))).toEqual({ kind: 'item', id: ITEM.id, path: SPEC.path })
-    expect(files.request(chipFor(renderStructuredText(`Read ${SPEC.path}`, { hubFile: { kind: 'row', id: 'r1' } })))).toEqual({ kind: 'row', id: 'r1', path: SPEC.path })
+    expect(files.request(chipFor(renderStructuredText(`Read ${SPEC.path}`, { hubFile: ownedBy({ kind: 'row', id: 'r1' }) })))).toEqual({ kind: 'row', id: 'r1', path: SPEC.path })
     // no attributes, an unlisted path, a rooted link, a forged entity
     expect(files.request(chipFor(linkStripHtml([SPEC], {})))).toBeNull()
     expect(files.request(chipFor(linkStripHtml([SCRIPT], { hubFiles: groupFor(entity) })))).toBeNull()
@@ -334,7 +337,7 @@ describe('a click on a file link', () => {
     await flush()
     return { desk, hub }
   }
-  const inline = (text = `Read ${SPEC.path}`) => renderStructuredText(text, { hubFile: entity })
+  const inline = (text = `Read ${SPEC.path}`) => renderStructuredText(text, { hubFile: ownedBy(entity) })
   const chip = linkStripHtml([SPEC], { hubFiles: groupFor(entity) })
   const target = (selector = '[data-link-kind="file"]') => document.querySelector<HTMLElement>(selector)!
 
@@ -448,7 +451,7 @@ describe('a click on a file link', () => {
     ['an unlisted file', linkStripHtml([SCRIPT], { hubFiles: groupFor(entity) }), SCRIPT.path],
     ['a file with no owner', linkStripHtml([SPEC], { hubFiles: groupFor(null) }), SPEC.path],
     ['an inline link with no owner', renderStructuredText(`Read ${SPEC.path}`, {}), SPEC.path],
-    ['an inline unlisted file', renderStructuredText(`Run ${SCRIPT.path}`, { hubFile: entity }), SCRIPT.path],
+    ['an inline unlisted file', renderStructuredText(`Run ${SCRIPT.path}`, { hubFile: ownedBy(entity) }), SCRIPT.path],
   ])('copies the path of %s, with the line saying it opens only on the other Mac', async (_name, html, path) => {
     const { desk } = await boot(html)
     target().click()

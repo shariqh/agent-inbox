@@ -65,7 +65,7 @@ import {
 } from '/source.js'
 import { attachCommand, claudeSessionUrl, placeLine } from '/place.js'
 import { OPEN_DESK, deskSession, installDeskOpen } from '/desk-open.js'
-import { hubFileEntity, hubFileGroupHtml, installHubFiles } from '/hub-files.js'
+import { hubFileEntity, hubFileGroupHtml, hubFileLinkAttrs, installHubFiles } from '/hub-files.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
@@ -5215,8 +5215,9 @@ function cardHeadingHtml(presentation, ctx) {
 // against the folder that item or plan recorded. #588: a plan row reads its #N
 // against its own issue link first (textRepo, shared with the Links strip).
 function textContext(identity, entity = identity) {
-  // #645: in another Mac's Inbox, the item or row this text belongs to: a listed file link opens its copy
-  return { ...textRepo(entity, identity), copyFiles: fileLinksCopy(), hubFile: hubFileOwner(entity) }
+  // #645: in another Mac's Inbox, a listed file link in this item's or row's text opens its copy
+  const owner = hubFileOwner(entity)
+  return { ...textRepo(entity, identity), copyFiles: fileLinksCopy(), hubFile: owner ? (path) => hubFileLinkAttrs(path, owner) : null }
 }
 
 // Issue #300: the Links strip under the card's origin, listing every link its

@@ -300,7 +300,7 @@ export function linkedHtml(value, from, to, ctx) {
   for (const link of findPlainLinks(value, from, to, ctx)) {
     html += esc(value.slice(cursor, link.start))
     html += link.kind === 'file'
-      ? fileLinkHtml(link.path, link.text, link.title ?? link.text, Boolean(ctx && ctx.copyFiles === true), link.root ?? null, ctx?.hubFile ?? null)
+      ? fileLinkHtml(link.path, link.text, link.title ?? link.text, Boolean(ctx && ctx.copyFiles === true), link.root ?? null, typeof ctx?.hubFile === 'function' ? ctx.hubFile : null)
       : textLinkHtml(link.url, link.text, link.kind)
     collect(ctx, link)
     cursor = link.end

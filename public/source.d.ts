@@ -103,8 +103,8 @@ export function textLinkHtml(url: unknown, label: unknown, kind?: 'web' | 'pr' |
 /** issue #300 — a local file as an inert control carrying its path; never an href. `root` (#324): a repo-relative path's folder */
 export function fileLinkHtml(
   path: unknown, label: unknown, title?: unknown, copy?: boolean, root?: string | null,
-  /** #645 — the item or row whose text holds the link, where a click opens a copy of a listed file (public/hub-files.js) */
-  hub?: { kind: string; id: string } | null,
+  /** #645 — in another Mac's Inbox, the attributes and title of a link whose click opens a copy of a listed file, or null (public/hub-files.js hubFileLinkAttrs) */
+  hub?: ((path: string) => { attrs: string; title: string } | null) | null,
 ): string
 /** issue #324 — the full path a repo-relative path names inside its folder */
 export function repoFilePath(root: string, path: string): string

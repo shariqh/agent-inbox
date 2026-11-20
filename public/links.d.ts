@@ -46,8 +46,8 @@ export interface LinkContext {
   found?: FoundLink[]
   /** a file link's click copies its path here, so its title says so */
   copyFiles?: boolean
-  /** #645 — in another Mac's Inbox, the item or plan row whose text this is: a listed file link then opens its copy on a click */
-  hubFile?: { kind: 'item' | 'row'; id: string } | null
+  /** #645 — in another Mac's Inbox, a path's attributes and title when a click on its link opens a copy (public/hub-files.js hubFileLinkAttrs for the item or row whose text this is), or null */
+  hubFile?: ((path: string) => { attrs: string; title: string } | null) | null
 }
 
 export interface GithubRef {

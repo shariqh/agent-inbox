@@ -22,7 +22,6 @@
 // The issue chip itself keeps #30's URL rules. public/issues.js computes what
 // to draw (`opts.issues`); this file only draws it.
 import { esc } from './esc.js'
-import { hubFileLinkAttrs } from './hub-files.js'
 import { closingKeys, issueKey, issueKeyFor } from './issue-key.js'
 
 export const PREVIEW_TTL_MS = 5 * 60_000
@@ -345,13 +344,13 @@ export function repoFilePath(root, path) {
 const rootedFile = (root) => typeof root === 'string' && root !== ''
 const rootAttr = (root) => (rootedFile(root) ? ` data-link-root="${esc(root)}"` : '')
 
-// #645: `hub` is `{ kind, id }`, the item or plan row whose text holds this link, in another Mac's Inbox
-// where a click opens a copy of a listed file (public/hub-files.js hubFileLinkAttrs); a repo-relative
-// path, an unlisted one or no owner keeps the plain link.
+// #645: in another Mac's Inbox, `hub(path)` gives the attributes and the title of a link whose click opens
+// a copy of a listed file, or null (public/hub-files.js hubFileLinkAttrs, bound to the item or plan row
+// whose text holds the link); a repo-relative path, an unlisted one or no owner keeps the plain link.
 export function fileLinkHtml(path, label, title, copy = false, root = null, hub = null) {
   if (typeof path !== 'string' || !path) return esc(label)
   const shown = rootedFile(root) ? repoFilePath(root, path) : path
-  const open = rootedFile(root) ? null : hubFileLinkAttrs(path, hub)
+  const open = !rootedFile(root) && typeof hub === 'function' ? hub(path) : null
   return `<a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="${esc(path)}"${rootAttr(root)}${open ? open.attrs : ''}` +
     ` title="${esc(open ? open.title : fileTitle(shown, title, copy))}">${esc(label)}</a>`
 }

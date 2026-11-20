@@ -1792,8 +1792,9 @@ is yes, a file link that is not repo-relative, whose path `hubFileListed` accept
 (`item` or `row`) and `data-hub-file-id` beside its own attributes, and its title is "Open a copy on
 this Mac: <path>". That is the chip in a card's Links strip and in the session panel's
 (`linkStripHtml`'s `hubFiles` option, whose callback gets `chip(attrs, title)`, the chip's own
-escaped markup with more attributes) and the inline link (`ctx.hubFile`, set by `textContext`, read
-by `links.js` and `fileLinkHtml`). The chip is still a group with its **Copy path** icon; a file off
+escaped markup with more attributes) and the inline link (`ctx.hubFile`, a function from a path to its
+attributes and title that `textContext` binds to the owner, passed on by `links.js` to `fileLinkHtml`;
+`source.js` itself imports nothing from `hub-files.js`, which keeps it out of the MCP server's graph). The chip is still a group with its **Copy path** icon; a file off
 the list keeps its chip, the icon and the line "This file opens only on the other Mac." There is no
 other button, listener or note. The form rule is `hubFileListed` (the hub's: `~/` or an allowed
 root, a listed name, no hidden segment), and main asks for exactly those. Each side keeps the roots

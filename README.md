@@ -436,14 +436,15 @@ Nothing is sent for you. A draft whose request is unchanged comes back in its
 card. A plan step an agent touched while you typed keeps your text in its editor
 as long as it still asks the same thing: if only something else moved, your Send
 goes through; if the ask's words were edited, the step says so and your next Send
-goes to the edited ask. One whose request changed meanwhile (answered elsewhere,
-closed, or a plan step with a new ask), or whose project you closed, is kept with
-the reason: beside the plan step while its card is open, otherwise under **unsent
-responses**. **Retry** sends a question's reply again, **Use this text** puts a
-step's text in the editor of its new ask, **Copy** copies it, and **Discard**
-removes it for good.
+goes to the edited ask (the same goes for a note on a step that is not waiting on
+you, which says the step was updated). If your text already reached the step, the
+draft just goes away. One whose request changed meanwhile (closed, or a plan step
+with a new ask), or whose project you closed, is kept with the reason: beside the
+plan step while its card is open, otherwise under **unsent responses**. **Retry**
+sends a question's reply again, **Use this text** puts a step's text in its editor,
+**Copy** copies it, and **Discard** removes an entry for good.
 While one of these is for a question or plan step the Review queue would show, the
-queue waits and the Inbox says "Finish or clear the 1 unsent response first", with
+queue waits and the Inbox says "Finish or discard the 1 unsent response first", with
 a **Show it** button; one for a question or step that has since closed or moved on
 never holds the queue. If you had already sent it and no answer came back,
 it says the send was not confirmed rather than that it was never sent. When you

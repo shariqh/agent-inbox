@@ -743,6 +743,33 @@ describe('what a Send or a click says and leaves', () => {
   })
 })
 
+// #636 review, point 13 (M26): a Send reads the ask as ITS editor showed it, not as
+// the draft's stored meta, which another editor of the same row may have moved on.
+describe('two editors of one row', () => {
+  it('refuses a Send from the editor that still shows the old ask, though the draft moved on in the other', async () => {
+    const { d, rowId } = seed()
+    const bridge = await bootApp(d)
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(buttonLabelled('Answer', document.querySelector(`#boards tr.board-row[data-row-id="${rowId}"]`)!))
+    await settle()
+    type(panelInput(rowId), 'Half an answer')
+    agentWrite(d, { note: 'The 1.4.1 build is ready.' })
+    // the typed draft holds the Plans panel as it was
+    await pollTick()
+    expect(panel(rowId)?.textContent).toContain('The 1.4 build is ready.')
+    // the Review queue draws its own editor from the new data, and moves the draft's meta to it
+    click(buttonLabelled('Review queue'))
+    await settle()
+    expect(document.getElementById('lightbox')!.textContent).toContain('The 1.4.1 build is ready.')
+
+    click(panelSend(rowId))
+    await settle()
+    expect(annotation(d), 'the old editor never lands text on an ask its writer did not read').toBeNull()
+    expect(annotatePosts(bridge)).toHaveLength(1)
+  })
+})
+
 describe('case 3: a different ask, or none', () => {
   it('keeps the text beside the row on screen, with Use this text, Copy and Discard', async () => {
     const { d, rowId } = seed()

@@ -159,9 +159,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   closing that fold closes the card too (`closeCardIn`, keeping any draft as any closed card
   does), or the next frame would open the fold again under them. *(#636, replacing #272)* A row
   snooze moves the revision but not the ask's words, so a drafted row's draft stays in its
-  editor and follows the row into its fold (`keepRowDraftWithAsk`, in `viewer-frontend.md`'s
+  editor and follows the row into its fold (`followRowAsk`, in `viewer-frontend.md`'s
   "A row draft follows its ask"). A stored `setAside` on an older draft is still read, and no
-  longer written. Deferred
+  longer written: with no stored reason it reads "Kept from before you set this aside." Deferred
   rows carry a reason chip instead of an urgency (`Pinned 2d ago`, `Back in 3h`,
   `… · agent waits quietly` while a Copilot asker's #217 deferral runs). Electron's `known`
   set is the unsuppressed attention set plus the `pinned` Later entries

@@ -3982,13 +3982,14 @@ function rowRecoveryReason(fate, unconfirmed = false) {
 const rowRecoveryWhy = (draft) => draft.reason
   || (draft.setAside ? 'Kept from before you set this aside.' : 'Your text was not sent.')
 
+// A draft whose row moved is followed or set aside by reconcileDraftOwners before
+// every frame, so one that is still mismatched here belongs to an ask the row no
+// longer holds (#636 review: the follow-up it once did here changed no outcome).
 function recoverMismatchedRenderedRowDraft(b, r) {
   const text = rowDrafts[r.id]
   const meta = rowDraftMeta[r.id]
   if (!String(text ?? '').trim() || !meta || meta.revision === r.revision) return false
-  const owner = { board: b, row: r }
-  const fate = followRowAsk(r.id, owner, meta, { text, kind: rowDraftKinds[r.id] ?? 'answer' })
-  if (rowDraftStays(fate)) return false
+  const fate = rowAskFate({ board: b, row: r }, meta)
   const revision = meta.revision ?? -1
   staleRowDrafts[rowDraftRecoveryKey(r.id, revision)] = {
     rowId: r.id,

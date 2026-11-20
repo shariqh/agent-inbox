@@ -1687,15 +1687,20 @@ then checks in order, each refusal `{ ok: false, reason }` with one word and not
    (`. , ; : ! ? …`) followed by one of those, with trailing dots dropped and an optional
    `:line`, `:line:column` or `:line-line` after it; in plain text, backticks or a Markdown link
    target, never in a fenced block, glued to a word, in angle brackets or as a `file://` URL.
-3. `not_a_document` (415): the path's name ends in one of `.md .markdown .txt .log .json .yaml .yml
+3. `not_a_document` (415): the path is under `~/` or one of the allowed roots (`ALLOWED_ROOTS`:
+   `/Users/`, `/Volumes/`, `/tmp/`, `/private/tmp/`, `/var/folders/`, `/private/var/folders/`), so
+   system locations (`/etc`, `/private/etc`, `/Library`, `/System`, `/Applications`, `/usr`, `/opt`,
+   the rest of `/var`) stay on the hub; its name ends in one of `.md .markdown .txt .log .json .yaml .yml
    .csv .tsv .pdf .png .jpg .jpeg .gif .webp`, compared without case (a name that is only an
-   extension is not one), and no segment of the path starts with `.`: a hidden file or folder
+   extension is not one); and no segment of the path starts with `.`: a hidden file or folder
    (`~/.ssh`, `~/.config`, `.git/…`, `.env.json`) stays on the hub. The route's own form rule has
    already refused an empty, `.` or `..` segment.
 4. The file (`openLinkedFile`): `realpath` resolves every link (a missing or looping one is
-   `not_found`, 404; any other error `unreadable`, 422); the resolved name must again be listed and
-   the resolved path must have no hidden segment, so a visible name that resolves into a hidden place
-   is refused too (`not_a_document`); `lstat` of the resolved path must be a regular file (`not_found`: a folder, a
+   `not_found`, 404; any other error `unreadable`, 422); the resolved path must again be under an
+   allowed root or the hub user's real home folder (so `/tmp/x.md`, which resolves to
+   `/private/tmp/x.md`, is served, and a link in the home folder to `/etc/…` is not), its name must
+   again be listed, and it must have no hidden segment, so a visible name that resolves into a hidden
+   or system place is refused too (`not_a_document`); `lstat` of the resolved path must be a regular file (`not_found`: a folder, a
    pipe) of at most 25 MB (`too_large`, 413). It is then opened with `O_NOFOLLOW | O_NONBLOCK` and
    `fstat` must show the same device and inode that were checked, so a file swapped for a link or
    another file between the check and the open is `not_found`.
@@ -1722,8 +1727,8 @@ the channels `agent-inbox:desk-files-available` and `agent-inbox:desk-open-file`
 base. `openFile` runs these checks in order:
 
 1. The sender (`unavailable`), then the request is exactly `{ kind, id, path }` with a path by the
-   hub's form rule (`bad_request`), then the hub's own document rule: a listed name and no hidden
-   segment (`not_a_document`). None of these use a press or log anything.
+   hub's form rule (`bad_request`), then the hub's own document rule: `~/` or an allowed root, a
+   listed name and no hidden segment (`not_a_document`). None of these use a press or log anything.
 2. A fresh key press or click in the view, used up by this open (`no_gesture`), as Open desk's.
 3. At most one open a second and twenty a minute, never two at once (`busy`).
 4. Day-old copies are swept (below). Main fetches `<hub>/api/remote/file?kind=…&id=…&path=<base64url>`
@@ -1763,8 +1768,13 @@ draws a file chip's group for the item or row whose card links it, from the chip
 markup) becomes a group: the chip (whose click still copies the path), **Copy path**, and either
 **Open a copy on this Mac** with a status line, or the line "This file opens only on the other
 Mac." The button shows for exactly the links the hub accepts on form (`hubFileListed`: the hub's
-form rule, a listed name, no hidden segment), and main asks for exactly those; one test feeds the
-same texts through the page's, main's and the hub's rules and compares the sets. A repo-relative
+form rule, `~/` or an allowed root, a listed name, no hidden segment), and main asks for exactly
+those. Each side keeps the roots and the extensions in one list (`ALLOWED_ROOTS` and
+`DOCUMENT_EXTENSIONS` in `src/remote-file.ts` and `electron/hub-files.cjs`, `HUB_FILE_ROOTS` and
+`HUB_FILE_EXTENSIONS` in `public/hub-files.js`), and tests compare them; one test feeds the same
+texts, system locations included, through the page's, main's and the hub's rules and compares the sets.
+On the card's path only `~/` stands for the home: an absolute path to a home outside the listed roots
+(a Linux `/home/…`) is not served, so all three sides can decide alike without knowing the hub's home. A repo-relative
 file keeps today's chip. While an open runs the button is disabled; then it says "Opened" for 1.5 seconds, or one
 sentence per reason word sits beside it for 6 seconds, as text. The words for an older hub say to
 update it once on that Mac (Agent Inbox → Check for Updates…), in a sentence of their own. On This

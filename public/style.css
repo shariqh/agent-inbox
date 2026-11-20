@@ -3376,9 +3376,9 @@ body.hub-reconnecting #status { display: none; }
 .reply-row > .handled-btn:not(.undo-btn) { order: -1; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
 .reply-row > .handled-btn:not(.undo-btn):hover { border-color: var(--app-accent-hover); background: var(--app-accent-hover); color: var(--app-on-accent); }
 /* Resolve, Dismiss, Note and Change answer stay, quieter. A hand-off's Acknowledge (beside its menu) keeps its weight. */
-:is(.card, .nrow-card-compose) > .actions button { border-color: transparent; background: transparent; color: var(--app-muted); }
-:is(.card, .nrow-card-compose) > .actions:has(> .disposition-menu) button { border-color: var(--app-border); background: var(--app-surface); color: var(--app-text); }
-:is(.card, .nrow-card-compose) > .actions button:hover { border-color: var(--app-border); color: var(--app-text); }
+:is(.lb-card > .card, .nrow-card-compose) > .actions button { border-color: transparent; background: transparent; color: var(--app-muted); }
+:is(.lb-card > .card, .nrow-card-compose) > .actions:has(> .disposition-menu) button { border-color: var(--app-border); background: var(--app-surface); color: var(--app-text); }
+:is(.lb-card > .card, .nrow-card-compose) > .actions button:hover { border-color: var(--app-border); color: var(--app-text); }
 /* The Inbox list row at rest is one line: the project dot, the title, the change marker, a chip that says
    something other than "waiting on you", and the short age. The rest is in the open card, and every part
    stays in the DOM. Scoped to the row's own lines: the open card under it and the session panel reuse
@@ -3401,3 +3401,11 @@ body.hub-reconnecting #status { display: none; }
    own along; the age drops its separator when it is the first text left. */
 .ny-card :is(.ny-agent, .ny-branch, .ny-session, .ny-plan) { display: none; }
 .ny-meta > .ny-project[hidden] ~ .ny-age::before { content: none; }
+/* The inspector's head: the opened ask's title leads; the session token and Show on Agents › stay, quietly. */
+/* :where() keeps these at one class, so the phone sheet's smaller head title (in the 1279px block) still wins */
+:where(.nrow-card-head > div, .lb-card > .card, .lb-row-card, .row-panel) > .card-title { font-size: 24px; font-weight: 700; line-height: 1.2; }
+:where(.nrow-card-scroll, .lb-card, .row-panel) .card-tldr-body { color: var(--app-text-soft); font-size: 15px; line-height: 1.45; }
+.nrow-card-head .nrow-card-session { gap: var(--sp-2); }
+.nrow-card-head .nrow-session { border-color: transparent; padding: 0; color: var(--app-text-soft); }
+.nrow-card-head .nrow-show-agents { color: var(--app-text-soft); font-size: var(--fs-meta); font-weight: 500; }
+.nrow-card-head .nrow-show-agents:hover { color: var(--app-accent); }

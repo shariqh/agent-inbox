@@ -202,7 +202,7 @@ describe('the answer area (UX ask, point 3)', () => {
     const actions = row(id)!.querySelector('.nrow-card-compose > .actions')!
     expect([...actions.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Resolve', 'Dismiss', 'Note'])
     expect(actions.querySelector('[data-shortcut-id="resolve"]')).not.toBeNull()
-    expect(rule(':is(.card, .nrow-card-compose) > .actions button')).toMatch(/border-color:\s*transparent/)
+    expect(rule(':is(.lb-card > .card, .nrow-card-compose) > .actions button')).toMatch(/border-color:\s*transparent/)
   })
 })
 
@@ -265,5 +265,24 @@ describe('the Inbox list row (UX ask, point 4)', () => {
     expect(block).toMatch(/\.nrow-star:has\(\.undo-btn\)/)
     expect(block).toMatch(/\.nrow > \.nrow-l2:not\(:has\(\.undo-btn\)\)/)
     expect(block).not.toMatch(/\.nrow-wake[^{]*\{[^}]*(?:opacity:\s*0|display:\s*none)/)
+  })
+})
+
+describe('the inspector head (UX ask, point 6)', () => {
+  it('names the project only under the title; the agent stays in Details', async () => {
+    db = freshDb()
+    const id = question(db)
+    question(db, { agent: 'claude-code', title: 'A second agent in the project names agents on rows' })
+    await bootApp(db)
+    await showInbox()
+    click(row(id))
+    await settle()
+    expect(row(id)!.querySelector('.nrow-agent')?.textContent).toBe('copilot')
+    const heading = row(id)!.querySelector('.nrow-card-head > div')!
+    expect(heading.querySelector(':scope > span')?.textContent).toBe('alpha')
+    expect(row(id)!.querySelector('.card-context .card-meta')?.textContent).toContain('copilot')
+    expect(rule('.nrow-card-head .nrow-show-agents')).toMatch(/font-weight:\s*500/)
+    // the head's title leads, at one class so the phone sheet's own size still wins
+    expect(rule(':where(.nrow-card-head > div, .lb-card > .card, .lb-row-card, .row-panel) > .card-title')).toMatch(/font-size:\s*24px;[^}]*font-weight:\s*700;[^}]*line-height:\s*1\.2/)
   })
 })

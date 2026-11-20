@@ -8274,8 +8274,9 @@ function rowCardBodyEl(entry, m, nowMs) {
   title.setAttribute('role', 'heading')
   title.setAttribute('aria-level', '2')
   title.innerHTML = renderStructuredText(m.title, entry.kind === 'row' ? textContext(entry.board, entry.row) : textContext(entry.item))
+  // UX pass, slice 1: the project only; the agent is in Details' meta line
   const meta = document.createElement('span')
-  meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
+  meta.textContent = m.project ?? ''
   heading.append(title, meta)
   // #454 A.2: the ask's session, and the way to its card on the Agents view,
   // offered only where a session card can open it (the lanes design §6)

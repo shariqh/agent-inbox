@@ -9,6 +9,8 @@ export interface HubFilesBridge {
 
 /** The hub's document extensions (src/remote-file.ts), lowercase with the dot. */
 export const HUB_FILE_EXTENSIONS: readonly string[]
+/** The hub's allowed roots besides `~/` (src/remote-file.ts ALLOWED_ROOTS). */
+export const HUB_FILE_ROOTS: readonly string[]
 export const OPEN_COPY: 'Open a copy on this Mac'
 export const ONLY_THERE: string
 /** One sentence per refusal word main can answer. */
@@ -16,7 +18,7 @@ export const HUB_FILE_REFUSALS: Readonly<Record<string, string>>
 export const HUB_FILE_FALLBACK: string
 /** The sentence for a refusal word, HUB_FILE_FALLBACK for any other. */
 export function hubFileRefusal(reason: unknown): string
-/** Whether a path may open as a copy: absolute or `~/`, with a listed extension. */
+/** Whether a path may open as a copy: the hub's rule (`~/` or an allowed root, a listed extension, nothing hidden). */
 export function hubFileListed(path: unknown): boolean
 /** `{ kind, id }` for an item or a plan row, else null. */
 export function hubFileEntity(entity: unknown): { kind: 'item' | 'row'; id: string } | null

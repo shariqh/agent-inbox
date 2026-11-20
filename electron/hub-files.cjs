@@ -7,8 +7,8 @@
 // card links the file and the path, through agentInboxDesk.openFile({ kind, id, path }). Main decides
 // everything else, in this order, each with its own reason word: the sender is the hub view's top
 // frame on the hub's own page (`unavailable`), the request is exactly `{ kind, id, path }` with a path
-// by the hub's form rule (`bad_request`) that names a listed document with no hidden segment
-// (`not_a_document`), that view is focused and had a key press or click
+// by the hub's form rule (`bad_request`) that names a listed document under `~/` or an allowed root,
+// with no hidden segment (`not_a_document`), that view is focused and had a key press or click
 // under 5 seconds ago, used up by this open (`no_gesture`), at most one open a second and twenty a
 // minute, never two at once (`busy`). Then main asks the hub itself, through the connection's hub
 // fetch only (`unreachable`): GET /api/remote/file, where the hub checks the link again
@@ -39,6 +39,8 @@ const DOCUMENT_EXTENSIONS = Object.freeze([
   '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
 ])
 const LISTED = new Set(DOCUMENT_EXTENSIONS)
+// the hub's allowed roots besides `~/` (src/remote-file.ts ALLOWED_ROOTS), compared in a test
+const ALLOWED_ROOTS = Object.freeze(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
 const PATH_MAX = 4096
 const NAME_MAX = 120
 // what a file name may hold in UTF-8, with room to spare under the file system's 255
@@ -109,9 +111,9 @@ function hiddenPath(filePath) {
   return filePath.split('/').some((segment) => segment.startsWith('.'))
 }
 
-/** The hub's servablePath (src/remote-file.ts): a path by the hub's form rule, with a listed name and no hidden segment. */
+/** The hub's servablePath (src/remote-file.ts): a path by the hub's form rule, under `~/` or an allowed root, with a listed name and no hidden segment. */
 function servablePath(filePath) {
-  return linkedPathForm(filePath) && documentName(filePath.slice(filePath.lastIndexOf('/') + 1)) && !hiddenPath(filePath) && copyName(filePath) !== null
+  return linkedPathForm(filePath) && (filePath.startsWith('~/') || ALLOWED_ROOTS.some((root) => filePath.startsWith(root))) && documentName(filePath.slice(filePath.lastIndexOf('/') + 1)) && !hiddenPath(filePath) && copyName(filePath) !== null
 }
 
 /** `{ kind, id, path }` from exactly one plain object with exactly those keys and a path the hub's form rule takes; else null. */
@@ -441,6 +443,7 @@ function createHubFiles(options) {
 }
 
 module.exports = {
+  ALLOWED_ROOTS,
   DOCUMENT_EXTENSIONS,
   FILES_FROM,
   FILE_MAX,

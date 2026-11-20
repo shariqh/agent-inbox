@@ -21,6 +21,9 @@ export const HUB_FILE_EXTENSIONS = Object.freeze([
   '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
 ])
 const LISTED = new Set(HUB_FILE_EXTENSIONS)
+// the hub's allowed roots besides `~/` (src/remote-file.ts ALLOWED_ROOTS), compared in a test:
+// system locations stay on the other Mac
+export const HUB_FILE_ROOTS = Object.freeze(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
 // item and row ids main accepts (electron/hub-files.cjs)
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
@@ -54,7 +57,7 @@ export function hubFileRefusal(reason) {
 
 /**
  * Whether a link's path may open as a copy: the hub's own rule (src/remote-file.ts linkedPathForm and
- * servablePath), so the button shows for exactly what the hub serves. Absolute or under `~/`, at most
+ * servablePath), so the button shows for exactly what the hub serves. Under `~/` or an allowed root, at most
  * 4,096 characters, no control character, no empty segment and none that starts with `.` (so no `.`,
  * no `..` and no hidden file or folder), its name ending in a listed extension. Main checks again.
  */
@@ -62,7 +65,7 @@ export function hubFileListed(path) {
   if (typeof path !== 'string' || path.length < 2 || path.length > PATH_MAX || CONTROL.test(path)) return false
   let body
   if (path.startsWith('~/')) body = path.slice(2)
-  else if (path.startsWith('/')) body = path.slice(1)
+  else if (HUB_FILE_ROOTS.some((root) => path.startsWith(root))) body = path.slice(1)
   else return false
   if (body.split('/').some((segment) => segment === '' || segment.startsWith('.'))) return false
   const name = path.slice(path.lastIndexOf('/') + 1)

@@ -9,6 +9,8 @@ export interface HubFileRequest { kind: 'item' | 'row'; id: string; path: string
 
 /** The hub's list of document extensions (src/remote-file.ts), lowercase with the dot. */
 export const DOCUMENT_EXTENSIONS: readonly string[]
+/** The hub's allowed roots besides `~/` (src/remote-file.ts ALLOWED_ROOTS). */
+export const ALLOWED_ROOTS: readonly string[]
 /** The first version whose hub serves GET /api/remote/file: a 403 from an older hub is `old_hub`. */
 export const FILES_FROM: string
 /** The largest file fetched, in bytes (25 MB). */
@@ -25,7 +27,7 @@ export function linkedPathForm(value: unknown): boolean
 export function copyName(filePath: unknown): string | null
 /** Whether any segment starts with `.` (a hidden file or folder). */
 export function hiddenPath(filePath: string): boolean
-/** The hub's servablePath: the form rule, a listed name, no hidden segment. */
+/** The hub's servablePath: the form rule, `~/` or an allowed root, a listed name, no hidden segment. */
 export function servablePath(filePath: string): boolean
 /** `{ kind, id, path }` from exactly `[{ kind, id, path }]` with a path by the hub's form rule, or null. */
 export function fileRequest(args: unknown): HubFileRequest | null

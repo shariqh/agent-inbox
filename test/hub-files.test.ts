@@ -128,6 +128,10 @@ describe('servablePath: the hub\'s rule, applied before anything is asked', () =
     ['/Users/owner/page.html', false], ['/Users/owner/icon.svg', false], ['/Users/owner/run.command', false], ['/Users/owner/.md', false],
     ['~/.ssh/config.json', false], ['/Users/owner/.config/gh/hosts.yml', false], ['/Users/owner/repo/.env.json', false],
     ['/Users/owner/repo/.git/HEAD.txt', false], ['~/notes/.draft.md', false],
+    // system locations stay on the hub
+    ['/etc/hosts.txt', false], ['/private/etc/x.json', false], ['/Library/Logs/x.log', false], ['/var/log/system.log', false],
+    ['/Applications/X.app/Contents/Info.json', false], ['/tmp/a.md', true], ['/private/tmp/a.md', true], ['/var/folders/ab/T/a.md', true],
+    ['/Volumes/Disk/a.md', true],
   ])('%s: %s', (path, expected) => {
     expect(servablePath(path)).toBe(expected)
   })
@@ -234,10 +238,10 @@ describe('createHubFiles: each check, in order', () => {
     expect(await h.open()).toEqual({ ok: true })
   })
 
-  it('1. the document: a type off the list or a hidden file or folder is not_a_document, asks nothing and uses no press', async () => {
+  it('1. the document: a type off the list, a hidden file or folder, or a system location is not_a_document, asks nothing and uses no press', async () => {
     const h = harness()
     h.press()
-    for (const path of ['/Users/owner/page.html', '~/.ssh/config.json', '/Users/owner/repo/.git/HEAD.txt', '/Users/owner/repo/.env.json']) {
+    for (const path of ['/Users/owner/page.html', '~/.ssh/config.json', '/Users/owner/repo/.git/HEAD.txt', '/Users/owner/repo/.env.json', '/etc/hosts.txt', '/var/log/system.log']) {
       expect(await h.open({ kind: 'item', id: ITEM, path }), path).toEqual({ ok: false, reason: 'not_a_document' })
     }
     expect(h.calls).toEqual([])

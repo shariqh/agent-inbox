@@ -7,9 +7,9 @@
 import { serveStatic } from '@hono/node-server/serve-static'
 import type Database from 'better-sqlite3'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, mkdirSync, openSync, renameSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import type { Server } from 'node:http'
-import { join } from 'node:path'
+import { extname, join } from 'node:path'
 import { Hono } from 'hono'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { archiveBoard, getBoardRowWithPlan, insertItem, listBoards, openDb, upsertBoard } from '../src/store.js'
@@ -18,12 +18,12 @@ import { startLocalViewer } from '../src/viewer-network.js'
 import { GUARDED_ROUTES, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import {
-  DOCUMENT_EXTENSIONS, FILE_MAX, FILE_PATH, cardFilePaths, documentName, fileStream, hiddenPath, linkedFiles, linkedPathForm,
+  ALLOWED_ROOTS, DOCUMENT_EXTENSIONS, FILE_MAX, FILE_PATH, allowedPath, cardFilePaths, documentName, fileStream, hiddenPath, linkedFiles, linkedPathForm,
   openLinkedFile, readFileQuery, remoteFileRoute, servablePath,
 } from '../src/remote-file.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 import { cardLinks } from '../public/link-strip.js'
-import { hubFileListed } from '../public/hub-files.js'
+import { HUB_FILE_ROOTS, hubFileListed } from '../public/hub-files.js'
 import hubFilesModule from '../electron/hub-files.cjs'
 import { waitUntil } from './wait.js'
 import { HOST, LOGIN, deviceHeaders, freePort, newSecret, rawRequest, setting, writeSetting, device } from './remote-fixtures.js'
@@ -200,6 +200,25 @@ describe('cardFilePaths: the file links a card draws, absolute or ~/', () => {
   })
 })
 
+describe('the root allowlist', () => {
+  it.each([
+    ['~/notes/a.md', true], ['/Users/owner/a.md', true], ['/Volumes/Disk/a.md', true], ['/tmp/a.md', true], ['/private/tmp/a.md', true],
+    ['/var/folders/ab/T/a.md', true], ['/private/var/folders/ab/a.md', true],
+    ['/etc/hosts.txt', false], ['/private/etc/x.json', false], ['/Library/Logs/x.log', false], ['/var/log/system.log', false],
+    ['/Applications/X.app/Contents/Info.json', false], ['/usr/share/x.md', false], ['/opt/x.md', false], ['/System/x.json', false],
+    ['/private/var/db/x.json', false], ['/home/owner/a.md', false], ['/Users', false], ['/tmpx/a.md', false], ['/Usersx/a.md', false],
+  ])('%s is under an allowed root: %s', (path, expected) => {
+    expect(allowedPath(path)).toBe(expected)
+    expect(servablePath(path)).toBe(expected)
+  })
+
+  it('takes the real home folder as allowed for a resolved target', () => {
+    expect(allowedPath('/home/owner/a.md', '/home/owner')).toBe(true)
+    expect(allowedPath('/home/ownerx/a.md', '/home/owner')).toBe(false)
+    expect(allowedPath('/home/owner', '/home/owner')).toBe(false)
+  })
+})
+
 describe('the hidden-file rule', () => {
   it.each([
     ['~/.ssh/config.json', true], ['/Users/owner/.config/gh/hosts.yml', true], ['/Users/owner/repo/.env.json', true],
@@ -218,7 +237,11 @@ describe('one rule on three sides: the page, the connecting Mac and the hub', ()
     'x=/Users/owner/eq.md', '/Users/owner/col.md:12:3', '/Users/owner/range.md:12-20', '~/notes/plan.txt', '/Users/owner/page.html',
     '/Users/owner/run.sh', '/Users/owner/../etc/x.md', 'x /Users//owner/a.md', '/Users/owner/.ssh/id.json', '~/.config/gh/hosts.yml',
     '/Users/owner/repo/.git/HEAD.txt', '/Users/owner/repo/.env.json', '/Users/owner/LOGO.PNG', '/Users/owner/ü-plan.md', '/Users/owner/a%2Fb.md',
-    '/Users/owner/.', '/tmp/x', '/etc/hosts.txt', '[spec](/Users/owner/md-link.md)', '`/Users/owner/code.md:4`', '/Users/owner/a-.md-',
+    '/Users/owner/.', '/tmp/x', '[spec](/Users/owner/md-link.md)', '`/Users/owner/code.md:4`', '/Users/owner/a-.md-',
+    // system locations stay on the hub; the allowed roots besides the home are served
+    '/etc/hosts.txt', '/private/etc/x.json', '/Library/Logs/x.log', '/var/log/system.log', '/Applications/X.app/Contents/Info.json',
+    '/usr/share/notes.md', '/opt/tool/readme.md', '/System/Library/x.json', '/private/var/db/x.json',
+    '/tmp/tmp-note.md', '/private/tmp/private-tmp.md', '/var/folders/ab/cd/T/folders.md', '/private/var/folders/ab/T/pv.md', '/Volumes/Disk/vol.md',
   ]
   const { fileRequest, servablePath: mainServable } = hubFilesModule
 
@@ -232,7 +255,13 @@ describe('one rule on three sides: the page, the connecting Mac and the hub', ()
     expect(main).toEqual(hub)
   })
 
-  it('accepts the forms the old boundary rule refused, and refuses the hidden and climbing ones', () => {
+  it('keeps one list of allowed roots per side, the same on all three', () => {
+    expect([...ALLOWED_ROOTS]).toEqual(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
+    expect([...hubFilesModule.ALLOWED_ROOTS]).toEqual([...ALLOWED_ROOTS])
+    expect([...HUB_FILE_ROOTS]).toEqual([...ALLOWED_ROOTS])
+  })
+
+  it('accepts the forms the old boundary rule refused, and refuses the hidden, climbing and system ones', () => {
     const served = texts.flatMap((text) => {
       const item = { id: ITEM, kind: 'note', title: text }
       return cardFilePaths(item, item).filter((path) => servablePath(path))
@@ -240,7 +269,8 @@ describe('one rule on three sides: the page, the connecting Mac and the hub', ()
     expect(served).toEqual([
       '/Users/owner/colon.md', '/Users/owner/spec.md', '/Users/owner/spec.md', '/Users/owner/curly.md', '/Users/owner/brace.md', '/Users/owner/eq.md',
       '/Users/owner/col.md', '/Users/owner/range.md', '~/notes/plan.txt', '/Users/owner/LOGO.PNG', '/Users/owner/ü-plan.md',
-      '/Users/owner/a%2Fb.md', '/etc/hosts.txt', '/Users/owner/md-link.md', '/Users/owner/code.md',
+      '/Users/owner/a%2Fb.md', '/Users/owner/md-link.md', '/Users/owner/code.md',
+      '/tmp/tmp-note.md', '/private/tmp/private-tmp.md', '/var/folders/ab/cd/T/folders.md', '/private/var/folders/ab/T/pv.md', '/Volumes/Disk/vol.md',
     ])
   })
 })
@@ -325,6 +355,33 @@ describe('openLinkedFile: the file checks after links are resolved', () => {
   ])('refuses %s', (_name, make, reason) => {
     const dir = home()
     expect(openLinkedFile(make(dir), dir)).toEqual({ ok: false, reason })
+  })
+
+  // a visible, allowed path that resolves to a system location is refused there, before it is read
+  const systemFile = ['/etc/racoon/psk.txt', '/usr/share/misc/syscalls.json', '/usr/share/icu/icutzformat.txt'].find((file) => existsSync(file))
+  it.skipIf(systemFile === undefined)('refuses a link in the home folder to a listed file in a system location', () => {
+    const dir = home()
+    symlinkSync(systemFile!, join(dir, `system${extname(systemFile!)}`))
+    expect(openLinkedFile(`~/system${extname(systemFile!)}`, dir)).toEqual({ ok: false, reason: 'not_a_document' })
+    expect(openLinkedFile(join(dir, `system${extname(systemFile!)}`), dir)).toEqual({ ok: false, reason: 'not_a_document' })
+  })
+
+  it('refuses a link in the home folder to a folder outside the allowed roots', () => {
+    const dir = home()
+    symlinkSync('/etc', join(dir, 'etc'))
+    expect(openLinkedFile('~/etc/hosts.txt', dir)).toEqual({ ok: false, reason: existsSync('/etc/hosts.txt') ? 'not_a_document' : 'not_found' })
+  })
+
+  it('serves a path under /tmp that resolves to /private/tmp', () => {
+    const tmp = mkdtempSync('/tmp/remote-file-tmp-')
+    try {
+      writeFileSync(join(tmp, 'note.md'), 'in tmp')
+      const opened = openLinkedFile(join(tmp, 'note.md'), '/nonexistent-home')
+      expect(opened).toMatchObject({ ok: true, size: 6 })
+      close(opened)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   it('takes a file of exactly 25 MB', () => {

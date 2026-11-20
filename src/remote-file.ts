@@ -12,10 +12,11 @@
 //    (public/link-strip.js cardLinks, which reads the same stored fields through public/links.js)
 //    finds a file link whose path is exactly the requested one, absolute or under `~/`. A
 //    repo-relative link is not served. Else `not_linked`, also for an unknown entity.
-// 3. The path in the card ends in a listed document extension and has no segment that starts with
-//    `.` (`not_a_document`). After symbolic links are resolved, the target must be a regular file
-//    (`not_found`) whose own name ends in a listed extension and whose path has no hidden segment
-//    (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The file opened
+// 3. The path in the card is under an allowed root (`~/`, /Users, /Volumes, /tmp, /private/tmp,
+//    /var/folders, /private/var/folders), ends in a listed document extension and has no segment that
+//    starts with `.` (`not_a_document`). After symbolic links are resolved, the target must be a
+//    regular file (`not_found`) under an allowed root or the real home folder, whose own name ends in
+//    a listed extension and whose path has no hidden segment (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The file opened
 //    is the one checked: same device and inode, opened without following a link.
 // 4. It goes out as a download, never as a page, streamed with its length; a file that changes size
 //    while it is read is cut off and the request fails.
@@ -42,6 +43,13 @@ export const FILE_MAX = 25 * 1024 * 1024
 export const DOCUMENT_EXTENSIONS: readonly string[] = Object.freeze([
   '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
 ])
+/**
+ * The folders a served file may be under, besides the hub user's home: on the path as the card names
+ * it (where `~/` stands for the home) and again on its resolved target (where the real home folder
+ * counts). System locations (`/etc`, `/Library`, `/System`, `/Applications`, `/usr`, `/opt`, the rest
+ * of `/var`) stay on the hub. The connecting Mac's main and the page keep the same list.
+ */
+export const ALLOWED_ROOTS: readonly string[] = Object.freeze(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
 export type FileRefusal = 'bad_request' | 'not_linked' | 'not_a_document' | 'too_large' | 'not_found' | 'unreadable'
 
 export type FileKind = 'item' | 'row'
@@ -120,9 +128,20 @@ export function hiddenPath(path: string): boolean {
   return path.split('/').some((segment) => segment.startsWith('.'))
 }
 
-/** A path the route may serve by its form: a listed document name and no hidden segment, on the path as the card names it. */
+/**
+ * Whether `path` is under an allowed root: `~/…`, one of ALLOWED_ROOTS, or (for a resolved target)
+ * inside `realHome`, the hub user's real home folder.
+ */
+export function allowedPath(path: string, realHome?: string): boolean {
+  if (path.startsWith('~/') || ALLOWED_ROOTS.some((root) => path.startsWith(root))) return true
+  if (typeof realHome !== 'string' || realHome === '' || realHome === '/') return false
+  const home = realHome.endsWith('/') ? realHome : `${realHome}/`
+  return path.startsWith(home)
+}
+
+/** A path the route may serve by its form, on the path as the card names it: under an allowed root, a listed document name, no hidden segment. */
 export function servablePath(path: string): boolean {
-  return linkedPathForm(path) && documentName(lastSegment(path)) && !hiddenPath(path)
+  return linkedPathForm(path) && allowedPath(path) && documentName(lastSegment(path)) && !hiddenPath(path)
 }
 
 type CardEntity = Parameters<typeof cardLinks>[0]
@@ -175,7 +194,13 @@ export function openLinkedFile(path: string, home: string, seam: { beforeOpen?: 
   } catch (error) {
     return { ok: false, reason: MISSING.has(errorCode(error) ?? '') ? 'not_found' : 'unreadable' }
   }
-  if (!documentName(lastSegment(real)) || hiddenPath(real)) return { ok: false, reason: 'not_a_document' }
+  let realHome = home
+  try {
+    realHome = realpathSync.native(home)
+  } catch {
+    // a home that cannot be resolved counts only as written
+  }
+  if (!allowedPath(real, realHome) || !documentName(lastSegment(real)) || hiddenPath(real)) return { ok: false, reason: 'not_a_document' }
   let checked
   try {
     checked = lstatSync(real)

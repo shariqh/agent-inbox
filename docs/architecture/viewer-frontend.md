@@ -95,6 +95,18 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   in use holds a viewer restart's reload. The Agents home's "Not delivered" fold
   rebuilds only when what it shows changes.
   Nothing about messages reaches attention, a badge, a count or the dock.
+- An ask at rest is its question, one line of why (the TL;DR), its Links strip and
+  its answers (UX pass, slice 1). Why it matters, Then, who acts and the PR, issue
+  and waits chips are the first blocks of the card's one `details.card-context`,
+  "Details" (`cardDetailsHtml`); a search hit in any of them opens it. Each option's
+  detail is one line until Compare (`openCompares`/`openRowCompares` hold the asks
+  opened; the compact session panel keeps `compactCompares`). The rest is CSS in one
+  block at the end of `public/style.css`: the context editor stays in the DOM, out of
+  sight until focus enters the answer area or it holds text; the Inbox row is one line
+  (`chip-rest` marks a chip that only says the ask waits on you); and shortcut tiles
+  draw only under `.keys-shown`, which `keyboard-ui.js` sets on the root while Show
+  keys is on. Hide with CSS, never by removing DOM: shortcuts, drafts, focus restore
+  and the inspector's lift of the answer area all bind to the markup.
 
 ## Invariants in detail
 

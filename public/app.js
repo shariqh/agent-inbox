@@ -5242,21 +5242,23 @@ function cardLinksHtml(entity, identity) {
   })
 }
 
-// At rest the origin names only the project (where the card shows one) and a
-// row's plan; '' when it has neither. Who acts and the chips are in Details.
+// At rest the origin names the project (where the card shows one), a row's plan
+// and the PR and issue chips, which say where an approval stands (and carry an
+// approval's Preview); '' when it has none of them. Who acts and a row's waits
+// chip are in Details.
 function cardOriginHtml(entity, identity, { showProject = true } = {}) {
   const parts = [
     showProject ? `<span>${esc(identity.project)}</span>` : '',
     entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : '',
-  ].filter(Boolean)
+    sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true }),
+  ].filter((part) => part.trim())
   return parts.length ? `<div class="card-origin">${parts.join('')}</div>` : ''
 }
 
-// Inside Details: who acts, the PR and issue chips and a row's waits chip.
+// Inside Details: who acts, and a row's waits chip.
 function cardSourcesHtml(entity, identity) {
   const parts = [
     entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : '',
-    sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true }),
     entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : '',
   ].filter((part) => part.trim())
   return parts.length ? `<div class="card-sources">${parts.join('')}</div>` : ''

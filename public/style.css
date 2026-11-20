@@ -3391,11 +3391,11 @@ body.hub-reconnecting #status { display: none; }
 .nrow > .nrow-l1 :is(.nrow-proj, .nrow-glyph, .nrow-owner, .nrow-session, .chip-rest, .nrow-src),
 .nrow > .nrow-l2:not(:has(.undo-btn)) { display: none; }
 .nrow > .nrow-l1 .nrow-asked { min-width: 3ch; text-align: end; font-variant-numeric: tabular-nums; }
-/* ★, ✕ and the caret show on hover, on the keyboard-selected row and on the open row; a staged state
-   ("Sent: … — Undo") always shows, and so does a snoozed or pinned row's Wake. */
-.nrow > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret) { opacity: 0; }
-.nrow:is(:hover, :focus-within, .selected, [data-open="1"]) > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret),
-.nrow > .nrow-l1 .nrow-star:has(.undo-btn) { opacity: 1; }
+/* ★ and ✕ take the row's right corner on hover, on the keyboard-selected row and on the open row; at rest
+   the age ends the line, at the same place in every row. A staged state ("Sent: … — Undo") always shows,
+   and so does a snoozed or pinned row's Wake. The caret is not drawn: the open row is the highlighted one. */
+.nrow > .nrow-l1 .nrow-caret { display: none; }
+.nrow:not(:is(:hover, :focus-within, .selected, [data-open="1"])) > .nrow-l1 :is(.nrow-dismiss, .nrow-star:not(:has(.undo-btn))) { display: none; }
 /* The Dashboard's Needs you card: its meta line at rest is the project dot, the project, the age and the
    Hand-off and Draft markers. Each separator belongs to the part it precedes, so a hidden part takes its
    own along; the age drops its separator when it is the first text left. */
@@ -3415,3 +3415,23 @@ body.hub-reconnecting #status { display: none; }
 :root:not(.keys-shown) [data-shortcut]::after { display: none; }
 :root:not(.keys-shown) .reply-row[data-shortcut] { padding-inline-start: 0; }
 :root:not(.keys-shown) .floating-search-key { display: none; }
+
+/* From the real app's screens. On the desktop the open ask hugs its content, so the question, its one
+   line, Details and the answers read top to bottom with no empty band between them; a long Details
+   scrolls inside the card and the answers stay in view. Tablet and phone keep their own layouts. */
+@media (min-width: 1280px) {
+  .nrow-card { bottom: auto; max-height: calc(100dvh - 220px); padding: var(--sp-5) 24px; }
+  .nrow-card-scroll { flex: 0 1 auto; }
+  .nrow-card-compose { max-height: calc(100dvh - 440px); margin-top: var(--sp-4); padding-top: var(--sp-4); }
+  /* More and an item's own actions share one quiet line while More is closed and ends the answer area */
+  .nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions { margin-top: -44px; justify-content: flex-end; pointer-events: none; }
+  .nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions > * { pointer-events: auto; }
+}
+/* Each answer and its one line read as a pair, with more room between pairs than inside one. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .option + .option { margin-top: var(--sp-1); }
+/* Compare options is a quiet line of its own between the answers and the editor, not a second button beside Send. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .compare-toggle { min-height: 32px; padding: 0 2px; border: 0; background: none; color: var(--app-text-soft); font-size: 12.5px; font-weight: 600; text-align: start; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .compare-toggle:hover { color: var(--app-text); }
+:is(.card, .nrow-card-compose) .reply-row > .compare-toggle { flex: 0 0 100%; order: -1; }
+/* Send waits quietly until there is something to send. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .reply-row > .reply-input:placeholder-shown ~ button:not(.handled-btn, .compare-toggle) { opacity: .6; }

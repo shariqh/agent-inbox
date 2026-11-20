@@ -34,10 +34,10 @@ share one SQLite database on your machine.
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
 Pending requests use the stated next step as their headline when one is available.
-A card shows the question, one line of why, its links and its answers, with each
-option's tradeoff on one line (**Compare options** shows them in full). Warnings and
-your own answer stay in view. Open **Details** for why it matters, what happens next,
-who acts, the PR and issue, the original tracking title, branch, background, and
+A card shows the question, one line of why, its PR and issue, its links and its
+answers, with each option's tradeoff on one line (**Compare options** shows them in
+full). Warnings and your own answer stay in view. Open **Details** for why it matters,
+what happens next, who acts, the original tracking title, branch, background, and
 delivery timeline.
 
 ## Quick start

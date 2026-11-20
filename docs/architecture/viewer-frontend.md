@@ -96,9 +96,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   rebuilds only when what it shows changes.
   Nothing about messages reaches attention, a badge, a count or the dock.
 - An ask at rest is its question, one line of why (the TL;DR), its Links strip and
-  its answers (UX pass, slice 1). Why it matters, Then, who acts and the PR, issue
-  and waits chips are the first blocks of the card's one `details.card-context`,
-  "Details" (`cardDetailsHtml`); a search hit in any of them opens it. Each option's
+  its answers (UX pass, slice 1); the PR and issue chips stay beside the plan's name in
+  the origin line, since they say where an approval stands. Why it matters, Then, who
+  acts and a row's waits chip are the first blocks of the card's one
+  `details.card-context`, "Details" (`cardDetailsHtml`); a search hit in any of them
+  opens it. Each option's
   detail is one line until Compare (`openCompares`/`openRowCompares` hold the asks
   opened; the compact session panel keeps `compactCompares`). The rest is CSS in one
   block at the end of `public/style.css`: the context editor stays in the DOM, out of

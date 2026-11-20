@@ -111,7 +111,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   in the strip: a `<button>`). `public/link-strip.js` builds the Links strip under each card's
   TL;DR (Inbox inspector, Review queue, Notes, History, Plans row panel: they all call
   `cardLinksHtml` right after `actionBlocksHtml`; the PR and issue chips sit in the card's
-  Details, `cardSourcesHtml`) by COLLECTING what `renderStructuredText` renders for each agent field, so
+  origin line, `cardOriginHtml`, and who acts and a row's waits chip in its Details,
+  `cardSourcesHtml`) by COLLECTING what `renderStructuredText` renders for each agent field, so
   it lists exactly the links the card shows, never one from a fence or quarantined markup: own
   PR and issue first, then first appearance, one chip per target (`#284`, `PR #284` and its
   github.com URL share a key), six visible and a `+N more` `<details>` kept open across

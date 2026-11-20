@@ -247,22 +247,25 @@ describe('the Inbox list row (UX ask, point 4)', () => {
     expect(getComputedStyle(row(id)!.querySelector('.nrow-title')!).whiteSpace).toBe('nowrap')
   })
 
-  it('shows ★, ✕ and the caret on the selected and the open row only; Wake and a staged state always', async () => {
+  it('shows ★ and ✕ on the selected and the open row only, and never the caret; Wake and a staged state always', async () => {
     db = freshDb()
     const id = question(db)
     const other = question(db, { title: 'Second' })
     attachStylesheet()
     await bootApp(db)
     await showInbox()
-    const opacity = (target: string, selector: string) => getComputedStyle(row(target)!.querySelector(selector)!).opacity
-    expect(rule('.nrow > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret)')).toMatch(/opacity:\s*0/)
+    const display = (target: string, selector: string) => getComputedStyle(row(target)!.querySelector(selector)!).display
+    expect(rule('.nrow > .nrow-l1 .nrow-caret')).toMatch(/display:\s*none/)
     click(row(id))
     await settle()
-    for (const selector of ['.nrow-star', '.nrow-dismiss', '.nrow-caret']) {
-      expect(opacity(id, selector), selector).toBe('1')
-      expect(opacity(other, selector), selector).toBe('0')
+    for (const selector of ['.nrow-star', '.nrow-dismiss']) {
+      // taken out of the line at rest, so the age ends every row at the same place
+      expect(display(id, selector), selector).not.toBe('none')
+      expect(display(other, selector), selector).toBe('none')
     }
-    expect(block).toMatch(/\.nrow-star:has\(\.undo-btn\)/)
+    for (const target of [id, other]) expect(display(target, '.nrow-caret'), target).toBe('none')
+    // a staged star ("Sent: … — Undo") is never one of the hidden ones
+    expect(block).toMatch(/\.nrow-star:not\(:has\(\.undo-btn\)\)/)
     expect(block).toMatch(/\.nrow > \.nrow-l2:not\(:has\(\.undo-btn\)\)/)
     expect(block).not.toMatch(/\.nrow-wake[^{]*\{[^}]*(?:opacity:\s*0|display:\s*none)/)
   })

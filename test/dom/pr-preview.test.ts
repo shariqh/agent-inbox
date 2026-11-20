@@ -35,7 +35,7 @@ describe('preview links in actual approval cards', () => {
     expect(row(ordinary)?.querySelector(`a[href="${PREVIEW}"]`)).toBeNull()
     click(row(id))
     await settle()
-    const link = row(id)?.querySelector<HTMLAnchorElement>(`.card-sources a[href="${PREVIEW}"]`)
+    const link = row(id)?.querySelector<HTMLAnchorElement>(`.card-origin a[href="${PREVIEW}"]`)
     expect(link?.textContent).toContain('Preview')
     expect(link?.tabIndex).toBe(0)
     expect(link?.target).toBe('_blank')
@@ -62,7 +62,7 @@ describe('preview links in actual approval cards', () => {
     expect(approval?.querySelector(`a[href="${PREVIEW}"]`)).not.toBeNull()
     click(approval)
     await settle()
-    expect(approval?.querySelector(`.card-sources a[href="${PREVIEW}"]`) ?? document.querySelector(`#needsYouList [data-key-hint-owner="row:${id}"] .card-sources a[href="${PREVIEW}"]`)).not.toBeNull()
+    expect(approval?.querySelector(`.card-origin a[href="${PREVIEW}"]`) ?? document.querySelector(`#needsYouList [data-key-hint-owner="row:${id}"] .card-origin a[href="${PREVIEW}"]`)).not.toBeNull()
     expect(document.title).toBe(title)
   })
 
@@ -79,7 +79,7 @@ describe('preview links in actual approval cards', () => {
     await settle()
     const input = answerInput(id)!
     type(input, 'Preserve my review notes')
-    const original = row(id)!.querySelector<HTMLAnchorElement>(`.card-sources a[href="${PREVIEW}"]`)!
+    const original = row(id)!.querySelector<HTMLAnchorElement>(`.card-origin a[href="${PREVIEW}"]`)!
     expect(original).not.toBeNull()
     seedLink(db, { pr_head_sha: 'b'.repeat(40), preview_url: 'https://preview.example/new-head' })
     await pollTick()
@@ -142,7 +142,7 @@ describe('preview links in actual approval cards', () => {
     expect(retired.querySelector(`a[href="${PREVIEW}"]`)).toBeNull()
     click(retired)
     await settle()
-    expect(document.querySelector(`.nrow[data-key-hint-owner="${owner}"] .card-sources a[href="${PREVIEW}"]`)).toBeNull()
+    expect(document.querySelector(`.nrow[data-key-hint-owner="${owner}"] .card-origin a[href="${PREVIEW}"]`)).toBeNull()
   })
 
   it('invalidates a retired-project preview inside a draft even when its branch stays active elsewhere', async () => {
@@ -157,7 +157,7 @@ describe('preview links in actual approval cards', () => {
     await settle()
     const input = answerInput(id)!
     type(input, 'Keep these notes')
-    const link = row(id)!.querySelector<HTMLAnchorElement>('.card-sources a[data-preview-key]')!
+    const link = row(id)!.querySelector<HTMLAnchorElement>('.card-origin a[data-preview-key]')!
     closeProject(db, 'retired')
     await pollTick()
     expect(listSourceLinks(db)[0]?.preview_url).toBe(PREVIEW)
@@ -180,7 +180,7 @@ describe('preview links in actual approval cards', () => {
     await settle()
     const input = answerInput(id)!
     type(input, 'Keep my draft while offline')
-    const link = row(id)!.querySelector<HTMLAnchorElement>('.card-sources a[data-preview-key]')!
+    const link = row(id)!.querySelector<HTMLAnchorElement>('.card-origin a[data-preview-key]')!
     expect(link.hasAttribute('href')).toBe(true)
     stalled = true
     await vi.advanceTimersByTimeAsync(PREVIEW_TTL_MS + 1)
@@ -201,7 +201,7 @@ describe('preview links in actual approval cards', () => {
     await showInbox()
     click(row(id))
     await settle()
-    const link = row(id)!.querySelector<HTMLAnchorElement>('.card-sources a[data-preview-key]')!
+    const link = row(id)!.querySelector<HTMLAnchorElement>('.card-origin a[data-preview-key]')!
     vi.setSystemTime(Date.now() + PREVIEW_TTL_MS)
     const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
     link.dispatchEvent(menu)

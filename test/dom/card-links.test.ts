@@ -98,9 +98,11 @@ describe('the Links strip (issue #300)', () => {
     const strip = stripOf(card)!
     expect(strip.getAttribute('role')).toBe('group')
     expect(strip.getAttribute('aria-label')).toBe('Links')
-    // UX pass, slice 1: the strip follows the TL;DR; the PR and issue chips moved into Details
+    // UX pass, slice 1: the strip follows the TL;DR; the PR and issue chips stay at rest in the origin line
     expect(strip.previousElementSibling?.classList.contains('card-tldr')).toBe(true)
-    expect(card.querySelector('.card-sources')?.closest('details.card-context')).not.toBeNull()
+    const ownPr = card.querySelector('.card-origin a[href="https://github.com/shariqh/agent-inbox/pull/284"]')
+    expect(ownPr).not.toBeNull()
+    expect(ownPr?.closest('details')).toBeNull()
 
     const pr = strip.querySelector<HTMLAnchorElement>('a[data-link-kind="pr"]')!
     expect(pr.href).toBe('https://github.com/shariqh/agent-inbox/pull/284')
@@ -135,7 +137,7 @@ describe('the Links strip (issue #300)', () => {
     seedPr(db)
     const card = await openInspector(db, id)
     expect(stripOf(card)).toBeNull()
-    expect(card.querySelector('.card-sources a[href="https://github.com/shariqh/agent-inbox/pull/284"]')).not.toBeNull()
+    expect(card.querySelector('.card-origin a[href="https://github.com/shariqh/agent-inbox/pull/284"]')).not.toBeNull()
   })
 
   it('appears on every card surface: Review queue, Notes, History and the Plans row panel', async () => {

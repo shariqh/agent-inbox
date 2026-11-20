@@ -8,12 +8,15 @@
 // 1. The request names an entity and a path, and nothing else: `kind` (item or row), its `id`, and
 //    the path as base64url of its UTF-8 (the gate refuses `%` anywhere in a target, so a path with a
 //    space or a non-ASCII letter could not travel as plain text). A bad form is `bad_request`.
-// 2. The entity exists, and the path appears verbatim, as a whole path, in one of its stored
-//    agent-written fields (linksPath); else `not_linked`, also for an unknown entity.
-// 3. The path in the card ends in a listed document extension (`not_a_document`). After symbolic links
-//    are resolved, the target must be a regular file (`not_found`) whose own name ends in a listed
-//    extension (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The
-//    file opened is the one checked: same device and inode, opened without following a link.
+// 2. The entity exists, and its card draws the path as a file link: the page's own scanner
+//    (public/link-strip.js cardLinks, which reads the same stored fields through public/links.js)
+//    finds a file link whose path is exactly the requested one, absolute or under `~/`. A
+//    repo-relative link is not served. Else `not_linked`, also for an unknown entity.
+// 3. The path in the card ends in a listed document extension and has no segment that starts with
+//    `.` (`not_a_document`). After symbolic links are resolved, the target must be a regular file
+//    (`not_found`) whose own name ends in a listed extension and whose path has no hidden segment
+//    (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The file opened
+//    is the one checked: same device and inode, opened without following a link.
 // 4. It goes out as a download, never as a page, streamed with its length; a file that changes size
 //    while it is read is cut off and the request fails.
 //
@@ -25,7 +28,11 @@ import type { IncomingMessage } from 'node:http'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import type { Handler } from 'hono'
-import { getBoardRow, getItem } from './store.js'
+// The page's link scanner, so "linked" means exactly what a card draws as a file link. This module is
+// reached only from src/viewer-remote.ts and src/viewer-server.ts, never from the stdio MCP server
+// (test/prstate.test.ts), so the scanner stays out of that server's import graph.
+import { cardLinks } from '../public/link-strip.js'
+import { getBoardRowWithPlan, getItem } from './store.js'
 
 /** On the remote entry only, registered by guardRemoteApp after the gate. */
 export const FILE_PATH = '/api/remote/file'
@@ -53,10 +60,6 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
 // item and row ids: UUIDs, and in tests short words; never a character a query or a path gives meaning to
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const BASE64URL = /^[A-Za-z0-9_-]{2,5464}$/
-// what may stand right before or right after a path in a card's text, besides whitespace
-const BOUNDARY = new Set(['`', '\'', '"', '(', ')', '[', ']', '<', '>', ',', ';'])
-const WHITESPACE = /\s/
-const DIGIT = /[0-9]/
 const CHUNK = 64 * 1024
 const NAME_MAX = 120
 
@@ -112,57 +115,42 @@ export function readFileQuery(raw: unknown): FileRequest | null {
   return linkedPathForm(path) ? { kind, id, path } : null
 }
 
-/** Whether a path may end at `index`: the end of the text, whitespace or a boundary mark, or a `.` that ends the text or comes before whitespace. */
-function closesAt(text: string, index: number): boolean {
-  if (index === text.length) return true
-  const ch = text[index]!
-  if (WHITESPACE.test(ch) || BOUNDARY.has(ch)) return true
-  return ch === '.' && (index + 1 === text.length || WHITESPACE.test(text[index + 1]!))
+/** Whether any segment of `path` starts with `.`: a hidden file or folder (`~/.ssh`, `.git/…`, `.env.json`). */
+export function hiddenPath(path: string): boolean {
+  return path.split('/').some((segment) => segment.startsWith('.'))
 }
 
+/** A path the route may serve by its form: a listed document name and no hidden segment, on the path as the card names it. */
+export function servablePath(path: string): boolean {
+  return linkedPathForm(path) && documentName(lastSegment(path)) && !hiddenPath(path)
+}
+
+type CardEntity = Parameters<typeof cardLinks>[0]
+type CardIdentity = Parameters<typeof cardLinks>[1]
+
 /**
- * Whether `text` holds `path` verbatim as a whole path: right after the start of the text,
- * whitespace or a boundary mark (`` ` ' " ( ) [ ] < > , ; ``), and right before the end, whitespace,
- * a boundary mark, or a `.` that ends the text or comes before whitespace, with an optional
- * `:<digits>` line between. So a path that is a prefix or a suffix of a longer one never matches.
+ * The absolute and `~/` file paths the card of `entity` (an item, or a plan row read against its plan
+ * `identity`) draws as file links: public/link-strip.js's cardLinks, the Links strip's own model, with
+ * no link index (a PR or issue chip is never a file). A repo-relative link is left out.
  */
-export function linksPath(text: string, path: string): boolean {
-  if (typeof text !== 'string' || typeof path !== 'string' || path === '') return false
-  for (let at = text.indexOf(path); at !== -1; at = text.indexOf(path, at + 1)) {
-    if (at > 0 && !WHITESPACE.test(text[at - 1]!) && !BOUNDARY.has(text[at - 1]!)) continue
-    let end = at + path.length
-    if (text[end] === ':' && DIGIT.test(text[end + 1] ?? '')) {
-      end += 1
-      while (end < text.length && DIGIT.test(text[end]!)) end += 1
-    }
-    if (closesAt(text, end)) return true
+export function cardFilePaths(entity: CardEntity, identity: CardIdentity): string[] {
+  const paths: string[] = []
+  for (const link of cardLinks(entity, identity, null)) {
+    if (link.kind !== 'file' || typeof link.path !== 'string' || link.root !== undefined) continue
+    if (link.path.startsWith('/') || link.path.startsWith('~/')) paths.push(link.path)
   }
-  return false
+  return paths
 }
 
-type TextFields = Record<string, unknown> & { options?: unknown }
-
-/**
- * The agent-written fields of an item (title, detail, context, next step, impact, next-after,
- * outcome, option labels and details) or a row (label, note and the same others): the fields a
- * card's Links strip reads (public/link-strip.js). Never a reply, an annotation or a row's history.
- */
-export function entityTexts(kind: FileKind, entity: TextFields): string[] {
-  const own = kind === 'item'
-    ? [entity['title'], entity['detail']]
-    : [entity['label'], entity['note']]
-  const options = Array.isArray(entity.options) ? entity.options : []
-  return [
-    ...own, entity['context'], entity['next_step'], entity['impact'], entity['next_after'], entity['outcome'],
-    ...options.flatMap((option: unknown) => (option && typeof option === 'object' ? [(option as TextFields)['label'], (option as TextFields)['detail']] : [])),
-  ].filter((text): text is string => typeof text === 'string' && text !== '')
-}
-
-/** The texts of the item or plan row with this id, from the store; null when there is none. Every item and every row of an active or archived plan is one the remote routes show. */
-export function linkedTexts(db: Database.Database): (kind: FileKind, id: string) => string[] | null {
+/** The file paths the card of the item or plan row with this id links, from the store; null when there is none. Every item and every row of an active or archived plan is one the remote routes show. */
+export function linkedFiles(db: Database.Database): (kind: FileKind, id: string) => string[] | null {
   return (kind, id) => {
-    const entity = kind === 'item' ? getItem(db, id) : getBoardRow(db, id)
-    return entity ? entityTexts(kind, entity as unknown as TextFields) : null
+    if (kind === 'item') {
+      const item = getItem(db, id)
+      return item ? cardFilePaths(item as unknown as CardEntity, item as unknown as CardIdentity) : null
+    }
+    const found = getBoardRowWithPlan(db, id)
+    return found ? cardFilePaths(found.row as unknown as CardEntity, found.board as unknown as CardIdentity) : null
   }
 }
 
@@ -174,7 +162,7 @@ const MISSING = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENAMETOOLONG'])
 
 /**
  * Opens the file a linked path names, or says why not. `~/` is under `home`. Symbolic links are
- * resolved first; the target must have a listed extension, be a regular file and be at most
+ * resolved first; the target must have a listed extension and no hidden segment, be a regular file and be at most
  * FILE_MAX. Then it is opened without following a link and must be the same file (device and
  * inode) that was checked, so a file swapped between the check and the open is `not_found`.
  * `seam.beforeOpen` runs between the two, for tests.
@@ -187,7 +175,7 @@ export function openLinkedFile(path: string, home: string, seam: { beforeOpen?: 
   } catch (error) {
     return { ok: false, reason: MISSING.has(errorCode(error) ?? '') ? 'not_found' : 'unreadable' }
   }
-  if (!documentName(lastSegment(real))) return { ok: false, reason: 'not_a_document' }
+  if (!documentName(lastSegment(real)) || hiddenPath(real)) return { ok: false, reason: 'not_a_document' }
   let checked
   try {
     checked = lstatSync(real)
@@ -308,11 +296,11 @@ const incomingOf = (env: unknown): IncomingMessage | undefined => (env as { inco
 /**
  * The route, registered on the guarded app after the gate (guardRemoteApp): every request has passed
  * it with a paired device's secret, and the handler refuses one with no matched device by itself.
- * `texts(kind, id)` answers the entity's text fields or null; `home` is the hub user's home for `~/`.
+ * `linked(kind, id)` answers the file paths the entity's card links, or null; `home` is the hub user's home for `~/`.
  * Each refusal is `{ ok: false, reason }` with its word only.
  */
 export function remoteFileRoute(opts: {
-  texts: (kind: FileKind, id: string) => string[] | null
+  linked: (kind: FileKind, id: string) => string[] | null
   deviceOf: (incoming: IncomingMessage | undefined) => string | null
   home: string
 }): Handler {
@@ -325,14 +313,14 @@ export function remoteFileRoute(opts: {
     if (c.req.method !== 'GET' || (length !== undefined && length !== '0') || incoming?.headers['transfer-encoding'] !== undefined) return refuse('bad_request')
     const request = readFileQuery(incoming?.url)
     if (request === null) return refuse('bad_request')
-    let texts: string[] | null
+    let linked: string[] | null
     try {
-      texts = opts.texts(request.kind, request.id)
+      linked = opts.linked(request.kind, request.id)
     } catch {
-      texts = null
+      linked = null
     }
-    if (texts === null || !texts.some((text) => linksPath(text, request.path))) return refuse('not_linked')
-    if (!documentName(lastSegment(request.path))) return refuse('not_a_document')
+    if (linked === null || !linked.includes(request.path)) return refuse('not_linked')
+    if (!servablePath(request.path)) return refuse('not_a_document')
     const opened = openLinkedFile(request.path, opts.home)
     if (!opened.ok) return refuse(opened.reason)
     const socket = incoming?.socket

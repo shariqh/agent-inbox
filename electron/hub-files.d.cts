@@ -23,7 +23,11 @@ export function documentName(name: unknown): boolean
 export function linkedPathForm(value: unknown): boolean
 /** The cleaned last segment a copy is saved under, or null when it has no listed extension. */
 export function copyName(filePath: unknown): string | null
-/** `{ kind, id, path }` from exactly `[{ kind, id, path }]`, or null. */
+/** Whether any segment starts with `.` (a hidden file or folder). */
+export function hiddenPath(filePath: string): boolean
+/** The hub's servablePath: the form rule, a listed name, no hidden segment. */
+export function servablePath(filePath: string): boolean
+/** `{ kind, id, path }` from exactly `[{ kind, id, path }]` with a path by the hub's form rule, or null. */
 export function fileRequest(args: unknown): HubFileRequest | null
 /** Removes copies older than a day under `root` (ours only, never through a link) and the folders left empty. */
 export function sweepCopies(root: string, nowMs: number): void

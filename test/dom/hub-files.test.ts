@@ -70,6 +70,9 @@ describe('the words and the rules', () => {
     ['/Users/owner/docs/spec.md', true], ['~/notes/a.TXT', true], ['/tmp/shot.png', true],
     ['/Users/owner/page.html', false], ['/Users/owner/icon.svg', false], ['/Users/owner/run.sh', false], ['/Users/owner/.md', false],
     ['docs/spec.md', false], ['', false], [7, false],
+    // hidden files and folders stay on the other Mac, and so does a path the hub's form rule refuses
+    ['~/.ssh/config.json', false], ['/Users/owner/.config/gh/hosts.yml', false], ['/Users/owner/repo/.env.json', false],
+    ['/Users/owner/repo/.git/HEAD.txt', false], ['/Users/owner/../etc/x.md', false], ['/Users//owner/a.md', false], ['/Users/owner/a\u0007.md', false],
   ])('%s may open as a copy: %s', (path, expected) => {
     expect(hubFileListed(path)).toBe(expected)
   })
@@ -93,6 +96,14 @@ describe('the Links strip in another Mac\'s Inbox', () => {
     expect(document.querySelector('[data-link-action="reveal"]')).toBeNull()
     const note = document.querySelector<HTMLElement>('.hub-file-note')!
     expect(note.hidden).toBe(true)
+  })
+
+  it('gives a hidden file Copy path and the line, never the button', () => {
+    const hidden = { ...SPEC, key: 'file:~/.config/gh/hosts.yml', path: '~/.config/gh/hosts.yml', label: 'hosts.yml', title: '~/.config/gh/hosts.yml' }
+    document.body.innerHTML = linkStripHtml([hidden], { copyFiles: true, hubFiles: groupFor(entity) })
+    expect(document.querySelector('[data-hub-file-open]')).toBeNull()
+    expect(document.querySelector('[data-link-action="copy"]')).not.toBeNull()
+    expect(document.querySelector('.hub-file-only')?.textContent).toBe(ONLY_THERE)
   })
 
   it('gives any other file Copy path and one line saying it opens only on the other Mac', () => {

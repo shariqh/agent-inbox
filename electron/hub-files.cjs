@@ -7,7 +7,8 @@
 // card links the file and the path, through agentInboxDesk.openFile({ kind, id, path }). Main decides
 // everything else, in this order, each with its own reason word: the sender is the hub view's top
 // frame on the hub's own page (`unavailable`), the request is exactly `{ kind, id, path }` with a path
-// that may name a listed document (`bad_request`), that view is focused and had a key press or click
+// by the hub's form rule (`bad_request`) that names a listed document with no hidden segment
+// (`not_a_document`), that view is focused and had a key press or click
 // under 5 seconds ago, used up by this open (`no_gesture`), at most one open a second and twenty a
 // minute, never two at once (`busy`). Then main asks the hub itself, through the connection's hub
 // fetch only (`unreachable`): GET /api/remote/file, where the hub checks the link again
@@ -103,7 +104,17 @@ function copyName(filePath) {
   return stem.length > 0 && documentName(name) ? name : null
 }
 
-/** `{ kind, id, path }` from exactly one plain object with exactly those keys, a path the hub's rule takes and a listed name; else null. */
+/** Whether any segment of `filePath` starts with `.`: a hidden file or folder, which stays on the hub. */
+function hiddenPath(filePath) {
+  return filePath.split('/').some((segment) => segment.startsWith('.'))
+}
+
+/** The hub's servablePath (src/remote-file.ts): a path by the hub's form rule, with a listed name and no hidden segment. */
+function servablePath(filePath) {
+  return linkedPathForm(filePath) && documentName(filePath.slice(filePath.lastIndexOf('/') + 1)) && !hiddenPath(filePath) && copyName(filePath) !== null
+}
+
+/** `{ kind, id, path }` from exactly one plain object with exactly those keys and a path the hub's form rule takes; else null. */
 function fileRequest(args) {
   if (!Array.isArray(args) || args.length !== 1 || !isPlainObject(args[0])) return null
   const given = args[0]
@@ -111,7 +122,7 @@ function fileRequest(args) {
   if (keys.join(',') !== 'id,kind,path') return null
   const { kind, id, path: filePath } = given
   if ((kind !== 'item' && kind !== 'row') || typeof id !== 'string' || !ENTITY_ID.test(id)) return null
-  if (!linkedPathForm(filePath) || copyName(filePath) === null) return null
+  if (!linkedPathForm(filePath)) return null
   return { kind, id, path: filePath }
 }
 
@@ -404,6 +415,8 @@ function createHubFiles(options) {
       if (current === null) return unlogged('unavailable')
       const request = fileRequest(args)
       if (request === null) return unlogged('bad_request')
+      // the hub's rule, before anything is asked: a listed document, nothing hidden
+      if (!servablePath(request.path)) return unlogged('not_a_document')
       let id = null
       try {
         id = current.takeGesture(event)
@@ -436,6 +449,8 @@ module.exports = {
   createHubFiles,
   documentName,
   fileRequest,
+  hiddenPath,
   linkedPathForm,
+  servablePath,
   sweepCopies,
 }

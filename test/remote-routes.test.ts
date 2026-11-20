@@ -245,7 +245,7 @@ describe('the remote app', () => {
     expect(server).toContain([
       'const remoteApp = createViewer(db, { mesh })',
       "remoteApp.get('/*', serveStatic({ root: './public' }))",
-      'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update, files: { texts: linkedTexts(db), home: homedir() } })',
+      'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update, files: { linked: linkedFiles(db), home: homedir() } })',
     ].join('\n'))
     // Hono copies the routes when the entry wraps the app: anything added to it later is never served
     expect(server.match(/\bremoteApp\b/g)).toHaveLength(3)

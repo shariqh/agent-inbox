@@ -23,6 +23,8 @@ export const HUB_FILE_EXTENSIONS = Object.freeze([
 const LISTED = new Set(HUB_FILE_EXTENSIONS)
 // item and row ids main accepts (electron/hub-files.cjs)
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
+const PATH_MAX = 4096
 export const OPEN_COPY = 'Open a copy on this Mac'
 export const ONLY_THERE = 'This file opens only on the other Mac.'
 const OPENED = 'Opened'
@@ -50,9 +52,19 @@ export function hubFileRefusal(reason) {
   return typeof reason === 'string' && Object.hasOwn(HUB_FILE_REFUSALS, reason) ? HUB_FILE_REFUSALS[reason] : HUB_FILE_FALLBACK
 }
 
-/** Whether a link's path may open as a copy: absolute or under `~/`, its name ending in a listed extension. Main checks again. */
+/**
+ * Whether a link's path may open as a copy: the hub's own rule (src/remote-file.ts linkedPathForm and
+ * servablePath), so the button shows for exactly what the hub serves. Absolute or under `~/`, at most
+ * 4,096 characters, no control character, no empty segment and none that starts with `.` (so no `.`,
+ * no `..` and no hidden file or folder), its name ending in a listed extension. Main checks again.
+ */
 export function hubFileListed(path) {
-  if (typeof path !== 'string' || !(path.startsWith('/') || path.startsWith('~/'))) return false
+  if (typeof path !== 'string' || path.length < 2 || path.length > PATH_MAX || CONTROL.test(path)) return false
+  let body
+  if (path.startsWith('~/')) body = path.slice(2)
+  else if (path.startsWith('/')) body = path.slice(1)
+  else return false
+  if (body.split('/').some((segment) => segment === '' || segment.startsWith('.'))) return false
   const name = path.slice(path.lastIndexOf('/') + 1)
   const dot = name.lastIndexOf('.')
   return dot > 0 && LISTED.has(name.slice(dot).toLowerCase())

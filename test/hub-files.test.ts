@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import hubFilesModule from '../electron/hub-files.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
-const { DOCUMENT_EXTENSIONS, FILES_FROM, FILE_MAX, KEEP_MS, REASONS, copyName, createHubFiles, fileRequest } = hubFilesModule
+const { DOCUMENT_EXTENSIONS, FILES_FROM, FILE_MAX, KEEP_MS, REASONS, copyName, createHubFiles, fileRequest, servablePath } = hubFilesModule
 
 afterEach(() => {
   removeScratchDirs()
@@ -114,13 +114,20 @@ describe('fileRequest: exactly [{ kind, id, path }]', () => {
     ['a relative path', [{ kind: 'item', id: ITEM, path: 'docs/spec.md' }]],
     ['a .. segment', [{ kind: 'item', id: ITEM, path: '/Users/owner/../x.md' }]],
     ['a control character', [{ kind: 'item', id: ITEM, path: '/Users/owner/x\u0007.md' }]],
-    ['a type off the list', [{ kind: 'item', id: ITEM, path: '/Users/owner/page.html' }]],
-    ['an SVG', [{ kind: 'item', id: ITEM, path: '/Users/owner/icon.svg' }]],
-    ['a script', [{ kind: 'item', id: ITEM, path: '/Users/owner/run.command' }]],
-    ['a name that is only a dot and an extension', [{ kind: 'item', id: ITEM, path: '/Users/owner/.md' }]],
     ['a class instance', [new (class { kind = 'item'; id = ITEM; path = SPEC })()]],
   ])('refuses %s', (_name, args) => {
     expect(fileRequest(args)).toBeNull()
+  })
+})
+
+describe('servablePath: the hub\'s rule, applied before anything is asked', () => {
+  it.each([
+    ['/Users/owner/docs/spec.md', true], ['~/notes/a.TXT', true],
+    ['/Users/owner/page.html', false], ['/Users/owner/icon.svg', false], ['/Users/owner/run.command', false], ['/Users/owner/.md', false],
+    ['~/.ssh/config.json', false], ['/Users/owner/.config/gh/hosts.yml', false], ['/Users/owner/repo/.env.json', false],
+    ['/Users/owner/repo/.git/HEAD.txt', false], ['~/notes/.draft.md', false],
+  ])('%s: %s', (path, expected) => {
+    expect(servablePath(path)).toBe(expected)
   })
 })
 
@@ -220,8 +227,19 @@ describe('createHubFiles: each check, in order', () => {
   it('1. the request: anything but exactly { kind, id, path } is bad_request, and uses no press', async () => {
     const h = harness()
     h.press()
-    expect(await h.open({ kind: 'item', id: ITEM, path: '/Users/owner/page.html' })).toEqual({ ok: false, reason: 'bad_request' })
+    expect(await h.open({ kind: 'item', id: ITEM, path: '/Users/owner/../x.md' })).toEqual({ ok: false, reason: 'bad_request' })
     expect(await h.files.open(HUB_EVENT, [])).toEqual({ ok: false, reason: 'bad_request' })
+    expect(await h.open()).toEqual({ ok: true })
+  })
+
+  it('1. the document: a type off the list or a hidden file or folder is not_a_document, asks nothing and uses no press', async () => {
+    const h = harness()
+    h.press()
+    for (const path of ['/Users/owner/page.html', '~/.ssh/config.json', '/Users/owner/repo/.git/HEAD.txt', '/Users/owner/repo/.env.json']) {
+      expect(await h.open({ kind: 'item', id: ITEM, path }), path).toEqual({ ok: false, reason: 'not_a_document' })
+    }
+    expect(h.calls).toEqual([])
+    expect(h.logs).toEqual([])
     expect(await h.open()).toEqual({ ok: true })
   })
 

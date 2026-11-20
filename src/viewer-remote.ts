@@ -529,8 +529,8 @@ export function startRemoteEntry(opts: {
   app: Hono; dir: string; viewerPort: number; intervalMs?: number; now?: () => number
   /** #637: the hub's update relay (src/remote-update.ts); without it the update routes answer 404 */
   update?: RemoteUpdate
-  /** #634: an entity's text fields and the hub user's home, for the file route (src/remote-file.ts); without them it answers 404 */
-  files?: { texts: (kind: FileKind, id: string) => string[] | null; home: string }
+  /** #634: the file paths an entity's card links, and the hub user's home, for the file route (src/remote-file.ts); without them it answers 404 */
+  files?: { linked: (kind: FileKind, id: string) => string[] | null; home: string }
 }): RemoteEntry {
   const file = join(opts.dir, REMOTE_FILE)
   const cache = remoteSettingCache(file)

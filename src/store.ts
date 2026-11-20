@@ -3238,15 +3238,19 @@ export function getActiveBoardRow(db: Database.Database, rowId: string): BoardRo
   return row ? withUnseen([row])[0] : undefined
 }
 
-// #634: one row of any plan, active or archived, as listBoards reads it: every plan the remote
-// entry's routes show (GET /api/boards and /api/boards/archived). The remote entry's file route reads
-// a row's text from it (src/remote-file.ts).
-export function getBoardRow(db: Database.Database, rowId: string): BoardRow | undefined {
-  const row = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows
-    WHERE id = ? AND EXISTS (
-      SELECT 1 FROM boards WHERE boards.id = board_rows.board_id AND boards.status IN ('active', 'archived')
-    )`).get(rowId) as BoardRowRecord | undefined
-  return row ? withUnseen([row])[0] : undefined
+// #634: one row of any plan, active or archived, with its plan, as listBoards reads both: every plan
+// the remote entry's routes show (GET /api/boards and /api/boards/archived). The remote entry's file
+// route reads the row's links against its plan, as the page does (src/remote-file.ts).
+export function getBoardRowWithPlan(db: Database.Database, rowId: string): { row: BoardRow; board: Board } | undefined {
+  // one snapshot, so the row and its plan agree
+  return db.transaction((): { row: BoardRow; board: Board } | undefined => {
+    const row = db.prepare(`SELECT board_id, ${ROW_COLUMNS} FROM board_rows WHERE id = ?`).get(rowId) as (BoardRowRecord & { board_id: string }) | undefined
+    if (!row) return undefined
+    const board = db.prepare(`SELECT * FROM boards WHERE id = ? AND status IN ('active', 'archived')`).get(row.board_id) as Board | undefined
+    if (!board) return undefined
+    const { board_id: _boardId, ...record } = row
+    return { row: withUnseen([record])[0]!, board }
+  })()
 }
 
 export function listUnansweredBoardRows(

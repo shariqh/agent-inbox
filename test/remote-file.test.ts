@@ -12,16 +12,19 @@ import type { Server } from 'node:http'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { archiveBoard, getBoardRow, insertItem, listBoards, openDb, upsertBoard } from '../src/store.js'
+import { archiveBoard, getBoardRowWithPlan, insertItem, listBoards, openDb, upsertBoard } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
 import { GUARDED_ROUTES, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import {
-  DOCUMENT_EXTENSIONS, FILE_MAX, FILE_PATH, documentName, entityTexts, fileStream, linkedPathForm, linkedTexts,
-  linksPath, openLinkedFile, readFileQuery, remoteFileRoute,
+  DOCUMENT_EXTENSIONS, FILE_MAX, FILE_PATH, cardFilePaths, documentName, fileStream, hiddenPath, linkedFiles, linkedPathForm,
+  openLinkedFile, readFileQuery, remoteFileRoute, servablePath,
 } from '../src/remote-file.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+import { cardLinks } from '../public/link-strip.js'
+import { hubFileListed } from '../public/hub-files.js'
+import hubFilesModule from '../electron/hub-files.cjs'
 import { waitUntil } from './wait.js'
 import { HOST, LOGIN, deviceHeaders, freePort, newSecret, rawRequest, setting, writeSetting, device } from './remote-fixtures.js'
 
@@ -108,26 +111,42 @@ describe('readFileQuery: the raw request target, exactly', () => {
   })
 })
 
-describe('linksPath: the path as a whole path in the card\'s text', () => {
+// "Linked" is what the card draws: the page's own scanner (public/link-strip.js cardLinks) over the
+// card's fields. These tables pin what that scanner makes of hostile and ordinary text.
+const linkedIn = (text: string) => {
+  const item = { id: ITEM, kind: 'note', title: text }
+  return cardFilePaths(item, item)
+}
+
+describe('cardFilePaths: the file links a card draws, absolute or ~/', () => {
   const P = '/Users/owner/docs/spec.md'
   it.each([
     ['alone', P],
     ['after a space, before a space', `read ${P} first`],
     ['in backticks', `read \`${P}\` first`],
     ['in quotes', `"${P}" and '${P}'`],
+    ['in curly quotes', `“${P}” and ‘${P}’`],
+    ['in guillemets', `«${P}»`],
     ['in parentheses', `(see ${P})`],
     ['in brackets', `[${P}]`],
-    ['in angle brackets', `<${P}>`],
+    ['in braces', `{${P}}`],
+    ['as a Markdown link target', `[spec](${P})`],
+    ['after an equals sign', `file=${P}`],
     ['before a comma', `${P}, then`],
     ['before a semicolon', `${P}; then`],
+    ['before a colon and a space', `read ${P}: it says`],
+    ['before an exclamation mark', `${P}!`],
+    ['before a question mark', `${P}?`],
+    ['before an ellipsis', `${P}…`],
     ['with a line', `${P}:12 is where`],
-    ['with a line in backticks', `\`${P}:12\``],
+    ['with a line and a column', `${P}:12:3`],
+    ['with a line range', `${P}:12-20`],
     ['at the end of a sentence', `Read ${P}.`],
     ['before a sentence', `Read ${P}. Then`],
     ['after a newline', `line one\n${P}`],
-    ['after a tab', `\t${P}`],
+    ['before a spaced dash', `${P} — next`],
   ])('links it %s', (_name, text) => {
-    expect(linksPath(text, P)).toBe(true)
+    expect(linkedIn(text)).toContain(P)
   })
 
   it.each([
@@ -136,46 +155,97 @@ describe('linksPath: the path as a whole path in the card\'s text', () => {
     ['as a prefix of a longer path', `${P}/more`, P],
     ['as a prefix with a second extension', `${P}.bak`, P],
     ['as a suffix of a longer path', `/Volumes/x${P}`, P],
-    ['as the tail of another path', '/Users/owner/docs/spec.md', '/docs/spec.md'],
+    ['as the tail of another path', P, '/docs/spec.md'],
     ['glued to a word before it', `see:${P}`, P],
-    ['glued to an equals sign', `file=${P}`, P],
-    ['followed by a colon and no line', `${P}: it says`, P],
-    ['with a line range', `${P}:12-20`, P],
-    ['with a line and a column', `${P}:12:3`, P],
-    ['followed by a dot and a letter', `${P}.x`, P],
+    ['in angle brackets', `<${P}>`, P],
+    ['glued to a dash after it', `${P}—next`, P],
     ['with a query-like tail', `${P}?raw=1`, P],
-    ['shorter than what the text names', '/Users/owner/docs/spec.mdx', '/Users/owner/docs/spec.md'],
+    ['with a fragment', `${P}#L3`, P],
+    ['inside a fenced block', `\`\`\`\n${P}\n\`\`\``, P],
+    ['as a file URL', `file://${P}`, P],
+    ['in bold', `**${P}**`, P],
+    ['shorter than what the text names', '/Users/owner/docs/spec.mdx', P],
     ['percent-encoded in the text', '/Users/owner/docs/%73pec.md', P],
     ['as the plain path when the text has it encoded', P, '/Users/owner/docs/%73pec.md'],
-    ['the home form when the text names the full path', '/Users/owner/docs/spec.md', '~/docs/spec.md'],
+    ['the home form when the text names the full path', P, '~/docs/spec.md'],
+    ['a root the page does not link', '/dev/notes.md', '/dev/notes.md'],
+    ['across a space', '/Users/owner/My Documents/a.md', '/Users/owner/My'],
+    ['another user\'s home', '~other/a.md', '~other/a.md'],
   ])('does not link it %s', (_name, text, path) => {
-    expect(linksPath(text, path)).toBe(false)
+    expect(linkedIn(text)).not.toContain(path)
   })
 
-  it('finds a later whole occurrence after an earlier glued one', () => {
-    expect(linksPath(`x${P} and ${P}`, P)).toBe(true)
+  it('never answers a repo-relative link, even where the card recorded its folder', () => {
+    const item = { id: ITEM, kind: 'note', title: 'see docs/spec.md and /Users/o/a.md', repo_root: '/Users/o/repo' }
+    expect(cardLinks(item, item, null).filter((link) => link.kind === 'file').map((link) => link.path)).toEqual(['docs/spec.md', '/Users/o/a.md'])
+    expect(cardFilePaths(item, item)).toEqual(['/Users/o/a.md'])
   })
-})
 
-describe('entityTexts: the stored fields that may link a file', () => {
-  it('reads an item\'s title, detail, context, next step, impact, next-after, outcome and options', () => {
+  it('reads an item\'s title, detail, context, next step, impact, next-after, outcome and options, never the human\'s words', () => {
+    const at = (name: string) => `/Users/owner/${name}.md`
     const item = {
-      title: 't', detail: 'd', context: 'c', next_step: 'n', impact: 'i', next_after: 'a', outcome: 'o',
-      options: [{ label: 'ol', detail: 'od' }, { label: 'only' }], reply: 'never', annotation: 'never', reply_context: 'never',
+      id: ITEM, kind: 'question', title: at('t'), detail: at('d'), context: at('c'), next_step: at('n'), impact: at('i'), next_after: at('a'),
+      outcome: at('o'), options: [{ label: at('ol'), detail: at('od') }], reply: at('reply'), annotation: at('annotation'), reply_context: at('rc'),
     }
-    expect(entityTexts('item', item).sort()).toEqual(['a', 'c', 'd', 'i', 'n', 'o', 'od', 'ol', 'only', 't'].sort())
+    expect(cardFilePaths(item, item).sort()).toEqual(['a', 'c', 'd', 'i', 'n', 'o', 'od', 'ol', 't'].map(at).sort())
   })
 
-  it('reads a row\'s label, note, context, next step, impact, next-after, outcome and options, never the human\'s words or history', () => {
+  it('reads a row\'s label, note and the same others, never its annotation or history', () => {
+    const at = (name: string) => `/Users/owner/${name}.md`
     const row = {
-      label: 'l', note: 'no', context: 'c', next_step: 'n', impact: 'i', next_after: 'a', outcome: 'o', options: [{ label: 'x', detail: 'y' }],
-      annotation: 'never', history: [{ note: 'never' }],
+      id: 'r1', label: at('l'), note: at('no'), context: at('c'), next_step: at('n'), impact: at('i'), next_after: at('a'), outcome: at('o'),
+      options: [{ label: at('x'), detail: at('y') }], annotation: at('annotation'), history: [{ note: at('history') }],
     }
-    expect(entityTexts('row', row).sort()).toEqual(['a', 'c', 'i', 'l', 'n', 'no', 'o', 'x', 'y'].sort())
+    expect(cardFilePaths(row, { id: 'b1' }).sort()).toEqual(['a', 'c', 'i', 'l', 'n', 'no', 'o', 'x', 'y'].map(at).sort())
   })
 })
 
-describe('linkedTexts and getBoardRow: the entity from the store', () => {
+describe('the hidden-file rule', () => {
+  it.each([
+    ['~/.ssh/config.json', true], ['/Users/owner/.config/gh/hosts.yml', true], ['/Users/owner/repo/.env.json', true],
+    ['/Users/owner/repo/.git/HEAD.txt', true], ['~/notes/.draft.md', true], ['/Users/owner/docs/spec.md', false], ['~/notes/a.b.md', false],
+  ])('%s is hidden: %s', (path, hidden) => {
+    expect(hiddenPath(path)).toBe(hidden)
+    expect(servablePath(path)).toBe(!hidden)
+  })
+})
+
+// The page offers Open a copy on this Mac for exactly the links the hub accepts on form, and the
+// connecting Mac's main asks for exactly those: the same texts through all three rules.
+describe('one rule on three sides: the page, the connecting Mac and the hub', () => {
+  const texts = [
+    '/Users/owner/colon.md: it says', '/x/spec.md: not a root the page links', '/Users/owner/spec.md! done', '/Users/owner/spec.md? maybe', '“/Users/owner/curly.md”', '{/Users/owner/brace.md}',
+    'x=/Users/owner/eq.md', '/Users/owner/col.md:12:3', '/Users/owner/range.md:12-20', '~/notes/plan.txt', '/Users/owner/page.html',
+    '/Users/owner/run.sh', '/Users/owner/../etc/x.md', 'x /Users//owner/a.md', '/Users/owner/.ssh/id.json', '~/.config/gh/hosts.yml',
+    '/Users/owner/repo/.git/HEAD.txt', '/Users/owner/repo/.env.json', '/Users/owner/LOGO.PNG', '/Users/owner/ü-plan.md', '/Users/owner/a%2Fb.md',
+    '/Users/owner/.', '/tmp/x', '/etc/hosts.txt', '[spec](/Users/owner/md-link.md)', '`/Users/owner/code.md:4`', '/Users/owner/a-.md-',
+  ]
+  const { fileRequest, servablePath: mainServable } = hubFilesModule
+
+  it.each(texts)('agrees on %j', (text) => {
+    const item = { id: ITEM, kind: 'note', title: text }
+    const strip = cardLinks(item, item, null).filter((link) => link.kind === 'file' && link.root === undefined)
+    const page = strip.map((link) => link.path!).filter((path) => hubFileListed(path))
+    const hub = cardFilePaths(item, item).filter((path) => servablePath(path))
+    const main = strip.map((link) => link.path!).filter((path) => fileRequest([{ kind: 'item', id: ITEM, path }]) !== null && mainServable(path))
+    expect(page).toEqual(hub)
+    expect(main).toEqual(hub)
+  })
+
+  it('accepts the forms the old boundary rule refused, and refuses the hidden and climbing ones', () => {
+    const served = texts.flatMap((text) => {
+      const item = { id: ITEM, kind: 'note', title: text }
+      return cardFilePaths(item, item).filter((path) => servablePath(path))
+    })
+    expect(served).toEqual([
+      '/Users/owner/colon.md', '/Users/owner/spec.md', '/Users/owner/spec.md', '/Users/owner/curly.md', '/Users/owner/brace.md', '/Users/owner/eq.md',
+      '/Users/owner/col.md', '/Users/owner/range.md', '~/notes/plan.txt', '/Users/owner/LOGO.PNG', '/Users/owner/ü-plan.md',
+      '/Users/owner/a%2Fb.md', '/etc/hosts.txt', '/Users/owner/md-link.md', '/Users/owner/code.md',
+    ])
+  })
+})
+
+describe('linkedFiles and getBoardRowWithPlan: the card from the store', () => {
   let db: Database.Database
   beforeAll(() => {
     db = openDb(join(scratchDir('remote-file-store-'), 'inbox.db'))
@@ -184,20 +254,29 @@ describe('linkedTexts and getBoardRow: the entity from the store', () => {
 
   it('finds an item, a row of an active plan and a row of an archived plan; an unknown id is null', () => {
     const id = insertItem(db, { project: 'p', stream: 's', agent: 'a', kind: 'note', title: 'Read /Users/owner/a.md', context: 'and ~/b.txt' })
-    const read = linkedTexts(db)
-    expect(read('item', id)).toEqual(expect.arrayContaining(['Read /Users/owner/a.md', 'and ~/b.txt']))
+    const read = linkedFiles(db)
+    expect(read('item', id)).toEqual(['/Users/owner/a.md', '~/b.txt'])
     upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'Plan', rows: [{ label: 'one', status: 'tracked', note: 'see /Users/owner/c.md' }] })
     const board = listBoards(db)[0]!
     const rowId = board.rows[0]!.id
-    expect(read('row', rowId)).toEqual(expect.arrayContaining(['one', 'see /Users/owner/c.md']))
+    expect(read('row', rowId)).toEqual(['/Users/owner/c.md'])
     expect(archiveBoard(db, board.id, board.revision)).toBe(true)
-    expect(getBoardRow(db, rowId)?.note).toBe('see /Users/owner/c.md')
-    expect(read('row', rowId)).toEqual(expect.arrayContaining(['see /Users/owner/c.md']))
+    expect(getBoardRowWithPlan(db, rowId)).toMatchObject({ row: { id: rowId, note: 'see /Users/owner/c.md' }, board: { id: board.id, status: 'archived' } })
+    expect(read('row', rowId)).toEqual(['/Users/owner/c.md'])
     expect(read('item', 'no-such-item')).toBeNull()
     expect(read('row', 'no-such-row')).toBeNull()
     // an item id never names a row, nor the other way round
     expect(read('row', id)).toBeNull()
     expect(read('item', rowId)).toBeNull()
+  })
+
+  it('reads a row against its plan, as the page does: a relative path with the plan\'s folder is not served', () => {
+    upsertBoard(db, {
+      project: 'p', stream: 's', agent: 'a', title: 'Rooted plan', repoRoot: '/Users/owner/repo',
+      rows: [{ label: 'two', status: 'tracked', note: 'see docs/spec.md and /Users/owner/d.md' }],
+    })
+    const rowId = listBoards(db).find((plan) => plan.title === 'Rooted plan')!.rows[0]!.id
+    expect(linkedFiles(db)('row', rowId)).toEqual(['/Users/owner/d.md'])
   })
 })
 
@@ -236,6 +315,8 @@ describe('openLinkedFile: the file checks after links are resolved', () => {
     ['a link to a folder', (dir: string) => { mkdirSync(join(dir, 'real')); symlinkSync(join(dir, 'real'), join(dir, 'dir.md')); return join(dir, 'dir.md') }, 'not_a_document'],
     ['a path through a linked folder to a type off the list', (dir: string) => { mkdirSync(join(dir, 'real')); writeFileSync(join(dir, 'real', 'x.sh'), 'x'); symlinkSync(join(dir, 'real', 'x.sh'), join(dir, 'real', 'x.md')); symlinkSync(join(dir, 'real'), join(dir, 'via')); return join(dir, 'via', 'x.md') }, 'not_a_document'],
     ['a link to a type off the list', (dir: string) => { writeFileSync(join(dir, 'page.html'), '<p>'); symlinkSync(join(dir, 'page.html'), join(dir, 'page.md')); return join(dir, 'page.md') }, 'not_a_document'],
+    ['a visible name that resolves into a hidden folder', (dir: string) => { mkdirSync(join(dir, '.secret')); writeFileSync(join(dir, '.secret', 'keys.json'), '{}'); symlinkSync(join(dir, '.secret', 'keys.json'), join(dir, 'keys.json')); return join(dir, 'keys.json') }, 'not_a_document'],
+    ['a visible name that resolves to a hidden file', (dir: string) => { writeFileSync(join(dir, '.env.json'), '{}'); symlinkSync(join(dir, '.env.json'), join(dir, 'env.json')); return join(dir, 'env.json') }, 'not_a_document'],
     ['a link to a file with no extension', (dir: string) => { writeFileSync(join(dir, 'secret'), 'x'); symlinkSync(join(dir, 'secret'), join(dir, 'note.txt')); return join(dir, 'note.txt') }, 'not_a_document'],
     ['a dangling link', (dir: string) => { symlinkSync(join(dir, 'gone.md'), join(dir, 'dangling.md')); return join(dir, 'dangling.md') }, 'not_found'],
     ['a link loop', (dir: string) => { symlinkSync(join(dir, 'b.md'), join(dir, 'a.md')); symlinkSync(join(dir, 'a.md'), join(dir, 'b.md')); return join(dir, 'a.md') }, 'not_found'],
@@ -384,9 +465,9 @@ describe('remoteFileRoute: the handler on its own', () => {
   const build = (device: string | null) => {
     const dir = scratchDir('remote-file-route-')
     writeFileSync(join(dir, 'spec.md'), 'the spec')
-    const texts = vi.fn(() => [`read ${join(dir, 'spec.md')}`])
+    const texts = vi.fn(() => [join(dir, 'spec.md')])
     const app = new Hono()
-    app.get(FILE_PATH, remoteFileRoute({ texts, deviceOf: () => device, home: dir }))
+    app.get(FILE_PATH, remoteFileRoute({ linked: texts, deviceOf: () => device, home: dir }))
     const url = target('item', ITEM, join(dir, 'spec.md'))
     const call = (headers: Record<string, string> = {}) => app.request(url, { method: 'GET' }, { incoming: { url, headers } })
     return { call, texts }
@@ -405,13 +486,12 @@ describe('remoteFileRoute: the handler on its own', () => {
     ['spec.md', 'spec.md'],
     ['ü-plan.md', '_-plan.md'],
     ['My notes "draft".txt', 'My_notes__draft_.txt'],
-    ['..hidden.md', 'hidden.md'],
     [`${'a'.repeat(200)}.md`, `${'a'.repeat(117)}.md`],
   ])('offers %s as %s', async (name, offered) => {
     const dir = scratchDir('remote-file-name-')
     writeFileSync(join(dir, name), 'x')
     const app = new Hono()
-    app.get(FILE_PATH, remoteFileRoute({ texts: () => [join(dir, name)], deviceOf: () => '3f9c0a1b2d4e5f60', home: dir }))
+    app.get(FILE_PATH, remoteFileRoute({ linked: () => [join(dir, name)], deviceOf: () => '3f9c0a1b2d4e5f60', home: dir }))
     const url = target('item', ITEM, join(dir, name))
     const response = await app.request(url, { method: 'GET' }, { incoming: { url, headers: {} } })
     expect(response.status).toBe(200)
@@ -457,11 +537,13 @@ describe('GET /api/remote/file through the remote entry', () => {
     writeFileSync(join(docs, 'big.log'), '')
     truncateSync(join(docs, 'big.log'), FILE_MAX + 1)
     writeFileSync(join(docs, 'plan.txt'), 'row file')
+    mkdirSync(join(home, '.private'))
+    writeFileSync(join(home, '.private', 'notes.md'), 'hidden')
     db = openDb(join(dir, 'inbox.db'))
     itemId = insertItem(db, {
       project: 'p', stream: 's', agent: 'a', kind: 'note',
-      title: `Read ${join(docs, 'spec.md')}`,
-      context: `Also ${join(docs, 'page.html')}, ${join(docs, 'big.log')}, ${join(docs, 'gone.md')} and ~/docs/spec.md:3`,
+      title: `Read ${join(docs, 'spec.md')}: it says`,
+      context: `Also ${join(docs, 'page.html')}, ${join(docs, 'big.log')}, ${join(docs, 'gone.md')}, ${join(home, '.private', 'notes.md')} and ~/docs/spec.md:3`,
     })
     upsertBoard(db, { project: 'p', stream: 's', agent: 'a', title: 'Plan', rows: [{ label: 'one', status: 'tracked', note: `see \`${join(docs, 'plan.txt')}\`` }] })
     rowId = listBoards(db)[0]!.rows[0]!.id
@@ -469,7 +551,7 @@ describe('GET /api/remote/file through the remote entry', () => {
     writeSetting(dir, setting(port, [device(laptop)]))
     const remoteApp = createViewer(db, { agentHome: dir, runtimeRoot: join(dir, 'runtime') })
     remoteApp.get('/*', serveStatic({ root: './public' }))
-    entry = startRemoteEntry({ app: remoteApp, dir, viewerPort: 4319, files: { texts: linkedTexts(db), home } })
+    entry = startRemoteEntry({ app: remoteApp, dir, viewerPort: 4319, files: { linked: linkedFiles(db), home } })
     const app = createViewer(db, { agentHome: dir, runtimeRoot: join(dir, 'runtime') })
     app.get('/*', serveStatic({ root: './public' }))
     local = startLocalViewer(app, 0)
@@ -517,6 +599,8 @@ describe('GET /api/remote/file through the remote entry', () => {
     expect(await refusal(await get(join(docs, 'page.html')))).toEqual({ status: 415, body: { ok: false, reason: 'not_a_document' } })
     expect(await refusal(await get(join(docs, 'big.log')))).toEqual({ status: 413, body: { ok: false, reason: 'too_large' } })
     expect(await refusal(await get(join(docs, 'gone.md')))).toEqual({ status: 404, body: { ok: false, reason: 'not_found' } })
+    // a hidden folder stays on the hub, linked or not
+    expect(await refusal(await get(join(home, '.private', 'notes.md')))).toEqual({ status: 415, body: { ok: false, reason: 'not_a_document' } })
     // a file that exists but this card does not link, and an entity that does not exist, read the same
     expect(await refusal(await get(join(docs, 'plan.txt')))).toEqual({ status: 404, body: { ok: false, reason: 'not_linked' } })
     expect(await refusal(await get(join(docs, 'spec.md'), 'item', 'no-such-item'))).toEqual({ status: 404, body: { ok: false, reason: 'not_linked' } })

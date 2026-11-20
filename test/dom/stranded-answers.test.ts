@@ -595,7 +595,8 @@ describe('what a Send or a click says and leaves', () => {
     await settle()
 
     expect(answerInput(rowId)?.value).toBe('Typed first')
-    expect(row(rowId)?.querySelector('.write-error')?.textContent).toBe(WRITE_FAILED)
+    expect(row(rowId)?.querySelector('.write-error')?.textContent)
+      .toBe('Your choice was not applied. Nothing was lost; choose again.')
     bridge.failPostsWith(null)
     click(sendButton(rowId))
     await settle()

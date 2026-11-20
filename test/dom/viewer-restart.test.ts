@@ -382,15 +382,44 @@ describe('viewer restart with human-owned work', () => {
       release()
       await settle()
     }
-    // #636 review: a click that got no answer is not turned into text. The editor
-    // keeps what it held (nothing), the write-failed line says so, and with no
-    // unsent text left to protect the restart goes ahead.
-    expect(answerInput(rowId)?.value).toBe('')
-    expect(row(rowId)?.querySelector('.write-error')?.textContent).toBe('Not sent — nothing was lost; press Send to retry.')
     await pollTick()
-    expect(reload).toHaveBeenCalledTimes(1)
+    expect(reload).not.toHaveBeenCalled()
+    expect(answerInput(rowId)?.value).toBe('Ship now')
     expect(getBoard(db, AGENT.project, 'Pending row option')!.rows[0]!.revision)
       .toBe(original.rows[0]!.revision)
+    type(answerInput(rowId), '')
+    await pollTick()
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  // #636 second review, B: with text typed, a click that got no answer leaves the text alone
+  it('keeps typed text, and says the choice was not applied, when an option click gets no answer', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT, title: 'Pending row option',
+      rows: [{
+        label: 'Approval', status: 'blocked', context: 'Original row identity',
+        options: [{ label: 'Ship now' }, { label: 'Hold' }],
+      }],
+    })
+    const rowId = getBoard(db, AGENT.project, 'Pending row option')!.rows[0]!.id
+    const { restart } = await bootWithRestart(db)
+    await showInbox()
+    click(row(rowId))
+    await settle()
+    type(answerInput(rowId), 'Typed first')
+    const release = holdPost(`/rows/${rowId}/annotate`, new Response('offline', { status: 503 }))
+    expectConsoleError(/annotate failed: HTTP 503/)
+    click(buttonLabelled('Ship now', row(rowId)!))
+    restart()
+    release()
+    await settle()
+    expect(answerInput(rowId)?.value).toBe('Typed first')
+    expect(row(rowId)?.querySelector('.write-error')?.textContent)
+      .toBe('Your choice was not applied. Nothing was lost; choose again.')
+    // the typed text still holds the restart
+    await pollTick()
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('defers a work-free restart through a held press without asking the human to finish a response', async () => {

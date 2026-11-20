@@ -1153,6 +1153,8 @@ function showWriteError(id, msg) {
 }
 
 const WRITE_FAILED = 'Not sent — nothing was lost; press Send to retry.'
+// an option click that got no answer, with text typed in the editor that it must not replace (#636)
+const ROW_CHOICE_NOT_APPLIED = 'Your choice was not applied. Nothing was lost; choose again.'
 // #412 step 3: an app launch's approval counts only from the app's own window
 const LAUNCH_ASK_REFUSED = 'Not sent — approve this from Agent Inbox’s own window.'
 // An app launch's approval (#412 step 3): only its driver closes it, after the
@@ -4757,13 +4759,16 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
     }
     const ownsSubmission = owns()
     if (res === null || unread) {
-      // the answer never came, or the re-read did: the text is as it was
-      if (ownsSubmission && !choice) {
+      // the answer never came, or the re-read did. Typed text is as it was, and a
+      // click over it never replaces it. A click with nothing typed becomes the
+      // editor's text, as before, so Send retries it and a pending viewer restart waits.
+      const held = String(rowDrafts[r.id] ?? input.value).trim() !== ''
+      if (ownsSubmission && (!choice || !held)) {
         rowDrafts[r.id] = typed
         rowDraftMeta[r.id] = { ...rowDraftMetaFor(b, r), notice: rowDraftMeta[r.id]?.notice }
         input.value = typed
       }
-      showWriteError(r.id, WRITE_FAILED)
+      showWriteError(r.id, choice && held ? ROW_CHOICE_NOT_APPLIED : WRITE_FAILED)
       // An option POST may outlive a poll rebuild; restore the current editor,
       // rather than leaving the response only on the detached captured input.
       if (ownsSubmission && !input.isConnected) forceRender()

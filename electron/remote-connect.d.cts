@@ -142,8 +142,11 @@ export interface RemoteConnect {
   tick(): Promise<ScheduleAnswer>
   /** The device header's value for a request to `url`, or null. Synchronous. */
   deviceHeaderFor(url: unknown): string | null
-  /** A fetch for main's own requests to the hub: refuses any other origin, adds the header, no redirect, a timeout. */
-  hubFetch(): (input: unknown, init?: RequestInit) => Promise<Response>
+  /**
+   * A fetch for main's own requests to the hub: refuses any other origin, adds the header, no redirect, a timeout
+   * of 5 seconds, or #634 the longer `timeoutMs` a caller asks for, up to 2 minutes.
+   */
+  hubFetch(): (input: unknown, init?: RequestInit & { timeoutMs?: number }) => Promise<Response>
   /** #617 PR 4a: `<origin>/` while `id` is the active hub, else null. From memory: no store read, no Keychain. */
   hubBase(id: unknown): string | null
 }

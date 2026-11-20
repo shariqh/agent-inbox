@@ -93,12 +93,15 @@ const CHANNELS: Record<string, { allows: 'local page only' | 'hub view'; args: u
   // #637: the hub's update, read and started by the owned local page only
   'agent-inbox:connect-hub-update': { allows: 'local page only', args: [ID] },
   'agent-inbox:connect-hub-update-start': { allows: 'local page only', args: [ID] },
-  // the only four the hub view may use: its connection (label, state, version), Retry from the offline
-  // file, and (#617 PR 4b) Open desk from the hub's own page
+  // the only six the hub view may use: its connection (label, state, version), Retry from the offline
+  // file, (#617 PR 4b) Open desk and (#634) a card's file from the hub's own page
   'agent-inbox:desk-connection': { allows: 'hub view', args: [] },
   'agent-inbox:desk-retry': { allows: 'hub view', args: [] },
   'agent-inbox:desk-available': { allows: 'hub view', args: [] },
   'agent-inbox:desk-open': { allows: 'hub view', args: [{ session: 'session-1' }] },
+  // #634: a card's file, opened as a copy on this Mac, from the hub's own page
+  'agent-inbox:desk-files-available': { allows: 'hub view', args: [] },
+  'agent-inbox:desk-open-file': { allows: 'hub view', args: [{ kind: 'item', id: 'item-1', path: '/Users/owner/docs/spec.md' }] },
 }
 
 /** An object that records every method called on it and answers each with `answer`. */
@@ -381,6 +384,24 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     expect(main.calls).toEqual([])
   })
 
+  // #634
+  it('a card\u2019s files answer the hub view\u2019s top frame on the hub\u2019s own page only: never the offline file, a sub-frame or the local page', async () => {
+    const e = events()
+    const available = main.handlers.get('agent-inbox:desk-files-available')!
+    const open = main.handlers.get('agent-inbox:desk-open-file')!
+    const request = { kind: 'item', id: 'item-1', path: '/Users/owner/docs/spec.md' }
+    main.calls.length = 0
+    expect(await available(e.hub)).toEqual({ files: true })
+    expect(await available(e.hub, 'extra')).toEqual({ files: false })
+    // the harness has no press: an open stops at the gesture check, before any fetch
+    expect(await open(e.hub, request)).toEqual({ ok: false, reason: 'no_gesture' })
+    for (const refused of [e.local, e.stranger, e.hubAsLocal, e.hubOffline, e.hubSubFrame, e.localSubFrame]) {
+      expect(await available(refused)).toEqual({ files: false })
+      expect(await open(refused, request)).toEqual({ ok: false, reason: 'unavailable' })
+    }
+    expect(main.calls).toEqual([])
+  })
+
   it('the Open desk command dialog is native, on the window, Cancel by default, and saves only on Save', async () => {
     main.calls.length = 0
     const answer = await (main.evaluate('confirmDeskCommand(globalThis.__mainIpcHarness.win, "ssh -t studio {attach}")') as Promise<unknown>)
@@ -472,6 +493,18 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     expect(confirm).toContain('return response === 0')
     // the controller is the only caller of the dialog, and only through its option
     expect(main.match(/confirmDeskCommand\(/g)).toHaveLength(2)
+  })
+  // #634
+  it('wires a card\u2019s files: the connection\u2019s hub fetch, its own folder beside the local database, and shell.openPath', () => {
+    expect(main).toContain("const { createHubFiles } = require('./hub-files.cjs')")
+    const files = main.slice(main.indexOf('const hubFilesFor = () =>'), main.indexOf('registerHubIpc({'))
+    expect(files).toContain('connect: () => remoteConnect,')
+    expect(files).toContain("dir: path.join(path.dirname(launchHubPath()), 'hub-files'),")
+    expect(files).toContain('openPath: (file) => shell.openPath(file),')
+    expect(files).not.toMatch(/\bfetch\(|safeStorage|deviceHeaderFor/)
+    const register = main.slice(main.indexOf('registerHubIpc({'), main.indexOf('})', main.indexOf('registerHubIpc({')))
+    expect(register).toContain('hubFiles: hubFilesFor,')
+    expect(read('electron/hub-files.cjs')).not.toMatch(/\bfetch\(|globalThis\.fetch|safeStorage|deviceHeaderFor|child_process|require\('electron'\)/)
   })
   const startRemote = main.slice(main.indexOf('function startRemoteConnect(win)'), main.indexOf('\n}\n', main.indexOf('function startRemoteConnect(win)')))
 

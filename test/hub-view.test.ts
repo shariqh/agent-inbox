@@ -1566,7 +1566,7 @@ function realConnect(confirmDeskCommand?: (command: string) => boolean) {
   })
 }
 
-function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | null; owned?: boolean; hubView?: unknown; deskOpen?: unknown; hubUpdate?: unknown } = {}) {
+function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | null; owned?: boolean; hubView?: unknown; deskOpen?: unknown; hubUpdate?: unknown; hubFiles?: unknown } = {}) {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const owner = { id: 7 }
   const hubContents = { id: 8, isDestroyed: () => false }
@@ -1596,6 +1596,7 @@ function ipcWorld(options: { connect?: ReturnType<typeof createRemoteConnect> | 
     hubView: () => hubView as never,
     ...(options.deskOpen === undefined ? {} : { deskOpen: () => options.deskOpen as never }),
     ...(options.hubUpdate === undefined ? {} : { hubUpdate: () => options.hubUpdate as never }),
+    ...(options.hubFiles === undefined ? {} : { hubFiles: () => options.hubFiles as never }),
   })
   const local = { sender: owner, senderFrame: { url: 'http://127.0.0.1:4319/', parent: null } }
   const hubEvent = { sender: hubContents, senderFrame: { url: `${ORIGIN}/`, parent: null } }
@@ -1614,7 +1615,10 @@ describe('registerHubIpc', () => {
       CONNECT_CHANNELS.connect, CONNECT_CHANNELS.forget, CONNECT_CHANNELS.show, CONNECT_CHANNELS.view, CONNECT_CHANNELS.deskCommand,
       CONNECT_CHANNELS.hubUpdate, CONNECT_CHANNELS.hubUpdateStart,
       DESK_CHANNELS.connection, DESK_CHANNELS.retry, DESK_CHANNELS.available, DESK_CHANNELS.open,
+      DESK_CHANNELS.filesAvailable, DESK_CHANNELS.openFile,
     ].sort())
+    // #634: added deliberately
+    expect([DESK_CHANNELS.filesAvailable, DESK_CHANNELS.openFile]).toEqual(['agent-inbox:desk-files-available', 'agent-inbox:desk-open-file'])
     expect([DESK_CHANNELS.available, DESK_CHANNELS.open, CONNECT_CHANNELS.deskCommand])
       .toEqual(['agent-inbox:desk-available', 'agent-inbox:desk-open', 'agent-inbox:connect-desk-command'])
     // #637: added deliberately
@@ -1643,6 +1647,43 @@ describe('registerHubIpc', () => {
     const bare = ipcWorld()
     expect(await bare.call(CONNECT_CHANNELS.hubUpdate, bare.local, '0123abcd')).toEqual(UNAVAILABLE)
     expect(await bare.call(CONNECT_CHANNELS.hubUpdateStart, bare.local, '0123abcd')).toEqual(UNAVAILABLE)
+  })
+
+  // #634
+  describe('a card\u2019s files', () => {
+    function recordingFiles() {
+      const seen: Array<[string, unknown[]]> = []
+      return {
+        seen,
+        available: async (_event: unknown, args: unknown[]) => { seen.push(['available', args]); return { files: true, extra: 'x' } },
+        open: async (_event: unknown, args: unknown[]) => { seen.push(['open', args]); return { ok: true } },
+      }
+    }
+    const REQUEST = { kind: 'item', id: 'i1', path: '/Users/owner/spec.md' }
+
+    it('desk-files-available and desk-open-file reach the handler from the hub\u2019s own page only: not the offline file, the local page or a sub-frame', async () => {
+      const files = recordingFiles()
+      const w = ipcWorld({ hubFiles: files })
+      expect(await w.call(DESK_CHANNELS.filesAvailable, w.hubEvent)).toEqual({ files: true })
+      expect(await w.call(DESK_CHANNELS.openFile, w.hubEvent, REQUEST)).toEqual({ ok: true })
+      const subFrame = { sender: w.hubContents, senderFrame: { url: `${ORIGIN}/`, parent: {} } }
+      const stranger = { sender: { id: 99 }, senderFrame: { url: `${ORIGIN}/`, parent: null } }
+      for (const event of [w.offlineEvent, w.local, subFrame, stranger]) {
+        expect(await w.call(DESK_CHANNELS.filesAvailable, event)).toEqual({ files: false })
+        expect(await w.call(DESK_CHANNELS.openFile, event, REQUEST)).toEqual({ ok: false, reason: 'unavailable' })
+      }
+      expect(await w.call(DESK_CHANNELS.filesAvailable, w.hubEvent, 'extra')).toEqual({ files: false })
+      expect(files.seen).toEqual([['available', []], ['open', [REQUEST]]])
+    })
+
+    it('without a handler (off macOS, or before the view exists) both answer no', async () => {
+      const w = ipcWorld()
+      expect(await w.call(DESK_CHANNELS.filesAvailable, w.hubEvent)).toEqual({ files: false })
+      expect(await w.call(DESK_CHANNELS.openFile, w.hubEvent, REQUEST)).toEqual({ ok: false, reason: 'unavailable' })
+      const throwing = ipcWorld({ hubFiles: { available: async () => { throw new Error('x') }, open: async () => { throw new Error('x') } } })
+      expect(await throwing.call(DESK_CHANNELS.filesAvailable, throwing.hubEvent)).toEqual({ files: false })
+      expect(await throwing.call(DESK_CHANNELS.openFile, throwing.hubEvent, REQUEST)).toEqual({ ok: false, reason: 'failed' })
+    })
   })
 
   // #617 PR 4b

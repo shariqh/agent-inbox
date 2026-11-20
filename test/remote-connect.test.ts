@@ -1334,6 +1334,20 @@ describe('hubFetch', () => {
     expect(call.init.signal!.aborted).toBe(true)
   })
 
+  // #634: a card's file may take longer than one ordinary request; nothing else changes
+  it('times out after 5 seconds, or after the longer timeoutMs a caller asks for, up to 2 minutes, and never passes timeoutMs on', async () => {
+    const h = await connected()
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    const fetch = h.connect.hubFetch()
+    for (const [asked, used] of [[undefined, 5_000], [60_000, 60_000], [120_000, 120_000], [120_001, 5_000], [1_000, 5_000], [Number.NaN, 5_000], ['60000', 5_000], [Infinity, 5_000]] as const) {
+      timeout.mockClear()
+      await fetch(`${ORIGIN}/api/version`, { timeoutMs: asked } as unknown as RequestInit)
+      expect(timeout.mock.calls, String(asked)).toEqual([[used]])
+      expect(Object.keys(h.fetch.calls.at(-1)!.init)).not.toContain('timeoutMs')
+    }
+    timeout.mockRestore()
+  })
+
   it('passes a POST through with its body', async () => {
     const h = await connected()
     await h.connect.hubFetch()(`${ORIGIN}/api/items/x/reply`, { method: 'POST', headers: { Origin: ORIGIN, 'Content-Type': 'application/json' }, body: '{"text":"y"}' })

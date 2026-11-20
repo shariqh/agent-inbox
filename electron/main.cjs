@@ -47,6 +47,7 @@ const { createRemoteConnect } = require('./remote-connect.cjs')
 const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
 const { createDeskOpen, deskConfirmation } = require('./desk-open.cjs')
 const { createHubUpdate } = require('./hub-update.cjs')
+const { createHubFiles } = require('./hub-files.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -856,6 +857,18 @@ const deskOpenFor = () => (remoteConnect === null || hubView === null ? null : (
 // the controller exists)
 let hubUpdate = null
 const hubUpdateFor = () => (remoteConnect === null ? null : (hubUpdate ??= createHubUpdate({ connect: () => remoteConnect })))
+// #634: a card's file on the hub, made on first use once the controller and the view exist (macOS
+// only). It fetches through the connection's hub fetch only, writes private copies to hub-files/ beside
+// the local database, and opens a copy with the person's default app.
+let hubFiles = null
+const hubFilesFor = () => (remoteConnect === null || hubView === null ? null : (hubFiles ??= createHubFiles({
+  platform: process.platform,
+  hubView: () => hubView,
+  connect: () => remoteConnect,
+  dir: path.join(path.dirname(launchHubPath()), 'hub-files'),
+  openPath: (file) => shell.openPath(file),
+  log: (line) => console.log(`[agent-inbox] ${line}`),
+})))
 registerHubIpc({
   ipcMain,
   settled: () => installBinding?.settled() ?? Promise.resolve(),
@@ -864,6 +877,7 @@ registerHubIpc({
   hubView: () => hubView,
   deskOpen: deskOpenFor,
   hubUpdate: hubUpdateFor,
+  hubFiles: hubFilesFor,
 })
 
 // #617 PR 4b: the only way an Open desk command is stored. The exact command, filled for an example

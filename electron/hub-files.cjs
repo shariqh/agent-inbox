@@ -217,7 +217,12 @@ async function writeCopy({ folder, name, response, size, random }) {
         if (done) break
         total += value.byteLength
         if (total > size || total > FILE_MAX) throw new Error('longer than its length')
-        fs.writeSync(fd, value)
+        // a write may take fewer bytes than given: write the rest
+        for (let offset = 0; offset < value.byteLength;) {
+          const written = fs.writeSync(fd, value, offset, value.byteLength - offset)
+          if (!(written > 0)) throw new Error('nothing written')
+          offset += written
+        }
       }
       reader = null
     }

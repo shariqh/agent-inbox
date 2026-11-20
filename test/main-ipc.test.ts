@@ -496,7 +496,7 @@ describe('electron/main.cjs wires the hub view (source)', () => {
   })
   // #634
   it('wires a card\u2019s files: the connection\u2019s hub fetch, its own folder beside the local database, and link-open\u2019s opener', () => {
-    expect(main).toContain("const { createHubFiles } = require('./hub-files.cjs')")
+    expect(main).toContain("const { createHubFiles, scheduleCopySweep } = require('./hub-files.cjs')")
     const files = main.slice(main.indexOf('const hubFilesFor = () =>'), main.indexOf('registerHubIpc({'))
     expect(files).toContain('connect: () => remoteConnect,')
     expect(files).toContain("const dir = path.join(path.dirname(launchHubPath()), 'hub-files')")
@@ -507,6 +507,15 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     const register = main.slice(main.indexOf('registerHubIpc({'), main.indexOf('})', main.indexOf('registerHubIpc({')))
     expect(register).toContain('hubFiles: hubFilesFor,')
     expect(read('electron/hub-files.cjs')).not.toMatch(/\bfetch\(|globalThis\.fetch|safeStorage|deviceHeaderFor|child_process|require\('electron'\)/)
+  })
+  // #645: old copies are swept soon after start and hourly, whether or not a hub is connected
+  it('sweeps old copies of a hub\u2019s files after start and hourly, without a hub, a connection or a key', () => {
+    expect(main).toContain("const { createHubFiles, scheduleCopySweep } = require('./hub-files.cjs')")
+    const ready = main.slice(main.indexOf('app.whenReady().then(async () => {'))
+    expect(ready).toContain("scheduleCopySweep({ platform: process.platform, dir: path.join(path.dirname(launchHubPath()), 'hub-files') })")
+    // not inside the controller: it runs when no hub is connected too
+    expect(main.slice(main.indexOf('function startRemoteConnect(win)'), main.indexOf('\n}\n', main.indexOf('function startRemoteConnect(win)')))).not.toContain('scheduleCopySweep')
+    expect(main.indexOf('scheduleCopySweep({')).toBeGreaterThan(main.indexOf('const win = createWindow()'))
   })
   const startRemote = main.slice(main.indexOf('function startRemoteConnect(win)'), main.indexOf('\n}\n', main.indexOf('function startRemoteConnect(win)')))
 

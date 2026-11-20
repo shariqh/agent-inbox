@@ -209,6 +209,70 @@ function sweepCopies(root, nowMs) {
   }
 }
 
+// #645: the scheduled sweep: the first one this long after start, then one every hour
+const SWEEP_FIRST_MS = 10_000
+const SWEEP_EVERY_MS = 60 * 60_000
+
+/**
+ * Sweeps `dir` (the hub-files folder) soon after start and then hourly, with sweepCopies, on macOS only,
+ * so a copy goes even when no file is opened and no hub is connected. It reads no connection and no
+ * key, and creates nothing: a missing folder stays missing, and a folder that is itself a link is not
+ * swept. The timers are unref'd and a sweep never throws, so it can neither keep the app alive nor
+ * reach main. Timers, clock and sweep are injected for the test. Returns a function that stops it, or
+ * null where it does not run.
+ */
+function scheduleCopySweep({
+  platform, dir, now = Date.now, sweep = sweepCopies,
+  setTimeout: later = globalThis.setTimeout, setInterval: every = globalThis.setInterval,
+  clearTimeout: stopLater = globalThis.clearTimeout, clearInterval: stopEvery = globalThis.clearInterval,
+}) {
+  if (platform !== 'darwin' || typeof dir !== 'string' || dir === '') return null
+  const once = () => {
+    try {
+      if (isRealDir(dir)) sweep(dir, now())
+    } catch {
+      // a sweep must never reach main
+    }
+  }
+  const unref = (handle) => {
+    try {
+      if (handle && typeof handle.unref === 'function') handle.unref()
+    } catch {
+      // nothing to do
+    }
+  }
+  let first = null
+  let hourly = null
+  let stopped = false
+  try {
+    first = later(() => {
+      first = null
+      if (stopped) return
+      once()
+      try {
+        hourly = every(once, SWEEP_EVERY_MS)
+        unref(hourly)
+      } catch {
+        hourly = null
+      }
+    }, SWEEP_FIRST_MS)
+    unref(first)
+  } catch {
+    return null
+  }
+  return () => {
+    stopped = true
+    try {
+      if (first !== null) stopLater(first)
+      if (hourly !== null) stopEvery(hourly)
+    } catch {
+      // already gone
+    }
+    first = null
+    hourly = null
+  }
+}
+
 /**
  * The body into `folder/name`: written to `.<random>.part` (created with O_EXCL and O_NOFOLLOW at
  * 0600), counted against `size` as it arrives, then renamed over `name`, which replaces a copy or a
@@ -450,12 +514,15 @@ module.exports = {
   FILE_MAX,
   KEEP_MS,
   REASONS,
+  SWEEP_EVERY_MS,
+  SWEEP_FIRST_MS,
   copyName,
   createHubFiles,
   documentName,
   fileRequest,
   hiddenPath,
   linkedPathForm,
+  scheduleCopySweep,
   servablePath,
   sweepCopies,
 }

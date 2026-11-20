@@ -47,7 +47,7 @@ const { createRemoteConnect } = require('./remote-connect.cjs')
 const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
 const { createDeskOpen, deskConfirmation } = require('./desk-open.cjs')
 const { createHubUpdate } = require('./hub-update.cjs')
-const { createHubFiles } = require('./hub-files.cjs')
+const { createHubFiles, scheduleCopySweep } = require('./hub-files.cjs')
 const { MANUAL_RELEASES_URL, createUpdateController, reviewReleaseOffered } = require('./update-controller.cjs')
 const { createUpdateDownloader } = require('./update-download.cjs')
 const { createInstallAttemptStore } = require('./update-install.cjs')
@@ -1693,6 +1693,9 @@ app.whenReady().then(async () => {
   startRemoteEntry()
   // #617 PR 3b: another Mac's Inbox, when one is connected (macOS only)
   startRemoteConnect(win)
+  // #645: copies of a hub's files are swept soon after start and hourly (macOS only), whether or not a
+  // hub is connected: nothing here reads the connection, calls safeStorage or creates the folder
+  scheduleCopySweep({ platform: process.platform, dir: path.join(path.dirname(launchHubPath()), 'hub-files') })
 
   // Self-heal (issue #23): while reusing a viewer we don't own, watch it — if it
   // disappears, start our own server on the same port and reload the dead page.

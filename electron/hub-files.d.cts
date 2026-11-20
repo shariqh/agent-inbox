@@ -34,6 +34,23 @@ export function fileRequest(args: unknown): HubFileRequest | null
 /** Removes copies older than a day under `root` (ours only, never through a link) and the folders left empty. */
 export function sweepCopies(root: string, nowMs: number): void
 
+export const SWEEP_FIRST_MS: number
+export const SWEEP_EVERY_MS: number
+/**
+ * #645: sweeps `dir` soon after start and hourly (macOS only), without a hub, a connection or a key, creating
+ * nothing; the timers are unref'd and a sweep never throws. Returns a stop function, or null where it does not run.
+ */
+export function scheduleCopySweep(options: {
+  platform: string
+  dir: string
+  now?: () => number
+  sweep?: (root: string, nowMs: number) => void
+  setTimeout?: (fn: () => void, ms: number) => unknown
+  setInterval?: (fn: () => void, ms: number) => unknown
+  clearTimeout?: (handle: unknown) => void
+  clearInterval?: (handle: unknown) => void
+}): (() => void) | null
+
 export interface HubFiles {
   available(event: unknown, args: unknown[]): Promise<{ files: boolean }>
   open(event: unknown, args: unknown[]): Promise<HubFileResult>

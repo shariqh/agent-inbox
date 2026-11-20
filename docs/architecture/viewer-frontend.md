@@ -379,9 +379,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   done mark) and `held` is the draft's own `{ text, kind }`. A draft for a blocked step:
   1. *The same ask:* same blocked action, same words, same response (`same`). The draft
      stays in its editor and its meta moves to the current revision (`followRowAsk`,
-     from `reconcileDraftOwners`, which runs before every frame, and
-     `placeRestoredDraft`; a draft still mismatched when its editor is drawn,
-     `recoverMismatchedRenderedRowDraft`, is one that followed nothing, so it is set aside). A Send or an option the server refused is sent once more by
+     from `reconcileDraftOwners`, `recoverMismatchedRenderedRowDraft` and
+     `placeRestoredDraft`; the second is needed because the Dashboard's session panel
+     paints its asks before the frame's reconcile runs). A Send or an option the server refused is sent once more by
      the page against the current revision (the loop in `rowAnswerEl`'s `save`, which
      re-reads with `load()` and then checks again that the editor is still the sender's);
      a second refusal keeps the text and says the step kept changing. If the re-read

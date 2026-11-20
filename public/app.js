@@ -3982,14 +3982,17 @@ function rowRecoveryReason(fate, unconfirmed = false) {
 const rowRecoveryWhy = (draft) => draft.reason
   || (draft.setAside ? 'Kept from before you set this aside.' : 'Your text was not sent.')
 
-// A draft whose row moved is followed or set aside by reconcileDraftOwners before
-// every frame, so one that is still mismatched here belongs to an ask the row no
-// longer holds (#636 review: the follow-up it once did here changed no outcome).
+// A draft whose row moved is followed here, as reconcileDraftOwners follows it,
+// because not every editor is drawn after that reconcile: the Dashboard's session
+// panel paints its asks (paintAmbient) before render() reconciles, so its editor
+// sees the newer row first, and without the follow every moved draft would be set
+// aside. A draft that does not stay goes to the unsent responses.
 function recoverMismatchedRenderedRowDraft(b, r) {
   const text = rowDrafts[r.id]
   const meta = rowDraftMeta[r.id]
   if (!String(text ?? '').trim() || !meta || meta.revision === r.revision) return false
-  const fate = rowAskFate({ board: b, row: r }, meta)
+  const fate = followRowAsk(r.id, { board: b, row: r }, meta, { text, kind: rowDraftKinds[r.id] ?? 'answer' })
+  if (rowDraftStays(fate)) return false
   const revision = meta.revision ?? -1
   staleRowDrafts[rowDraftRecoveryKey(r.id, revision)] = {
     rowId: r.id,

@@ -12,7 +12,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import {
-  advanceBoardRow, annotateBoardRow, closeProject, getBoard, markRowHandled, updateBoardRow, upsertBoard,
+  advanceBoardRow, annotateBoardRow, closeProject, getBoard, markRowHandled, updateBoardRow, upsertActivity, upsertBoard,
 } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, repaint, row,
@@ -767,6 +767,49 @@ describe('two editors of one row', () => {
     await settle()
     expect(annotation(d), 'the old editor never lands text on an ask its writer did not read').toBeNull()
     expect(annotatePosts(bridge)).toHaveLength(1)
+  })
+})
+
+// #636 second review, A: the Dashboard's session panel paints its asks before the
+// frame's reconcile runs, so its editor sees the newer row before any follow has.
+describe('the session panel’s editor', () => {
+  async function typeInPanel(d: Database.Database, rowId: string) {
+    upsertActivity(d, { ...AGENT, session: 'here', doing: 'Working', idle: false })
+    const bridge = await bootApp(d)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    click(document.querySelector('#dashboard [data-session-card="session:here"] .sc-doing'))
+    await settle()
+    const block = () => document.querySelector<HTMLElement>(`#dashboard .dash-focus [data-panel-ask="${rowId}"]`)
+    type(block()!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Half an answer')
+    return { bridge, block }
+  }
+
+  it('keeps the text when an agent moved only what the person does not read, and a tab is clicked', async () => {
+    const { d, rowId } = seed()
+    const { block } = await typeInPanel(d, rowId)
+    agentWrite(d, { issue: { repo: 'example/repo', number: 7 } })
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+
+    expect(block()!.querySelector<HTMLTextAreaElement>('.reply-input')?.value).toBe('Half an answer')
+    expect(block()!.querySelector('.row-recovery')).toBeNull()
+    expect(fold()).toBeNull()
+    expect(noticeIn(block())).toBeNull()
+  })
+
+  it('keeps the text and its notice when an agent edited the ask, and a tab is clicked', async () => {
+    const { d, rowId } = seed()
+    const { block } = await typeInPanel(d, rowId)
+    agentWrite(d, { note: 'The 1.4.1 build is ready.' })
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    await settle()
+
+    expect(block()!.querySelector<HTMLTextAreaElement>('.reply-input')?.value).toBe('Half an answer')
+    expect(block()!.querySelector('.row-recovery')).toBeNull()
+    expect(noticeIn(block())).toBe(EDITED)
+    expect(fold()).toBeNull()
   })
 })
 

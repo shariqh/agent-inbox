@@ -1688,9 +1688,11 @@ then checks in order, each refusal `{ ok: false, reason }` with one word and not
    `:line`, `:line:column` or `:line-line` after it; in plain text, backticks or a Markdown link
    target, never in a fenced block, glued to a word, in angle brackets or as a `file://` URL.
 3. `not_a_document` (415): the path is under `~/` or one of the allowed roots (`ALLOWED_ROOTS`:
-   `/Users/`, `/Volumes/`, `/tmp/`, `/private/tmp/`, `/var/folders/`, `/private/var/folders/`), so
+   `/Users/`, `/tmp/`, `/private/tmp/`, `/var/folders/`, `/private/var/folders/`), so
    system locations (`/etc`, `/private/etc`, `/Library`, `/System`, `/Applications`, `/usr`, `/opt`,
-   the rest of `/var`) stay on the hub; its name ends in one of `.md .markdown .txt .log .json .yaml .yml
+   the rest of `/var`) and volumes (`/Volumes`: a path on a network or removable volume can hang the
+   hub's viewer, which serves everything else) stay on the hub, and such a link keeps Copy path and
+   the line that it opens only on the other Mac; its name ends in one of `.md .markdown .txt .log .json .yaml .yml
    .csv .tsv .pdf .png .jpg .jpeg .gif .webp`, compared without case (a name that is only an
    extension is not one); and no segment of the path starts with `.`: a hidden file or folder
    (`~/.ssh`, `~/.config`, `.git/…`, `.env.json`) stays on the hub. The route's own form rule has

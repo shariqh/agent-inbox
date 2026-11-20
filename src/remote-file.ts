@@ -12,7 +12,7 @@
 //    (public/link-strip.js cardLinks, which reads the same stored fields through public/links.js)
 //    finds a file link whose path is exactly the requested one, absolute or under `~/`. A
 //    repo-relative link is not served. Else `not_linked`, also for an unknown entity.
-// 3. The path in the card is under an allowed root (`~/`, /Users, /Volumes, /tmp, /private/tmp,
+// 3. The path in the card is under an allowed root (`~/`, /Users, /tmp, /private/tmp,
 //    /var/folders, /private/var/folders), ends in a listed document extension and has no segment that
 //    starts with `.` (`not_a_document`). After symbolic links are resolved, the target must be a
 //    regular file (`not_found`) under an allowed root or the real home folder with no hidden segment (else
@@ -48,9 +48,9 @@ export const DOCUMENT_EXTENSIONS: readonly string[] = Object.freeze([
  * The folders a served file may be under, besides the hub user's home: on the path as the card names
  * it (where `~/` stands for the home) and again on its resolved target (where the real home folder
  * counts). System locations (`/etc`, `/Library`, `/System`, `/Applications`, `/usr`, `/opt`, the rest
- * of `/var`) stay on the hub. The connecting Mac's main and the page keep the same list.
+ * of `/var`) and volumes (`/Volumes`: a network or removable volume can hang the hub's viewer) stay on the hub. The connecting Mac's main and the page keep the same list.
  */
-export const ALLOWED_ROOTS: readonly string[] = Object.freeze(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
+export const ALLOWED_ROOTS: readonly string[] = Object.freeze(['/Users/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
 export type FileRefusal = 'bad_request' | 'not_linked' | 'not_a_document' | 'too_large' | 'not_found' | 'unreadable'
 
 export type FileKind = 'item' | 'row'

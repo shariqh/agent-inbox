@@ -75,7 +75,7 @@ describe('the words and the rules', () => {
     ['/Users/owner/repo/.git/HEAD.txt', false], ['/Users/owner/../etc/x.md', false], ['/Users//owner/a.md', false], ['/Users/owner/a\u0007.md', false],
     // system locations stay on the other Mac
     ['/etc/hosts.txt', false], ['/private/etc/x.json', false], ['/Library/Logs/x.log', false], ['/var/log/system.log', false],
-    ['/Applications/X.app/Contents/Info.json', false], ['/private/tmp/a.md', true], ['/var/folders/ab/T/a.md', true], ['/Volumes/Disk/a.md', true],
+    ['/Applications/X.app/Contents/Info.json', false], ['/private/tmp/a.md', true], ['/var/folders/ab/T/a.md', true], ['/Volumes/Disk/a.md', false],
   ])('%s may open as a copy: %s', (path, expected) => {
     expect(hubFileListed(path)).toBe(expected)
   })

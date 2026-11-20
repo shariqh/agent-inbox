@@ -40,7 +40,7 @@ const DOCUMENT_EXTENSIONS = Object.freeze([
 ])
 const LISTED = new Set(DOCUMENT_EXTENSIONS)
 // the hub's allowed roots besides `~/` (src/remote-file.ts ALLOWED_ROOTS), compared in a test
-const ALLOWED_ROOTS = Object.freeze(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
+const ALLOWED_ROOTS = Object.freeze(['/Users/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
 const PATH_MAX = 4096
 const NAME_MAX = 120
 // what a file name may hold in UTF-8, with room to spare under the file system's 255

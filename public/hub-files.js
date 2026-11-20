@@ -23,7 +23,7 @@ export const HUB_FILE_EXTENSIONS = Object.freeze([
 const LISTED = new Set(HUB_FILE_EXTENSIONS)
 // the hub's allowed roots besides `~/` (src/remote-file.ts ALLOWED_ROOTS), compared in a test:
 // system locations stay on the other Mac
-export const HUB_FILE_ROOTS = Object.freeze(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
+export const HUB_FILE_ROOTS = Object.freeze(['/Users/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
 // item and row ids main accepts (electron/hub-files.cjs)
 const ENTITY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/

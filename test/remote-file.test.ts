@@ -202,7 +202,7 @@ describe('cardFilePaths: the file links a card draws, absolute or ~/', () => {
 
 describe('the root allowlist', () => {
   it.each([
-    ['~/notes/a.md', true], ['/Users/owner/a.md', true], ['/Volumes/Disk/a.md', true], ['/tmp/a.md', true], ['/private/tmp/a.md', true],
+    ['~/notes/a.md', true], ['/Users/owner/a.md', true], ['/Volumes/Disk/a.md', false], ['/Volumes/Macintosh HD/Users/owner/a.md', false], ['/tmp/a.md', true], ['/private/tmp/a.md', true],
     ['/var/folders/ab/T/a.md', true], ['/private/var/folders/ab/a.md', true],
     ['/etc/hosts.txt', false], ['/private/etc/x.json', false], ['/Library/Logs/x.log', false], ['/var/log/system.log', false],
     ['/Applications/X.app/Contents/Info.json', false], ['/usr/share/x.md', false], ['/opt/x.md', false], ['/System/x.json', false],
@@ -256,7 +256,7 @@ describe('one rule on three sides: the page, the connecting Mac and the hub', ()
   })
 
   it('keeps one list of allowed roots per side, the same on all three', () => {
-    expect([...ALLOWED_ROOTS]).toEqual(['/Users/', '/Volumes/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
+    expect([...ALLOWED_ROOTS]).toEqual(['/Users/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
     expect([...hubFilesModule.ALLOWED_ROOTS]).toEqual([...ALLOWED_ROOTS])
     expect([...HUB_FILE_ROOTS]).toEqual([...ALLOWED_ROOTS])
   })
@@ -270,7 +270,7 @@ describe('one rule on three sides: the page, the connecting Mac and the hub', ()
       '/Users/owner/colon.md', '/Users/owner/spec.md', '/Users/owner/spec.md', '/Users/owner/curly.md', '/Users/owner/brace.md', '/Users/owner/eq.md',
       '/Users/owner/col.md', '/Users/owner/range.md', '~/notes/plan.txt', '/Users/owner/LOGO.PNG', '/Users/owner/ü-plan.md',
       '/Users/owner/a%2Fb.md', '/Users/owner/md-link.md', '/Users/owner/code.md',
-      '/tmp/tmp-note.md', '/private/tmp/private-tmp.md', '/var/folders/ab/cd/T/folders.md', '/private/var/folders/ab/T/pv.md', '/Volumes/Disk/vol.md',
+      '/tmp/tmp-note.md', '/private/tmp/private-tmp.md', '/var/folders/ab/cd/T/folders.md', '/private/var/folders/ab/T/pv.md',
     ])
   })
 })

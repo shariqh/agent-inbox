@@ -131,7 +131,8 @@ describe('servablePath: the hub\'s rule, applied before anything is asked', () =
     // system locations stay on the hub
     ['/etc/hosts.txt', false], ['/private/etc/x.json', false], ['/Library/Logs/x.log', false], ['/var/log/system.log', false],
     ['/Applications/X.app/Contents/Info.json', false], ['/tmp/a.md', true], ['/private/tmp/a.md', true], ['/var/folders/ab/T/a.md', true],
-    ['/Volumes/Disk/a.md', true],
+    // a network or removable volume can hang the hub's viewer: volumes stay on the hub
+    ['/Volumes/Disk/a.md', false], ['/Volumes/Macintosh HD/Users/owner/a.md', false],
   ])('%s: %s', (path, expected) => {
     expect(servablePath(path)).toBe(expected)
   })

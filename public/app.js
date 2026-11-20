@@ -65,6 +65,7 @@ import {
 } from '/source.js'
 import { attachCommand, claudeSessionUrl, placeLine } from '/place.js'
 import { OPEN_DESK, deskSession, installDeskOpen } from '/desk-open.js'
+import { hubFileEntity, installHubFiles } from '/hub-files.js'
 import { buildIssueView, planGroups, rowParentRuns } from '/issues.js'
 import { buildSummary } from '/buildstamp.js'
 import { actionCategory, actionOwnerLabel, agentFollowupChip, changeKind, lifecycleReceipt, responseLabel } from '/action.js'
@@ -2264,6 +2265,13 @@ const deskOpen = installDeskOpen({
   },
 })
 
+// #634: a card's files opened as copies on this Mac, offered only where
+// agentInboxDesk.filesAvailable() says so (the hub's page shown from another Mac). Asked once now
+// and on each connection change; a change is a frame input, so the next poll repaints the strips.
+const hubFiles = installHubFiles({ onChange: () => noteOutsideChange() })
+// the item or row a Links strip's file belongs to, while files open here; else no hub actions
+const hubFileOwner = (entity) => (hubFiles.available() ? (hubFileEntity(entity) ?? null) : null)
+
 const agentsHome = installAgentsHome({
   deskOpen: () => deskOpen,
   // a card's or row's click toggles its panel; Enter and Open open it at its head, Message,
@@ -2858,14 +2866,21 @@ function renderDashFocus(aside, model, { forced = false } = {}) {
   setFocusPart(aside, aside.querySelector('.dash-focus-source'), source
     ? sourceChipsHtml(linkIndex, source, Date.now(), { ...sourceOptions(source, source), tabbable: true }) : '')
   const links = new Map()
+  // #634: which item or row first linked each file, for Open a copy on this Mac in another Mac's Inbox
+  const owners = new Map()
   const linked = [...card.asks.map((entry) => [dashboardEntryEntity(entry), entry.kind === 'row' ? entry.board : entry.item]),
     ...(focus.board ? [[focus.board, focus.board]] : [])]
   for (const [entity, identity] of linked) {
-    for (const link of cardLinks(entity, identity, linkIndex)) if (!links.has(link.key)) links.set(link.key, link)
+    for (const link of cardLinks(entity, identity, linkIndex)) {
+      if (links.has(link.key)) continue
+      links.set(link.key, link)
+      owners.set(link.key, hubFileOwner(entity))
+    }
   }
   const linksKey = `links:session:${card.id}`
   setFocusPart(aside, aside.querySelector('.dash-focus-links'), linkStripHtml([...links.values()], {
     key: linksKey, open: openContexts.has(linksKey), actions: linkFileActions(), copyFiles: fileLinksCopy(),
+    hubFiles: (link) => owners.get(link.key) ?? null,
   }))
 }
 
@@ -3653,7 +3668,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAl
 function frameInputs() {
   return [
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
-    focusSession, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()),
+    focusSession, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available(),
     triageHeld,
     agentsHome.state(),
     meshAgentPage.state(),
@@ -4810,10 +4825,12 @@ function textContext(identity, entity = identity) {
 
 // Issue #300: the Links strip under the card's origin, listing every link its
 // text shows; '' when there is nothing beyond the PR and issue chips above it.
+// #634: in another Mac's Inbox, a file chip also offers Open a copy on this Mac (public/hub-files.js).
 function cardLinksHtml(entity, identity) {
   const key = `links:${entity.id}`
+  const owner = hubFileOwner(entity)
   return linkStripHtml(cardLinks(entity, identity, linkIndex), {
-    key, open: openContexts.has(key), actions: linkFileActions(), copyFiles: fileLinksCopy(),
+    key, open: openContexts.has(key), actions: linkFileActions(), copyFiles: fileLinksCopy(), hubFiles: owner ? () => owner : null,
   })
 }
 

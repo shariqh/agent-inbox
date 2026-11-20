@@ -695,3 +695,68 @@ describe('a plan row linked to another repository (issue #588)', () => {
     expect(calls).toContain('entry.board, entry.row')
   })
 })
+
+// #634: in another Mac's Inbox (the hub's page in this app's sealed view), main says files open here
+// as copies; a listed file in a card's Links strip then offers Open a copy on this Mac beside Copy path
+describe('a card’s files in another Mac’s Inbox (issue #634)', () => {
+  function hubDesk(files = true) {
+    const openFile = vi.fn(async (_request: unknown): Promise<unknown> => ({ ok: true }))
+    const desk = {
+      available: async () => ({ open: false }),
+      open: vi.fn(),
+      connection: async () => ({ mode: 'hub', label: 'studio', state: 'online', version: '2.16.0' }),
+      onConnection: () => () => {},
+      retry: async () => ({ ok: false }),
+      filesAvailable: vi.fn(async () => ({ files })),
+      openFile,
+    }
+    Object.defineProperty(window, 'agentInboxDesk', { configurable: true, value: desk })
+    return desk
+  }
+  afterEach(() => { Reflect.deleteProperty(window, 'agentInboxDesk') })
+
+  it('offers it on a listed file of an item, keeps Copy path, and sends the item and the path', async () => {
+    const desk = hubDesk()
+    db = freshDb()
+    const id = seed(db, { detail: 'Spec at /Users/s/docs/spec.md:12, the script at /Users/s/bin/run.sh' })
+    const card = await openInspector(db, id)
+    await pollTick()
+    await settle()
+    const strip = stripOf(cardOf(id) ?? card)!
+    const opens = [...strip.querySelectorAll<HTMLButtonElement>('[data-hub-file-open]')]
+    expect(opens.map((button) => button.dataset.hubFilePath)).toEqual(['/Users/s/docs/spec.md', '~/notes/plan.md'])
+    expect(strip.querySelectorAll('[data-link-action="copy"]')).toHaveLength(3)
+    expect(strip.querySelector('.hub-file-only')?.textContent).toBe('This file opens only on the other Mac.')
+    click(opens[0]!)
+    await settle()
+    expect(desk.openFile.mock.calls).toEqual([[{ kind: 'item', id, path: '/Users/s/docs/spec.md' }]])
+  })
+
+  it('sends a plan row as the entity for its own file', async () => {
+    const desk = hubDesk()
+    db = freshDb()
+    upsertBoard(db, { ...SCOPE, title: 'Links plan', rows: [{ label: 'Draft the spec', status: 'tracked', note: 'Draft in /Users/s/docs/draft.md' }] })
+    await bootApp(db)
+    await pollTick()
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('#boards .board-row'))
+    await settle()
+    const open = document.querySelector<HTMLButtonElement>('#boards .row-panel [data-hub-file-open]')!
+    expect(open.dataset.hubFileKind).toBe('row')
+    click(open)
+    await settle()
+    expect(desk.openFile.mock.calls).toEqual([[{ kind: 'row', id: open.dataset.hubFileId, path: '/Users/s/docs/draft.md' }]])
+    expect(open.dataset.hubFileId).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('offers nothing where main does not say files open here', async () => {
+    hubDesk(false)
+    db = freshDb()
+    const id = seed(db)
+    const card = await openInspector(db, id)
+    await pollTick()
+    await settle()
+    expect((cardOf(id) ?? card).querySelector('[data-hub-file-open], .hub-file-only')).toBeNull()
+  })
+})

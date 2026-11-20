@@ -1464,6 +1464,17 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .nrow-card-compose .reply-input { background: var(--app-bg); }
 .nrow-card-close { display: grid; flex: 0 0 auto; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font-size: 20px; cursor: pointer; }
 .nrow-card:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 34%, transparent); outline-offset: 2px; }
+/* UX pass, slice 1 (from the real app's screens): the open ask hugs its content, so the question, its one
+   line, Details and the answers read top to bottom with no empty band between them. A long Details scrolls
+   inside the card and the answers stay in view; when both are long they give way together, so neither
+   pushes the other out of sight. These sit here, not in the slice's block at the end of the file, because
+   the one responsive block below has to come after them: it lays the card out again for tablet and phone. */
+.nrow-card { bottom: auto; max-height: calc(100dvh - 220px); padding: var(--sp-5) 24px; }
+.nrow-card-scroll { flex: 0 1 auto; }
+.nrow-card-compose { flex: 0 1 auto; min-height: 160px; max-height: none; margin-top: var(--sp-4); padding-top: var(--sp-4); }
+/* More and an item's own actions share one quiet line while More is closed and ends the answer area */
+.nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions { margin-top: -44px; justify-content: flex-end; pointer-events: none; }
+.nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions > * { pointer-events: auto; }
 .card, .lb-row-card, .row-panel { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .card-title { margin: 0 0 8px; font-size: 18px; font-weight: 650; line-height: 1.35; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .nrow-card-head .card-title { margin: 0; }
@@ -3123,6 +3134,7 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     inset: auto;
     width: 100%;
     max-width: none;
+    max-height: none;
     margin: 10px 0 0;
     overflow: visible;
     padding: 16px 4px 4px 18px;
@@ -3139,12 +3151,15 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     .nrow-card-scroll,
     .nrow-card-compose {
       flex: 0 0 auto;
+      min-height: 0;
       max-height: none;
       overflow: visible;
       overscroll-behavior: auto;
     }
   }
   .nrow-owner { display: inline-flex; }
+  /* the desktop card's one-line footer (More beside the actions) is not for the inline card or the phone sheet */
+  #needsYouList .nrow-card-compose > .actions { margin-top: 8px; justify-content: flex-start; pointer-events: auto; }
 
   @container compact-masthead (max-width: 620px) {
     .sidebar-shell {
@@ -3262,6 +3277,8 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
       scroll-padding-block-end: 32px;
     }
     .nrow-card-compose {
+      flex: 0 0 auto;
+      min-height: 0;
       max-height: min(42dvh, 320px);
       margin: 0;
       overflow-y: auto;
@@ -3274,6 +3291,9 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     .nrow-card-compose .options { display: grid; grid-template-columns: minmax(0, 1fr); }
     .nrow-card-compose .options:not(.comparing):has(.option:nth-child(3)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .nrow-card-compose .options.comparing { grid-template-columns: minmax(0, 1fr); }
+    /* UX pass, slice 1: asks now start with their details on one line, so two columns of answers is the
+       usual state here; Compare options, the editor and More keep the full width under them */
+    .nrow-card-compose .options > :not(.option) { grid-column: 1 / -1; }
     .nrow-card-compose .option { width: 100%; }
     .nrow-card-compose .opt-pill { width: 100%; min-height: 44px; text-align: left; }
   }
@@ -3416,18 +3436,6 @@ body.hub-reconnecting #status { display: none; }
 :root:not(.keys-shown) .reply-row[data-shortcut] { padding-inline-start: 0; }
 :root:not(.keys-shown) .floating-search-key { display: none; }
 
-/* From the real app's screens. On the desktop the open ask hugs its content, so the question, its one
-   line, Details and the answers read top to bottom with no empty band between them; a long Details
-   scrolls inside the card and the answers stay in view. Tablet and phone keep their own layouts. */
-@media (min-width: 1280px) {
-  .nrow-card { bottom: auto; max-height: calc(100dvh - 220px); padding: var(--sp-5) 24px; }
-  /* when both are long (Details open, Compare on) they give way together, so neither pushes the other out of sight */
-  .nrow-card-scroll { flex: 0 1 auto; }
-  .nrow-card-compose { flex: 0 1 auto; min-height: 160px; max-height: none; margin-top: var(--sp-4); padding-top: var(--sp-4); }
-  /* More and an item's own actions share one quiet line while More is closed and ends the answer area */
-  .nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions { margin-top: -44px; justify-content: flex-end; pointer-events: none; }
-  .nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions > * { pointer-events: auto; }
-}
 /* Each answer and its one line read as a pair, with more room between pairs than inside one. */
 :is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .option + .option { margin-top: var(--sp-1); }
 /* Compare options is a quiet line of its own between the answers and the editor, not a second button beside Send. */

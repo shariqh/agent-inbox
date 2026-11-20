@@ -4374,7 +4374,7 @@ const UNHANDLED_LABEL = 'Not done after all'
 // snooze choices it replaces.
 // `label` names the menu: the compact surface (#303, #454) calls it "More…",
 // since its host already shows Snooze and Pin.
-function dispositionEl(onResponse, onSnooze, key, onPin = null, { label = 'More responses' } = {}) {
+function dispositionEl(onResponse, onSnooze, key, onPin = null, { label = 'More' } = {}) {
   const menu = document.createElement('details')
   menu.className = 'disposition-menu'
   menu.open = openDispositionMenus.has(key)

@@ -50,8 +50,8 @@ it('reveals explicit Tab targets only in their scrolling owner and leaves passiv
   const send = buttonLabelled('Send', card)!
   const context = card.querySelector<HTMLTextAreaElement>('.reply-context-input')!
   const more = [...card.querySelectorAll<HTMLElement>('summary')]
-    .find((summary) => summary.textContent?.includes('More responses'))!
-  // #217: a Copilot ask also offers "I'll take a while" below More responses.
+    .find((summary) => summary.textContent === 'More')!
+  // #217: a Copilot ask also offers "I'll take a while" below More.
   const wait = [...card.querySelectorAll<HTMLElement>('summary')]
     .find((summary) => summary.textContent === 'I’ll take a while')!
   const resolve = buttonLabelled('Resolve', card)!

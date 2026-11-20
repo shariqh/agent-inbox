@@ -3367,3 +3367,15 @@ body.hub-reconnecting #status { display: none; }
 :is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-pill { width: 100%; min-height: 44px; font-size: 15px; font-weight: 600; line-height: 1.3; }
 :is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-detail { margin: var(--sp-1) 0 0; padding: 0 2px; color: var(--app-muted); font-size: 13px; line-height: 1.4; }
 :is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .options:not(.comparing) .opt-detail { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
+/* The answer area. The context editor waits out of sight, still in the DOM and focusable, until focus
+   enters this ask's answer area or it holds text, so a draft is never hidden. */
+:is(.card, .nrow-card-compose) > .options:not(:focus-within) > .reply-context-row:not(:has(> .reply-context-input:not(:placeholder-shown))) {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+/* A task row's "I've done my part" is its main control: drawn first and filled, in place in the DOM. */
+.reply-row > .handled-btn:not(.undo-btn) { order: -1; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+.reply-row > .handled-btn:not(.undo-btn):hover { border-color: var(--app-accent-hover); background: var(--app-accent-hover); color: var(--app-on-accent); }
+/* Resolve, Dismiss, Note and Change answer stay, quieter. A hand-off's Acknowledge (beside its menu) keeps its weight. */
+:is(.card, .nrow-card-compose) > .actions button { border-color: transparent; background: transparent; color: var(--app-muted); }
+:is(.card, .nrow-card-compose) > .actions:has(> .disposition-menu) button { border-color: var(--app-border); background: var(--app-surface); color: var(--app-text); }
+:is(.card, .nrow-card-compose) > .actions button:hover { border-color: var(--app-border); color: var(--app-text); }

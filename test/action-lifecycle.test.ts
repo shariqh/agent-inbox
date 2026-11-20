@@ -1507,7 +1507,7 @@ describe('the coupled "I’ll take a while" write (#247)', () => {
     expect(getItem(db, id)).toEqual({ ...before, watch_stopped_at: at(5), watch_stopped_until: null, pinned_at: at(5) })
   })
 
-  it('"Back in …" makes a question’s watcher wait quietly and snoozes it exactly as More responses would', () => {
+  it('"Back in …" makes a question’s watcher wait quietly and snoozes it exactly as More would', () => {
     const coupled = question()
     const separate = question()
     expect(pinItem(db, coupled, true)).toBe(true)
@@ -1570,7 +1570,7 @@ describe('the coupled "I’ll take a while" write (#247)', () => {
     expect(after.board).toMatchObject({ revision: before.board.revision, updated_at: before.board.updated_at })
   })
 
-  it('"Back in …" makes a row’s watcher wait quietly and snoozes it exactly as More responses would', () => {
+  it('"Back in …" makes a row’s watcher wait quietly and snoozes it exactly as More would', () => {
     plan('A', 'Upload')
     plan('B', 'Upload')
     expect(pinBoardRow(db, current('A').row.id, true, current('A').row.revision, current('A').board.revision)).toBe(true)

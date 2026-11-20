@@ -32,7 +32,7 @@ function chipText(id: string): string {
 }
 
 describe('human disposition controls', () => {
-  it('keeps More responses open across a poll rebuild', async () => {
+  it('keeps More open across a poll rebuild', async () => {
     const d = open()
     const id = insertItem(d, {
       ...AGENT,
@@ -46,6 +46,7 @@ describe('human disposition controls', () => {
     await settle()
 
     const before = row(id)?.querySelector<HTMLDetailsElement>('.disposition-menu')!
+    expect(before.querySelector('summary')?.textContent).toBe('More')
     before.open = true
     before.dispatchEvent(new Event('toggle'))
     await pollTick()

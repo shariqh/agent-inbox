@@ -3971,8 +3971,10 @@ function followRowAsk(id, owner, meta, held = null) {
 }
 
 // The sentence a row's kept text carries, by what became of its ask.
-function rowRecoveryReason(fate, unconfirmed = false) {
-  const cause = {
+// `typedFor` is the draft's meta: one stored without knowing whether it was typed
+// for a blocked step (the released version) cannot say the step "was closed".
+function rowRecoveryReason(fate, unconfirmed = false, typedFor = null) {
+  const cause = fate === 'closed' && typedFor && typedFor.blocked == null ? 'stepChanged' : {
     closed: 'stepClosed', removed: 'stepRemoved', projectClosed: 'projectClosed', asked: 'stepAsked',
   }[fate] ?? 'askChanged'
   return draftReason(cause, unconfirmed)
@@ -4005,7 +4007,7 @@ function recoverMismatchedRenderedRowDraft(b, r) {
     boardTitle: meta.boardTitle ?? b.title,
     label: meta.label ?? r.label,
     context: meta.context ?? '',
-    reason: rowRecoveryReason(fate, unconfirmedRowSends.get(r.id) === text),
+    reason: rowRecoveryReason(fate, unconfirmedRowSends.get(r.id) === text, meta),
   }
   rowAskNotices.delete(r.id)
   bumpDraftGeneration(rowDraftGenerations, r.id)
@@ -9147,7 +9149,7 @@ function reconcileDraftOwners() {
       boardTitle: meta?.boardTitle ?? 'Plan',
       label: meta?.label ?? 'Removed row',
       context: meta?.context ?? '',
-      reason: rowRecoveryReason(fate, unconfirmedRowSends.get(id) === text),
+      reason: rowRecoveryReason(fate, unconfirmedRowSends.get(id) === text, meta),
     }
     rowAskNotices.delete(id)
     bumpDraftGeneration(rowDraftGenerations, id)
@@ -9189,6 +9191,8 @@ const DRAFT_REASONS = {
   // #636: a plan row's kept text says what became of the ask it was typed for
   askChanged: ['The ask changed before your text was sent.', 'Your send was not confirmed, and the ask has changed since.'],
   stepClosed: ['This step was closed before your text was sent.', 'Your send was not confirmed, and this step has been closed since.'],
+  // a draft stored without knowing whether its step was waiting: true whichever way it was typed
+  stepChanged: ['This step changed before your text was sent.', 'Your send was not confirmed, and this step has changed since.'],
   stepAsked: ['This step now has an ask. Your note was not sent.', 'Your send was not confirmed, and this step has an ask now.'],
   // a row this window no longer lists: its plan may be finished or archived, or the row deleted
   stepRemoved: [
@@ -9652,7 +9656,7 @@ function placeRestoredDraft(key, draft) {
         label: draft.label,
         context: draft.context,
         setAside: draft.setAside,
-        reason: rowRecoveryReason(projectClosed ? 'projectClosed' : fate, draft.unconfirmed),
+        reason: rowRecoveryReason(projectClosed ? 'projectClosed' : fate, draft.unconfirmed, meta),
       }
       return null
     }

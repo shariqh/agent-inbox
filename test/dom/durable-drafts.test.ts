@@ -628,6 +628,36 @@ describe('a draft whose target changed goes to the unsent responses', () => {
       expect(row(rowId)?.querySelector('.ask-edited')?.textContent).toBe(ANSWERED)
     })
 
+    // #636 second review, C: whether it was typed for a blocked step is not known
+    it('says the step changed, not that it was closed, for a note on a step that was never waiting', async () => {
+      db = freshDb()
+      const board = plan(db)
+      const notes = board.rows[1]!
+      await bootApp(db)
+      click(document.querySelector('.tab[data-tab="boards"]'))
+      await settle()
+      click(document.querySelector(`#boards tr.board-row[data-row-id="${notes.id}"] .row-expand`))
+      await settle()
+      type(panelInput(notes.id), 'Mention the migration.')
+      window.dispatchEvent(new Event('pagehide'))
+      const raw = JSON.parse(localStorage.getItem(KEY)!) as { entries: Record<string, Stored> }
+      for (const field of ['ask', 'response', 'blocked', 'notice']) delete raw.entries[`row:${notes.id}`]!.draft[field]
+      localStorage.setItem(KEY, JSON.stringify(raw))
+      updateBoardRow(db, {
+        ...AGENT, title: 'Launch plan', label: 'Write notes',
+        expectedBoardVersion: board.revision, expectedRevision: notes.revision, issue: { repo: 'example/repo', number: 7 },
+      })
+
+      const bridge = await reopen(db)
+      await pollTick()
+      expect(bridge.posts).toHaveLength(0)
+      await showInbox()
+      const line = recovery()!.querySelector<HTMLElement>('.stale-draft-line')!
+      expect(line.textContent).toContain('This step changed before your text was sent.')
+      expect(line.textContent).not.toContain('was closed')
+      expect([...line.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Use this text', 'Copy', 'Discard'])
+    })
+
     it('says nothing when the row did not move at all', async () => {
       const { rowId } = await legacyDraft()
       await reopen(db!)

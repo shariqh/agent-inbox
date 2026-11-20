@@ -58,12 +58,13 @@ describe('action-first attention cards', () => {
     expect(card?.querySelector('.card-after')?.textContent).toContain('Review the replies together.')
     const background = card?.querySelector<HTMLDetailsElement>('.card-context')
     expect(background?.open).toBe(false)
-    expect(background?.querySelector('summary')?.textContent).toBe('Details & history')
+    expect(background?.querySelector('summary')?.textContent).toBe('Details')
     expect(background?.querySelector('.card-original-title')?.textContent).toBe('Design-partner outreach')
     expect(background?.querySelector('.card-meta')?.textContent).toContain('feat/internal-rollout-132')
     expect(background?.textContent).toContain('Candidate profiles')
-    for (const selector of ['.card-tldr', '.card-impact', '.card-after']) {
-      expect(card?.querySelector(selector)?.closest('details')).toBeNull()
+    expect(card?.querySelector('.card-tldr')?.closest('details')).toBeNull()
+    for (const selector of ['.card-impact', '.card-after']) {
+      expect(card?.querySelector(selector)?.closest('details')).toBe(background)
     }
     expect(card?.querySelector('.nrow-card-compose > .row-answer')).not.toBeNull()
   })
@@ -169,6 +170,80 @@ describe('action-first attention cards', () => {
     await settle()
     expect(listBoards(d)[0]!.rows[0]!.annotation).toBe('Merge PR #582')
     expect(row(rowId)?.querySelector('.nrow-title')?.textContent).toBe('#334 PR-X0 spec (#582)')
+  })
+
+  // UX pass, slice 1: at rest an ask is its question, one line of why and its
+  // answers; the rest sits behind one "Details".
+  const ORDER = ['card-title', 'card-origin', 'card-finished', 'card-tldr', 'card-links', 'item-annotation',
+    'rec-warning', 'reply-block', 'annotation', 'outcome-block', 'card-context', 'options', 'row-answer', 'actions']
+  const restOrder = (card: Element) => [...card.children]
+    .map((child) => ORDER.find((name) => child.classList.contains(name)))
+    .filter(Boolean)
+
+  it('draws an item card as the question, its why, its links, then Details, the answers and the actions', async () => {
+    const d = open()
+    insertItem(d, {
+      ...AGENT,
+      kind: 'question',
+      title: 'Release window',
+      detail: 'The build is green; the guide is at https://example.com/guide.',
+      next_step: 'Choose when to release.',
+      action_owner: 'decision',
+      impact: 'Customers wait for the fix until we release.',
+      next_after: 'The agent tags the release.',
+      context: 'Long background.',
+      options: [{ label: 'Tonight', recommended: true }, { label: 'Tomorrow' }],
+    })
+    await bootApp(d)
+    click(document.querySelector('.triage-btn'))
+    await settle()
+    const card = document.querySelector('#lightbox .card')!
+    expect(restOrder(card)).toEqual(['card-title', 'card-origin', 'card-tldr', 'card-links', 'card-context', 'options', 'actions'])
+    expect(card.querySelector(':scope > .card-origin')?.textContent?.trim()).toBe('alpha')
+    const details = card.querySelector<HTMLDetailsElement>(':scope > .card-context')!
+    expect(details.open).toBe(false)
+    expect(details.querySelector(':scope > summary')?.textContent).toBe('Details')
+    const inside = [...details.children].map((child) => child.className)
+    expect(inside.slice(0, 4)).toEqual(['card-context-label', 'card-impact', 'card-after', 'card-sources'])
+    for (const selector of ['.card-impact', '.card-after', '.action-owner']) {
+      expect(card.querySelectorAll(selector), selector).toHaveLength(1)
+      expect(card.querySelector(selector)?.closest('details'), selector).toBe(details)
+    }
+    expect(details.querySelector('.action-owner')?.textContent).toBe('Decision')
+    expect([...details.querySelectorAll('.card-section-label')].map((label) => label.textContent))
+      .toEqual(['Why it matters', 'Then'])
+  })
+
+  it('draws a plan row the same way in the Inbox inspector, keeping only the plan at rest', async () => {
+    const d = open()
+    upsertBoard(d, {
+      ...AGENT,
+      title: 'Launch',
+      rows: [{
+        label: 'Outreach',
+        status: 'blocked',
+        note: 'The kit is ready; see https://example.com/kit.',
+        next_step: 'Choose the tracker.',
+        action_owner: 'task',
+        impact: 'Outreach cannot start without it.',
+        next_after: 'Send the first messages.',
+      }],
+    })
+    const rowId = listBoards(d)[0]!.rows[0]!.id
+    await bootApp(d)
+    click(row(rowId))
+    await settle()
+    const card = row(rowId)!.querySelector('.nrow-card-scroll > .lb-row-card')!
+    expect(restOrder(card)).toEqual(['card-origin', 'card-tldr', 'card-links', 'card-context'])
+    expect(card.querySelector(':scope > .card-origin')?.textContent?.trim()).toBe('Plan · Launch')
+    const details = card.querySelector<HTMLDetailsElement>(':scope > .card-context')!
+    expect(details.querySelector(':scope > summary')?.textContent).toBe('Details')
+    for (const selector of ['.card-impact', '.card-after', '.action-owner']) {
+      expect(row(rowId)!.querySelectorAll(selector), selector).toHaveLength(1)
+      expect(card.querySelector(selector)?.closest('details'), selector).toBe(details)
+    }
+    expect(details.querySelector('.action-owner')?.textContent).toBe('To do')
+    expect(row(rowId)!.querySelector('.nrow-card-compose > .row-answer')).not.toBeNull()
   })
 
   it('uses the same request and full explanation in Review queue and Plans', async () => {

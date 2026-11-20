@@ -101,7 +101,7 @@ describe('action lifecycle presentation', () => {
     expect(new Set(rowTitles())).toEqual(new Set(['Choose whether to publish.', 'Upload the build.']))
   })
 
-  it('shows impact, next-after, lifecycle history, and outcomes without expanding background', async () => {
+  it('keeps who acts, impact, next-after and lifecycle history in Details, and Details open across a poll', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -140,10 +140,13 @@ describe('action lifecycle presentation', () => {
     click(row(current.id))
     await settle()
     const card = row(current.id)?.querySelector('.nrow-card')
-    expect(card?.textContent).toContain('To do')
-    expect(card?.textContent).toContain('Starts the design-partner evidence loop.')
-    expect(card?.textContent).toContain('Review replies and schedule interviews.')
-    expect(card?.querySelector('.action-history')?.textContent).toContain('People Pipeline')
+    // UX pass, slice 1: these moved from the card's face into its one Details
+    const details = card?.querySelector<HTMLDetailsElement>('.card-context')
+    expect(details?.open).toBe(false)
+    expect(details?.querySelector('.action-owner')?.textContent).toBe('To do')
+    expect(details?.querySelector('.card-impact')?.textContent).toContain('Starts the design-partner evidence loop.')
+    expect(details?.querySelector('.card-after')?.textContent).toContain('Review replies and schedule interviews.')
+    expect(details?.querySelector('.action-history')?.textContent).toContain('People Pipeline')
     for (const selector of ['.card-context', '.action-history']) {
       const disclosure = card?.querySelector<HTMLDetailsElement>(selector)
       disclosure!.open = true

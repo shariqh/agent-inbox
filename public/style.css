@@ -3354,3 +3354,9 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 .hub-reconnecting { color: var(--app-warning); font-size: var(--fs-body); font-weight: 600; }
 /* the line says the page is reconnecting; the page's own "disconnected" would say it twice */
 body.hub-reconnecting #status { display: none; }
+
+/* UX pass, slice 1: the ask */
+/* An ask at rest is its question, one line of why and its answers; the rest sits behind one Details. */
+.card-sources { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); margin: var(--sp-2) 0; color: var(--app-text-soft); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.card-sources .action-owner { margin-top: 0; }
+.card-context > .card-impact, .card-context > .card-after { margin: var(--sp-1) 0 var(--sp-2); }

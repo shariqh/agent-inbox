@@ -1357,7 +1357,8 @@ function focusItem(id, source = null) {
     openRows.add(source.rowId)
     if (board) showDoneBoards.add(board.id)
   }
-  if (source?.field === 'context') {
+  // UX pass, slice 1: Why it matters, Then and who acts sit inside Details too
+  if (['context', 'impact', 'next', 'owner'].includes(source?.field)) {
     openContexts.add(source.rowId ? `row:${source.rowId}` : `item:${id}`)
   }
   if (source?.field === 'option-detail') {
@@ -5153,10 +5154,15 @@ function sourceOptions(entity, identity = entity) {
   }
 }
 
+// UX pass, slice 1: one "Details" holds everything but the question, its one
+// line of why and its answers: Why it matters and Then first, then who acts and
+// the PR, issue and waits chips, then the tracking record.
 function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = true } = {}) {
   const metadata = [identity.project, identity.agent, identity.stream].filter(Boolean)
   return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}>
-    <summary class="card-context-label">Details &amp; history</summary>
+    <summary class="card-context-label">Details</summary>
+    ${actionWhyHtml(presentation, textContext(identity, entity))}
+    ${cardSourcesHtml(entity, identity)}
     <div class="card-tracking-label">Original ${entity.label === undefined ? 'title' : 'label'}</div>
     <div class="card-original-title">${esc(presentation.originalTitle)}</div>
     <div class="meta card-meta">${metadata.map(esc).join(' · ')}</div>
@@ -5199,9 +5205,14 @@ function openIssueActivity(id, rowId) {
   focusItem(id, rowId ? { rowId } : null)
 }
 
+// The TL;DR, the one line of why an ask shows at rest.
 function actionBlocksHtml(presentation, ctx) {
+  return presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail, ctx)}</div></div>` : ''
+}
+
+// Why it matters and Then, the first blocks inside Details (cardDetailsHtml).
+function actionWhyHtml(presentation, ctx) {
   return `
-    ${presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail, ctx)}</div></div>` : ''}
     ${presentation.impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(presentation.impact, ctx)}</div>` : ''}
     ${presentation.nextAfter ? `<div class="card-after"><div class="card-section-label">Then</div>${renderStructuredText(presentation.nextAfter, ctx)}</div>` : ''}`
 }
@@ -5231,14 +5242,24 @@ function cardLinksHtml(entity, identity) {
   })
 }
 
+// At rest the origin names only the project (where the card shows one) and a
+// row's plan; '' when it has neither. Who acts and the chips are in Details.
 function cardOriginHtml(entity, identity, { showProject = true } = {}) {
-  return `<div class="card-origin">
-    ${showProject ? `<span>${esc(identity.project)}</span>` : ''}
-    ${entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : ''}
-    ${entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : ''}
-    ${sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true })}
-    ${entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : ''}
-  </div>${cardLinksHtml(entity, identity)}`
+  const parts = [
+    showProject ? `<span>${esc(identity.project)}</span>` : '',
+    entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : '',
+  ].filter(Boolean)
+  return parts.length ? `<div class="card-origin">${parts.join('')}</div>` : ''
+}
+
+// Inside Details: who acts, the PR and issue chips and a row's waits chip.
+function cardSourcesHtml(entity, identity) {
+  const parts = [
+    entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : '',
+    sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true }),
+    entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : '',
+  ].filter((part) => part.trim())
+  return parts.length ? `<div class="card-sources">${parts.join('')}</div>` : ''
 }
 
 function lifecycleHtml(entity, { includeAsked = true } = {}) {
@@ -5285,6 +5306,7 @@ function rowPanelEl(b, r, readOnly = false) {
     ${cardHeadingHtml(presentation, textContext(b, r))}
     ${cardOriginHtml(r, b)}
     ${actionBlocksHtml(presentation, textContext(b, r))}
+    ${cardLinksHtml(r, b)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome, r.outcome_at, textContext(b, r))}
     ${rowWaitsHtml(r, b, Date.now(), { issues: issueView })}
@@ -5308,6 +5330,7 @@ function rowCardEl(b, r, onSaved, { includeAsked = true, header = true } = {}) {
     ${header ? cardHeadingHtml(presentation, textContext(b, r)) : ''}
     ${cardOriginHtml(r, b, { showProject: header })}
     ${actionBlocksHtml(presentation, textContext(b, r))}
+    ${cardLinksHtml(r, b)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome, r.outcome_at, textContext(b, r))}
     ${cardDetailsHtml(r, b, `row:${r.id}`, presentation, { includeAsked })}`
@@ -10375,6 +10398,7 @@ function itemCardEl(it, {
     ${cardOriginHtml(it, it, { showProject: header })}
     ${s.handoff && it.title && it.title !== presentation.headline ? '<div class="card-finished"></div>' : ''}
     ${actionBlocksHtml(presentation, textContext(it))}
+    ${cardLinksHtml(it, it)}
     ${itemAnnotationHtml(s.annotationReceipt)}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}

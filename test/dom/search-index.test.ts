@@ -225,6 +225,44 @@ describe('workspace search index', () => {
       .toEqual(query.split('-'))
   })
 
+  it.each([
+    ['impact', 'zircon', '.card-impact'],
+    ['next_after', 'basalt', '.card-after'],
+  ])('opens Details for a hit in the %s, which sits inside it', async (field, query, selector) => {
+    const d = open()
+    const target = insertItem(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
+      title: 'Gate 140', next_step: 'Confirm the window.',
+      detail: 'The update is ready.',
+      [field]: `A ${query} reason to read before choosing.`,
+    })
+    await bootApp(d)
+    await searchFor(query)
+    click(option(target))
+    await settle()
+    const details = row(target)?.querySelector<HTMLDetailsElement>('.card-context')
+    expect(details?.open).toBe(true)
+    expect(details?.querySelector(`${selector} .search-jump-highlight`)?.textContent).toBe(query)
+    await pollTick()
+    expect(row(target)?.querySelector<HTMLDetailsElement>('.card-context')?.open).toBe(true)
+  })
+
+  it('opens Details when a deep link names a hit in a row’s impact', async () => {
+    const d = open()
+    upsertBoard(d, {
+      project: 'alpha', stream: 'main', agent: 'copilot', title: 'Launch',
+      rows: [{ label: 'Outreach', status: 'blocked', note: 'Ready.', impact: 'Outreach waits on the tracker.' }],
+    })
+    const board = listBoards(d)[0]!
+    await bootApp(d)
+    await searchFor('tracker')
+    click(option(board.id))
+    await settle()
+    expect(document.querySelector<HTMLDetailsElement>('#boards .row-panel .card-context')?.open).toBe(true)
+    await pollTick()
+    expect(document.querySelector<HTMLDetailsElement>('#boards .row-panel .card-context')?.open).toBe(true)
+  })
+
   it('reveals a promoted request and an exact duplicate explanation at their remaining source', async () => {
     const d = open()
     const target = insertItem(d, {

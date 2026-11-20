@@ -56,14 +56,16 @@ describe('draft recovery visibility from Plan flow', () => {
     click(buttonLabelled('Send', detail))
     await settle()
 
-    const fold = document.querySelector<HTMLDetailsElement>('.stale-drafts-fold')!
+    // #636: the row asks again, so the text is kept beside it in the Inbox
+    const kept = document.querySelector<HTMLElement>('#needsYouList .row-recovery')!
     expect(mission.hidden).toBe(true)
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
-    expect(fold?.textContent).toContain('Preserve mission response')
-    expect(fold?.textContent).toContain('Original mission context')
-    expect(document.activeElement).toBe(fold?.querySelector('summary'))
-    click(buttonLabelled('Clear', fold))
-    await settle()
+    expect(kept?.textContent).toContain('Preserve mission response')
+    expect(kept?.textContent).toContain('The ask changed before your text was sent.')
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
+    expect(document.activeElement).toBe(kept)
+    click(buttonLabelled('Discard', kept))
+    await settle()
+    expect(document.querySelector('#needsYouList .row-recovery')).toBeNull()
   })
 })

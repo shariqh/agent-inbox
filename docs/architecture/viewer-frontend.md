@@ -172,8 +172,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   editor (`[data-draft-focus-key]`) has focus in a focused window; a New session task
   holds while its dialog is open. Past that, the poll paints and every editor is
   rebuilt with its text from module state; nothing is sent or focused. A draft whose
-  target moved (its row advanced, its question closed) is moved to the unsent responses
-  by that poll frame, still durable, but the frame never navigates: `renderIfIdle()`
+  target moved (its row advanced, its question closed; a row whose ask is still the
+  same keeps its draft, #636 below) is moved to the unsent responses by that poll frame, still durable, but the frame never navigates: `renderIfIdle()`
   sets `pollPaint`, so `reconcileDraftOwners()` and `recoverMismatchedRenderedRowDraft()`
   skip `requestDraftRecovery()` (no tab switch, no closing the Review queue, no focus
   move) and leave `recoveryNavPending` for the next frame the human asks for. `hasUnsentResponses()` reads every draft (`typedDrafts()`), so the
@@ -235,7 +235,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (an unreadable or unknown one is dropped, never thrown) and merges one window's
   changes into what the profile holds. The window's memory stays the source of truth:
   `saveDrafts()` writes only what changed since this window last loaded or wrote each
-  key, so an emptied editor, a successful send (JSON `ok:true`), Clear and every
+  key, so an emptied editor, a successful send (JSON `ok:true`), Discard and every
   deliberate discard delete the stored copy, and a refused send keeps it as an unsent
   response. A save is queued from `showPauseHint()`, which every draft change reaches,
   and lands within 300 ms. The leaving saves (`pagehide`, `beforeunload`,
@@ -246,7 +246,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   carries what it was written against: a question draft the question's answer as of
   the last edit (`replied_at`, source, kind and text, never `response_revision`, which
   the human's own Note also moves), a row draft its row and board ids and revisions,
-  its action version and whether its send was still unanswered, and any reply intent
+  its action version, short hashes of its ask's words and of the row's response
+  (#636), whether it was typed for a blocked step, the notice its row said when the
+  ask moved under it, and whether its send was still unanswered, and any reply intent
   its claiming client id and its pin, the answer as it stood when the intent was
   claimed. The pin travels on the intent, so nothing can move it while the intent is
   kept, and a fresh intent brings its own. The tab's
@@ -256,13 +258,15 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   draft whose row no active plan holds may wait for the complete archived plans,
   #299 in `store-and-snapshots.md`), and sends
   nothing, focuses nothing and switches no tab. A draft whose target is unchanged and
-  whose project is open goes back to its editor, the newest one in the queue reopens
+  whose project is open goes back to its editor (for a row: the same ask, by #636's
+  rule below, with its notice when the words or response moved), the newest one in the queue reopens
   its card when none is open, a Plans-only row reopens its panel, and the next queue
   render opens any fold holding a restored draft once. Anything else goes to the
   unsent responses, which never pause the list and show in every project view, with a
-  stored `reason`: "this question changed", "this question is closed or no longer
-  available", "this action changed", "Kept because this project is closed", or #272's
-  set-aside reason only when it was recorded. Once a send of the text was tried and
+  stored `reason`: "The question changed before your text was sent.", "This question
+  was closed or removed before your text was sent.", a row's "The ask changed …",
+  "This step was closed …" or "This step was closed or removed …" (#636), "Kept because
+  this project is closed", or #272's set-aside reason on an entry stored before #636. Once a send of the text was tried and
   never answered (a reply intent, or a row send still in flight), the reason says
   "Your send was not confirmed", never "not sent": the write may have landed. A draft
   whose exact text the server already holds is dropped. **One rule decides every reuse
@@ -350,20 +354,88 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the queue opens over it. `hasDraftRecovery()` still guards the viewer-restart
   reload, which protects every entry. A held queue never moves focus to the
   off-screen fold: every door (the Dashboard rail's button, the Inbox toolbar's
-  button and `t`) switches to the Inbox and writes "Finish or clear the N unsent
+  button and `t`) switches to the Inbox and writes "Finish or discard the N unsent
   response(s) first." into the Needs-you header's polite `role="status"` region,
   with a Show control that focuses it. That header node is never rebuilt, so
-  `paintTriageHold()` writes it in place (Clear calls it too, even while the list's
+  `paintTriageHold()` writes it in place (Discard calls it too, even while the list's
   rebuild is held back); `triageHeld` is in `frameInputs()` and ends when the queue
   opens, the held entries are gone or the human leaves the Inbox. Show is an
   explicit navigation: it opens the row (`requestDraftRecovery(target)`) for an
   inline recovery, then `revealDetailsAncestors`, `revealControl` and a
   `motion.scrollBehavior()` scroll of the in-flow row or line, and focuses the
   editor or the line (`tabIndex = -1`, kept across rebuilds by the recovery focus
-  bookmark). The fold says what its buttons do ("Retry sends a response again;
-  Clear discards it for good.", or the Clear half when no entry can retry). Nothing
+  bookmark). The fold says what its buttons do, naming only those shown
+  (`staleDraftsHelp`, below). Nothing
   here reaches attention, a badge or the dock. `test/dom/review-queue-hold.test.ts`
   and `review-queue-hold-key.test.ts` pin it.
+- **A row draft follows its ask, not its revision (#636).** The server's guard stays:
+  an annotate whose `expected_revision` or `expected_board_version` is stale is
+  refused, so text never lands on an ask its writer did not see. The page decides what
+  a moved revision means for a draft with `rowAskFate(owner, typedFor, held)`, where
+  `typedFor` is the draft's `rowDraftMeta` (revision, `action_version`, whether it was
+  typed for a `blocked` step, and `rowAskSignature` / `rowResponseSignature`: cyrb53
+  hashes of the row's status, note, next step, owner, impact, after, context, outcome
+  and options with their details and recommended flag, and of its annotation, kind and
+  done mark) and `held` is the draft's own `{ text, kind }`. A draft for a blocked step:
+  1. *The same ask:* same blocked action, same words, same response (`same`). The draft
+     stays in its editor and its meta moves to the current revision (`followRowAsk`,
+     from `reconcileDraftOwners`, `recoverMismatchedRenderedRowDraft` and
+     `placeRestoredDraft`; the second is needed because the Dashboard's session panel
+     paints its asks before the frame's reconcile runs). A Send or an option the server refused is sent once more by
+     the page against the current revision (the loop in `rowAnswerEl`'s `save`, which
+     re-reads with `load()` and then checks again that the editor is still the sender's);
+     a second refusal keeps the text and says the step kept changing. If the re-read
+     itself got nothing, the line is the ordinary write-failed one.
+  2. *The same ask, moved:* its words were edited (`edited`), or the response changed
+     from elsewhere (`answered`: another window answered, the done mark moved, a
+     response was cleared). The draft stays in its editor at the current revision and
+     carries a notice word (`rowDraftMeta[id].notice`, stored with the draft, so a
+     reload keeps it) until a send of it lands, or the editor is emptied, or the draft
+     leaves its ask. A Send or option click that finds it announces the sentence
+     through the write-error slot (`showWriteError`, a `role="status"` span rewritten
+     in place, which is how this page announces); a later render draws it as a plain
+     `.ask-edited` paragraph, with no role, and never both. An option click is not
+     applied and the editor keeps what it held; its sentence ends "…then choose." (or
+     "…then choose again.") where a Send's ends "…then send." A refused click with no
+     text typed keeps its notice in memory (`rowAskNotices`), which ends with the ask
+     (`action_version`, or the row leaving `blocked`).
+  3. *The text already landed* (`landed`): the fate would be `answered` but the row now
+     holds exactly the draft's text and kind (`rowHoldsText`), as after a send whose
+     answer was lost, or the same words saved in another window. The draft is retired
+     (`retireRowDraft`), nothing is shown and nothing is sent again.
+  4. *A new ask, or none* (`changed`, `closed`, `removed`, `projectClosed`). The text
+     goes to `staleRowDrafts` with its reason. `rowRecoveryEl` shows it beside the row
+     while the row's open card is in the Inbox list (and in any other surface that draws
+     the row's editor), and `renderOrphanedDrafts` lists it in the unsent responses only
+     when the Inbox card does not show it. Both offer **Use this text** whenever the row
+     still has an editor (`rowRecoveryUsable`: it is listed and its project is open; a
+     blocked row's card opens in the Inbox, a step that asks nothing opens in Plans;
+     after anything already typed, focus to the editor, nothing sent), **Copy** and
+     **Discard**. An entry stored with no reason reads "Kept from before you set this
+     aside." (`setAside`) or "Your text was not sent.". A refused option click is not
+     kept as text: it says the step changed and nothing was applied; on a step that
+     was closed or removed, or whose project was closed, meanwhile it is one entry of
+     its own (`choice`, stored as `row-recovery:<row>:<revision>:choice`):
+     `Your choice "<label>" was not applied: this step was closed first.` (or `this
+     project was closed first.`), with **Discard** alone. An option click that gets no
+     answer leaves typed text alone and says "Your choice was not applied. Nothing was
+     lost; choose again."; with nothing typed its label goes into the editor with the
+     ordinary write-failed line, so Send retries it and a pending viewer restart waits.
+  A note typed on a step that is not `blocked` (the Plans panel) follows the same rules
+  with `typedFor.blocked` false: still not blocked and nothing it reads changed is
+  `same` (sent again by the page); still not blocked but something it reads changed is
+  `updated` (the text stays, with "This step was updated while you were typing. Read it
+  again, then send."); the row blocked meanwhile is `asked` (kept beside the row with
+  "This step now has an ask. Your note was not sent."). A draft the released version
+  stored has no hashes: once its row moved under the same action it is `answered` when
+  the row holds a response and `edited` otherwise, never `same`; one stored without the
+  `blocked` flag whose row is not blocked now says "This step changed before your text
+  was sent." (it may have been typed either way). The fold's help line
+  (`staleDraftsHelp`) names each button for what it works on: "Retry sends a response
+  again; Use this text puts a step’s text in its editor; Copy copies a step’s text;
+  Discard removes an entry for good.", naming only those shown.
+  `test/dom/stranded-answers.test.ts` and `test/dom/durable-drafts.test.ts` pin it;
+  `set-aside-draft.test.ts` the deferrals, which leave the words alone.
 - **An idle tick paints nothing, and the clock still moves (#298).** Rebuilding
   an unchanged page every 3 s cost about 1.3% renderer and 1.5% GPU CPU at idle.
   `load()` calls `renderIfIdle()` unless `pollMaySkipPaint` (`public/poll.js`)

@@ -425,7 +425,7 @@ function showPauseHint() {
   const el = document.getElementById('pauseHint')
   if (!el) return
   const hint = refreshPending && hasUnsentResponses()
-    ? 'Viewer updated — finish or clear unsent responses to refresh.'
+    ? 'Viewer updated — finish or discard unsent responses to refresh.'
     : renderDirty ? suspendHint(suspendState()) : null
   el.setAttribute('role', 'status')
   if (el.textContent !== (hint ?? '')) el.textContent = hint ?? ''
@@ -1154,6 +1154,8 @@ function showWriteError(id, msg) {
 }
 
 const WRITE_FAILED = 'Not sent — nothing was lost; press Send to retry.'
+// an option click that got no answer, with text typed in the editor that it must not replace (#636)
+const ROW_CHOICE_NOT_APPLIED = 'Your choice was not applied. Nothing was lost; choose again.'
 // #412 step 3: an app launch's approval counts only from the app's own window
 const LAUNCH_ASK_REFUSED = 'Not sent — approve this from Agent Inbox’s own window.'
 // An app launch's approval (#412 step 3): only its driver closes it, after the
@@ -3780,8 +3782,28 @@ const rowDraftGenerations = {} // row id → monotonic edit token across duplica
 const rowSubmissionTokens = {} // row id → latest async submission allowed to retire its draft
 const staleRowDrafts = {} // row-id + revision key → one refused action response
 const unconfirmedRowSends = new Map() // row id → text whose annotate POST has had no answer (#279)
-const ROW_SET_ASIDE = 'Kept from before you set this aside.'
-const ROW_ACTION_CHANGED = 'Not sent because this action changed.'
+// row id → { actionVersion, word, choice }: a notice with no draft to carry it, as
+// after an option click the row refused (#636). A draft carries its own, in its meta.
+const rowAskNotices = new Map()
+// What the row says when its ask moved under a response (#636), by what moved:
+// `send` while text waits in the editor, `choose` after a refused option click.
+const ROW_ASK_SENTENCES = {
+  edited: {
+    send: 'This ask was edited while you were typing. Read it again, then send.',
+    choose: 'This ask was edited while you were typing. Read it again, then choose.',
+  },
+  answered: {
+    send: 'The response on this step changed before yours was sent. Read it, then send yours.',
+    choose: 'The response on this step changed before yours was sent. Read it, then choose again.',
+  },
+  updated: {
+    send: 'This step was updated while you were typing. Read it again, then send.',
+    choose: 'This step was updated while you were typing. Read it again, then choose.',
+  },
+}
+const rowAskSentence = (word, choice = false) => ROW_ASK_SENTENCES[word]?.[choice ? 'choose' : 'send'] ?? ''
+const isRowAskSentence = (text) => Object.values(ROW_ASK_SENTENCES).some((pair) => text === pair.send || text === pair.choose)
+const ROW_KEPT_CHANGING = 'This step kept changing, so nothing was sent. Try again.'
 let requestedDraftFocusBookmark = null
 let draftRecoveryFocusPending = false
 let draftRecoveryFocusControl = null // { line, label } of the unsent-response control focused at the last rebuild
@@ -3789,6 +3811,12 @@ let draftRecoveryTarget = null
 
 function rowDraftRecoveryKey(rowId, revision) {
   return JSON.stringify([rowId, revision])
+}
+
+// An option click a closed step could not take (#636) is its own entry, so it
+// never takes the place of text kept for the same revision.
+function rowChoiceRecoveryKey(rowId, revision) {
+  return JSON.stringify([rowId, revision, 'choice'])
 }
 
 function bumpDraftGeneration(generations, id) {
@@ -3803,10 +3831,192 @@ function clearRowRecoveryTarget(rowId, revision) {
   }
 }
 
+// #636: what the person reads of a row's ask (its status, words, options and
+// outcome: the Outcome block changes the card's headline too), as a short hash. A draft keeps
+// the signature of the ask it was typed under, so a later revision of the same
+// action tells an edit to those words (case 2) from a write that left them
+// alone (case 1). Hashed so the stored draft (#279) does not carry the words twice.
+function rowAskSignature(r) {
+  return textHash(JSON.stringify([
+    r.status, r.note ?? '', r.next_step ?? '', r.action_owner ?? null, r.impact ?? '', r.next_after ?? '',
+    r.context ?? '', r.outcome ?? '',
+    (r.options ?? []).map((option) => [option.label, option.detail ?? '', Boolean(option.recommended)]),
+  ]))
+}
+
+// The response the row holds: the human's words, their kind and the done mark.
+function rowResponseSignature(r) {
+  return textHash(JSON.stringify([r.annotation ?? '', r.annotation_kind ?? null, r.handled_at ?? null]))
+}
+
+// A 53-bit string hash (cyrb53), in base 36. Not for secrets: it only tells
+// two texts apart.
+function textHash(text) {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
+}
+
+// What a row draft remembers of the row it was typed on.
+function rowDraftMetaFor(b, r) {
+  return {
+    revision: r.revision,
+    actionVersion: r.action_version,
+    ask: rowAskSignature(r),
+    response: rowResponseSignature(r),
+    boardTitle: b.title,
+    label: r.label,
+    context: r.context ?? '',
+    boardId: b.id,
+    boardRevision: b.revision,
+    // typed for a step that asked something of the person, or for a note on one that did not
+    blocked: r.status === 'blocked',
+  }
+}
+
+// #636: what became of the ask a row draft was typed for (`typedFor`: its
+// revision, actionVersion, ask and response signatures, and whether the step
+// was blocked), against the row now. `held` ({ text, kind }) is the draft's own
+// text, when the caller has it.
+//   same     the same revision, or the same blocked action with the same words
+//            and the same response (a step that asked nothing: the same words and
+//            status, and the same response)
+//   edited   the same blocked action, but words the person reads changed
+//   updated  a step that asked nothing and still asks nothing, but something the
+//            person reads of it changed
+//   answered the same words, but the response changed (another window, the done
+//            mark, a response cleared, or an earlier send of this one)
+//   landed   answered, and the row now holds exactly the draft's own text and
+//            kind: the send went through, so there is nothing to send
+//   changed  a new action: its action_version moved (or was never known)
+//   closed   a blocked ask that asks nothing now (it left `blocked`)
+//   asked    a note on a step that asked nothing, which now has an ask
+//   removed  the row is not listed (deleted, or its plan finished or archived)
+//   projectClosed  its project is closed
+// A draft the released version stored has no hashes: once its row moved under
+// the same action it is never `same`, but `answered` when the row now holds a
+// response, and `edited` otherwise.
+function rowAskFate(owner, typedFor, held = null) {
+  if (!owner) return 'removed'
+  const { row } = owner
+  if (row.revision === typedFor.revision) return 'same'
+  if (closedSet().has(owner.board.project)) return 'projectClosed'
+  const waiting = typedFor.blocked !== false
+  if (waiting) {
+    if (row.status !== 'blocked') return 'closed'
+    if (typedFor.actionVersion == null || row.action_version !== typedFor.actionVersion) return 'changed'
+  } else if (row.status === 'blocked') {
+    return 'asked'
+  }
+  const moved = waiting ? 'edited' : 'updated'
+  let fate
+  if (typedFor.ask == null || typedFor.response == null) fate = rowHasResponse(row) ? 'answered' : moved
+  else if (typedFor.ask !== rowAskSignature(row)) fate = moved
+  else fate = typedFor.response === rowResponseSignature(row) ? 'same' : 'answered'
+  return fate === 'answered' && held && rowHoldsText(row, held) ? 'landed' : fate
+}
+
+// A response of any kind: the human's words, a clarification or decline, or the done mark.
+const rowHasResponse = (row) => Boolean(row.annotation || row.annotation_kind || row.handled_at)
+
+// Whether the row holds exactly this text and kind as its annotation.
+function rowHoldsText(row, { text, kind }) {
+  return (row.annotation ?? '') === text.trim() && (row.annotation_kind ?? 'answer') === kind
+}
+
+// Cases 1 and 2 (#636): the row still asks what the draft was typed for.
+const sameRowAsk = (fate) => fate === 'same' || fate in ROW_ASK_SENTENCES
+
+// The draft's text needs nowhere else to go: it stays in its editor, or the
+// server already holds it.
+const rowDraftStays = (fate) => sameRowAsk(fate) || fate === 'landed'
+
+// Says beside the row's editor that its ask moved under the draft. The notice
+// goes with the draft (its meta, so a reload keeps it) while text waits; with
+// none, as after a refused option click, it is kept in memory.
+function noteRowAskMoved(id, fate, owner, { choice = false } = {}) {
+  if (!(fate in ROW_ASK_SENTENCES)) return
+  const meta = rowDraftMeta[id]
+  if (meta && String(rowDrafts[id] ?? '').trim()) {
+    meta.notice = fate
+    rowAskNotices.delete(id)
+  } else {
+    rowAskNotices.set(id, { actionVersion: owner.row.action_version, word: fate, choice })
+  }
+}
+
+// Drops the notice a row carries, and the sentence that announced it.
+function clearRowAskNotice(id) {
+  rowAskNotices.delete(id)
+  if (rowDraftMeta[id]) delete rowDraftMeta[id].notice
+  if (isRowAskSentence(writeErrors[id])) showWriteError(id, '')
+  for (const el of document.querySelectorAll(`.ask-edited[data-notice-for="${CSS.escape(id)}"]`)) el.remove()
+}
+
+// A draft the server already holds (its send went through) goes away: nothing
+// is shown and nothing is sent again.
+function retireRowDraft(id) {
+  bumpDraftGeneration(rowDraftGenerations, id)
+  delete rowDrafts[id]
+  delete rowDraftKinds[id]
+  delete rowDraftMeta[id]
+  unconfirmedRowSends.delete(id)
+  clearRowAskNotice(id)
+  showWriteError(id, '')
+  scheduleDraftSave()
+}
+
+// Follows a row draft to what became of its ask (#636 cases 1 and 2): while the
+// row still asks what it was typed for, its meta moves to the current revision,
+// so the next Send goes there, and a moved ask is marked on the draft for the
+// row to say so. One the server already holds is retired. Returns the fate;
+// anything else is for the caller to keep with its reason.
+function followRowAsk(id, owner, meta, held = null) {
+  const fate = rowAskFate(owner, meta, held)
+  if (fate === 'landed') {
+    retireRowDraft(id)
+  } else if (sameRowAsk(fate)) {
+    const notice = fate in ROW_ASK_SENTENCES ? fate : meta.notice
+    Object.assign(meta, rowDraftMetaFor(owner.board, owner.row))
+    if (notice) meta.notice = notice
+  }
+  return fate
+}
+
+// The sentence a row's kept text carries, by what became of its ask.
+// `typedFor` is the draft's meta: one stored without knowing whether it was typed
+// for a blocked step (the released version) cannot say the step "was closed".
+function rowRecoveryReason(fate, unconfirmed = false, typedFor = null) {
+  const cause = fate === 'closed' && typedFor && typedFor.blocked == null ? 'stepChanged' : {
+    closed: 'stepClosed', removed: 'stepRemoved', projectClosed: 'projectClosed', asked: 'stepAsked',
+  }[fate] ?? 'askChanged'
+  return draftReason(cause, unconfirmed)
+}
+
+// What a kept row text says when it was stored without a reason (the released
+// version stored in-session recoveries so): a text set aside before is told
+// from one that was simply not sent.
+const rowRecoveryWhy = (draft) => draft.reason
+  || (draft.setAside ? 'Kept from before you set this aside.' : 'Your text was not sent.')
+
+// A draft whose row moved is followed here, as reconcileDraftOwners follows it,
+// because not every editor is drawn after that reconcile: the Dashboard's session
+// panel paints its asks (paintAmbient) before render() reconciles, so its editor
+// sees the newer row first, and without the follow every moved draft would be set
+// aside. A draft that does not stay goes to the unsent responses.
 function recoverMismatchedRenderedRowDraft(b, r) {
   const text = rowDrafts[r.id]
   const meta = rowDraftMeta[r.id]
   if (!String(text ?? '').trim() || !meta || meta.revision === r.revision) return false
+  const fate = followRowAsk(r.id, { board: b, row: r }, meta, { text, kind: rowDraftKinds[r.id] ?? 'answer' })
+  if (rowDraftStays(fate)) return false
   const revision = meta.revision ?? -1
   staleRowDrafts[rowDraftRecoveryKey(r.id, revision)] = {
     rowId: r.id,
@@ -3817,7 +4027,9 @@ function recoverMismatchedRenderedRowDraft(b, r) {
     boardTitle: meta.boardTitle ?? b.title,
     label: meta.label ?? r.label,
     context: meta.context ?? '',
+    reason: rowRecoveryReason(fate, unconfirmedRowSends.get(r.id) === text, meta),
   }
+  rowAskNotices.delete(r.id)
   bumpDraftGeneration(rowDraftGenerations, r.id)
   delete rowDrafts[r.id]
   delete rowDraftKinds[r.id]
@@ -3943,7 +4155,7 @@ function heldDraftRecoveries(deck = buildDeck()) {
   }
   for (const [key, draft] of Object.entries(staleRowDrafts)) {
     const owner = rows.get(draft.rowId)
-    if (!owner) continue
+    if (!owner || draft.choice) continue
     const inline = owner.row.revision === draft.revision
     const sameAction = draft.actionVersion != null && draft.actionVersion === owner.row.action_version
     if (inline || sameAction) {
@@ -3966,12 +4178,12 @@ let triageHeld = false
 
 function triageHoldText(count) {
   return count === 1
-    ? 'Finish or clear the 1 unsent response first.'
-    : `Finish or clear the ${count} unsent responses first.`
+    ? 'Finish or discard the 1 unsent response first.'
+    : `Finish or discard the ${count} unsent responses first.`
 }
 
 // Writes the hold line in the Needs-you header, which is never rebuilt, so a
-// Clear can update it even while the list's own rebuild is held back.
+// Discard can update it even while the list's own rebuild is held back.
 function paintTriageHold() {
   const count = triageHeld ? heldDraftRecoveries().length : 0
   if (!count) triageHeld = false
@@ -4212,20 +4424,15 @@ async function deferAsk(entry, url, body, { refusal = '', onSaved = null } = {})
   const res = await postJSON(url, body)
   if (res === null) return
   if (refusal) showWriteError(ask.id, res.ok ? '' : refusal)
-  // #272: a row snooze moves the revision, so the next frame moves this draft to
-  // the unsent responses. The mark says why, and is read only by that frame: a
-  // pin moves no revision, so a later agent edit must not inherit it.
-  const meta = res.ok && entry.kind === 'row' && rowDraftMeta[ask.id]?.revision === ask.revision
-    ? rowDraftMeta[ask.id]
-    : null
-  if (meta) meta.setAside = true
+  // A row snooze moves the revision but leaves the ask's words alone, so a draft
+  // on it stays in its editor and follows the row (#636, which replaced #272's
+  // move to the unsent responses).
   if (res.ok) {
     if (holdsDraft(ask.id)) keepDraftInView(entry)
     else if (openRowId === ask.id) setOpenRow(null, { resume: false })
     onSaved?.()
   }
   await reloadAndPaint()
-  if (meta) delete meta.setAside
 }
 
 // #247 §2.3: with the Later section on, "I'll take a while" also defers the ask
@@ -4235,8 +4442,8 @@ function deferWaitStop(entry, url, until, pins, options) {
   return deferAsk(entry, url, { until, defer: true, ...pins }, options)
 }
 
-const ROW_CHANGED_REFUSAL = 'This action changed before your click; refreshed without applying it.'
-const ITEM_CHANGED_REFUSAL = 'This question changed before your click; refreshed without applying it.'
+const ROW_CHANGED_REFUSAL = 'This step changed before your click, so nothing was applied. Check it and try again.'
+const ITEM_CHANGED_REFUSAL = 'This question changed before your click, so nothing was applied. Check it and try again.'
 
 // The snooze and pin writes for one ask, shared by every card that offers them:
 // the Inbox and Review queue cards, the plan panel and the session panel (#454).
@@ -4399,7 +4606,7 @@ function rowHandledEl(b, r) {
       showWriteError(
         r.id,
         res.reason === 'version_mismatch'
-          ? 'This action changed before your click; refreshed without applying it.'
+          ? ROW_CHANGED_REFUSAL
           : handledUndoRefusal({ ...r, handled_seen_at: r.handled_seen_at ?? new Date().toISOString() }, Date.now()),
       )
     } else {
@@ -4488,21 +4695,17 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
     : r.status === 'blocked' ? 'tell the agent how to proceed…' : 'your note on this row…'
   const recoveryKey = rowDraftRecoveryKey(r.id, r.revision)
   const staleDraft = staleRowDrafts[recoveryKey]
-  const rowRecoveries = Object.values(staleRowDrafts)
-    .filter((draft) => draft.rowId === r.id)
+  const rowRecoveries = Object.entries(staleRowDrafts)
+    .filter(([, draft]) => draft.rowId === r.id)
   if (staleDraft) input.dataset.recoveredDraft = '1'
   input.value = rowDrafts[r.id] ?? (staleDraft?.text ?? '')
   if (input.value && rowDrafts[r.id] === undefined) {
     bumpDraftGeneration(rowDraftGenerations, r.id)
     rowDrafts[r.id] = input.value
     rowDraftMeta[r.id] = {
-      revision: r.revision,
+      ...rowDraftMetaFor(b, r),
       actionVersion: staleDraft?.actionVersion ?? r.action_version,
-      boardTitle: b.title,
-      label: r.label,
       context: staleDraft?.context ?? r.context ?? '',
-      boardId: b.id,
-      boardRevision: b.revision,
     }
   }
   if (staleDraft?.revision === r.revision) rowDraftKinds[r.id] = staleDraft.kind
@@ -4514,67 +4717,134 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
     rowDraftKinds[r.id] = input.dataset.responseKind ?? rowDraftKinds[r.id] ?? 'answer'
     resizeReplyEditor(input)
     if (input.value.trim()) {
-      rowDraftMeta[r.id] = {
-        revision: r.revision,
-        actionVersion: r.action_version,
-        boardTitle: b.title,
-        label: r.label,
-        context: r.context ?? '',
-        boardId: b.id,
-        boardRevision: b.revision,
-      }
+      rowDraftMeta[r.id] = { ...rowDraftMetaFor(b, r), notice: rowDraftMeta[r.id]?.notice }
     } else {
+      // the notice goes with the text it was about (#636), unless a refused click left its own
+      const kept = rowAskNotices.get(r.id)
       delete rowDraftMeta[r.id]
+      if (!kept) clearRowAskNotice(r.id)
     }
     delete staleRowDrafts[recoveryKey]
     clearRowRecoveryTarget(r.id, r.revision)
     resumeRender()
   })
-  const save = () => withPendingResponse(async () => {
-    const typed = input.value
+  // `choice`: an option or a disposition ({ text, kind }), sent as it is; the
+  // editor and its draft are left as they were until the server takes it.
+  const save = (choice = null) => withPendingResponse(async () => {
+    const typed = choice ? choice.text : input.value
     if (!typed.trim()) return
-    const kind = input.dataset.responseKind ?? 'answer'
+    const kind = choice ? choice.kind : input.dataset.responseKind ?? 'answer'
     const submittedGeneration = editorGeneration
     const submissionToken = bumpDraftGeneration(rowSubmissionTokens, r.id)
-    // Until the server answers, this text may or may not have landed (#279).
-    unconfirmedRowSends.set(r.id, typed)
-    // fix round 2 (C3): the draft used to be dropped BEFORE the POST, so a
-    // dropped request (viewer server restarted — routine for the Electron app)
-    // erased the human's note with no trace. Clear only once it landed.
-    const res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, {
-      text: typed.trim(),
-      kind,
-      expected_revision: r.revision,
-      expected_board_version: b.revision,
-    })
-    if (res !== null && unconfirmedRowSends.get(r.id) === typed) unconfirmedRowSends.delete(r.id)
-    const ownsSubmission = (rowDraftGenerations[r.id] ?? 0) === submittedGeneration
+    const owns = () => (rowDraftGenerations[r.id] ?? 0) === submittedGeneration
       && rowSubmissionTokens[r.id] === submissionToken
-    if (res === null) {
-      if (ownsSubmission) {
+    // #636: the ask as this editor shows it, so a refusal can say what became of it
+    const typedFor = rowDraftMetaFor(b, r)
+    let target = { board: b, row: r }
+    let res = null
+    let fate = 'same'
+    // the re-read after a refusal got nothing (so the refusal cannot be read), or
+    // the person typed again meanwhile (so nothing more is sent, and nothing is said)
+    let unread = false
+    let superseded = false
+    for (let resent = false; ; resent = true) {
+      // Until the server answers, this text may or may not have landed (#279).
+      unconfirmedRowSends.set(r.id, typed)
+      // fix round 2 (C3): the draft used to be dropped BEFORE the POST, so a
+      // dropped request (viewer server restarted — routine for the Electron app)
+      // erased the human's note with no trace. Clear only once it landed.
+      res = await postJSON(`/api/boards/${b.id}/rows/${r.id}/annotate`, {
+        text: typed.trim(),
+        kind,
+        expected_revision: target.row.revision,
+        expected_board_version: target.board.revision,
+      })
+      if (res !== null && unconfirmedRowSends.get(r.id) === typed) unconfirmedRowSends.delete(r.id)
+      if (res === null || res.ok || !owns()) break
+      // #636: refused because the row or its plan moved. The server's guard
+      // stands; the page reads what moved. Still the same ask, words and all
+      // (case 1): sent once more, against the current revision.
+      const before = lastData
+      await load()
+      if (!owns()) {
+        superseded = true
+        break
+      }
+      if (lastData === before) {
+        unread = true
+        break
+      }
+      const owner = currentRow(r.id)
+      fate = rowAskFate(owner, typedFor, { text: typed, kind })
+      if (fate !== 'same' || resent) break
+      target = owner
+    }
+    const ownsSubmission = owns()
+    if (res === null || unread) {
+      // the answer never came, or the re-read did. Typed text is as it was, and a
+      // click over it never replaces it. A click with nothing typed becomes the
+      // editor's text, as before, so Send retries it and a pending viewer restart waits.
+      const held = String(rowDrafts[r.id] ?? input.value).trim() !== ''
+      if (ownsSubmission && (!choice || !held)) {
         rowDrafts[r.id] = typed
-        rowDraftMeta[r.id] = {
-          revision: r.revision,
-          actionVersion: r.action_version,
-          boardTitle: b.title,
-          label: r.label,
-          context: r.context ?? '',
-          boardId: b.id,
-          boardRevision: b.revision,
-        }
+        rowDraftMeta[r.id] = { ...rowDraftMetaFor(b, r), notice: rowDraftMeta[r.id]?.notice }
         input.value = typed
       }
-      showWriteError(r.id, WRITE_FAILED)
+      showWriteError(r.id, choice && held ? ROW_CHOICE_NOT_APPLIED : WRITE_FAILED)
       // An option POST may outlive a poll rebuild; restore the current editor,
       // rather than leaving the response only on the detached captured input.
       if (ownsSubmission && !input.isConnected) forceRender()
       else resumeRender()
       return
     }
-    if (!res.ok) {
+    if (!res.ok && fate !== 'landed') {
       if (!ownsSubmission) {
-        showWriteError(r.id, 'An earlier response was not applied; your newer draft is preserved.')
+        if (!superseded) showWriteError(r.id, 'An earlier response was not applied; your newer draft is preserved.')
         resumeRender()
+        return
+      }
+      if (sameRowAsk(fate)) {
+        // The same ask (#636 cases 1 and 2): typed text stays in this row's
+        // editor, now against the current revision, so the next Send goes
+        // there. A choice is not applied, and the editor keeps what it held.
+        const owner = currentRow(r.id)
+        if (!choice) {
+          rowDrafts[r.id] = typed
+          rowDraftKinds[r.id] = kind
+        }
+        if (String(rowDrafts[r.id] ?? '').trim()) {
+          rowDraftMeta[r.id] = { ...rowDraftMetaFor(owner.board, owner.row), notice: rowDraftMeta[r.id]?.notice }
+        }
+        noteRowAskMoved(r.id, fate, owner, { choice: Boolean(choice) })
+        // said through the write-error slot, which is rewritten in place and so announced
+        showWriteError(r.id, fate === 'same' ? ROW_KEPT_CHANGING : rowAskSentence(fate, Boolean(choice)))
+        await reloadAndPaint()
+        return
+      }
+      // A new ask, or none (#636 case 3). A choice was meant for the ask that
+      // went, so it is not kept as text; typed text is, beside the row or in the
+      // unsent responses, with what happened.
+      rowAskNotices.delete(r.id)
+      if (choice) {
+        if (fate === 'closed' || fate === 'removed' || fate === 'projectClosed') {
+          // the card left the queue with the step, or its project: one entry says the click did nothing
+          staleRowDrafts[rowChoiceRecoveryKey(r.id, r.revision)] = {
+            rowId: r.id,
+            revision: r.revision,
+            text: choice.text,
+            kind,
+            choice: true,
+            boardTitle: b.title,
+            label: r.label,
+            context: r.context ?? '',
+            reason: `Your choice "${choice.text}" was not applied: this ${fate === 'projectClosed' ? 'project' : 'step'} was closed first.`,
+          }
+          requestDraftRecovery(null)
+          showWriteError(r.id, '')
+        } else {
+          showWriteError(r.id, ROW_CHANGED_REFUSAL)
+        }
+        await reloadAndPaint()
         return
       }
       staleRowDrafts[recoveryKey] = {
@@ -4586,13 +4856,14 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
         boardTitle: b.title,
         label: r.label,
         context: r.context ?? '',
+        reason: rowRecoveryReason(fate),
       }
       requestDraftRecovery({ rowId: r.id, revision: r.revision, project: b.project })
       bumpDraftGeneration(rowDraftGenerations, r.id)
       delete rowDrafts[r.id]
       delete rowDraftKinds[r.id]
       delete rowDraftMeta[r.id]
-      showWriteError(r.id, 'This action changed before your response arrived; refreshed without applying it.')
+      showWriteError(r.id, '')
       await reloadAndPaint()
       return
     }
@@ -4605,6 +4876,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       clearRowRecoveryTarget(r.id, r.revision)
       delete input.dataset.responseKind
     }
+    rowAskNotices.delete(r.id)
     showWriteError(r.id, '')
     // the row stays blocked until the agent picks the note up — the human's part
     // is done, so the caller decides what to drop
@@ -4624,12 +4896,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       const pill = document.createElement('button')
       pill.className = `opt-pill${option.recommended ? ' rec' : ''}`
       pill.innerHTML = optionPillHtml(option, surface)
-      pill.addEventListener('click', () => {
-        input.value = option.label
-        input.dataset.responseKind = 'answer'
-        rowDraftKinds[r.id] = 'answer'
-        save()
-      })
+      pill.addEventListener('click', () => save({ text: option.label, kind: 'answer' }))
       box.appendChild(pill)
       if (option.detail) {
         const detail = document.createElement('div')
@@ -4653,12 +4920,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   if (r.status === 'blocked' && !r.annotation && !r.annotation_kind && !r.handled_at) {
     const entry = { kind: 'row', row: r, board: b }
     const menu = dispositionEl(
-      (kind, text) => {
-        input.value = text
-        input.dataset.responseKind = kind
-        rowDraftKinds[r.id] = kind
-        save()
-      },
+      (kind, text) => save({ text, kind }),
       (until) => snoozeAsk(entry, until, { onSaved }),
       `${keyPrefix}row:${r.id}`,
       surface || !pinOffered(r, 'row') ? null : () => pinAsk(entry, { onSaved }),
@@ -4686,22 +4948,150 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
     const reminder = waitStopEl(r, { answered: true, pickedUp: rowPickup(r).pickedUp })
     if (reminder) wrap.appendChild(reminder)
   }
-  bindReplyEditor(input, save)
+  bindReplyEditor(input, () => save())
+  // #636 case 2: this ask moved under its draft (until a send of it lands). A
+  // notice with no draft ends with the ask it was about.
+  const askNotice = rowAskNotices.get(r.id)
+  if (askNotice && (askNotice.actionVersion !== r.action_version || r.status !== 'blocked')) rowAskNotices.delete(r.id)
+  const draftNotice = String(rowDrafts[r.id] ?? '').trim() ? rowDraftMeta[r.id]?.notice : undefined
+  const noticeWord = draftNotice ?? rowAskNotices.get(r.id)?.word
+  const noticeText = rowAskSentence(noticeWord, !draftNotice && Boolean(rowAskNotices.get(r.id)?.choice))
+  // what a Send or a click announced through the write-error slot outlives the ask it was about
+  if (!noticeText && isRowAskSentence(writeErrors[r.id])) delete writeErrors[r.id]
+  // drawn once: the slot already says it right after a Send or a click
+  if (noticeText && !isRowAskSentence(writeErrors[r.id])) {
+    const notice = document.createElement('p')
+    notice.className = 'ask-edited'
+    notice.dataset.noticeFor = r.id
+    notice.textContent = noticeText
+    wrap.appendChild(notice)
+  }
   row.appendChild(input)
-  row.appendChild(btn('Send', save, 'submit'))
+  row.appendChild(btn('Send', () => save(), 'submit'))
   const handled = rowHandledEl(b, r)
   if (handled) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
   wrap.appendChild(row)
-  for (const recovery of rowRecoveries) {
+  for (const [key, recovery] of rowRecoveries) {
+    if (recovery.revision !== r.revision) {
+      wrap.appendChild(rowRecoveryEl(key, recovery))
+      continue
+    }
     const warning = document.createElement('div')
     warning.className = 'write-error stale-draft'
-    warning.textContent = recovery.revision === r.revision
-      ? 'Not sent because the board changed. Review the preserved draft and send again.'
-      : `${recovery.setAside ? ROW_SET_ASIDE : ROW_ACTION_CHANGED} Preserved ${recovery.kind}: ${recovery.text}`
+    warning.textContent = 'Not sent because the board changed. Review the preserved draft and send again.'
     wrap.appendChild(warning)
   }
   return wrap
+}
+
+// #636 case 3: text kept from an ask this row no longer holds, shown beside
+// the row while the row is on screen (the unsent responses list it otherwise).
+function rowRecoveryEl(key, draft) {
+  const block = document.createElement('div')
+  block.className = 'row-recovery stale-draft'
+  block.dataset.recoveryLine = key
+  block.tabIndex = -1 // where a refused Send leaves the keyboard
+  const why = document.createElement('p')
+  why.className = 'row-recovery-why'
+  why.textContent = rowRecoveryWhy(draft)
+  const text = document.createElement('p')
+  text.className = 'row-recovery-text'
+  text.textContent = draft.text
+  const actions = document.createElement('div')
+  actions.className = 'row-recovery-actions'
+  // a click that was not applied has no text to use or copy: the sentence says it all
+  if (!draft.choice && rowRecoveryUsable(currentRow(draft.rowId))) {
+    actions.appendChild(btn('Use this text', (event) => useRowRecovery(key, draft, event.currentTarget)))
+  }
+  if (!draft.choice) actions.appendChild(btn('Copy', (event) => copyRecoveryText(draft.text, event.currentTarget)))
+  actions.appendChild(btn('Discard', (event) => {
+    const scopeId = event.currentTarget.closest('[id]')?.id ?? null
+    discardRowRecovery(key, draft)
+    forceRender()
+    paintTriageHold()
+    // the keyboard goes back to the row it was beside
+    restoreDraftFocus({ key: `row:${draft.rowId}`, scopeId })
+  }))
+  for (const button of actions.children) button.className = 'undo-btn'
+  if (draft.choice) block.append(why, actions)
+  else block.append(why, text, actions)
+  return block
+}
+
+// Whether kept text has an editor to go to: the row is still listed, blocked or
+// not (its card in the Inbox, or its panel in Plans), and its project is open.
+function rowRecoveryUsable(owner) {
+  return Boolean(owner && !closedSet().has(owner.board.project))
+}
+
+function discardRowRecovery(key, draft) {
+  if (staleRowDrafts[key] !== draft) return false
+  delete staleRowDrafts[key]
+  clearRowRecoveryTarget(draft.rowId, draft.revision)
+  return true
+}
+
+// Opens a step's panel in Plans, widening a filter that would hide it, as a
+// deep link opens it, but without moving the page's address.
+function showPlanRow(owner) {
+  openRows.add(owner.row.id)
+  showDoneBoards.add(owner.board.id)
+  if (projectFilter && projectFilter !== owner.board.project) projectFilter = owner.board.project
+  if (agentFilter && agentFilter !== owner.board.agent) agentFilter = null
+  selectTab('boards', { paint: false })
+}
+
+// Use this text (#636): the kept text goes to the editor of the row's current
+// ask, after anything already typed there, and the keyboard goes with it.
+// Nothing is sent. From the Inbox (beside the row, or the unsent responses) a
+// blocked row's card opens, and a step that asks nothing opens in Plans, as a
+// deep link opens it; elsewhere the editor beside the button takes it.
+function useRowRecovery(key, draft, button) {
+  const owner = currentRow(draft.rowId)
+  if (staleRowDrafts[key] !== draft || draft.choice || !rowRecoveryUsable(owner)) {
+    forceRender()
+    return
+  }
+  const id = draft.rowId
+  const held = String(rowDrafts[id] ?? '')
+  if (!held.trim()) rowDraftKinds[id] = draft.kind
+  bumpDraftGeneration(rowDraftGenerations, id)
+  rowDrafts[id] = held.trim() ? `${held.trimEnd()}\n\n${draft.text}` : draft.text
+  rowDraftMeta[id] = {
+    ...rowDraftMetaFor(owner.board, owner.row),
+    notice: held.trim() ? rowDraftMeta[id]?.notice : undefined,
+  }
+  discardRowRecovery(key, draft)
+  const blocked = owner.row.status === 'blocked'
+  const scopeId = button.closest('#needsYouList') ? null : button.closest('[id]')?.id ?? null
+  if (!scopeId && blocked) keepDraftInView({ kind: 'row', row: owner.row, board: owner.board })
+  // no card in the Inbox shows a step that asks nothing: its Plans panel does
+  else if (!scopeId) showPlanRow(owner)
+  forceRender()
+  paintTriageHold()
+  const focusEditor = () => {
+    const editor = scopeId
+      ? document.getElementById(scopeId)?.querySelector(`[data-draft-focus-key="${CSS.escape(`row:${id}`)}"]`)
+      : blocked
+        ? needsYouRowEl(id)?.querySelector('.reply-input:not(.reply-context-input)')
+        : document.querySelector(`#boards [data-row-id="${CSS.escape(id)}"] + .row-panel-row .reply-input`)
+    if (!editor) return
+    editor.focus({ preventScroll: true })
+    editor.setSelectionRange(editor.value.length, editor.value.length)
+    resizeReplyEditor(editor)
+  }
+  focusEditor()
+}
+
+async function copyRecoveryText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text)
+    button.textContent = 'Copied ✓'
+  } catch {
+    button.textContent = 'Copy failed'
+  }
+  setTimeout(() => { button.textContent = 'Copy' }, 1500)
 }
 
 // The delivery marker for ONE thing the human left on a row (issue #37) — the
@@ -7394,6 +7784,18 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   return restoreQueueView
 }
 
+// The unsent responses' one line on their buttons, naming only the ones shown,
+// each for what it works on: a question entry has Retry and Discard, a step's
+// kept text Use this text, Copy and Discard, an unapplied click Discard alone.
+function staleDraftsHelp(entries) {
+  return [
+    entries.some((entry) => entry.retry) && 'Retry sends a response again',
+    entries.some((entry) => entry.use) && 'Use this text puts a step’s text in its editor',
+    entries.some((entry) => entry.copy) && 'Copy copies a step’s text',
+    'Discard removes an entry for good',
+  ].filter(Boolean).join('; ') + '.'
+}
+
 function renderOrphanedDrafts(host) {
   const activeRows = new Map((lastData?.boards ?? [])
     .flatMap((board) => board.rows.map((row) => [row.id, row.revision])))
@@ -7418,26 +7820,32 @@ function renderOrphanedDrafts(host) {
         ].filter(Boolean).join(' · '),
       }
     }),
+    // #636: one the row's open card shows beside its editor is not listed twice
     ...Object.entries(staleRowDrafts)
-      .filter(([, draft]) =>
-        activeRows.get(draft.rowId) !== draft.revision
-        || !needsYouRowEl(draft.rowId)?.querySelector('.reply-input'))
+      .filter(([key, draft]) => {
+        const card = needsYouRowEl(draft.rowId)
+        return activeRows.get(draft.rowId) === draft.revision
+          ? !card?.querySelector('.reply-input')
+          : !card?.querySelector(`.row-recovery[data-recovery-line="${CSS.escape(key)}"]`)
+      })
       .map(([key, draft]) => ({
         id: key,
         draft,
-        clear: () => {
-          delete staleRowDrafts[key]
-          clearRowRecoveryTarget(draft.rowId, draft.revision)
-          return true
-        },
-        text: [
-          draft.boardTitle,
-          draft.label,
-          `action ${draft.actionVersion ?? draft.revision}`,
-          draft.reason,
-          `${draft.kind}: ${draft.text}`,
-          draft.context ? `context: ${draft.context}` : '',
-        ].filter(Boolean).join(' · '),
+        use: !draft.choice && rowRecoveryUsable(currentRow(draft.rowId))
+          ? (event) => useRowRecovery(key, draft, event.currentTarget)
+          : null,
+        copy: draft.choice ? null : (event) => copyRecoveryText(draft.text, event.currentTarget),
+        clear: () => discardRowRecovery(key, draft),
+        text: draft.choice
+          ? [draft.boardTitle, draft.label, rowRecoveryWhy(draft)].filter(Boolean).join(' · ')
+          : [
+              draft.boardTitle,
+              draft.label,
+              `action ${draft.actionVersion ?? draft.revision}`,
+              rowRecoveryWhy(draft),
+              `${draft.kind}: ${draft.text}`,
+              draft.context ? `context: ${draft.context}` : '',
+            ].filter(Boolean).join(' · '),
       })),
     ...[...messageRecoveries].map(([session, draft]) => ({
       id: `message:${session}`,
@@ -7476,12 +7884,11 @@ function renderOrphanedDrafts(host) {
   summary.tabIndex = 0
   summary.textContent = `unsent responses (${entries.length})`
   fold.appendChild(summary)
-  // #407: what the two buttons do, so Clear is not a guess
+  // #407: what the buttons do, so Discard is not a guess; #636 adds a plan
+  // row's Use this text and Copy, and names every entry's removal Discard
   const help = document.createElement('p')
   help.className = 'stale-drafts-help'
-  help.textContent = entries.some((entry) => entry.retry)
-    ? 'Retry sends a response again; Clear discards it for good.'
-    : 'Clear discards a response for good.'
+  help.textContent = staleDraftsHelp(entries)
   fold.appendChild(help)
   for (const entry of entries) {
     const line = document.createElement('div')
@@ -7509,7 +7916,13 @@ function renderOrphanedDrafts(host) {
       retry.disabled = Boolean(entry.pending)
       line.appendChild(retry)
     }
-    const clear = btn('Clear', () => {
+    for (const [label, run] of [['Use this text', entry.use], ['Copy', entry.copy]]) {
+      if (!run) continue
+      const button = btn(label, run)
+      button.className = 'undo-btn'
+      line.appendChild(button)
+    }
+    const clear = btn('Discard', () => {
       if (!entry.clear()) {
         forceRender()
         return
@@ -8654,9 +9067,12 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
 
 function restoreDraftRecoveryFocus() {
   if (!draftRecoveryFocusPending) return false
-  const inline = draftRecoveryTarget
-    ? needsYouRowEl(draftRecoveryTarget.rowId)?.querySelector('.reply-input[data-recovered-draft="1"]')
-    : null
+  const card = draftRecoveryTarget ? needsYouRowEl(draftRecoveryTarget.rowId) : null
+  // the preserved draft in the row's editor, or (#636) the text kept beside it
+  const inline = card?.querySelector('.reply-input[data-recovered-draft="1"]')
+    ?? card?.querySelector(`.row-recovery[data-recovery-line="${
+      CSS.escape(rowDraftRecoveryKey(draftRecoveryTarget.rowId, draftRecoveryTarget.revision))}"]`)
+    ?? null
   if (inline) revealDetailsAncestors(inline)
   const visibleInline = inline && !inline.closest('[hidden], details:not([open])') ? inline : null
   // the same control of the same entry when it is still there, as after a
@@ -8688,13 +9104,11 @@ function currentRow(id) {
 }
 
 // Whether a typed draft still belongs to the editor it was typed in. One that
-// does not moves to the unsent responses in the next frame (reconcileDraftOwners).
+// does not moves to the unsent responses in the next frame (reconcileDraftOwners);
+// a row draft stays while its row still asks what it was typed for
+// (followRowAsk, #636).
 function itemDraftOwned(item) {
   return Boolean(item && cardSections(item).showAnswer)
-}
-
-function rowDraftOwned(owner, meta) {
-  return Boolean(owner && meta?.revision === owner.row.revision)
 }
 
 // Moves every draft whose target moved to the unsent responses. A frame the
@@ -8745,7 +9159,8 @@ function reconcileDraftOwners() {
     const meta = rowDraftMeta[id]
     if (!String(text).trim()) continue
     const owner = currentRow(id)
-    if (rowDraftOwned(owner, meta)) continue
+    const fate = meta ? followRowAsk(id, owner, meta, { text, kind: rowDraftKinds[id] ?? 'answer' }) : 'changed'
+    if (meta && rowDraftStays(fate)) continue
     const revision = meta?.revision ?? -1
     staleRowDrafts[rowDraftRecoveryKey(id, revision)] = {
       rowId: id,
@@ -8756,8 +9171,9 @@ function reconcileDraftOwners() {
       boardTitle: meta?.boardTitle ?? 'Plan',
       label: meta?.label ?? 'Removed row',
       context: meta?.context ?? '',
-      setAside: meta?.setAside === true,
+      reason: rowRecoveryReason(fate, unconfirmedRowSends.get(id) === text, meta),
     }
+    rowAskNotices.delete(id)
     bumpDraftGeneration(rowDraftGenerations, id)
     delete rowDrafts[id]
     delete rowDraftKinds[id]
@@ -8782,19 +9198,29 @@ function reconcileDraftOwners() {
 // change, and again as the page goes away. Never to the server, and nothing
 // here sends anything. The window's memory stays the source of truth: a save
 // writes what changed since this window last loaded or wrote it, so emptying
-// an editor, a successful send and Clear delete the stored copy too.
+// an editor, a successful send and Discard delete the stored copy too.
 const DRAFT_SAVE_MS = 300
 // Why a restored draft waits in the unsent responses. Once a send of it was
 // tried and never answered, it may have landed, so it is "not confirmed",
 // never "not sent".
 const DRAFT_REASONS = {
-  questionChanged: ['Not sent because this question changed.', 'Your send was not confirmed, and this question has changed since.'],
+  questionChanged: ['The question changed before your text was sent.', 'Your send was not confirmed, and this question has changed since.'],
   questionClosed: [
-    'Not sent because this question is closed or no longer available.',
+    'This question was closed or removed before your text was sent.',
     'Your send was not confirmed, and this question is closed or no longer available.',
   ],
   projectClosed: ['Kept because this project is closed.', 'Your send was not confirmed, and this project is closed.'],
-  actionChanged: [ROW_ACTION_CHANGED, 'Your send was not confirmed, and this action has changed since.'],
+  // #636: a plan row's kept text says what became of the ask it was typed for
+  askChanged: ['The ask changed before your text was sent.', 'Your send was not confirmed, and the ask has changed since.'],
+  stepClosed: ['This step was closed before your text was sent.', 'Your send was not confirmed, and this step has been closed since.'],
+  // a draft stored without knowing whether its step was waiting: true whichever way it was typed
+  stepChanged: ['This step changed before your text was sent.', 'Your send was not confirmed, and this step has changed since.'],
+  stepAsked: ['This step now has an ask. Your note was not sent.', 'Your send was not confirmed, and this step has an ask now.'],
+  // a row this window no longer lists: its plan may be finished or archived, or the row deleted
+  stepRemoved: [
+    'This step was closed or removed before your text was sent.',
+    'Your send was not confirmed, and this step has been closed or removed since.',
+  ],
   // #412 step 3: an app launch's approval takes only its own options, so typed text never goes back to it
   launchAsk: [
     'Not sent: this approval takes only its own options.',
@@ -8895,12 +9321,15 @@ function collectDrafts() {
       boardRevision: meta.boardRevision,
       revision: meta.revision,
       actionVersion: meta.actionVersion ?? null,
+      ask: meta.ask ?? null,
+      response: meta.response ?? null,
+      blocked: meta.blocked ?? null,
+      notice: meta.notice ?? null,
       text,
       kind: rowDraftKinds[id] ?? 'answer',
       boardTitle: meta.boardTitle,
       label: meta.label,
       context: meta.context ?? '',
-      setAside: meta.setAside === true,
       unconfirmed: unconfirmedRowSends.get(id) === text,
     })
   }
@@ -8915,6 +9344,7 @@ function collectDrafts() {
       boardTitle: draft.boardTitle,
       label: draft.label,
       context: draft.context ?? '',
+      choice: draft.choice === true,
       setAside: draft.setAside === true,
       reason: draft.reason ?? '',
     })
@@ -9207,20 +9637,27 @@ function placeRestoredDraft(key, draft) {
       const id = draft.rowId
       if (rowHolds(id, draft)) return null
       const owner = currentRow(id)
-      const unchanged = owner?.row.revision === draft.revision
       const projectClosed = Boolean(owner) && closedSet().has(owner.board.project)
-      if (unchanged && !projectClosed && rowDrafts[id] === undefined) {
+      const meta = {
+        revision: draft.revision,
+        actionVersion: draft.actionVersion ?? undefined,
+        ask: draft.ask ?? undefined,
+        response: draft.response ?? undefined,
+        blocked: draft.blocked ?? undefined,
+        notice: draft.notice ?? undefined,
+        boardTitle: draft.boardTitle,
+        label: draft.label,
+        context: draft.context,
+        boardId: draft.boardId,
+        boardRevision: draft.boardRevision,
+      }
+      // #636: what became of its ask; the same ask, its words edited or not,
+      // takes the draft back at the current revision (followRowAsk)
+      const fate = projectClosed || rowDrafts[id] !== undefined ? rowAskFate(owner, meta) : followRowAsk(id, owner, meta)
+      if (!projectClosed && rowDrafts[id] === undefined && sameRowAsk(fate)) {
         rowDrafts[id] = draft.text
         rowDraftKinds[id] = draft.kind
-        rowDraftMeta[id] = {
-          revision: draft.revision,
-          actionVersion: draft.actionVersion ?? undefined,
-          boardTitle: draft.boardTitle,
-          label: draft.label,
-          context: draft.context,
-          boardId: draft.boardId,
-          boardRevision: draft.boardRevision,
-        }
+        rowDraftMeta[id] = meta
         if (draft.unconfirmed) unconfirmedRowSends.set(id, draft.text)
         bumpDraftGeneration(rowDraftGenerations, id)
         // a row the queue does not show keeps its text in its Plans panel,
@@ -9231,7 +9668,6 @@ function placeRestoredDraft(key, draft) {
         }
         return { id, queue: owner.row.status === 'blocked' }
       }
-      const cause = unchanged && projectClosed ? 'projectClosed' : 'actionChanged'
       staleRowDrafts[rowDraftRecoveryKey(id, draft.revision)] = {
         rowId: id,
         revision: draft.revision,
@@ -9242,18 +9678,17 @@ function placeRestoredDraft(key, draft) {
         label: draft.label,
         context: draft.context,
         setAside: draft.setAside,
-        reason: cause === 'actionChanged' && draft.setAside && !draft.unconfirmed
-          ? ROW_SET_ASIDE
-          : draftReason(cause, draft.unconfirmed),
+        reason: rowRecoveryReason(projectClosed ? 'projectClosed' : fate, draft.unconfirmed, meta),
       }
       return null
     }
     case 'row-recovery':
       if (rowHolds(draft.rowId, draft)) return null
-      staleRowDrafts[rowDraftRecoveryKey(draft.rowId, draft.revision)] = {
+      staleRowDrafts[draft.choice ? rowChoiceRecoveryKey(draft.rowId, draft.revision) : rowDraftRecoveryKey(draft.rowId, draft.revision)] = {
         rowId: draft.rowId,
         revision: draft.revision,
         actionVersion: draft.actionVersion ?? undefined,
+        choice: draft.choice || undefined,
         text: draft.text,
         kind: draft.kind,
         boardTitle: draft.boardTitle,

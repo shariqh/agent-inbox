@@ -85,7 +85,7 @@ describe('draft owner removal recovery', () => {
     expect(recoveryFold().textContent).toContain('Forced removed question')
     expect(recoveryFold().textContent).toContain('Recover item from forced render')
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
-    click(buttonLabelled('Clear', recoveryFold()))
+    click(buttonLabelled('Discard', recoveryFold()))
     await settle()
     await repaint()
 
@@ -115,7 +115,7 @@ describe('draft owner removal recovery', () => {
     insertItem(db, { ...AGENT, kind: 'question', title: 'Arrival after row refusal' })
     await pollTick()
     expect(rowTitles()).toContain('Arrival after row refusal')
-    click(buttonLabelled('Clear', recoveryFold()))
+    click(buttonLabelled('Discard', recoveryFold()))
     await settle()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })

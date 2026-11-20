@@ -206,7 +206,7 @@ describe('viewer restart with human-owned work', () => {
     expect(recovery.textContent).toContain('The original condition.')
     await pollTick()
     expect(reload).not.toHaveBeenCalled()
-    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
+    click(buttonLabelled('Discard', document.querySelector('.stale-drafts-fold')!))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -244,12 +244,12 @@ describe('viewer restart with human-owned work', () => {
     await repaint()
     expect(reload).not.toHaveBeenCalled()
     expect(answerInput(rowId)?.value).toBe('')
-    const recovery = document.querySelector('.stale-drafts-fold')!
+    // #636: kept beside the row, whose card is open, until the human discards it
+    const recovery = row(rowId)!.querySelector<HTMLElement>('.row-recovery')!
     expect(recovery.textContent).toContain('Only approve the original action.')
-    expect(recovery.textContent).toContain('Original action context')
-    expect(recovery.textContent).toContain(`action ${original.rows[0]!.action_version}`)
+    expect(recovery.textContent).toContain('The ask changed before your text was sent.')
     expect(bridge.posts).toHaveLength(0)
-    click(buttonLabelled('Clear', recovery))
+    click(buttonLabelled('Discard', recovery))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -282,7 +282,7 @@ describe('viewer restart with human-owned work', () => {
     expect(reload).not.toHaveBeenCalled()
     const recovery = document.querySelector('.stale-drafts-fold')!
     expect(recovery.textContent).toContain('Ship now')
-    click(buttonLabelled('Clear', recovery))
+    click(buttonLabelled('Discard', recovery))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -350,7 +350,7 @@ describe('viewer restart with human-owned work', () => {
     expect(reload).not.toHaveBeenCalled()
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Ship now')
     expect(bridge.posts).toHaveLength(1)
-    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
+    click(buttonLabelled('Discard', document.querySelector('.stale-drafts-fold')!))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -390,6 +390,36 @@ describe('viewer restart with human-owned work', () => {
     type(answerInput(rowId), '')
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  // #636 second review, B: with text typed, a click that got no answer leaves the text alone
+  it('keeps typed text, and says the choice was not applied, when an option click gets no answer', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT, title: 'Pending row option',
+      rows: [{
+        label: 'Approval', status: 'blocked', context: 'Original row identity',
+        options: [{ label: 'Ship now' }, { label: 'Hold' }],
+      }],
+    })
+    const rowId = getBoard(db, AGENT.project, 'Pending row option')!.rows[0]!.id
+    const { restart } = await bootWithRestart(db)
+    await showInbox()
+    click(row(rowId))
+    await settle()
+    type(answerInput(rowId), 'Typed first')
+    const release = holdPost(`/rows/${rowId}/annotate`, new Response('offline', { status: 503 }))
+    expectConsoleError(/annotate failed: HTTP 503/)
+    click(buttonLabelled('Ship now', row(rowId)!))
+    restart()
+    release()
+    await settle()
+    expect(answerInput(rowId)?.value).toBe('Typed first')
+    expect(row(rowId)?.querySelector('.write-error')?.textContent)
+      .toBe('Your choice was not applied. Nothing was lost; choose again.')
+    // the typed text still holds the restart
+    await pollTick()
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('defers a work-free restart through a held press without asking the human to finish a response', async () => {

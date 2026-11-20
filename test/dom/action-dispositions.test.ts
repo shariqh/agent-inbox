@@ -6,8 +6,8 @@ import {
   markReplySeen, openDb, replyItem, stopBoardRowWatch, stopItemWatch, updateBoardRow, upsertBoard,
 } from '../../src/store.js'
 import {
-  answerInput, badgeCount, bootApp, buttonLabelled, click, collapseRow, freshDb, row, rowTitles,
-  pollTick, sendButton, settle, type, useDomTest,
+  answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, row, rowTitles,
+  pollTick, repaint, sendButton, settle, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -165,7 +165,10 @@ describe('human disposition controls', () => {
     await settle()
 
     expect(getBoard(d, 'alpha', 'Launch')!.rows[0]!.annotation).toBeNull()
-    expect(row(rowId)?.textContent).toContain('Preserved answer: Tomorrow morning')
+    // #636: the same ask with its note edited, so the text stays in its editor
+    expect(answerInput(rowId)?.value).toBe('Tomorrow morning')
+    // said through the write-error slot, which is announced as it is rewritten (#636 review)
+    expect(row(rowId)?.querySelector('.write-error')?.textContent).toContain('This ask was edited')
 
     const current = getBoard(d, 'alpha', 'Launch')!
     updateBoardRow(d, {
@@ -178,10 +181,13 @@ describe('human disposition controls', () => {
       outcome: 'Action superseded.',
     })
     await pollTick()
+    await repaint()
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Tomorrow morning')
+    expect(document.querySelector('.stale-drafts-fold')?.textContent)
+      .toContain('This step was closed or removed before your text was sent.')
   })
 
-  it('preserves the response kind when clarification loses a revision race', async () => {
+  it('applies a clarification that lost a race to an unrelated board change (#636)', async () => {
     const d = open()
     upsertBoard(d, {
       ...AGENT,
@@ -205,14 +211,10 @@ describe('human disposition controls', () => {
     click(buttonLabelled('Needs clarification', row(rowId)!))
     await settle()
 
-    expect(answerInput(rowId)?.value).toContain('Please clarify')
-    await collapseRow(rowId)
-    click(row(rowId))
-    await settle()
-    click(sendButton(rowId))
-    await settle()
+    // the ask itself did not change, so the page sent it again at the current revision
     expect(getBoard(d, 'alpha', 'Launch')!.rows.find((candidate) => candidate.id === rowId))
-      .toMatchObject({ annotation_kind: 'clarify' })
+      .toMatchObject({ annotation_kind: 'clarify', annotation: expect.stringContaining('Please clarify') })
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 })
 

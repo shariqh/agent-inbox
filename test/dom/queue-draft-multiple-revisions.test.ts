@@ -14,14 +14,16 @@ afterEach(() => { db?.close(); db = null })
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 
+// #636: kept text is beside its row while the row's card is open, in the
+// unsent responses otherwise
 function recoveryLines(): HTMLElement[] {
-  return [...document.querySelectorAll<HTMLElement>('.stale-drafts-fold .stale-draft-line')]
+  return [...document.querySelectorAll<HTMLElement>('.stale-drafts-fold .stale-draft-line, #needsYouList .row-recovery')]
 }
 
 function clearRecovery(text: string): void {
   const line = recoveryLines().find((candidate) => candidate.textContent?.includes(text))
   if (!line) throw new Error(`missing recovery line: ${text}`)
-  click(buttonLabelled('Clear', line))
+  click(buttonLabelled('Discard', line))
 }
 
 describe('version-keyed row draft recovery', () => {
@@ -61,7 +63,7 @@ describe('version-keyed row draft recovery', () => {
 
     expect(recoveryLines()).toHaveLength(1)
     expect(recoveryLines()[0]?.textContent).toContain('Revision one recovery')
-    expect(recoveryLines()[0]?.textContent).toContain('First action context')
+    expect(recoveryLines()[0]?.textContent).toContain('The ask changed before your text was sent.')
 
     type(answerInput(rowId), 'Revision two succeeds')
     click(sendButton(rowId))

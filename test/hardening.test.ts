@@ -98,7 +98,7 @@ describe('every write-path fetch has a catch with a visible signal (fix 3)', () 
 
     const rowAnswerEl = js.match(/function rowAnswerEl\([\s\S]*?\n\}/)
     expect(rowAnswerEl, 'rowAnswerEl is missing').toBeTruthy()
-    expect(rowAnswerEl![0]).toMatch(/const save = \(\) => withPendingResponse\(async \(\) => \{/)
+    expect(rowAnswerEl![0]).toMatch(/const save = \(choice = null\) => withPendingResponse\(async \(\) => \{/)
     expect(rowAnswerEl![0], 'rowAnswerEl does not call postJSON(').toMatch(boardsApiPattern)
 
     const unarchiveHandler = js.match(/btn\('Un-archive',[\s\S]*?\}\)\)/)

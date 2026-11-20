@@ -58,12 +58,12 @@ describe('draft recovery visibility from Review queue', () => {
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Preserve triage response')
     click(lightbox.querySelector('.lb-close'))
     await settle()
-    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
+    click(buttonLabelled('Discard', document.querySelector('.stale-drafts-fold')!))
     await settle()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
-  it('focuses same-revision inline recovery after an unrelated board-version race', async () => {
+  it('sends again by itself after an unrelated board-version race (#636)', async () => {
     db = freshDb()
     upsertBoard(db, {
       ...AGENT,
@@ -143,34 +143,18 @@ describe('draft recovery visibility from Review queue', () => {
     staleSend.click()
     await settle()
 
-    const recovered = answerInput(target.id)
+    // the ask did not change, so the page sent it at the current revision
+    expect(getBoard(db, 'alpha', 'Shared launch')!.rows[0]!.annotation).toBe('Retry this exact action')
     expect(lightbox.hidden).toBe(true)
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Unrelated removed recovery')
-    expect(row(target.id)?.dataset.open).toBe('1')
-    expect(recovered?.value).toBe('Retry this exact action')
-    expect(document.activeElement).toBe(recovered)
-
-    // #407: the row is in the deck on the same revision, so the queue is held,
-    // the header says why, and its control takes the human to the response
-    click(buttonLabelled('Review queue'))
-    expect(lightbox.hidden).toBe(true)
-    expect(document.querySelector('.triage-hold-text')?.textContent)
-      .toBe('Finish or clear the 1 unsent response first.')
-    click(buttonLabelled('Show it'))
-    expect(document.activeElement).toBe(answerInput(target.id))
-    expect(answerInput(target.id)?.value).toBe('Retry this exact action')
-
-    click(sendButton(target.id))
-    await settle()
-    expect(getBoard(db, 'alpha', 'Shared launch')!.rows[0]!.annotation).toBe('Retry this exact action')
-    expect(document.querySelector('.triage-hold-text')?.textContent).toBe('')
+    expect(document.querySelector('.stale-drafts-fold')?.textContent).not.toContain('Retry this exact action')
     // only the removed row's response is left, and the deck cannot meet it
     click(buttonLabelled('Review queue'))
     expect(lightbox.hidden).toBe(false)
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Unrelated removed recovery')
   })
 
-  it('opens a closed deferred fold before focusing its same-revision recovery', async () => {
+  it('sends from a deferred row whose fold closed, after an unrelated board-version race (#636)', async () => {
     db = freshDb()
     upsertBoard(db, {
       ...AGENT,
@@ -215,10 +199,7 @@ describe('draft recovery visibility from Review queue', () => {
     staleSend.click()
     await settle()
 
-    fold = document.querySelector<HTMLDetailsElement>('.later-section')!
-    const recovered = answerInput(target.id)
-    expect(fold.open).toBe(true)
-    expect(recovered?.value).toBe('Retry from the deferred row')
-    expect(document.activeElement).toBe(recovered)
+    expect(getBoard(db, 'alpha', 'Deferred launch')!.rows[0]!.annotation).toBe('Retry from the deferred row')
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 })

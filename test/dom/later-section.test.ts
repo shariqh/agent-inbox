@@ -855,7 +855,7 @@ describe('"I’ll take a while" with the Later section on (#247)', () => {
     expect(getBoard(d, 'alpha', 'Release')!.rows[0]).toMatchObject({ watch_stopped_at: null, pinned_at: null })
     expect(inQueue(rowId)).toBe(true)
     expect(row(rowId)?.querySelector('.write-error')?.textContent)
-      .toBe('This action changed before your click; refreshed without applying it.')
+      .toBe('This step changed before your click, so nothing was applied. Check it and try again.')
   })
 
   it('with the setting off, writes the watch stop only and keeps the ask in Needs you', async () => {

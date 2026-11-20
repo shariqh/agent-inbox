@@ -151,7 +151,7 @@ describe('Review queue and unsent responses (#407)', () => {
     await settle()
     expect(lightbox().hidden).toBe(true)
     expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
-    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
     expect(document.querySelector('.triage-hold-text')?.getAttribute('role')).toBe('status')
     const show = buttonLabelled('Show it')!
     expect(document.activeElement).toBe(show)
@@ -166,10 +166,10 @@ describe('Review queue and unsent responses (#407)', () => {
     click(buttonLabelled('Review queue'))
     await settle()
     expect(lightbox().hidden).toBe(true)
-    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
 
-    // Clear discards it, the hold line goes, and the queue opens
-    click(buttonLabelled('Clear', fold()!))
+    // Discard removes it, the hold line goes, and the queue opens
+    click(buttonLabelled('Discard', fold()!))
     await settle()
     expect(fold()).toBeNull()
     expect(holdText()).toBe('')
@@ -197,7 +197,7 @@ describe('Review queue and unsent responses (#407)', () => {
     await settle()
     expect(lightbox().hidden).toBe(true)
     // only the row in the deck holds it; the removed row's response does not count
-    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
     click(buttonLabelled('Show it'))
     await settle()
     expect(document.activeElement).toBe(answerInput(r.id))
@@ -222,7 +222,7 @@ describe('Review queue and unsent responses (#407)', () => {
     click(document.querySelector('.ny-review'))
     await settle()
     expect(lightbox().hidden).toBe(true)
-    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
     click(buttonLabelled('Show it'))
     await settle()
     expect(document.activeElement?.closest('.stale-drafts-fold')).not.toBeNull()
@@ -246,7 +246,7 @@ describe('Review queue and unsent responses (#407)', () => {
     click(buttonLabelled('Review queue'))
     await settle()
     expect(lightbox().hidden).toBe(true)
-    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
   })
 
   it('ends a stale hold line on a poll whose repaint a draft holds back', async () => {
@@ -258,7 +258,7 @@ describe('Review queue and unsent responses (#407)', () => {
     await settle()
     click(buttonLabelled('Review queue'))
     await settle()
-    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
+    expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
     click(buttonLabelled('Show it'))
     await settle()
     // typing turns the recovery into a live draft, which holds the list back
@@ -284,23 +284,23 @@ describe('Review queue and unsent responses (#407)', () => {
     toolbar.focus()
     click(toolbar)
     await settle()
-    expect(holdText()).toBe('Finish or clear the 2 unsent responses first.')
+    expect(holdText()).toBe('Finish or discard the 2 unsent responses first.')
     expect(document.activeElement?.textContent).toBe('Show them')
 
     click(buttonLabelled('Show them'))
     await settle()
     const lines = () => [...fold()!.querySelectorAll<HTMLElement>('.stale-draft-line')]
     expect(document.activeElement).toBe(lines()[0])
-    const firstClear = buttonLabelled('Clear', lines()[0]!)!
-    firstClear.focus()
-    click(firstClear)
+    const firstDiscard = buttonLabelled('Discard', lines()[0]!)!
+    firstDiscard.focus()
+    click(firstDiscard)
     await settle()
     expect(lines()).toHaveLength(1)
     expect(document.activeElement).toBe(lines()[0])
-    expect(holdText()).toBe('Finish or clear the 1 unsent response first.')
-    const lastClear = buttonLabelled('Clear', lines()[0]!)!
-    lastClear.focus()
-    click(lastClear)
+    expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
+    const lastDiscard = buttonLabelled('Discard', lines()[0]!)!
+    lastDiscard.focus()
+    click(lastDiscard)
     await settle()
     expect(fold()).toBeNull()
     expect(document.activeElement).toBe(document.querySelector('.triage-btn'))
@@ -326,7 +326,7 @@ describe('Review queue and unsent responses (#407)', () => {
     expect(document.activeElement).toBe(fold()!.querySelector('summary'))
   })
 
-  it('explains Retry and Clear in the unsent responses', async () => {
+  it('explains Retry, Copy and Discard in the unsent responses', async () => {
     db = freshDb()
     const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Release day?' })
     seed({
@@ -337,11 +337,12 @@ describe('Review queue and unsent responses (#407)', () => {
     click(document.querySelector('.tab[data-tab="needsYou"]'))
     await settle()
     expect(fold()?.querySelector('.stale-drafts-help')?.textContent)
-      .toBe('Retry sends a response again; Clear discards it for good.')
+      .toBe('Retry sends a response again; Copy copies a step’s text; Discard removes an entry for good.')
 
-    click(buttonLabelled('Clear', fold()!.querySelector<HTMLElement>(`.stale-draft-line[data-recovery-line*="${id}"]`)!))
+    click(buttonLabelled('Discard', fold()!.querySelector<HTMLElement>(`.stale-draft-line[data-recovery-line*="${id}"]`)!))
     await settle()
-    // a row response has no Retry, so only Clear is explained
-    expect(fold()?.querySelector('.stale-drafts-help')?.textContent).toBe('Clear discards a response for good.')
+    // a row response has no Retry; its row is gone, so it has no Use this text either (#636)
+    expect(fold()?.querySelector('.stale-drafts-help')?.textContent)
+      .toBe('Copy copies a step’s text; Discard removes an entry for good.')
   })
 })

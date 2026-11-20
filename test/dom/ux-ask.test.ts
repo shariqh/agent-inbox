@@ -286,3 +286,30 @@ describe('the inspector head (UX ask, point 6)', () => {
     expect(rule(':where(.nrow-card-head > div, .lb-card > .card, .lb-row-card, .row-panel) > .card-title')).toMatch(/font-size:\s*24px;[^}]*font-weight:\s*700;[^}]*line-height:\s*1\.2/)
   })
 })
+
+describe('shortcut tiles (UX ask, point 7)', () => {
+  const keysShown = () => document.documentElement.classList.contains('keys-shown')
+
+  it('draws no tile at rest and every tile while Show keys is on, the shortcuts decorated either way', async () => {
+    db = freshDb()
+    const id = question(db)
+    attachStylesheet()
+    await bootApp(db)
+    await showInbox()
+    click(row(id))
+    await settle()
+    expect(rule(':root:not(.keys-shown) [data-shortcut]::after')).toMatch(/display:\s*none/)
+    expect(rule(':root:not(.keys-shown) .floating-search-key')).toMatch(/display:\s*none/)
+    expect(keysShown()).toBe(false)
+    const pills = [...row(id)!.querySelectorAll('.opt-pill')]
+    expect(pills.map((pill) => pill.getAttribute('data-shortcut'))).toEqual(['1', '2'])
+    expect(document.querySelector('[data-tab="needsYou"]')?.getAttribute('data-shortcut')).toBe('G I')
+    expect(buttonLabelled('Send', row(id)!)?.getAttribute('data-shortcut')).toBeTruthy()
+    const hints = document.getElementById('keyboardHints')!
+    click(hints)
+    expect(keysShown()).toBe(true)
+    expect(hints.getAttribute('aria-pressed')).toBe('true')
+    click(hints)
+    expect(keysShown()).toBe(false)
+  })
+})

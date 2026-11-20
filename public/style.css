@@ -3409,3 +3409,8 @@ body.hub-reconnecting #status { display: none; }
 .nrow-card-head .nrow-session { border-color: transparent; padding: 0; color: var(--app-text-soft); }
 .nrow-card-head .nrow-show-agents { color: var(--app-text-soft); font-size: var(--fs-meta); font-weight: 500; }
 .nrow-card-head .nrow-show-agents:hover { color: var(--app-accent); }
+/* Shortcut tiles are drawn only while Show keys is on (keyboard-ui.js sets .keys-shown on the root);
+   every shortcut works either way, and the Keyboard help panel's own keys are unchanged. */
+:root:not(.keys-shown) [data-shortcut]::after { display: none; }
+:root:not(.keys-shown) .reply-row[data-shortcut] { padding-inline-start: 0; }
+:root:not(.keys-shown) .floating-search-key { display: none; }

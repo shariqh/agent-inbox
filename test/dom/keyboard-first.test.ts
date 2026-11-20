@@ -28,9 +28,11 @@ function press(key: string, target: EventTarget = document.activeElement ?? docu
 }
 
 describe('keyboard-first workspace', () => {
-  it('shows key tiles and uses G sequences for workspace navigation', async () => {
+  it('decorates key tiles, drawn only while keys are shown, and uses G sequences for workspace navigation', async () => {
     const { db: d } = open()
     await bootApp(d)
+    // UX pass, slice 1: the tiles below are drawn by CSS only under .keys-shown (Show keys)
+    expect(document.documentElement.classList.contains('keys-shown')).toBe(false)
 
     expect(document.getElementById('keyboardHelp')?.getAttribute('data-shortcut')).toBe('?')
     expect(document.getElementById('keyboardHints')?.getAttribute('data-shortcut')).toBe('F')

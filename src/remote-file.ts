@@ -21,6 +21,8 @@
 //    opened with no link allowed anywhere in its resolved path, and its type and size are read from the opened descriptor.
 // 4. It goes out as a download, never as a page, streamed with its length; a file that changes size
 //    while it is read is cut off and the request fails.
+//    At most two files are served at once (a further request is `busy`, 429, before any file system
+//    call) and a response still being read after 120 seconds is cut off.
 //
 // Nothing here writes to the hub's disk, lists a folder or reads a pattern, and no refusal says more
 // than its word: never whether a path exists outside the rule. Nothing is logged.

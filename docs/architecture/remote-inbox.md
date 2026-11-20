@@ -1700,12 +1700,26 @@ then checks in order, each refusal `{ ok: false, reason }` with one word and not
 4. The file (`openLinkedFile`): `realpath` resolves every link (a missing or looping one is
    `not_found`, 404; any other error `unreadable`, 422); the resolved path must again be under an
    allowed root or the hub user's real home folder (so `/tmp/x.md`, which resolves to
-   `/private/tmp/x.md`, is served, and a link in the home folder to `/etc/…` is not), its name must
-   again be listed, and it must have no hidden segment, so a visible name that resolves into a hidden
-   or system place is refused too (`not_a_document`); `lstat` of the resolved path must be a regular file (`not_found`: a folder, a
-   pipe) of at most 25 MB (`too_large`, 413). It is then opened with `O_NOFOLLOW | O_NONBLOCK` and
-   `fstat` must show the same device and inode that were checked, so a file swapped for a link or
-   another file between the check and the open is `not_found`.
+   `/private/tmp/x.md`, is served, and a link in the home folder to `/etc/…` is not) and have no
+   hidden segment, else it is `not_found`, the word a missing target gets, so a refusal never says
+   whether a target outside the rule exists; inside the rule its name must again be listed
+   (`not_a_document`). It is then opened with `O_NONBLOCK` and, on macOS, `O_NOFOLLOW_ANY` (value
+   `0x20000000`, not in `fs.constants`; the kernel refuses it together with `O_NOFOLLOW`, so it
+   replaces it), which fails with `ELOOP` on a link in ANY component of the resolved path: a folder
+   swapped for a link after the check (possible in world-writable places such as `/tmp`) is
+   `not_found` instead of widening what is served. Other platforms keep `O_NOFOLLOW` (the last
+   component only); the remote entry runs on macOS only. Type and size come from `fstat` on the
+   opened descriptor alone: a regular file (`not_found`: a folder, a pipe) of at most 25 MB
+   (`too_large`, 413). The earlier `lstat` and the device-and-inode comparison are gone: every rule
+   is on the resolved path string, so another regular file at that same path cannot change an
+   outcome, and a link at the path fails the open.
+
+At most two files are served at once by a hub (`FILE_SLOTS`). Right after the request's form is
+accepted, a third answers `busy` (429) before the card or the file system is read. A slot is held
+while the file is open and given back when the response ends, the reader cancels, the client
+disconnects, or 120 seconds after the response started (`FILE_TIME_MS`), when the stream is
+destroyed, the socket cut and the descriptor closed. The connecting Mac passes the hub's `busy` on
+as its own word, so the page shows its existing "One moment" sentence.
 
 Only after steps 1 to 3 does the route touch the file system, so no answer says whether a path
 outside the rule exists. Nothing is logged and nothing is written on the hub.
@@ -1738,7 +1752,7 @@ base. `openFile` runs these checks in order:
    caller's longer timeout, up to 2 minutes; 5 seconds stays the default). A failed fetch, or an
    answer without the remote entry's marker, is `unreachable`. A 403 is `old_hub` when the
    connection's probed version is older than 2.16.0 (`FILES_FROM`), else `refused`. Any other
-   non-200 passes on the hub's word when it is one of its six, else `failed`.
+   non-200 passes on the hub's word when it is one of its seven (the six refusals and `busy`), else `failed`.
 5. A 200 must be exactly `application/octet-stream` with a decimal `Content-Length` (`failed`) of
    at most 25 MB (`too_large`). The copy's name is the path's last segment with every separator,
    `:`, control or format character (a right-to-left override, a zero-width space) and line
@@ -1793,6 +1807,16 @@ the folder, a link inside it that points outside, an unlisted extension and a di
 longer timeout), `test/hub-view.test.ts`, `test/main-ipc.test.ts` and `test/remote-preload.test.ts`
 (the channels and the bridge), and the DOM tests in `test/dom/hub-files.test.ts` and
 `test/dom/card-links.test.ts`.
+
+Known limits, accepted:
+
+- A hard link to a file is that file: the resolved path is the link's own name, so a visible listed
+  name that is a hard link to a file elsewhere serves it.
+- Any key press or click in the hub's view counts as the press for an open (as for Open desk).
+- Each request scans the card's text again, so a very large card costs the hub time.
+- A fetched copy opens in whatever application the connecting Mac uses for its type.
+- The file-system calls on the hub are synchronous (`realpath`, `open`, `fstat`), so a slow file
+  system holds the hub's viewer for as long as it takes; reads in the stream are asynchronous.
 
 Not checked without the real app: a file fetched over the tailnet and opened in its default app,
 the time a large file takes over Tailscale (the 60-second limit), and how macOS treats a copy the

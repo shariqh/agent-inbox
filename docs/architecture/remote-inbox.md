@@ -1646,11 +1646,12 @@ the connecting Mac takes to see the hub again.
 ## Opening a card's files from another Mac (#634)
 
 A card's file links name paths on the hub, which do not exist on the connecting Mac. There, a
-listed document in a card's Links strip gets **Open a copy on this Mac** beside **Copy path**: main
-fetches the file from the hub, saves a private copy and opens it with the person's default app. No
+listed document opens as a copy when its link is clicked, in the card's Links strip or inline in its
+text (#645): main fetches the file from the hub, saves a private copy and opens it with the person's
+default app. There is no separate button; the chip keeps its **Copy path** icon. No
 preview in the app, no editing, no upload; the text of items and plan rows only, never a message or
 a row's earlier steps. Both Macs need this release: the hub serves the route and draws the
-button, the connecting app fetches.
+links, the connecting app fetches.
 
 **The hub's route** (`src/remote-file.ts`). `GET /api/remote/file` is a `GUARDED_ROUTES` entry,
 served by the guarded app after the whole gate (a paired device's secret, step 8), never by the
@@ -1773,40 +1774,67 @@ base. `openFile` runs these checks in order:
    finds no `shell.openPath` in main.
 
 Nothing from the hub is run, and nothing whose extension is off the list is opened. Copies older than
-24 hours are swept at the start of every open, as desk scripts are before every write: only regular
-files in folders of the two hex patterns, through `lstat`, and folders left empty. A refusal logs its
-word, a success `hub-files: opened`; the three refusals before the gesture check log nothing.
+24 hours are swept with `sweepCopies` at the start of every open, as desk scripts are before every
+write, and (#645) by `scheduleCopySweep`: once about ten seconds after the app is ready and every hour
+after that, on macOS only, over the same folder (`path.join(path.dirname(launchHubPath()),
+'hub-files')`), so a copy goes even when nothing is opened and whether or not a hub is connected. The
+schedule reads no connection file, calls no `safeStorage` and creates nothing (a missing folder stays
+missing, and a folder that is itself a link is not swept); its timers are unref'd and a sweep never
+throws into main. It is started from the app's ready handler beside `startRemoteConnect`, not from the
+controller, which only exists with a hub. The sweep touches only regular files in folders of the two
+hex patterns, through `lstat`, and folders left empty. A refusal logs its word, a success `hub-files:
+opened`; the three refusals before the gesture check log nothing.
 
-**On the page** (`public/hub-files.js`). The page asks `filesAvailable()` once per load and on each
-`onConnection`; the answer is a frame input, so the next poll repaints. Where it is yes, a file chip
-in a card's Links strip and in the session panel's (`linkStripHtml`'s new `hubFiles` option, which
-draws a file chip's group for the item or row whose card links it, from the chip's own escaped
-markup) becomes a group: the chip (whose click still copies the path), **Copy path**, and either
-**Open a copy on this Mac** with a status line, or the line "This file opens only on the other
-Mac." The button shows for exactly the links the hub accepts on form (`hubFileListed`: the hub's
-form rule, `~/` or an allowed root, a listed name, no hidden segment), and main asks for exactly
-those. Each side keeps the roots and the extensions in one list (`ALLOWED_ROOTS` and
-`DOCUMENT_EXTENSIONS` in `src/remote-file.ts` and `electron/hub-files.cjs`, `HUB_FILE_ROOTS` and
-`HUB_FILE_EXTENSIONS` in `public/hub-files.js`), and tests compare them; one test feeds the same
-texts, system locations included, through the page's, main's and the hub's rules and compares the sets.
-On the card's path only `~/` stands for the home: an absolute path to a home outside the listed roots
-(a Linux `/home/…`) is not served, so all three sides can decide alike without knowing the hub's home. A repo-relative
-file keeps today's chip. While an open runs the button is disabled; then it says "Opened" for 1.5 seconds, or one
-sentence per reason word sits beside it for 6 seconds, as text. The words for an older hub say to
-update it once on that Mac (Agent Inbox → Check for Updates…), in a sentence of their own. On This
-Mac's page and in a browser nothing changes: This Mac's `agentInboxDesk` has no `filesAvailable`. An
-older connecting app has no such member either, so a new hub's page shows what it shows today; an
-older hub's page has no button.
+**On the page** (`public/hub-files.js`, `public/link-open.js`). The page asks `filesAvailable()` once
+per load and on each `onConnection`; the answer is a frame input, so the next poll repaints. Where it
+is yes, a file link that is not repo-relative, whose path `hubFileListed` accepts and whose owner
+(`hubFileEntity`: the item or plan row whose text holds it) is known, carries `data-hub-file-kind`
+(`item` or `row`) and `data-hub-file-id` beside its own attributes, and its title is "Open a copy on
+this Mac: <path>". That is the chip in a card's Links strip and in the session panel's
+(`linkStripHtml`'s `hubFiles` option, whose callback gets `chip(attrs, title)`, the chip's own
+escaped markup with more attributes) and the inline link (`ctx.hubFile`, set by `textContext`, read
+by `links.js` and `fileLinkHtml`). The chip is still a group with its **Copy path** icon; a file off
+the list keeps its chip, the icon and the line "This file opens only on the other Mac." There is no
+other button, listener or note. The form rule is `hubFileListed` (the hub's: `~/` or an allowed
+root, a listed name, no hidden segment), and main asks for exactly those. Each side keeps the roots
+and the extensions in one list (`ALLOWED_ROOTS` and `DOCUMENT_EXTENSIONS` in `src/remote-file.ts` and
+`electron/hub-files.cjs`, `HUB_FILE_ROOTS` and `HUB_FILE_EXTENSIONS` in `public/hub-files.js`), and
+tests compare them; one test feeds the same texts, system locations included, through the page's,
+main's and the hub's rules and compares the sets. On the card's path only `~/` stands for the home:
+an absolute path to a home outside the listed roots (a Linux `/home/…`) is not served, so all three
+sides can decide alike without knowing the hub's home.
+
+The click is handled by `link-open.js`, still the one handler for `[data-link-kind]` (mouse, and
+Enter or Space on the inline link through its keydown handling). `initLinkOpening` takes the option
+`hubFiles`, the object `installHubFiles` returns (`available()`, `request(el)`, `open(request)`),
+and asks it first for a file link: where `request(el)` gives `{ kind, id, path }` it calls
+`open(request)` once and copies nothing. What the person is told goes in the existing status region
+(`#linkOpenStatus`): "Getting the file from the other Mac…" at once, kept until the answer;
+"Opened a copy on this Mac." (the usual 2.6 seconds); or the refusal's sentence, one per reason word
+(`HUB_FILE_REFUSALS`, `no_gesture` being "Click the file again."), in the error state for 6 seconds,
+and `HUB_FILE_FALLBACK` for a missing bridge, an `openFile` that throws or an answer it does not
+understand. A path is never copied as a stand-in for a failed open. While an open runs the link is
+marked `aria-busy="true"` and another click on that same element does nothing; a repaint that
+replaced the element is harmless. A file link that cannot open (off the list, no owner,
+repo-relative) copies its path as before, and where hub files are available the note after "Copied
+the path." is "This file opens only on the other Mac." instead of "Files open only in Agent Inbox's
+own window." The words for an older hub say to update it once on that Mac (Agent Inbox → Check for
+Updates…), in a sentence of their own. On This Mac's page and in a browser nothing changes: This
+Mac's `agentInboxDesk` has no `filesAvailable`, no link carries `data-hub-file-*`, and a click opens
+the file locally or copies as before. An older connecting app has no such member either, so a new
+hub's page shows what it shows today; an older hub's page has no link to click.
 
 Tests: `test/remote-file.test.ts` (the request and path rules, and what the scanner links, as
 tables with hostile inputs, the one rule on three sides, the file checks with links, folders, pipes, a swap between the check and the open, the
 stream's size held while reading, and the route through the real gate and listener),
 `test/remote-routes.test.ts` (the guarded route's Hono chain), `test/hub-files.test.ts` (each check
-in order, the copy's name, the real private writer, the sweep, and `openHubCopy` with a path outside
+in order, the copy's name, the real private writer, the sweep and its schedule (`scheduleCopySweep`, with
+injected timers and clock), and `openHubCopy` with a path outside
 the folder, a link inside it that points outside, an unlisted extension and a directory), `test/remote-connect.test.ts` (the
 longer timeout), `test/hub-view.test.ts`, `test/main-ipc.test.ts` and `test/remote-preload.test.ts`
-(the channels and the bridge), and the DOM tests in `test/dom/hub-files.test.ts` and
-`test/dom/card-links.test.ts`.
+(the channels and the bridge, and the sweep's wiring), and the DOM tests in `test/dom/hub-files.test.ts`
+(the markup, one click, the three messages, a second click while it runs, Enter on the inline link,
+the unlisted file's copy and its note, and the app's own window) and `test/dom/card-links.test.ts`.
 
 Known limits, accepted:
 

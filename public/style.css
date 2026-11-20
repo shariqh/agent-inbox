@@ -3396,3 +3396,8 @@ body.hub-reconnecting #status { display: none; }
 .nrow > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret) { opacity: 0; }
 .nrow:is(:hover, :focus-within, .selected, [data-open="1"]) > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret),
 .nrow > .nrow-l1 .nrow-star:has(.undo-btn) { opacity: 1; }
+/* The Dashboard's Needs you card: its meta line at rest is the project dot, the project, the age and the
+   Hand-off and Draft markers. Each separator belongs to the part it precedes, so a hidden part takes its
+   own along; the age drops its separator when it is the first text left. */
+.ny-card :is(.ny-agent, .ny-branch, .ny-session, .ny-plan) { display: none; }
+.ny-meta > .ny-project[hidden] ~ .ny-age::before { content: none; }

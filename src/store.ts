@@ -3238,6 +3238,17 @@ export function getActiveBoardRow(db: Database.Database, rowId: string): BoardRo
   return row ? withUnseen([row])[0] : undefined
 }
 
+// #634: one row of any plan, active or archived, as listBoards reads it: every plan the remote
+// entry's routes show (GET /api/boards and /api/boards/archived). The remote entry's file route reads
+// a row's text from it (src/remote-file.ts).
+export function getBoardRow(db: Database.Database, rowId: string): BoardRow | undefined {
+  const row = db.prepare(`SELECT ${ROW_COLUMNS} FROM board_rows
+    WHERE id = ? AND EXISTS (
+      SELECT 1 FROM boards WHERE boards.id = board_rows.board_id AND boards.status IN ('active', 'archived')
+    )`).get(rowId) as BoardRowRecord | undefined
+  return row ? withUnseen([row])[0] : undefined
+}
+
 export function listUnansweredBoardRows(
   db: Database.Database,
   project: string,

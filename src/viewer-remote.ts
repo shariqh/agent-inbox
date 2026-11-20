@@ -26,6 +26,8 @@ import { PAIR_PATH, createPairing, isDeviceLabel } from './remote-pair.js'
 import type { MadeCode, PairedDevice } from './remote-pair.js'
 import { UPDATE_PATH, remoteUpdateRoutes } from './remote-update.js'
 import type { RemoteUpdate } from './remote-update.js'
+import { FILE_PATH, remoteFileRoute } from './remote-file.js'
+import type { FileKind } from './remote-file.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
 const REMOTE_FILE = 'remote.json'
@@ -301,12 +303,13 @@ const isApiPath = (path: string): boolean => path === '/api' || path.startsWith(
 
 /**
  * #637: the routes the guarded app serves itself, after the gate, for a paired device only: what the
- * hub's update would be, and the request to start it (src/remote-update.ts). Not on REMOTE_ROUTES,
- * which lists what the wrapped app serves.
+ * hub's update would be, and the request to start it (src/remote-update.ts). #634: a file a card
+ * links, read-only (src/remote-file.ts). Not on REMOTE_ROUTES, which lists what the wrapped app serves.
  */
 export const GUARDED_ROUTES: ReadonlyArray<{ method: 'GET' | 'POST'; path: string }> = [
   { method: 'GET', path: UPDATE_PATH },
   { method: 'POST', path: UPDATE_PATH },
+  { method: 'GET', path: FILE_PATH },
 ]
 
 /** Step 9: a GET outside `/api/` (a static file), or a route on REMOTE_ROUTES (`:param` is one non-empty segment). */
@@ -468,7 +471,7 @@ export function remoteGate(opts: {
  * and answers a bare 500.
  */
 export function guardRemoteApp(
-  app: Hono, gate: MiddlewareHandler<{ Bindings: HttpBindings }>, pair: Handler, update?: { get: Handler; post: Handler },
+  app: Hono, gate: MiddlewareHandler<{ Bindings: HttpBindings }>, pair: Handler, update?: { get: Handler; post: Handler }, file?: Handler,
 ): Hono<{ Bindings: HttpBindings }> {
   const guarded = new Hono<{ Bindings: HttpBindings }>()
   // The gate must precede route(), as in src/viewer-network.ts: middleware added after the routes
@@ -482,6 +485,8 @@ export function guardRemoteApp(
     guarded.get(UPDATE_PATH, update.get)
     guarded.post(UPDATE_PATH, update.post)
   }
+  // #634: a file a card links, for a paired device only (step 8 ran); served here, never by the wrapped app
+  if (file) guarded.get(FILE_PATH, file)
   // Hono copies the app's routes at this call: a route added to `app` afterwards is never served.
   guarded.route('/', app as unknown as Hono<{ Bindings: HttpBindings }>)
   // createViewer sets no onError, so this one handles its errors (Hono's default logs the error itself)
@@ -524,6 +529,8 @@ export function startRemoteEntry(opts: {
   app: Hono; dir: string; viewerPort: number; intervalMs?: number; now?: () => number
   /** #637: the hub's update relay (src/remote-update.ts); without it the update routes answer 404 */
   update?: RemoteUpdate
+  /** #634: an entity's text fields and the hub user's home, for the file route (src/remote-file.ts); without them it answers 404 */
+  files?: { texts: (kind: FileKind, id: string) => string[] | null; home: string }
 }): RemoteEntry {
   const file = join(opts.dir, REMOTE_FILE)
   const cache = remoteSettingCache(file)
@@ -576,7 +583,8 @@ export function startRemoteEntry(opts: {
       // only on the listener the current setting names: a request still on an old port is refused
       return setting && incoming?.socket.localPort === setting.port ? setting : null
     },
-  }), pairing.handler, opts.update ? remoteUpdateRoutes(opts.update, remoteDeviceOf) : undefined)
+  }), pairing.handler, opts.update ? remoteUpdateRoutes(opts.update, remoteDeviceOf) : undefined,
+  opts.files ? remoteFileRoute({ ...opts.files, deviceOf: remoteDeviceOf }) : undefined)
 
   function closeServer(): void {
     const current = server

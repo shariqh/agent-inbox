@@ -5,8 +5,8 @@
 // a scratch folder, and the hub's answers are fakes: nothing here fetches, and no app is opened (the
 // opener is recorded). Fixtures are synthetic (hub.example.ts.net, studio).
 import { createHash } from 'node:crypto'
-import {
-  existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync,
+import fs, {
+  constants, existsSync, lstatSync, lutimesSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs'
 import { readFileSync as readText } from 'node:fs'
 import { join } from 'node:path'
@@ -40,7 +40,7 @@ const fileResponse = (body: string, headers: Record<string, string> = {}) => new
 const refusalResponse = (status: number, reason: string, marked = true) =>
   new Response(JSON.stringify({ ok: false, reason }), { status, headers: { 'content-type': 'application/json', ...(marked ? MARKER : {}) } })
 
-function harness(options: { platform?: string; version?: string | null; respond?: (url: string) => Response | Promise<Response>; openCopy?: (file: string) => Promise<{ ok: boolean; reason?: string }> } = {}) {
+function harness(options: { platform?: string; version?: string | null; respond?: (url: string) => Response | Promise<Response>; openCopy?: (file: string) => Promise<{ ok: boolean; reason?: string }>; randomBytes?: (n: number) => Buffer } = {}) {
   const dir = join(scratchDir('hub-files-'), 'hub-files')
   const calls: Array<{ url: string; init: Record<string, unknown> }> = []
   const opened: string[] = []
@@ -75,6 +75,7 @@ function harness(options: { platform?: string; version?: string | null; respond?
     openCopy: options.openCopy ?? (async (file: string) => { opened.push(file); return { ok: true } }),
     now: () => clock.now,
     log: (line: string) => logs.push(line),
+    ...(options.randomBytes ? { randomBytes: options.randomBytes } : {}),
   })
   return {
     dir, calls, opened, logs, clock, files, connection,
@@ -488,6 +489,143 @@ describe('the private copy on disk', () => {
     expect(readFileSync(outside, 'utf8')).toBe('keep')
     expect(readdirSync(odd)).toEqual(['c.md'])
   })
+
+  // The sweep removes only what this app made: old regular files in a copy folder (16 hex) of a hub
+  // folder (8 hex), reached with lstat, never a link followed and never a tree it did not make.
+  describe('the sweep, edge by edge', () => {
+    const dayAgo = (h: { clock: { now: number } }) => (h.clock.now - KEEP_MS - 1_000) / 1_000
+    const run = async (h: ReturnType<typeof harness>) => {
+      h.press()
+      expect(await h.open()).toEqual({ ok: true })
+    }
+
+    it('removes an old regular file only: a folder it did not make, with its contents, stays', async () => {
+      const h = harness()
+      const copy = join(h.dir, HUB, 'aaaaaaaaaaaaaaaa')
+      mkdirSync(join(copy, 'tree', 'deeper'), { recursive: true, mode: 0o700 })
+      writeFileSync(join(copy, 'tree', 'deeper', 'inside.md'), 'inside')
+      writeFileSync(join(copy, 'old.md'), 'old')
+      const old = dayAgo(h)
+      for (const path of [join(copy, 'tree'), join(copy, 'tree', 'deeper', 'inside.md'), join(copy, 'old.md')]) utimesSync(path, old, old)
+      await run(h)
+      expect(existsSync(join(copy, 'old.md'))).toBe(false)
+      expect(readFileSync(join(copy, 'tree', 'deeper', 'inside.md'), 'utf8')).toBe('inside')
+    })
+
+    it('leaves an old link in a copy folder alone, and the file it points at', async () => {
+      const h = harness()
+      const copy = join(h.dir, HUB, 'aaaaaaaaaaaaaaaa')
+      mkdirSync(copy, { recursive: true, mode: 0o700 })
+      const target = join(scratchDir('hub-files-target-'), 'keep.md')
+      writeFileSync(target, 'keep')
+      symlinkSync(target, join(copy, 'link.md'))
+      lutimesSync(join(copy, 'link.md'), dayAgo(h), dayAgo(h))
+      utimesSync(target, dayAgo(h), dayAgo(h))
+      await run(h)
+      expect(readlinkSync(join(copy, 'link.md'))).toBe(target)
+      expect(readFileSync(target, 'utf8')).toBe('keep')
+    })
+
+    it('looks only in a hub folder named by 8 hex digits and a copy folder by 16', async () => {
+      const h = harness()
+      const kept = [join(h.dir, 'not-a-hub', 'aaaaaaaaaaaaaaaa', 'a.md'), join(h.dir, 'ffffffff', 'not-a-copy', 'b.md')]
+      for (const file of kept) {
+        mkdirSync(join(file, '..'), { recursive: true, mode: 0o700 })
+        writeFileSync(file, 'x')
+        utimesSync(file, dayAgo(h), dayAgo(h))
+      }
+      await run(h)
+      for (const file of kept) expect(existsSync(file), file).toBe(true)
+    })
+
+    it('never follows a link to a folder, at the hub level or the copy level', async () => {
+      const h = harness()
+      const outside = scratchDir('hub-files-outside-')
+      mkdirSync(join(outside, 'aaaaaaaaaaaaaaaa'), { recursive: true })
+      writeFileSync(join(outside, 'aaaaaaaaaaaaaaaa', 'a.md'), 'outside a')
+      writeFileSync(join(outside, 'b.md'), 'outside b')
+      for (const path of [join(outside, 'aaaaaaaaaaaaaaaa', 'a.md'), join(outside, 'b.md')]) utimesSync(path, dayAgo(h), dayAgo(h))
+      mkdirSync(join(h.dir, HUB), { recursive: true, mode: 0o700 })
+      symlinkSync(outside, join(h.dir, '11223344'))
+      symlinkSync(outside, join(h.dir, HUB, 'bbbbbbbbbbbbbbbb'))
+      await run(h)
+      expect(readFileSync(join(outside, 'aaaaaaaaaaaaaaaa', 'a.md'), 'utf8')).toBe('outside a')
+      expect(readFileSync(join(outside, 'b.md'), 'utf8')).toBe('outside b')
+    })
+  })
+
+  // The private writer owns the folders it writes in: a folder another user owns is not used.
+  it('refuses a folder owned by someone else', async () => {
+    const h = harness()
+    const uid = process.getuid!()
+    vi.spyOn(process, 'getuid').mockReturnValue(uid + 1)
+    h.press()
+    expect(await h.open()).toEqual({ ok: false, reason: 'failed' })
+    expect(h.opened).toEqual([])
+    expect(existsSync(join(h.dir, HUB, key(SPEC), 'spec.md'))).toBe(false)
+  })
+
+  describe('the partial file', () => {
+    const RANDOM = Buffer.from('0123456789abcdef', 'hex')
+    const partialName = `.${RANDOM.toString('hex')}.part`
+
+    it('is created exclusively and without following a link, at 0600', async () => {
+      const h = harness({ randomBytes: () => RANDOM })
+      const open = vi.spyOn(fs, 'openSync')
+      h.press()
+      expect(await h.open()).toEqual({ ok: true })
+      const partial = open.mock.calls.filter(([path]) => String(path).endsWith(partialName))
+      expect(partial).toHaveLength(1)
+      const [, flags, mode] = partial[0]!
+      const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = constants
+      expect(flags).toBe(O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW)
+      expect(mode).toBe(0o600)
+    })
+
+    it('is never written through a file planted at its name', async () => {
+      const h = harness({ randomBytes: () => RANDOM })
+      const folder = join(h.dir, HUB, key(SPEC))
+      mkdirSync(folder, { recursive: true, mode: 0o700 })
+      writeFileSync(join(folder, partialName), 'PLANTED-CONTENT-THAT-STAYS')
+      h.press()
+      expect(await h.open()).toEqual({ ok: false, reason: 'failed' })
+      // the failed open may clear the name, but never leaves a write through it
+      expect(existsSync(join(folder, partialName)) ? readFileSync(join(folder, partialName), 'utf8') : 'PLANTED-CONTENT-THAT-STAYS').toBe('PLANTED-CONTENT-THAT-STAYS')
+      expect(existsSync(join(folder, 'spec.md'))).toBe(false)
+      expect(h.opened).toEqual([])
+    })
+
+    it('is never written through a link planted at its name', async () => {
+      const h = harness({ randomBytes: () => RANDOM })
+      const folder = join(h.dir, HUB, key(SPEC))
+      mkdirSync(folder, { recursive: true, mode: 0o700 })
+      const victim = join(scratchDir('hub-files-victim-'), 'victim.md')
+      writeFileSync(victim, 'untouched')
+      symlinkSync(victim, join(folder, partialName))
+      h.press()
+      expect(await h.open()).toEqual({ ok: false, reason: 'failed' })
+      expect(readFileSync(victim, 'utf8')).toBe('untouched')
+    })
+  })
+
+  it('stops reading and writing as soon as the body is longer than its length', async () => {
+    let pulls = 0
+    const chunk = new Uint8Array(64 * 1024).fill(0x61)
+    const endless = new Response(new ReadableStream({
+      pull(controller) {
+        pulls += 1
+        controller.enqueue(pulls === 1 ? new TextEncoder().encode('abcd') : chunk)
+      },
+    }), { status: 200, headers: { 'content-type': 'application/octet-stream', 'content-length': '4', ...MARKER } })
+    const h = harness({ respond: () => endless })
+    const write = vi.spyOn(fs, 'writeSync')
+    h.press()
+    expect(await h.open()).toEqual({ ok: false, reason: 'failed' })
+    // the first chunk fills the length; the second goes past it and ends the read before it is written
+    expect(write.mock.calls.reduce((sum, call) => sum + Number(call[3] ?? 0), 0)).toBe(4)
+    expect(pulls).toBeLessThan(6)
+    expect(h.opened).toEqual([])
+  })
 })
 
 describe('the source', () => {
@@ -535,6 +673,13 @@ describe('openHubCopy: the one opener for a fetched copy (electron/link-open.cjs
     expect(await openHubCopy(join(copy, 'missing.md'), { dir, shell })).toEqual({ ok: false, reason: 'not_file' })
     expect(await openHubCopy(dir, { dir, shell })).toEqual({ ok: false, reason: 'outside' })
     expect(await openHubCopy('spec.md', { dir, shell })).toEqual({ ok: false, reason: 'outside' })
+    expect(opened).toEqual([])
+  })
+
+  it('refuses a dotfile, even with a listed extension', async () => {
+    const { copy, dir, opened, shell } = setup()
+    writeFileSync(join(copy, '.hidden.md'), 'x')
+    expect(await openHubCopy(join(copy, '.hidden.md'), { dir, shell })).toEqual({ ok: false, reason: 'type' })
     expect(opened).toEqual([])
   })
 

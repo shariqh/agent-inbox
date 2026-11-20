@@ -883,6 +883,31 @@ describe('GET /api/remote/file through the remote entry', () => {
     expect(await refusal(bad)).toEqual({ status: 400, body: { ok: false, reason: 'bad_request' } })
   })
 
+  // The request must be one of the card's links, as a whole: not a longer path that starts with one.
+  it('matches the requested path exactly, never by prefix', async () => {
+    writeFileSync(join(docs, 'spec.md.txt'), 'a longer name that starts with a linked path')
+    const prefixed = join(docs, 'spec.md.txt')
+    expect(await refusal(await get(prefixed))).toEqual({ status: 404, body: { ok: false, reason: 'not_linked' } })
+    // and the same file once a card links it
+    const own = insertItem(db, { project: 'p', stream: 's', agent: 'a', kind: 'note', title: `Read ${prefixed}` })
+    expect((await get(prefixed, 'item', own)).status).toBe(200)
+    expect(await refusal(await get(join(docs, 'spec.md'), 'item', own))).toEqual({ status: 404, body: { ok: false, reason: 'not_linked' } })
+  })
+
+  // The rule is applied to the path the card names, not only to where it resolves: a hidden or
+  // unlisted name that is a link to a visible listed file is refused.
+  it('applies the rule to the card\'s own path: a hidden or unlisted name that links to a visible file is refused', async () => {
+    symlinkSync(join(docs, 'spec.md'), join(home, '.notes.md'))
+    symlinkSync(join(docs, 'spec.md'), join(docs, 'view.html'))
+    const id = insertItem(db, {
+      project: 'p', stream: 's', agent: 'a', kind: 'note', title: 'Read ~/.notes.md',
+      context: `and ${join(docs, 'view.html')}, and ${join(docs, 'spec.md')}`,
+    })
+    expect(await refusal(await get('~/.notes.md', 'item', id))).toEqual({ status: 415, body: { ok: false, reason: 'not_a_document' } })
+    expect(await refusal(await get(join(docs, 'view.html'), 'item', id))).toEqual({ status: 415, body: { ok: false, reason: 'not_a_document' } })
+    expect((await get(join(docs, 'spec.md'), 'item', id)).status).toBe(200)
+  })
+
   it('refuses a HEAD before it opens anything', async () => {
     const response = await rawRequest(port, { method: 'HEAD', target: target('item', itemId, join(docs, 'spec.md')), headers: deviceHeaders(laptop) })
     expect(response.status).toBe(400)

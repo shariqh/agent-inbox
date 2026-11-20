@@ -16,7 +16,7 @@ import linkOpenModule from '../electron/link-open.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const { HUB_COPY_EXTENSIONS, openHubCopy } = linkOpenModule
-const { DOCUMENT_EXTENSIONS, FILES_FROM, FILE_MAX, KEEP_MS, REASONS, copyName, createHubFiles, fileRequest, servablePath } = hubFilesModule
+const { DOCUMENT_EXTENSIONS, FILES_FROM, FILE_MAX, KEEP_MS, REASONS, SWEEP_FIRST_MS, SWEEP_EVERY_MS, copyName, createHubFiles, fileRequest, scheduleCopySweep, servablePath } = hubFilesModule
 
 afterEach(() => {
   removeScratchDirs()
@@ -698,5 +698,141 @@ describe('openHubCopy: the one opener for a fetched copy (electron/link-open.cjs
 
   it('lists the same extensions as the hub', () => {
     expect([...HUB_COPY_EXTENSIONS]).toEqual([...DOCUMENT_EXTENSIONS])
+  })
+})
+
+// #645: old copies are removed without opening anything: once soon after start and then every hour,
+// on macOS only, whether or not a hub is connected. The timers are injected, so nothing here waits.
+describe('the scheduled sweep of old copies', () => {
+  function timers() {
+    const unref = vi.fn()
+    const world = {
+      clock: { now: Date.UTC(2026, 10, 20) },
+      first: null as null | { fn: () => void; ms: number },
+      every: null as null | { fn: () => void; ms: number },
+      unref,
+      cleared: [] as unknown[],
+      setTimeout: vi.fn((fn: () => void, ms: number) => { world.first = { fn, ms }; return { unref, kind: 'timeout' } }),
+      setInterval: vi.fn((fn: () => void, ms: number) => { world.every = { fn, ms }; return { unref, kind: 'interval' } }),
+      clearTimeout: vi.fn((handle: unknown) => { world.cleared.push(handle) }),
+      clearInterval: vi.fn((handle: unknown) => { world.cleared.push(handle) }),
+    }
+    return world
+  }
+  const options = (world: ReturnType<typeof timers>, dir: string, extra: Record<string, unknown> = {}) => ({
+    platform: 'darwin', dir, now: () => world.clock.now,
+    setTimeout: world.setTimeout, setInterval: world.setInterval, clearTimeout: world.clearTimeout, clearInterval: world.clearInterval, ...extra,
+  })
+  const oldCopy = (dir: string, world: ReturnType<typeof timers>, copy = 'aaaaaaaaaaaaaaaa') => {
+    const folder = join(dir, HUB, copy)
+    mkdirSync(folder, { recursive: true, mode: 0o700 })
+    writeFileSync(join(folder, 'a.md'), 'old')
+    const then = (world.clock.now - KEEP_MS - 1_000) / 1_000
+    utimesSync(join(folder, 'a.md'), then, then)
+    return folder
+  }
+
+  it('is ten seconds after start and then every hour', () => {
+    expect(SWEEP_FIRST_MS).toBe(10_000)
+    expect(SWEEP_EVERY_MS).toBe(60 * 60_000)
+    const world = timers()
+    scheduleCopySweep(options(world, join(scratchDir('hub-files-'), 'hub-files')))
+    expect(world.first?.ms).toBe(10_000)
+    expect(world.every).toBeNull()
+  })
+
+  it('removes an old copy at the first tick, and one that grew old later at an interval tick', () => {
+    const world = timers()
+    const dir = join(scratchDir('hub-files-'), 'hub-files')
+    const first = oldCopy(dir, world)
+    scheduleCopySweep(options(world, dir))
+    expect(existsSync(first)).toBe(true)
+    world.first!.fn()
+    expect(existsSync(first)).toBe(false)
+    expect(world.every?.ms).toBe(60 * 60_000)
+    const later = oldCopy(dir, world, 'bbbbbbbbbbbbbbbb')
+    world.every!.fn()
+    expect(existsSync(later)).toBe(false)
+  })
+
+  it('keeps a copy younger than a day', () => {
+    const world = timers()
+    const dir = join(scratchDir('hub-files-'), 'hub-files')
+    const fresh = join(dir, HUB, 'cccccccccccccccc')
+    mkdirSync(fresh, { recursive: true, mode: 0o700 })
+    writeFileSync(join(fresh, 'c.md'), 'fresh')
+    scheduleCopySweep(options(world, dir))
+    world.first!.fn()
+    world.clock.now += 60 * 60_000
+    world.every!.fn()
+    expect(readdirSync(fresh)).toEqual(['c.md'])
+  })
+
+  it('leaves a missing folder missing, and never creates it', () => {
+    const world = timers()
+    const dir = join(scratchDir('hub-files-'), 'hub-files')
+    scheduleCopySweep(options(world, dir))
+    world.first!.fn()
+    world.every!.fn()
+    expect(existsSync(dir)).toBe(false)
+    expect(existsSync(join(dir, '..'))).toBe(true)
+  })
+
+  it('does not follow a folder that is a link', () => {
+    const world = timers()
+    const real = join(scratchDir('hub-files-'), 'real')
+    const copy = oldCopy(real, world)
+    const dir = join(scratchDir('hub-files-link-'), 'hub-files')
+    symlinkSync(real, dir)
+    scheduleCopySweep(options(world, dir))
+    world.first!.fn()
+    expect(existsSync(copy)).toBe(true)
+  })
+
+  it('does nothing on another platform', () => {
+    for (const platform of ['linux', 'win32']) {
+      const world = timers()
+      const dir = join(scratchDir('hub-files-'), 'hub-files')
+      const copy = oldCopy(dir, world)
+      expect(scheduleCopySweep(options(world, dir, { platform }))).toBeNull()
+      expect(world.setTimeout).not.toHaveBeenCalled()
+      expect(world.setInterval).not.toHaveBeenCalled()
+      expect(existsSync(copy)).toBe(true)
+    }
+  })
+
+  it('unrefs both timers, so they never keep the app alive', () => {
+    const world = timers()
+    scheduleCopySweep(options(world, join(scratchDir('hub-files-'), 'hub-files')))
+    world.first!.fn()
+    expect(world.unref).toHaveBeenCalledTimes(2)
+  })
+
+  it('can never throw into main: a sweep, a clock or a timer that throws is swallowed', () => {
+    const world = timers()
+    const dir = join(scratchDir('hub-files-'), 'hub-files')
+    scheduleCopySweep(options(world, dir, { now: () => { throw new Error('clock') } }))
+    expect(() => world.first!.fn()).not.toThrow()
+    expect(() => world.every!.fn()).not.toThrow()
+    const broken = timers()
+    broken.setTimeout.mockImplementation(() => { throw new Error('timer') })
+    expect(() => scheduleCopySweep(options(broken, dir))).not.toThrow()
+    expect(() => scheduleCopySweep(options(timers(), dir, { sweep: () => { throw new Error('sweep') } }))).not.toThrow()
+  })
+
+  it('stops when told to: both timers are cleared', () => {
+    const world = timers()
+    const dir = join(scratchDir('hub-files-'), 'hub-files')
+    const stop = scheduleCopySweep(options(world, dir))!
+    world.first!.fn()
+    stop()
+    expect(world.cleared).toEqual([expect.objectContaining({ kind: 'interval' })])
+    const early = timers()
+    scheduleCopySweep(options(early, dir))!()
+    expect(early.cleared).toEqual([expect.objectContaining({ kind: 'timeout' })])
+  })
+
+  it('reads no connection file and calls no safeStorage: the module still has neither', () => {
+    expect(readText(join(import.meta.dirname, '..', 'electron', 'hub-files.cjs'), 'utf8')).not.toMatch(/safeStorage|remote-connection|connection\.json/)
   })
 })

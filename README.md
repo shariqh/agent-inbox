@@ -433,11 +433,18 @@ app restart: answers and their context, plan-row notes, Note attempts and the
 **unsent responses** list. Drafts stay in this browser or app profile for 30 days
 after your last edit and never reach the hub or an agent until you send them.
 Nothing is sent for you. A draft whose request is unchanged comes back in its
-card. One whose request changed meanwhile (answered elsewhere, closed, or a plan
-row with a new action), or whose project you closed, waits under **unsent
-responses** with the reason. **Retry** sends it again and **Clear** discards it for good.
+card. A plan step an agent touched while you typed keeps your text in its editor
+as long as it still asks the same thing: if only something else moved, your Send
+goes through; if the ask's words were edited, the step says so and your next Send
+goes to the edited ask (the same goes for a note on a step that is not waiting on
+you, which says the step was updated). If your text already reached the step, the
+draft just goes away. One whose request changed meanwhile (closed, or a plan step
+with a new ask), or whose project you closed, is kept with the reason: beside the
+plan step while its card is open, otherwise under **unsent responses**. **Retry**
+sends a question's reply again, **Use this text** puts a step's text in its editor,
+**Copy** copies it, and **Discard** removes an entry for good.
 While one of these is for a question or plan step the Review queue would show, the
-queue waits and the Inbox says "Finish or clear the 1 unsent response first", with
+queue waits and the Inbox says "Finish or discard the 1 unsent response first", with
 a **Show it** button; one for a question or step that has since closed or moved on
 never holds the queue. If you had already sent it and no answer came back,
 it says the send was not confirmed rather than that it was never sent. When you
@@ -449,7 +456,7 @@ says so. A Send or Retry never replaces an answer you have not seen: if a newer
 reply arrived (from another window, or the agent recording what you said in chat),
 the first click shows it, "A newer reply was sent: …", and only a second click
 replaces it. Sending,
-emptying or clearing a draft deletes it. A crash in the moment after you type can
+emptying or discarding a draft deletes it. A crash in the moment after you type can
 still lose the last keystrokes. Another browser or profile does not see these
 drafts, and neither does the viewer opened at its other address (`localhost`
 instead of `127.0.0.1`).

@@ -117,7 +117,11 @@ describe('async draft ownership', () => {
     await settle()
 
     expect(getBoard(db, 'alpha', 'Duplicate editors')!.rows[0]!.annotation).toBe('submission A')
-    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('newer draft B')
+    // #636: still the same ask, now answered, so draft B stays in its editor and says so
+    expect(boardPanelInput(rowId).value).toBe('newer draft B')
+    expect(document.querySelector('#boards .ask-edited')?.textContent)
+      .toBe('The response on this step changed before yours was sent. Read it, then send yours.')
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
   it('does not restore a failed row submission over a newer draft', async () => {
@@ -172,7 +176,7 @@ describe('async draft ownership', () => {
     expect(document.querySelector('.stale-drafts-fold')?.textContent ?? '').not.toContain('submission A')
   })
 
-  it('recovers the later of two option submissions when the earlier one wins the CAS race', async () => {
+  it('does not apply the later of two option clicks when the earlier one wins the CAS race (#636)', async () => {
     db = freshDb()
     upsertBoard(db, {
       ...AGENT,
@@ -196,7 +200,10 @@ describe('async draft ownership', () => {
     await settle()
 
     expect(getBoard(db, 'alpha', 'Option race')!.rows[0]!.annotation).toBe('Ship now')
-    expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Hold')
+    // the second click is never sent over the first: the row says a response was saved
+    expect(row(rowId)?.querySelector('.write-error')?.textContent)
+      .toBe('The response on this step changed before yours was sent. Read it, then choose again.')
+    expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
   it('preserves a newer item answer when an earlier successful reply completes', async () => {
@@ -612,7 +619,7 @@ describe('async draft ownership', () => {
     expect(lines.some((line) => line.textContent?.includes('Text X'))).toBe(true)
     const optionLine = lines.find((line) => line.textContent?.includes('Option Y'))!
     expect(buttonLabelled('Retry', optionLine)).not.toBeNull()
-    click(buttonLabelled('Clear', optionLine))
+    click(buttonLabelled('Discard', optionLine))
 
     const remaining = document.querySelector('.stale-drafts-fold')?.textContent ?? ''
     expect(remaining).toContain('Text X')

@@ -39,7 +39,7 @@ describe('draft recovery visibility from Plans', () => {
     expect(document.activeElement).toBe(fold?.querySelector('summary'))
     expect(document.getElementById('pauseHint')?.textContent).toBe('')
 
-    click(buttonLabelled('Clear', fold))
+    click(buttonLabelled('Discard', fold))
     await settle()
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
     advanceClock()

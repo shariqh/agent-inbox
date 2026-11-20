@@ -120,7 +120,7 @@ describe('C2 · changeAnswer only stages the draft once the server accepted', ()
 // next successful poll ≤3s later and the next render rebuilds an empty input.
 describe('C3 · a failed write restores the draft and leaves a persistent inline error', () => {
   const send = fn('async function submitItemReply(', '\n// the answer surface')
-  const save = fn('  const save = () => withPendingResponse(async () => {', '\n  input.addEventListener')
+  const save = fn('  const save = (choice = null) => withPendingResponse(async () => {', '\n  input.addEventListener')
 
   it('sendReply keeps response settlement protected while delegating the write', () => {
     expect(fn('function sendReply(', '\n}'))

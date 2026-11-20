@@ -228,7 +228,7 @@ describe('informational item feedback', () => {
     expect(prompt).toHaveBeenLastCalledWith(expect.any(String), '')
     expect(bridge.posts).toHaveLength(1)
     expect(document.querySelector('.stale-drafts-fold')).not.toBeNull()
-    click(buttonLabelled('Clear', document.querySelector('.stale-drafts-fold')!))
+    click(buttonLabelled('Discard', document.querySelector('.stale-drafts-fold')!))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
@@ -297,7 +297,7 @@ describe('informational item feedback', () => {
       expect(pending?.textContent).toContain('Saving note')
       expect(pending?.textContent).toContain('Reviewed correction while retrying.')
       expect(buttonLabelled('Retry', pending)?.disabled).toBe(true)
-      expect(buttonLabelled('Clear', pending)?.disabled).toBe(true)
+      expect(buttonLabelled('Discard', pending)?.disabled).toBe(true)
       click(buttonLabelled('Retry', pending))
       expect(bridge.posts).toHaveLength(2)
     } finally {

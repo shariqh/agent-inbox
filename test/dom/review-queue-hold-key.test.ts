@@ -42,7 +42,7 @@ it('holds the Review queue on `t`, says why, and shows the response', async () =
   await settle()
   expect(document.getElementById('lightbox')!.hidden).toBe(true)
   expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
-  expect(document.querySelector('.triage-hold-text')?.textContent).toBe('Finish or clear the 1 unsent response first.')
+  expect(document.querySelector('.triage-hold-text')?.textContent).toBe('Finish or discard the 1 unsent response first.')
   click(buttonLabelled('Show it'))
   await settle()
   expect(document.activeElement).toBe(answerInput(r.id))

@@ -313,7 +313,7 @@ describe('createHubFiles: each check, in order', () => {
   })
 
   it('6. the hub\'s own refusal word passes on; any other answer is failed', async () => {
-    for (const [status, word] of [[400, 'bad_request'], [404, 'not_linked'], [415, 'not_a_document'], [413, 'too_large'], [404, 'not_found'], [422, 'unreadable']] as const) {
+    for (const [status, word] of [[400, 'bad_request'], [404, 'not_linked'], [415, 'not_a_document'], [413, 'too_large'], [404, 'not_found'], [422, 'unreadable'], [429, 'busy']] as const) {
       const h = harness({ respond: () => refusalResponse(status, word) })
       h.press()
       expect(await h.open(), word).toEqual({ ok: false, reason: word })

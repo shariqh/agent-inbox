@@ -40,6 +40,10 @@ import { getBoardRowWithPlan, getItem } from './store.js'
 export const FILE_PATH = '/api/remote/file'
 /** The largest file served, in bytes. */
 export const FILE_MAX = 25 * 1024 * 1024
+/** How many files a hub serves at once; a further request answers `busy` (429) without touching the file system. */
+export const FILE_SLOTS = 2
+/** A response still being read this long after it started is cut off, and its file closed. */
+export const FILE_TIME_MS = 120_000
 /** The inert documents and images a card's file may be: no HTML, no SVG, nothing executable. */
 export const DOCUMENT_EXTENSIONS: readonly string[] = Object.freeze([
   '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
@@ -51,7 +55,7 @@ export const DOCUMENT_EXTENSIONS: readonly string[] = Object.freeze([
  * of `/var`) and volumes (`/Volumes`: a network or removable volume can hang the hub's viewer) stay on the hub. The connecting Mac's main and the page keep the same list.
  */
 export const ALLOWED_ROOTS: readonly string[] = Object.freeze(['/Users/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'])
-export type FileRefusal = 'bad_request' | 'not_linked' | 'not_a_document' | 'too_large' | 'not_found' | 'unreadable'
+export type FileRefusal = 'bad_request' | 'not_linked' | 'not_a_document' | 'too_large' | 'not_found' | 'unreadable' | 'busy'
 
 export type FileKind = 'item' | 'row'
 export interface FileRequest {
@@ -60,8 +64,8 @@ export interface FileRequest {
   path: string
 }
 
-const STATUS: Record<FileRefusal, 400 | 404 | 413 | 415 | 422> = {
-  bad_request: 400, not_linked: 404, not_found: 404, not_a_document: 415, too_large: 413, unreadable: 422,
+const STATUS: Record<FileRefusal, 400 | 404 | 413 | 415 | 422 | 429> = {
+  bad_request: 400, not_linked: 404, not_found: 404, not_a_document: 415, too_large: 413, unreadable: 422, busy: 429,
 }
 const LISTED = new Set(DOCUMENT_EXTENSIONS)
 const PATH_MAX = 4096
@@ -174,7 +178,7 @@ export function linkedFiles(db: Database.Database): (kind: FileKind, id: string)
   }
 }
 
-export type OpenedFile = { ok: true; fd: number; size: number } | { ok: false; reason: Exclude<FileRefusal, 'bad_request' | 'not_linked'> }
+export type OpenedFile = { ok: true; fd: number; size: number } | { ok: false; reason: Exclude<FileRefusal, 'bad_request' | 'not_linked' | 'busy'> }
 
 const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants
 // macOS: O_NOFOLLOW_ANY (sys/fcntl.h, not in fs.constants) fails with ELOOP on a link in ANY component,
@@ -253,6 +257,10 @@ export function fileStream(fd: number, size: number, opts: {
   read?: (fd: number, length: number, position: number) => Promise<Buffer>
   close?: (fd: number) => void
   onChanged?: () => void
+  /** Runs once, when the file is closed: at the end, on an error, when the reader cancels or on `signal`. */
+  onClose?: () => void
+  /** Aborting cuts the stream off: the file is closed, the stream fails and `onChanged` runs. */
+  signal?: AbortSignal
 } = {}): ReadableStream<Uint8Array> {
   const read = opts.read ?? readAt
   const closeFd = opts.close ?? closeSync
@@ -265,6 +273,11 @@ export function fileStream(fd: number, size: number, opts: {
       closeFd(fd)
     } catch {
       // already closed
+    }
+    try {
+      opts.onClose?.()
+    } catch {
+      // the slot is the caller's own
     }
   }
   const fail = (controller: ReadableStreamDefaultController<Uint8Array>, error: Error, wasChange: boolean) => {
@@ -279,11 +292,20 @@ export function fileStream(fd: number, size: number, opts: {
     controller.error(error)
   }
   return new ReadableStream<Uint8Array>({
+    start(controller) {
+      const cut = () => {
+        if (!closed) fail(controller, new Error('the response took too long'), true)
+      }
+      if (opts.signal?.aborted) cut()
+      else opts.signal?.addEventListener('abort', cut, { once: true })
+    },
     async pull(controller) {
       if (!Number.isSafeInteger(size) || size < 0 || size > FILE_MAX) return fail(controller, new Error('the file is too large'), false)
       try {
         const want = Math.min(CHUNK, size - sent)
         const chunk = want > 0 ? await read(fd, want, sent) : Buffer.alloc(0)
+        // cut off or cancelled while the read was out: the descriptor is closed and may be another file's now
+        if (closed) return
         if (want > 0 && chunk.length === 0) return fail(controller, changed(), true)
         if (sent + chunk.length < size) {
           sent += chunk.length
@@ -292,6 +314,7 @@ export function fileStream(fd: number, size: number, opts: {
         }
         // the last chunk: only once the file has nothing past its size
         const extra = await read(fd, 1, size)
+        if (closed) return
         if (extra.length > 0) return fail(controller, changed(), true)
         sent += chunk.length
         finish()
@@ -324,13 +347,22 @@ const incomingOf = (env: unknown): IncomingMessage | undefined => (env as { inco
  * The route, registered on the guarded app after the gate (guardRemoteApp): every request has passed
  * it with a paired device's secret, and the handler refuses one with no matched device by itself.
  * `linked(kind, id)` answers the file paths the entity's card links, or null; `home` is the hub user's home for `~/`.
- * Each refusal is `{ ok: false, reason }` with its word only.
+ * Each refusal is `{ ok: false, reason }` with its word only. At most FILE_SLOTS files are served at once
+ * by the route (the slot is held while the file is open, and given back when the response ends, the
+ * client goes away or FILE_TIME_MS passes); a request beyond that is `busy`, answered before the card
+ * or the file system is read. `timer` replaces setTimeout and clearTimeout, for tests.
  */
 export function remoteFileRoute(opts: {
   linked: (kind: FileKind, id: string) => string[] | null
   deviceOf: (incoming: IncomingMessage | undefined) => string | null
   home: string
+  timer?: { set: (fn: () => void, ms: number) => unknown; clear: (handle: unknown) => void }
 }): Handler {
+  const timer = opts.timer ?? {
+    set: (fn, ms) => { const handle = setTimeout(fn, ms); handle.unref(); return handle },
+    clear: (handle) => clearTimeout(handle as NodeJS.Timeout),
+  }
+  let serving = 0
   return (c) => {
     const incoming = incomingOf(c.env)
     if (opts.deviceOf(incoming) === null) return c.text('Forbidden', 403)
@@ -340,6 +372,7 @@ export function remoteFileRoute(opts: {
     if (c.req.method !== 'GET' || (length !== undefined && length !== '0') || incoming?.headers['transfer-encoding'] !== undefined) return refuse('bad_request')
     const request = readFileQuery(incoming?.url)
     if (request === null) return refuse('bad_request')
+    if (serving >= FILE_SLOTS) return refuse('busy')
     let linked: string[] | null
     try {
       linked = opts.linked(request.kind, request.id)
@@ -351,7 +384,22 @@ export function remoteFileRoute(opts: {
     const opened = openLinkedFile(request.path, opts.home)
     if (!opened.ok) return refuse(opened.reason)
     const socket = incoming?.socket
-    const body = fileStream(opened.fd, opened.size, { onChanged: () => socket?.destroy() })
+    serving += 1
+    const cut = new AbortController()
+    const limit = timer.set(() => cut.abort(), FILE_TIME_MS)
+    let freed = false
+    const body = fileStream(opened.fd, opened.size, {
+      onChanged: () => socket?.destroy(),
+      signal: cut.signal,
+      onClose: () => {
+        if (freed) return
+        freed = true
+        serving -= 1
+        timer.clear(limit)
+      },
+    })
+    // a client that goes away before the body is cancelled for it still gives the file and the slot back
+    ;(c.env as { outgoing?: { once?: (event: string, fn: () => void) => unknown } } | undefined)?.outgoing?.once?.('close', () => cut.abort())
     return new Response(body, {
       status: 200,
       headers: {

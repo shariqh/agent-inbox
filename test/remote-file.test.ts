@@ -8,6 +8,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import type Database from 'better-sqlite3'
 import { execFileSync } from 'node:child_process'
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
 import type { Server } from 'node:http'
 import { extname, join } from 'node:path'
 import { Hono } from 'hono'
@@ -658,6 +659,129 @@ describe('remoteFileRoute: the handler on its own', () => {
     const fine = await call({ 'content-length': '0' })
     expect(fine.status).toBe(200)
     expect(await fine.text()).toBe('the spec')
+  })
+})
+
+// How many files a hub serves at once, and for how long: a device cannot hold the hub's files open without limit.
+describe('remoteFileRoute: at most two files at once, and a time limit', () => {
+  afterEach(() => removeScratchDirs())
+
+  // a file of more than one 64 KiB chunk, so an unread response keeps its descriptor open
+  const BIG = 200_000
+  const build = () => {
+    const dir = scratchDir('remote-file-slots-')
+    const names = ['one.log', 'two.log', 'three.log', 'four.log']
+    for (const name of names) writeFileSync(join(dir, name), 'x'.repeat(BIG))
+    const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
+    const linked = vi.fn(() => names.map((name) => join(dir, name)))
+    const app = new Hono()
+    app.get(FILE_PATH, remoteFileRoute({
+      linked, deviceOf: () => '3f9c0a1b2d4e5f60', home: dir,
+      timer: {
+        set: (fn, ms) => { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer },
+        clear: (handle) => { (handle as { cleared: boolean }).cleared = true },
+      },
+    }))
+    const destroyed: string[] = []
+    const call = (name: string) => {
+      const url = target('item', ITEM, join(dir, name))
+      const outgoing = new EventEmitter()
+      const socket = { destroy: () => { destroyed.push(name) } }
+      const response = app.request(url, { method: 'GET' }, { incoming: { url, headers: {}, socket }, outgoing })
+      return Promise.resolve(response).then((r) => ({ response: r, outgoing }))
+    }
+    return { call, linked, timers, destroyed, dir }
+  }
+  const busy = async (response: Response) => {
+    expect(response.status).toBe(429)
+    expect(await response.json()).toEqual({ ok: false, reason: 'busy' })
+  }
+
+  it('answers a third request busy while two files are served, reading nothing', async () => {
+    const { call, linked } = build()
+    const first = await call('one.log')
+    const second = await call('two.log')
+    expect(first.response.status).toBe(200)
+    expect(second.response.status).toBe(200)
+    const asked = linked.mock.calls.length
+    // a linked file and one the card does not link: nothing is read for either, so both are busy
+    await busy((await call('three.log')).response)
+    await busy((await call('missing.log')).response)
+    expect(linked.mock.calls.length).toBe(asked)
+    await first.response.body!.cancel()
+    await second.response.body!.cancel()
+  })
+
+  it('frees a slot when a response ends', async () => {
+    const { call } = build()
+    const first = await call('one.log')
+    const second = await call('two.log')
+    await busy((await call('three.log')).response)
+    expect((await first.response.arrayBuffer()).byteLength).toBe(BIG)
+    const third = await call('three.log')
+    expect(third.response.status).toBe(200)
+    await busy((await call('four.log')).response)
+    await second.response.body!.cancel()
+    await third.response.body!.cancel()
+  })
+
+  it('frees a slot when the reader goes away', async () => {
+    const { call } = build()
+    const first = await call('one.log')
+    const second = await call('two.log')
+    await busy((await call('three.log')).response)
+    await first.response.body!.cancel()
+    const third = await call('three.log')
+    expect(third.response.status).toBe(200)
+    await second.response.body!.cancel()
+    await third.response.body!.cancel()
+  })
+
+  it('frees a slot when the client disconnects, even if nothing cancels the body', async () => {
+    const { call } = build()
+    const first = await call('one.log')
+    const second = await call('two.log')
+    await busy((await call('three.log')).response)
+    first.outgoing.emit('close')
+    const third = await call('three.log')
+    expect(third.response.status).toBe(200)
+    await second.response.body!.cancel()
+    await third.response.body!.cancel()
+  })
+
+  it('cuts off a response still being read after 120 seconds, and frees its slot', async () => {
+    const { call, timers, destroyed } = build()
+    const first = await call('one.log')
+    const second = await call('two.log')
+    expect(timers.map((timer) => timer.ms)).toEqual([120_000, 120_000])
+    await busy((await call('three.log')).response)
+    timers[0]!.fn()
+    expect(destroyed).toEqual(['one.log'])
+    // the stream is dead: what was queued may be read, then it errors
+    await expect(first.response.arrayBuffer()).rejects.toThrow()
+    const third = await call('three.log')
+    expect(third.response.status).toBe(200)
+    await busy((await call('four.log')).response)
+    await second.response.body!.cancel()
+    await third.response.body!.cancel()
+  })
+
+  it('clears the timer when a response ends first', async () => {
+    const { call, timers } = build()
+    const first = await call('one.log')
+    await first.response.arrayBuffer()
+    expect(timers).toHaveLength(1)
+    expect(timers[0]!.cleared).toBe(true)
+  })
+
+  it('counts only a file being served: a refusal takes no slot', async () => {
+    const { call } = build()
+    for (let index = 0; index < 5; index += 1) expect((await call('missing.log')).response.status).toBe(404)
+    const first = await call('one.log')
+    const second = await call('two.log')
+    expect([first.response.status, second.response.status]).toEqual([200, 200])
+    await first.response.body!.cancel()
+    await second.response.body!.cancel()
   })
 })
 

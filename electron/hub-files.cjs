@@ -13,7 +13,7 @@
 // minute, never two at once (`busy`). Then main asks the hub itself, through the connection's hub
 // fetch only (`unreachable`): GET /api/remote/file, where the hub checks the link again
 // (src/remote-file.ts) and answers its own word (`not_linked`, `not_a_document`, `too_large`,
-// `not_found`, `unreadable`); a 403 is `old_hub` from a hub older than the route, else `refused`. The
+// `not_found`, `unreadable`, or `busy` when it is already serving two files); a 403 is `old_hub` from a hub older than the route, else `refused`. The
 // bytes become a private copy, `hub-files/<hub id>/<16 hex of the path's SHA-256>/<file name>` beside
 // the local database (folders 0700, the file 0600, written to a new name created exclusively without
 // following a link, then renamed into place), whose name is the path's own last segment, cleaned,
@@ -62,7 +62,8 @@ const MINUTE_MS = 60_000
 // the whole request and its body: up to 25 MB over the tailnet
 const FETCH_MS = 60_000
 const REFUSAL_MAX = 1024
-const HUB_WORDS = new Set(['bad_request', 'not_linked', 'not_a_document', 'too_large', 'not_found', 'unreadable'])
+// the hub's refusal words (src/remote-file.ts FileRefusal); its `busy` (two files already being served) reads as ours
+const HUB_WORDS = new Set(['bad_request', 'not_linked', 'not_a_document', 'too_large', 'not_found', 'unreadable', 'busy'])
 const REASONS = Object.freeze([
   'unavailable', 'bad_request', 'no_gesture', 'busy', 'unreachable', 'old_hub', 'refused',
   'not_linked', 'not_a_document', 'too_large', 'not_found', 'unreadable', 'failed', 'open_failed',

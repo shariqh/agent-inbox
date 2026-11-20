@@ -99,6 +99,33 @@ describe('draftEntry', () => {
     expect(draftEntry({ ...row, response: false })).toBeNull()
   })
 
+  it('keeps whether a row draft was typed for a waiting step, and what its row said when the ask moved (#636 review)', () => {
+    const row = {
+      type: 'row', rowId: 'r1', boardId: 'b1', boardRevision: 4, revision: 7, actionVersion: 2,
+      text: 'Go.', kind: 'answer', boardTitle: 'Plan', label: 'Step', context: '',
+    }
+    expect(draftEntry(row), 'a draft stored before has neither').toMatchObject({ blocked: null, notice: null })
+    expect(draftEntry({ ...row, blocked: false, notice: 'updated' })).toMatchObject({ blocked: false, notice: 'updated' })
+    for (const notice of ['edited', 'answered', 'updated']) {
+      expect(draftEntry({ ...row, blocked: true, notice })).toMatchObject({ blocked: true, notice })
+    }
+    expect(draftEntry({ ...row, blocked: 'yes' })).toBeNull()
+    expect(draftEntry({ ...row, notice: 'closed' })).toBeNull()
+    expect(draftEntry({ ...row, notice: 7 })).toBeNull()
+  })
+
+  it('names an option click a closed step could not take apart from kept text for the same revision', () => {
+    const recovery = {
+      type: 'row-recovery', rowId: 'r1', revision: 3, actionVersion: null, text: 'Hold', kind: 'answer',
+      boardTitle: 'Plan', label: 'Step', context: '', reason: 'Your choice "Hold" was not applied: this step was closed first.',
+    }
+    expect(draftEntry(recovery)).toMatchObject({ choice: false })
+    expect(draftEntry({ ...recovery, choice: true })).toMatchObject({ choice: true })
+    expect(draftKey(draftEntry({ ...recovery, choice: true })!)).toBe('row-recovery:r1:3:choice')
+    expect(draftKey(draftEntry(recovery)!)).toBe('row-recovery:r1:3')
+    expect(draftEntry({ ...recovery, choice: 'yes' })).toBeNull()
+  })
+
   it('names every kind but an item recovery, whose window names it', () => {
     expect(draftKey(reply('q1'))).toBe('reply:q1')
     expect(draftKey(draftEntry({

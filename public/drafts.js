@@ -27,6 +27,9 @@ const MAX_LABEL = 2_000
 const MAX_ID = 200
 const MAX_KEY = 600
 const KINDS = new Set(['answer', 'clarify', 'decline'])
+// What a row draft says of its ask having moved under it (#636): edited words, a
+// response saved meanwhile, or a step that asks nothing updated.
+const NOTICES = new Set(['edited', 'answered', 'updated'])
 
 const isText = (value, max = MAX_TEXT) => typeof value === 'string' && value.length <= max
 const isId = (value, max = MAX_ID) => typeof value === 'string' && value.length > 0 && value.length <= max
@@ -92,14 +95,20 @@ export function draftEntry(raw) {
         || !isInt(raw.revision, 0) || !isText(raw.text) || !filled(raw.text) || !KINDS.has(raw.kind)
         || !isText(raw.boardTitle, MAX_LABEL) || !isText(raw.label, MAX_LABEL) || !isText(raw.context)
         || typeof (raw.setAside ?? false) !== 'boolean' || typeof (raw.unconfirmed ?? false) !== 'boolean'
-        || !optionalText(raw.ask ?? null, 64) || !optionalText(raw.response ?? null, 64)) return null
+        || !optionalText(raw.ask ?? null, 64) || !optionalText(raw.response ?? null, 64)
+        || (raw.blocked ?? null) !== null && typeof raw.blocked !== 'boolean'
+        || (raw.notice ?? null) !== null && !NOTICES.has(raw.notice)) return null
       // unconfirmed: its send was in flight, or lost its answer, when this was written.
       // ask, response: hashes of the ask's words and of the response the row held
-      // when it was typed (#636); null before that.
+      // when it was typed (#636); null before that. blocked: whether it was typed for
+      // a step that asked something of the person (null: not known). notice: what the
+      // row said when its ask moved under the draft, until the send lands (null: nothing).
       return {
         type: 'row', rowId: raw.rowId, boardId: raw.boardId, boardRevision: raw.boardRevision,
-        revision: raw.revision, actionVersion, ask: raw.ask ?? null, response: raw.response ?? null, text: raw.text, kind: raw.kind, boardTitle: raw.boardTitle,
-        label: raw.label, context: raw.context, setAside: raw.setAside === true, unconfirmed: raw.unconfirmed === true,
+        revision: raw.revision, actionVersion, ask: raw.ask ?? null, response: raw.response ?? null,
+        blocked: raw.blocked ?? null, notice: raw.notice ?? null, text: raw.text, kind: raw.kind,
+        boardTitle: raw.boardTitle, label: raw.label, context: raw.context, setAside: raw.setAside === true,
+        unconfirmed: raw.unconfirmed === true,
       }
     }
     case 'row-recovery': {
@@ -108,11 +117,13 @@ export function draftEntry(raw) {
       if (actionVersion === undefined || !isId(raw.rowId) || !isInt(raw.revision, -1) || !isText(raw.text)
         || !filled(raw.text) || !KINDS.has(raw.kind) || !isText(raw.boardTitle, MAX_LABEL)
         || !isText(raw.label, MAX_LABEL) || !isText(raw.context) || typeof (raw.setAside ?? false) !== 'boolean'
-        || !isText(reason, MAX_LABEL)) return null
+        || typeof (raw.choice ?? false) !== 'boolean' || !isText(reason, MAX_LABEL)) return null
+      // choice: an option click a closed step could not take (#636); its text is the
+      // option's label, and its entry offers Discard alone.
       return {
         type: 'row-recovery', rowId: raw.rowId, revision: raw.revision, actionVersion, text: raw.text,
         kind: raw.kind, boardTitle: raw.boardTitle, label: raw.label, context: raw.context,
-        setAside: raw.setAside === true, reason,
+        setAside: raw.setAside === true, choice: raw.choice === true, reason,
       }
     }
     case 'message': {
@@ -145,7 +156,7 @@ export function draftKey(draft) {
   switch (draft.type) {
     case 'reply': return `reply:${draft.itemId}`
     case 'row': return `row:${draft.rowId}`
-    case 'row-recovery': return `row-recovery:${draft.rowId}:${draft.revision}`
+    case 'row-recovery': return `row-recovery:${draft.rowId}:${draft.revision}${draft.choice ? ':choice' : ''}`
     case 'note': return `note:${draft.itemId}`
     // a message waiting in the unsent responses is its own entry, so a new draft
     // to the same session never overwrites it

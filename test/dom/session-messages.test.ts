@@ -681,7 +681,7 @@ describe('a viewer restart with message drafts (#420 review)', () => {
     restart()
     await pollTick()
     expect(reload).not.toHaveBeenCalled()
-    expect(document.getElementById('pauseHint')?.textContent).toBe('Viewer updated — finish or clear unsent responses to refresh.')
+    expect(document.getElementById('pauseHint')?.textContent).toBe('Viewer updated — finish or discard unsent responses to refresh.')
     box.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     await settle()
     expect(panel().hidden).toBe(true)

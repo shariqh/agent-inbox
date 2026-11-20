@@ -14,7 +14,7 @@ import {
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
-  row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest,
+  repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -506,6 +506,210 @@ describe('a draft whose target changed goes to the unsent responses', () => {
     click(sendButton(rowId))
     await settle()
     expect(getBoard(db, 'alpha', 'Launch plan')!.rows[0]!.annotation).toBe('Approve the original action.')
+  })
+
+  // #636 review, point 2: what the row said about its moved ask is stored with the
+  // draft, because the draft's revision moves forward when it is seen
+  describe('the notice a draft carries (#636 review)', () => {
+    const EDITED = 'This ask was edited while you were typing. Read it again, then send.'
+    const ANSWERED = 'The response on this step changed before yours was sent. Read it, then send yours.'
+
+    it.each([
+      ['edited', EDITED, (d: Database.Database, board: ReturnType<typeof plan>) => {
+        updateBoardRow(d, {
+          ...AGENT, title: 'Launch plan', label: 'Approve launch',
+          expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision, note: 'Choose now, after the hotfix.',
+        })
+      }],
+      ['answered', ANSWERED, (d: Database.Database, board: ReturnType<typeof plan>) => {
+        expect(annotateBoardRow(d, board.rows[0]!.id, 'Another window said so', 'answer', board.rows[0]!.revision, board.revision)).toBe(true)
+      }],
+    ] as const)('says the ask %s again after a reload, until the send lands', async (word, sentence, change) => {
+      db = freshDb()
+      const board = plan(db)
+      const rowId = board.rows[0]!.id
+      await bootApp(db)
+      await draftAnswer(rowId, 'Approve the original action.')
+      change(db, board)
+      // a frame sees it: the draft moves forward to the current revision, with its notice
+      await pollTick()
+      await repaint()
+      expect(row(rowId)?.querySelector('.ask-edited')?.textContent).toBe(sentence)
+      await saved()
+      expect((stored()[`row:${rowId}`]?.draft as { notice?: string }).notice).toBe(word)
+
+      const bridge = await reopen(db)
+      await pollTick()
+      expect(bridge.posts).toHaveLength(0)
+      expect(recovery()).toBeNull()
+      await showInbox()
+      expect(answerInput(rowId)?.value).toBe('Approve the original action.')
+      const notice = row(rowId)?.querySelector('.ask-edited')
+      expect(notice?.textContent).toBe(sentence)
+      expect(notice?.hasAttribute('role'), 'a standing notice is not a live region').toBe(false)
+
+      click(sendButton(rowId))
+      await settle()
+      expect(getBoard(db, 'alpha', 'Launch plan')!.rows[0]!.annotation).toBe('Approve the original action.')
+      expect(row(rowId)?.querySelector('.ask-edited')).toBeNull()
+      await saved()
+      expect(stored()).toEqual({})
+    })
+
+    it('goes with the text when the editor is emptied', async () => {
+      db = freshDb()
+      const board = plan(db)
+      const rowId = board.rows[0]!.id
+      await bootApp(db)
+      await draftAnswer(rowId, 'Approve the original action.')
+      updateBoardRow(db, {
+        ...AGENT, title: 'Launch plan', label: 'Approve launch',
+        expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision, note: 'Choose now, after the hotfix.',
+      })
+      await pollTick()
+      await repaint()
+      type(answerInput(rowId), '')
+      await saved()
+      expect(stored()).toEqual({})
+
+      type(answerInput(rowId), 'Fresh words')
+      await saved()
+      expect((stored()[`row:${rowId}`]?.draft as { notice?: string | null }).notice).toBeNull()
+      await reopen(db)
+      await showInbox()
+      expect(row(rowId)?.querySelector('.ask-edited')).toBeNull()
+    })
+  })
+
+  // #636 review, point 4: a draft the released version stored has no hashes. Once its
+  // row moved under the same action, the page never takes it for "the same ask".
+  describe('a draft stored by the released version (#636 review)', () => {
+    const EDITED = 'This ask was edited while you were typing. Read it again, then send.'
+    const ANSWERED = 'The response on this step changed before yours was sent. Read it, then send yours.'
+
+    async function legacyDraft(): Promise<{ board: ReturnType<typeof plan>, rowId: string }> {
+      db = freshDb()
+      const board = plan(db)
+      const rowId = board.rows[0]!.id
+      await bootApp(db)
+      await draftAnswer(rowId, 'Approve the original action.')
+      window.dispatchEvent(new Event('pagehide'))
+      const raw = JSON.parse(localStorage.getItem(KEY)!) as { entries: Record<string, Stored> }
+      for (const field of ['ask', 'response', 'blocked', 'notice']) delete raw.entries[`row:${rowId}`]!.draft[field]
+      localStorage.setItem(KEY, JSON.stringify(raw))
+      return { board, rowId }
+    }
+
+    it('says the ask was edited when the row moved and holds no response', async () => {
+      const { board, rowId } = await legacyDraft()
+      updateBoardRow(db!, {
+        ...AGENT, title: 'Launch plan', label: 'Approve launch',
+        expectedBoardVersion: board.revision, expectedRevision: board.rows[0]!.revision, issue: { repo: 'example/repo', number: 7 },
+      })
+      const bridge = await reopen(db!)
+      await pollTick()
+      expect(bridge.posts).toHaveLength(0)
+      await showInbox()
+      expect(answerInput(rowId)?.value).toBe('Approve the original action.')
+      expect(row(rowId)?.querySelector('.ask-edited')?.textContent).toBe(EDITED)
+      // nothing stored was dropped by reading it
+      await saved()
+      expect(stored()[`row:${rowId}`]?.draft['text']).toBe('Approve the original action.')
+    })
+
+    it('says the response changed when the row now holds one', async () => {
+      const { board, rowId } = await legacyDraft()
+      expect(annotateBoardRow(db!, rowId, 'Another window said so', 'answer', board.rows[0]!.revision, board.revision)).toBe(true)
+      const bridge = await reopen(db!)
+      await pollTick()
+      expect(bridge.posts).toHaveLength(0)
+      await showInbox()
+      expect(answerInput(rowId)?.value).toBe('Approve the original action.')
+      expect(row(rowId)?.querySelector('.ask-edited')?.textContent).toBe(ANSWERED)
+    })
+
+    it('says nothing when the row did not move at all', async () => {
+      const { rowId } = await legacyDraft()
+      await reopen(db!)
+      await showInbox()
+      expect(answerInput(rowId)?.value).toBe('Approve the original action.')
+      expect(row(rowId)?.querySelector('.ask-edited')).toBeNull()
+    })
+  })
+
+  // #636 review, point 11: an in-session recovery was stored with no reason
+  describe('an unsent response stored with no reason (#636 review)', () => {
+    function recoveryEntry(rowId: string, revision: number, setAside: boolean): Record<string, Stored> {
+      return {
+        [`row-recovery:${rowId}:${revision}`]: {
+          savedAt: Date.now(),
+          draft: {
+            type: 'row-recovery', rowId, revision, actionVersion: null, text: 'A kept note.', kind: 'answer',
+            boardTitle: 'Launch plan', label: 'Approve launch', context: '', setAside, reason: '',
+          },
+        },
+      }
+    }
+
+    it.each([
+      ['set aside', true, 'Kept from before you set this aside.'],
+      ['not set aside', false, 'Your text was not sent.'],
+    ] as const)('reads a stored text that was %s in the fold', async (_what, setAside, sentence) => {
+      db = freshDb()
+      seed(recoveryEntry('gone-row', 1, setAside))
+      await bootApp(db)
+      await showInbox()
+      expect(recovery()!.querySelector('.stale-draft-line')!.textContent).toContain(sentence)
+    })
+
+    it.each([
+      ['set aside', true, 'Kept from before you set this aside.'],
+      ['not set aside', false, 'Your text was not sent.'],
+    ] as const)('reads a stored text that was %s beside its row', async (_what, setAside, sentence) => {
+      db = freshDb()
+      const board = plan(db)
+      const rowId = board.rows[0]!.id
+      seed(recoveryEntry(rowId, 0, setAside))
+      await bootApp(db)
+      await showInbox()
+      click(row(rowId))
+      await settle()
+      expect(row(rowId)?.querySelector('.row-recovery-why')?.textContent).toBe(sentence)
+    })
+  })
+
+  // #636 review, point 9: an option click a closed step could not take
+  it('keeps an unapplied option click in the unsent responses across a reload, with Discard only', async () => {
+    db = freshDb()
+    const board = plan(db)
+    upsertBoard(db, {
+      ...AGENT, title: 'Options plan',
+      rows: [{ label: 'Choose', status: 'blocked', note: 'Pick one.', next_step: 'Pick.', action_owner: 'decision', impact: 'Ships.', options: [{ label: 'Tuesday' }, { label: 'Thursday' }] }],
+    })
+    const optionsBoard = getBoard(db, 'alpha', 'Options plan')!
+    const rowId = optionsBoard.rows[0]!.id
+    expect(board.rows).toHaveLength(2)
+    await bootApp(db)
+    await showInbox()
+    click(row(rowId))
+    await settle()
+    updateBoardRow(db, {
+      ...AGENT, title: 'Options plan', label: 'Choose',
+      expectedBoardVersion: optionsBoard.revision, expectedRevision: optionsBoard.rows[0]!.revision, status: 'done', outcome: 'Settled.',
+    })
+    click(buttonLabelled('Thursday', row(rowId)!))
+    await settle()
+    expect(recovery()!.querySelectorAll('.stale-draft-line')).toHaveLength(1)
+    await saved()
+    expect(Object.keys(stored())).toEqual([`row-recovery:${rowId}:${optionsBoard.rows[0]!.revision}:choice`])
+
+    const bridge = await reopen(db)
+    await pollTick()
+    expect(bridge.posts).toHaveLength(0)
+    await showInbox()
+    const line = recovery()!.querySelector<HTMLElement>('.stale-draft-line')!
+    expect(line.textContent).toContain('Your choice "Thursday" was not applied: this step was closed first.')
+    expect([...line.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Discard'])
   })
 
   // Issue #299: the poll carries archived plans in brief, without the human's

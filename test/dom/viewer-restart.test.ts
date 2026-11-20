@@ -382,14 +382,15 @@ describe('viewer restart with human-owned work', () => {
       release()
       await settle()
     }
-    await pollTick()
-    expect(reload).not.toHaveBeenCalled()
-    expect(answerInput(rowId)?.value).toBe('Ship now')
-    expect(getBoard(db, AGENT.project, 'Pending row option')!.rows[0]!.revision)
-      .toBe(original.rows[0]!.revision)
-    type(answerInput(rowId), '')
+    // #636 review: a click that got no answer is not turned into text. The editor
+    // keeps what it held (nothing), the write-failed line says so, and with no
+    // unsent text left to protect the restart goes ahead.
+    expect(answerInput(rowId)?.value).toBe('')
+    expect(row(rowId)?.querySelector('.write-error')?.textContent).toBe('Not sent — nothing was lost; press Send to retry.')
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
+    expect(getBoard(db, AGENT.project, 'Pending row option')!.rows[0]!.revision)
+      .toBe(original.rows[0]!.revision)
   })
 
   it('defers a work-free restart through a held press without asking the human to finish a response', async () => {

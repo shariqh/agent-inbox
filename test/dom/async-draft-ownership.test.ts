@@ -120,7 +120,7 @@ describe('async draft ownership', () => {
     // #636: still the same ask, now answered, so draft B stays in its editor and says so
     expect(boardPanelInput(rowId).value).toBe('newer draft B')
     expect(document.querySelector('#boards .ask-edited')?.textContent)
-      .toBe('A response was saved on this step before yours was sent. Read it, then send yours to replace it.')
+      .toBe('The response on this step changed before yours was sent. Read it, then send yours.')
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 
@@ -201,8 +201,8 @@ describe('async draft ownership', () => {
 
     expect(getBoard(db, 'alpha', 'Option race')!.rows[0]!.annotation).toBe('Ship now')
     // the second click is never sent over the first: the row says a response was saved
-    expect(row(rowId)?.querySelector('.ask-edited')?.textContent)
-      .toBe('A response was saved on this step before yours was sent. Read it, then send yours to replace it.')
+    expect(row(rowId)?.querySelector('.write-error')?.textContent)
+      .toBe('The response on this step changed before yours was sent. Read it, then choose again.')
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
   })
 

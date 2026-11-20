@@ -567,7 +567,7 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
     const awaited = lines
       .map((line, i) => ({ line, n: i + 1 }))
       .filter(({ line }) => /^(?:const loaded = )?await\s+load\(\);?$/.test(line))
-    const midWrite = awaited.filter(({ n }) => lines[n] === 'const owner = currentRow(r.id)')
+    const midWrite = awaited.filter(({ n }) => lines[n] === 'if (!owns()) {')
     expect(midWrite.length, 'the #636 re-read of a refused row send').toBe(1)
     const ending = awaited.filter((entry) => !midWrite.includes(entry))
     expect(ending.length, `stray await load(): ${JSON.stringify(ending)}`).toBe(1)

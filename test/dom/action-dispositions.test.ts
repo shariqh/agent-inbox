@@ -167,7 +167,8 @@ describe('human disposition controls', () => {
     expect(getBoard(d, 'alpha', 'Launch')!.rows[0]!.annotation).toBeNull()
     // #636: the same ask with its note edited, so the text stays in its editor
     expect(answerInput(rowId)?.value).toBe('Tomorrow morning')
-    expect(row(rowId)?.querySelector('.ask-edited')?.textContent).toContain('This ask was edited')
+    // said through the write-error slot, which is announced as it is rewritten (#636 review)
+    expect(row(rowId)?.querySelector('.write-error')?.textContent).toContain('This ask was edited')
 
     const current = getBoard(d, 'alpha', 'Launch')!
     updateBoardRow(d, {

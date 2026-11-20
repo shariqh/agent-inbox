@@ -8,14 +8,16 @@
 // no such member, and a browser has no bridge, so neither ever shows the button. The answer is asked
 // once when the page loads and again on each `onConnection`; a change repaints through `onChange`.
 //
-// Where it is on, a listed document in a card's Links strip gets "Open a copy on this Mac" beside Copy
-// path; any other file keeps Copy path and one line saying it opens only on the other Mac. A click
-// sends `{ kind, id, path }` and nothing else: main fetches the file from the hub itself, which
-// answers only for a path that card links. Every word reaches the DOM as textContent, or escaped in
-// static markup.
+// Where it is on, a click on a listed document's file link (a chip in a card's Links strip, or the link
+// inline in a card's text) opens a copy on this Mac: the link carries the entity it belongs to
+// (`data-hub-file-kind`, `data-hub-file-id`) and says "Open a copy on this Mac: <path>" in its title. Any
+// other file keeps Copy path, and in the Links strip one line saying it opens only on the other Mac. The
+// click itself is handled by public/link-open.js, the one handler for a file link, which asks `request(el)`
+// and `open(request)` here and says what happened in its own status region. `open` sends `{ kind, id,
+// path }` and nothing else: main fetches the file from the hub itself, which answers only for a path that
+// card links. Every word reaches the DOM as textContent, or escaped in static markup.
 import { esc } from './esc.js'
 
-const BINDING = Symbol.for('agent-inbox.hub-files')
 // the hub's list (src/remote-file.ts), compared in a test
 export const HUB_FILE_EXTENSIONS = Object.freeze([
   '.md', '.markdown', '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
@@ -30,13 +32,10 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
 const PATH_MAX = 4096
 export const OPEN_COPY = 'Open a copy on this Mac'
 export const ONLY_THERE = 'This file opens only on the other Mac.'
-const OPENED = 'Opened'
-const OPENED_MS = 1500
-const SAID_MS = 6000
 
 /** One sentence per refusal main can answer, said beside the link; anything else is HUB_FILE_FALLBACK. */
 export const HUB_FILE_REFUSALS = Object.freeze({
-  no_gesture: 'Press Open a copy on this Mac again.',
+  no_gesture: 'Click the file again.',
   busy: 'One moment: a file was just opened.',
   unreachable: 'The other Mac’s Inbox could not be reached. Try again.',
   old_hub: 'The other Mac runs an older Agent Inbox that can’t send files. Update it once on that Mac: Agent Inbox → Check for Updates…',
@@ -82,25 +81,31 @@ export function hubFileEntity(entity) {
 }
 
 /**
- * A file chip in another Mac's Inbox: the chip and its Copy path button as one group, then "Open a
- * copy on this Mac" with the place its sentence goes, or, for a file off the list, the line saying it
- * opens only there. `chip` and `copy` are source.js's own escaped markup; the rest is escaped here.
+ * The attributes and the title a file link carries when a click opens its copy, or null: for a path
+ * `hubFileListed` accepts and an entity `hubFileEntity` named. The title is `Open a copy on this Mac: <path>`.
+ * `attrs` is escaped markup to put beside the link's own attributes.
+ */
+export function hubFileLinkAttrs(path, entity) {
+  if (!hubFileListed(path) || entity === null || typeof entity !== 'object') return null
+  if ((entity.kind !== 'item' && entity.kind !== 'row') || typeof entity.id !== 'string' || !ENTITY_ID.test(entity.id)) return null
+  return { attrs: ` data-hub-file-kind="${esc(entity.kind)}" data-hub-file-id="${esc(entity.id)}"`, title: `${OPEN_COPY}: ${path}` }
+}
+
+/**
+ * A file chip in another Mac's Inbox: the chip and its Copy path button as one group. A listed file's
+ * chip opens its copy on a click (see hubFileLinkAttrs); for any other file the group is followed by the
+ * line saying it opens only there. `chip(attrs, title)` and `copy` are source.js's own escaped markup;
+ * the rest is escaped here.
  */
 export function hubFileGroupHtml({ chip, copy, link, entity }) {
-  const group = `<span class="link-file" role="group" aria-label="${esc(`File ${link.label}`)}">${chip}${copy}</span>`
-  const tail = hubFileListed(link.path)
-    ? `<button type="button" class="hub-file-open" data-hub-file-open data-hub-file-kind="${esc(entity.kind)}" data-hub-file-id="${esc(entity.id)}"` +
-      ` data-hub-file-path="${esc(link.path)}" title="${esc('Fetch this file from the other Mac and open a copy here')}"` +
-      ` aria-label="${esc(`${OPEN_COPY}: ${link.label}`)}">${esc(OPEN_COPY)}</button><span class="hub-file-note" role="status" hidden></span>`
-    : `<span class="hub-file-note hub-file-only">${esc(ONLY_THERE)}</span>`
-  return `<span class="hub-file">${group}${tail}</span>`
+  const open = hubFileLinkAttrs(link.path, entity)
+  const group = `<span class="link-file" role="group" aria-label="${esc(`File ${link.label}`)}">${open ? chip(open.attrs, open.title) : chip()}${copy}</span>`
+  return open ? group : `<span class="hub-file">${group}<span class="hub-file-note hub-file-only">${esc(ONLY_THERE)}</span></span>`
 }
 
 export function installHubFiles({
   desk = () => globalThis.agentInboxDesk,
   onChange = () => {},
-  setTimeout: later = (fn, ms) => globalThis.setTimeout(fn, ms),
-  documentRef = globalThis.document,
 } = {}) {
   let files = false
   let asks = 0
@@ -146,62 +151,9 @@ export function installHubFiles({
     }
   }
 
-  // the last word each button showed, so a timer never clears a newer one
-  const shown = new WeakMap()
-  function show(button, note, label, sentence, ms) {
-    const token = (shown.get(button) ?? 0) + 1
-    shown.set(button, token)
-    button.textContent = label
-    if (note) {
-      note.textContent = sentence
-      note.hidden = sentence === ''
-    }
-    if (!ms) return
-    later(() => {
-      if (shown.get(button) !== token) return
-      button.textContent = OPEN_COPY
-      if (note) {
-        note.textContent = ''
-        note.hidden = true
-      }
-    }, ms)
-  }
-
-  /** One open: the button is disabled while it runs, then says Opened, or the refusal is said beside it. */
-  async function run(request, button, note) {
-    const api = bridge()
-    if (!files || !api || !button || button.disabled) return null
+  const valid = (request) => {
     const { kind, id, path } = request ?? {}
-    if ((kind !== 'item' && kind !== 'row') || typeof id !== 'string' || !ENTITY_ID.test(id) || !hubFileListed(path)) return null
-    button.disabled = true
-    show(button, note, OPEN_COPY, '', 0)
-    let answer = null
-    try {
-      answer = await api.openFile({ kind, id, path })
-    } catch {
-      answer = null
-    }
-    button.disabled = false
-    if (answer !== null && typeof answer === 'object' && answer.ok === true) show(button, note, OPENED, '', OPENED_MS)
-    else show(button, note, OPEN_COPY, hubFileRefusal(answer?.reason), SAID_MS)
-    return answer
-  }
-
-  // one listener per document; a later install replaces what it forwards to
-  if (documentRef) {
-    let bound = documentRef[BINDING]
-    if (!bound) {
-      bound = { click: null }
-      documentRef.addEventListener('click', (event) => bound.click?.(event), true)
-      documentRef[BINDING] = bound
-    }
-    bound.click = (event) => {
-      const button = event.target && typeof event.target.closest === 'function' ? event.target.closest('[data-hub-file-open]') : null
-      if (!button) return
-      event.preventDefault()
-      const note = button.parentElement?.querySelector('.hub-file-note') ?? null
-      void run({ kind: button.dataset.hubFileKind, id: button.dataset.hubFileId, path: button.dataset.hubFilePath }, button, note)
-    }
+    return (kind === 'item' || kind === 'row') && typeof id === 'string' && ENTITY_ID.test(id) && hubFileListed(path)
   }
 
   return {
@@ -209,6 +161,34 @@ export function installHubFiles({
     available: () => files,
     /** Resolves once the last ask has its answer. */
     ready: () => ready,
-    run,
+    /**
+     * `{ kind, id, path }` for a file link that opens its copy on a click, else null: files open here, the
+     * link carries an entity (hubFileLinkAttrs), an absolute listed path and no repository folder.
+     */
+    request(el) {
+      if (!files || !el || !el.dataset) return null
+      const { hubFileKind: kind, hubFileId: id, linkPath: path, linkRoot: root } = el.dataset
+      if (root) return null
+      const request = { kind, id, path }
+      return valid(request) ? request : null
+    },
+    /**
+     * One open: sends `{ kind, id, path }` through the bridge and answers `{ ok: true }`, or
+     * `{ ok: false, message }` with the sentence to say (the fallback for a request that is not valid, a
+     * missing bridge, a bridge that throws or an answer it does not understand). Never throws.
+     */
+    async open(request) {
+      const api = bridge()
+      if (!files || !api || !valid(request)) return { ok: false, message: HUB_FILE_FALLBACK }
+      const { kind, id, path } = request
+      let answer = null
+      try {
+        answer = await api.openFile({ kind, id, path })
+      } catch {
+        answer = null
+      }
+      if (answer !== null && typeof answer === 'object' && answer.ok === true) return { ok: true }
+      return { ok: false, message: hubFileRefusal(answer?.reason) }
+    },
   }
 }

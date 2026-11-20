@@ -5215,12 +5215,13 @@ function cardHeadingHtml(presentation, ctx) {
 // against the folder that item or plan recorded. #588: a plan row reads its #N
 // against its own issue link first (textRepo, shared with the Links strip).
 function textContext(identity, entity = identity) {
-  return { ...textRepo(entity, identity), copyFiles: fileLinksCopy() }
+  // #645: in another Mac's Inbox, the item or row this text belongs to: a listed file link opens its copy
+  return { ...textRepo(entity, identity), copyFiles: fileLinksCopy(), hubFile: hubFileOwner(entity) }
 }
 
 // Issue #300: the Links strip under the card's origin, listing every link its
 // text shows; '' when there is nothing beyond the PR and issue chips above it.
-// #634: in another Mac's Inbox, a file chip also offers Open a copy on this Mac (public/hub-files.js).
+// #634: in another Mac's Inbox, a click on a listed file's chip opens a copy on this Mac (public/hub-files.js).
 function cardLinksHtml(entity, identity) {
   const key = `links:${entity.id}`
   const owner = hubFileOwner(entity)
@@ -12300,7 +12301,7 @@ initScrollGuard()
 initIdleFrame()
 initAgentSelect()
 initStructuredTextCopy()
-initLinkOpening()
+initLinkOpening({ hubFiles })
 initCopyOnSelect()
 initGear()
 initSessionsIndicator()

@@ -696,8 +696,8 @@ describe('a plan row linked to another repository (issue #588)', () => {
   })
 })
 
-// #634: in another Mac's Inbox (the hub's page in this app's sealed view), main says files open here
-// as copies; a listed file in a card's Links strip then offers Open a copy on this Mac beside Copy path
+// #634, #645: in another Mac's Inbox (the hub's page in this app's sealed view), main says files open here
+// as copies; a click on a listed file's chip or inline link then opens its copy, with no separate button
 describe('a card’s files in another Mac’s Inbox (issue #634)', () => {
   function hubDesk(files = true) {
     const openFile = vi.fn(async (_request: unknown): Promise<unknown> => ({ ok: true }))
@@ -715,7 +715,7 @@ describe('a card’s files in another Mac’s Inbox (issue #634)', () => {
   }
   afterEach(() => { Reflect.deleteProperty(window, 'agentInboxDesk') })
 
-  it('offers it on a listed file of an item, keeps Copy path, and sends the item and the path', async () => {
+  it('opens a listed file of an item from its chip or its inline link, keeps Copy path, and sends the item and the path', async () => {
     const desk = hubDesk()
     db = freshDb()
     const id = seed(db, { detail: 'Spec at /Users/s/docs/spec.md:12, the script at /Users/s/bin/run.sh' })
@@ -723,11 +723,25 @@ describe('a card’s files in another Mac’s Inbox (issue #634)', () => {
     await pollTick()
     await settle()
     const strip = stripOf(cardOf(id) ?? card)!
-    const opens = [...strip.querySelectorAll<HTMLButtonElement>('[data-hub-file-open]')]
-    expect(opens.map((button) => button.dataset.hubFilePath)).toEqual(['/Users/s/docs/spec.md', '~/notes/plan.md'])
+    const chipsOpen = [...strip.querySelectorAll<HTMLButtonElement>('button[data-hub-file-kind]')]
+    expect(chipsOpen.map((chip) => chip.dataset.linkPath)).toEqual(['/Users/s/docs/spec.md', '~/notes/plan.md'])
+    expect(chipsOpen.map((chip) => chip.title)).toEqual(['Open a copy on this Mac: /Users/s/docs/spec.md', 'Open a copy on this Mac: ~/notes/plan.md'])
     expect(strip.querySelectorAll('[data-link-action="copy"]')).toHaveLength(3)
     expect(strip.querySelector('.hub-file-only')?.textContent).toBe('This file opens only on the other Mac.')
-    click(opens[0]!)
+    expect(document.querySelector('[data-hub-file-open]')).toBeNull()
+    click(chipsOpen[0]!)
+    await settle()
+    expect(desk.openFile.mock.calls).toEqual([[{ kind: 'item', id, path: '/Users/s/docs/spec.md' }]])
+    expect(document.getElementById('linkOpenStatus')?.textContent).toBe('Opened a copy on this Mac.')
+    // the same file inline, in the card's text
+    const inline = [...(cardOf(id) ?? card).querySelectorAll<HTMLElement>('a.file-link[data-hub-file-kind]')]
+    expect(inline.map((link) => link.dataset.linkPath)).toContain('/Users/s/docs/spec.md')
+    expect(inline.every((link) => link.dataset.hubFileId === id && link.title.startsWith('Open a copy on this Mac: '))).toBe(true)
+    // the unlisted script keeps its inline link as it was
+    const script = [...(cardOf(id) ?? card).querySelectorAll<HTMLElement>('a.file-link')].find((link) => link.dataset.linkPath === '/Users/s/bin/run.sh')!
+    expect(script.hasAttribute('data-hub-file-kind')).toBe(false)
+    desk.openFile.mockClear()
+    click(inline.find((link) => link.dataset.linkPath === '/Users/s/docs/spec.md')!)
     await settle()
     expect(desk.openFile.mock.calls).toEqual([[{ kind: 'item', id, path: '/Users/s/docs/spec.md' }]])
   })
@@ -742,7 +756,7 @@ describe('a card’s files in another Mac’s Inbox (issue #634)', () => {
     await settle()
     click(document.querySelector('#boards .board-row'))
     await settle()
-    const open = document.querySelector<HTMLButtonElement>('#boards .row-panel [data-hub-file-open]')!
+    const open = document.querySelector<HTMLButtonElement>('#boards .row-panel button[data-hub-file-kind]')!
     expect(open.dataset.hubFileKind).toBe('row')
     click(open)
     await settle()
@@ -757,6 +771,6 @@ describe('a card’s files in another Mac’s Inbox (issue #634)', () => {
     const card = await openInspector(db, id)
     await pollTick()
     await settle()
-    expect((cardOf(id) ?? card).querySelector('[data-hub-file-open], .hub-file-only')).toBeNull()
+    expect((cardOf(id) ?? card).querySelector('[data-hub-file-kind], [data-hub-file-id], .hub-file-only')).toBeNull()
   })
 })

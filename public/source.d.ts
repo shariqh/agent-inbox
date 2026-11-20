@@ -101,7 +101,11 @@ export function linkFor(index: Map<string, CachedLink> | null, entity: LinkedEnt
 export function safeHttpUrl(url: unknown): string
 export function textLinkHtml(url: unknown, label: unknown, kind?: 'web' | 'pr' | 'issue'): string
 /** issue #300 — a local file as an inert control carrying its path; never an href. `root` (#324): a repo-relative path's folder */
-export function fileLinkHtml(path: unknown, label: unknown, title?: unknown, copy?: boolean, root?: string | null): string
+export function fileLinkHtml(
+  path: unknown, label: unknown, title?: unknown, copy?: boolean, root?: string | null,
+  /** #645 — the item or row whose text holds the link, where a click opens a copy of a listed file (public/hub-files.js) */
+  hub?: { kind: string; id: string } | null,
+): string
 /** issue #324 — the full path a repo-relative path names inside its folder */
 export function repoFilePath(root: string, path: string): string
 
@@ -120,12 +124,13 @@ export function linkStripHtml(
   /**
    * `actions` (part 2): give each file chip Reveal and Copy path, naming Reveal as `actions.reveal`;
    * `copyFiles`: a file chip's click copies its path here, so its title says so;
-   * `hubFiles` (#634): in another Mac's Inbox, an absolute file chip's markup drawn from its escaped
-   * chip and Copy path button (public/hub-files.js hubFileGroupHtml); '' or null keeps the plain chip
+   * `hubFiles` (#634, #645): in another Mac's Inbox, an absolute file chip's markup drawn from its escaped
+   * chip and Copy path button (public/hub-files.js hubFileGroupHtml); `chip(attrs, title)` draws the chip
+   * with more attributes and another title, so a click on a listed file opens its copy; '' or null keeps the plain chip
    */
   opts?: {
     key?: string; open?: boolean; actions?: { reveal: string } | null; copyFiles?: boolean
-    hubFiles?: ((link: StripLink, parts: { chip: string; copy: string }) => string | null) | null
+    hubFiles?: ((link: StripLink, parts: { chip: (attrs?: string, title?: string | null) => string; copy: string }) => string | null) | null
   },
 ): string
 /** issue #588 — the repository and folder an entity's bare #N and repo-relative paths are read against */

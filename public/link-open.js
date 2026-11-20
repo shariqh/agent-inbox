@@ -25,16 +25,24 @@
 // never a click's default there. Nothing here reaches attention, a badge or a
 // count.
 //
+// In another Mac's Inbox (#645) the click handler asks `hubFiles` (public/hub-files.js) first: a file
+// link that names its owner and a listed document opens a copy on this Mac, and what the person is
+// told, from "Getting the file from the other Mac…" to the refusal's sentence, is said in the same
+// status region. Any other file link copies its path as before.
+//
 // A repo-relative file (#324) carries the folder its card recorded
 // (data-link-root): main joins the two, and refuses one whose symlinks lead
 // outside that folder. Copying one copies the full path. One that folder does
 // not have (a doc only on a PR branch or in another worktree) shows its nearest
 // folder inside the repository, never one above it.
+import { HUB_FILE_FALLBACK, ONLY_THERE } from './hub-files.js'
 import { repoFilePath } from './source.js'
 import { writeClipboard } from './structured-copy.js'
 
 const BINDING = Symbol.for('agent-inbox.link-open')
 const STATUS_MS = 2600
+// a refusal from the other Mac is read more slowly than a copied path
+const REFUSAL_MS = 6000
 const NEVER_OPENED = new Set(['blocked', 'executable', 'special'])
 // Why a file link copies instead, the same wherever it does: a browser or a
 // viewer this app did not start (main's boundary, never this module's).
@@ -133,11 +141,14 @@ export function initLinkOpening({
   documentRef = globalThis.document,
   bridge = () => globalThis.agentInboxLinks,
   finder = finderName(globalThis.navigator?.platform ?? ''),
+  // #645: in another Mac's Inbox, the object installHubFiles returned: `available()`, `request(el)`, `open(request)`
+  hubFiles = null,
 } = {}) {
   if (!documentRef) return
   const region = statusRegion(documentRef)
   let timer = null
-  const show = (message, state) => {
+  // `ms` is how long the message stays; null keeps it until the next one
+  const show = (message, state, ms = STATUS_MS) => {
     clearTimeout(timer)
     region.textContent = message
     if (!message) {
@@ -145,10 +156,39 @@ export function initLinkOpening({
       return
     }
     region.dataset.state = state
+    if (ms === null) return
     timer = setTimeout(() => {
       region.textContent = ''
       delete region.dataset.state
-    }, STATUS_MS)
+    }, ms)
+  }
+  const hubOn = () => {
+    try {
+      return Boolean(hubFiles) && hubFiles.available() === true
+    } catch {
+      return false
+    }
+  }
+  // links whose copy is being fetched: another click on one does nothing until it answers
+  const running = new WeakSet()
+  const openCopy = async (el, request) => {
+    running.add(el)
+    el.setAttribute('aria-busy', 'true')
+    show('Getting the file from the other Mac…', 'pending', null)
+    try {
+      const answer = await hubFiles.open(request)
+      if (answer && answer.ok === true) show('Opened a copy on this Mac.', 'success')
+      else show(answer && typeof answer.message === 'string' ? answer.message : HUB_FILE_FALLBACK, 'error', REFUSAL_MS)
+    } catch {
+      show(HUB_FILE_FALLBACK, 'error', REFUSAL_MS)
+    } finally {
+      running.delete(el)
+      try {
+        el.removeAttribute('aria-busy')
+      } catch {
+        // a link a repaint replaced
+      }
+    }
   }
   const api = () => usableBridge(bridge())
   const bound = binding(documentRef)
@@ -218,8 +258,14 @@ export function initLinkOpening({
         event.preventDefault()
         const target = fileTarget(el)
         if (!target.path) return
+        // in another Mac's Inbox, a listed file that names its owner opens its copy; nothing else is copied
+        const request = hubOn() ? hubFiles.request(el) : null
+        if (request) {
+          if (!running.has(el)) void openCopy(el, request)
+          return
+        }
         if (links) void openFile(links, target, false)
-        else void copyPath(fullPath(target), COPY_NOTE)
+        else void copyPath(fullPath(target), hubOn() ? ONLY_THERE : COPY_NOTE)
         return
       }
       if (!links || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return

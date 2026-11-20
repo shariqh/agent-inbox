@@ -1,4 +1,6 @@
 // Types for public/link-open.js (issue #300).
+import type { HubFiles } from './hub-files.js'
+
 export interface LinkRequestResult { ok: boolean; action?: string; reason?: string }
 
 interface LinksBridge {
@@ -29,4 +31,6 @@ export function initLinkOpening(opts?: {
   documentRef?: Document
   bridge?: () => LinksBridge | null | undefined
   finder?: string
+  /** #645: in another Mac's Inbox, installHubFiles's object: a click on a listed file's link opens its copy (public/hub-files.js) */
+  hubFiles?: HubFiles | null
 }): void

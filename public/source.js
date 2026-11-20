@@ -22,6 +22,7 @@
 // The issue chip itself keeps #30's URL rules. public/issues.js computes what
 // to draw (`opts.issues`); this file only draws it.
 import { esc } from './esc.js'
+import { hubFileLinkAttrs } from './hub-files.js'
 import { closingKeys, issueKey, issueKeyFor } from './issue-key.js'
 
 export const PREVIEW_TTL_MS = 5 * 60_000
@@ -344,11 +345,15 @@ export function repoFilePath(root, path) {
 const rootedFile = (root) => typeof root === 'string' && root !== ''
 const rootAttr = (root) => (rootedFile(root) ? ` data-link-root="${esc(root)}"` : '')
 
-export function fileLinkHtml(path, label, title, copy = false, root = null) {
+// #645: `hub` is `{ kind, id }`, the item or plan row whose text holds this link, in another Mac's Inbox
+// where a click opens a copy of a listed file (public/hub-files.js hubFileLinkAttrs); a repo-relative
+// path, an unlisted one or no owner keeps the plain link.
+export function fileLinkHtml(path, label, title, copy = false, root = null, hub = null) {
   if (typeof path !== 'string' || !path) return esc(label)
   const shown = rootedFile(root) ? repoFilePath(root, path) : path
-  return `<a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="${esc(path)}"${rootAttr(root)}` +
-    ` title="${esc(fileTitle(shown, title, copy))}">${esc(label)}</a>`
+  const open = rootedFile(root) ? null : hubFileLinkAttrs(path, hub)
+  return `<a class="structured-link file-link" role="button" tabindex="0" data-link-kind="file" data-link-path="${esc(path)}"${rootAttr(root)}${open ? open.attrs : ''}` +
+    ` title="${esc(open ? open.title : fileTitle(shown, title, copy))}">${esc(label)}</a>`
 }
 
 const STRIP_VISIBLE = 6
@@ -361,18 +366,21 @@ const COPY_ICON = '<svg class="link-action-icon" viewBox="0 0 16 16" aria-hidden
 // In the desktop app (`actions`), a file chip also offers Reveal and Copy path:
 // two buttons carrying the same escaped path, never an href. A repo-relative
 // file (#324) carries its repository folder beside it on all three.
-// #634: in another Mac's Inbox, `hubFile(link, { chip, copy })` may draw an
-// absolute file's chip with Copy path and "Open a copy on this Mac" around this
-// escaped markup (public/hub-files.js, hubFileGroupHtml); '' or null keeps it.
+// #634, #645: in another Mac's Inbox, `hubFile(link, { chip, copy })` may draw an
+// absolute file's chip around this escaped markup (public/hub-files.js,
+// hubFileGroupHtml): `chip(attrs, title)` is the chip with more attributes and
+// another title, which is how a click on a listed file opens its copy; '' or
+// null keeps the plain chip.
 function fileChipHtml(link, inner, actions, copyFiles, hubFile) {
   const path = esc(link.path)
   const root = rootAttr(link.root)
   const shown = rootedFile(link.root) ? repoFilePath(link.root, link.path) : link.path
-  const chip = `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${path}"${root}` +
-    ` title="${esc(fileTitle(shown, link.title, copyFiles))}">${inner}</button>`
+  const chipWith = (attrs = '', title = null) => `<button type="button" class="src-chip tone-link" data-link-kind="file" data-link-path="${path}"${root}${attrs}` +
+    ` title="${esc(title ?? fileTitle(shown, link.title, copyFiles))}">${inner}</button>`
+  const chip = chipWith()
   const copy = `<button type="button" class="link-file-action" data-link-action="copy" data-link-path="${path}"${root}` +
     ` title="Copy path" aria-label="${esc(`Copy path: ${link.label}`)}">${COPY_ICON}</button>`
-  const hub = !rootedFile(link.root) && typeof hubFile === 'function' ? hubFile(link, { chip, copy }) : null
+  const hub = !rootedFile(link.root) && typeof hubFile === 'function' ? hubFile(link, { chip: chipWith, copy }) : null
   if (typeof hub === 'string' && hub !== '') return hub
   if (!actions || typeof actions.reveal !== 'string') return chip
   return `<span class="link-file" role="group" aria-label="${esc(`File ${link.label}`)}">${chip}` +

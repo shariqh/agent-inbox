@@ -280,7 +280,7 @@ describe('workspace search index', () => {
     expect(row(target)?.querySelector('.card-tldr')?.textContent).toContain('risks losing customer data')
   })
 
-  it('reveals a matching option consequence even after its comparison was collapsed', async () => {
+  it('reveals a matching option consequence in full, from the one-line state', async () => {
     const d = open()
     const target = insertItem(d, {
       project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question',
@@ -293,8 +293,7 @@ describe('workspace search index', () => {
     await bootApp(d)
     click(row(target))
     await settle()
-    click(row(target)?.querySelector('.compare-toggle'))
-    await settle()
+    // UX pass, slice 1: an ask starts with one-line option details
     expect(row(target)?.querySelector('.options.comparing')).toBeNull()
 
     await searchFor('downtime')

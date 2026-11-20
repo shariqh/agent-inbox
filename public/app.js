@@ -1362,8 +1362,8 @@ function focusItem(id, source = null) {
     openContexts.add(source.rowId ? `row:${source.rowId}` : `item:${id}`)
   }
   if (source?.field === 'option-detail') {
-    if (source.rowId) closedRowCompares.delete(source.rowId)
-    else closedCompares.delete(id)
+    if (source.rowId) openRowCompares.add(source.rowId)
+    else openCompares.add(id)
   }
   projectFilter = target.project
   agentFilter = null
@@ -4890,7 +4890,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   const options = r.status === 'blocked' ? optionOrder(r.options) : []
   if (options.length) {
     const choices = document.createElement('div')
-    choices.className = `options row-options${comparing(closedRowCompares, r.id, surface) ? ' comparing' : ''}`
+    choices.className = `options row-options${comparing(openRowCompares, r.id, surface) ? ' comparing' : ''}`
     for (const option of options) {
       const box = document.createElement('div')
       box.className = 'option'
@@ -4908,8 +4908,8 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       choices.appendChild(box)
     }
     if (options.some((option) => option.detail)) {
-      const compare = btn(comparing(closedRowCompares, r.id, surface) ? 'Hide option details' : 'Compare options', () => {
-        toggleCompare(closedRowCompares, r.id, surface)
+      const compare = btn(comparing(openRowCompares, r.id, surface) ? 'Hide option details' : 'Compare options', () => {
+        toggleCompare(openRowCompares, r.id, surface)
         forceRender()
       })
       compare.className = 'compare-toggle'
@@ -8794,14 +8794,16 @@ function archiveBtn(board) {
 }
 
 // answer-back UI state that must survive the 3s poll rebuild
-const closedCompares = new Set() // option details stay visible until the human collapses them
-const closedRowCompares = new Set()
+// UX pass, slice 1: every ask opens with each option's detail cut to one line;
+// Compare shows them in full, per ask, until the human hides them again.
+const openCompares = new Set()
+const openRowCompares = new Set()
 // The compact surface (the session panel, #454 A.2) opens with the options
 // alone; Compare stacks each option's tradeoff under it.
 const compactCompares = new Set()
-const comparing = (closed, id, surface) => (surface ? compactCompares.has(id) : !closed.has(id))
-function toggleCompare(closed, id, surface) {
-  const set = surface ? compactCompares : closed
+const comparing = (open, id, surface) => (surface ? compactCompares : open).has(id)
+function toggleCompare(open, id, surface) {
+  const set = surface ? compactCompares : open
   if (set.has(id)) set.delete(id)
   else set.add(id)
 }
@@ -10205,7 +10207,7 @@ function optionPillHtml(option, surface = null) {
 // `surface: 'compact'`: the session panel's ask (#454); see rowAnswerEl.
 function answerEl(it, { surface = null } = {}) {
   const wrap = document.createElement('div')
-  wrap.className = `options${comparing(closedCompares, it.id, surface) ? ' comparing' : ''}`
+  wrap.className = `options${comparing(openCompares, it.id, surface) ? ' comparing' : ''}`
   setHintOwner(wrap, it)
   let editorGeneration = itemDraftGenerations[it.id] ?? 0
   const opts = optionOrder(it.options)
@@ -10233,8 +10235,8 @@ function answerEl(it, { surface = null } = {}) {
   const row = document.createElement('div')
   row.className = 'reply-row'
   if (opts.some((o) => o.detail)) {
-    const cmp = btn(comparing(closedCompares, it.id, surface) ? 'Hide option details' : 'Compare options', () => {
-      toggleCompare(closedCompares, it.id, surface)
+    const cmp = btn(comparing(openCompares, it.id, surface) ? 'Hide option details' : 'Compare options', () => {
+      toggleCompare(openCompares, it.id, surface)
       forceRender()
     })
     cmp.className = 'compare-toggle'

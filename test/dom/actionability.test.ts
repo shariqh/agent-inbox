@@ -278,6 +278,6 @@ describe('action-first attention cards', () => {
     const plan = document.querySelector('#boards .row-panel')!
     expect(plan.querySelector('.card-title')?.textContent).toBe('Approve the release after verifying the backup.')
     expect(plan.querySelector('.card-tldr')?.textContent).toContain('Do not skip the backup.')
-    expect(plan.querySelector('.row-options.comparing .opt-detail')?.textContent).toBe('Customers receive the update.')
+    expect(plan.querySelector('.row-options:not(.comparing) .opt-detail')?.textContent).toBe('Customers receive the update.')
   })
 })

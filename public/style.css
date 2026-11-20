@@ -3360,3 +3360,10 @@ body.hub-reconnecting #status { display: none; }
 .card-sources { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); margin: var(--sp-2) 0; color: var(--app-text-soft); font-size: var(--fs-meta); overflow-wrap: anywhere; }
 .card-sources .action-owner { margin-top: 0; }
 .card-context > .card-impact, .card-context > .card-after { margin: var(--sp-1) 0 var(--sp-2); }
+/* Option details (outside the session panel's compact asks): each a full-width answer with its detail
+   cut to one line at rest; Compare (.comparing) shows every detail in full. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .options:not(.comparing) { flex-direction: column; align-items: stretch; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .option { width: 100%; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-pill { width: 100%; min-height: 44px; font-size: 15px; font-weight: 600; line-height: 1.3; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-detail { margin: var(--sp-1) 0 0; padding: 0 2px; color: var(--app-muted); font-size: 13px; line-height: 1.4; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .options:not(.comparing) .opt-detail { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }

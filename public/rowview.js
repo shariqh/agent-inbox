@@ -98,6 +98,8 @@ export function askTimeModel(askedAt, nowMs) {
     datetime: new Date(at).toISOString(),
     exact,
     text,
+    // UX pass, slice 1: what the Inbox row shows; `text` is its title
+    short: shortAge(Math.max(0, nowMs - at)),
     accessibleLabel: `${text}, ${exact}`,
   }
 }
@@ -258,6 +260,8 @@ export function rowModel(entry, {
 // One time vocabulary shared with the Live freshness dots (§6) — never a raw
 // age ramp: only a live asking session earns heat. A deferred ask (#247) shows
 // its reason instead: when it was pinned, or when its snooze brings it back.
+// `rest: true` marks a chip that only says the ask waits on the human, which
+// the Inbox row hides at rest (UX pass, slice 1).
 export function urgencyChip(model, nowMs) {
   if (model.liveness === 'later') {
     if (model.later === 'pinned') {
@@ -273,14 +277,20 @@ export function urgencyChip(model, nowMs) {
     // still need to act" and start reading "answered — has anyone collected it?"
     // The alarm is relabeled, never removed, so a pickup that never happens
     // stays on screen as the agent's failure rather than as your to-do.
-    if (!model.answered) return { text: 'Needs input', tone: 'blocked' }
+    if (!model.answered) return { text: 'Needs input', tone: 'blocked', rest: true }
     return agentFollowupChip(model, nowMs) ?? { text: 'Waiting for delivery', tone: 'muted' }
   }
   if (model.answered) return agentFollowupChip(model, nowMs) ?? { text: 'Answered', tone: 'muted' }
   const age = nowMs - Date.parse(model.created_at)
-  if (model.liveness === 'waiting') return { text: `Waiting ${relMs(age)}`, tone: age >= ESCALATE_MS ? 'hot' : 'warm' }
+  if (model.liveness === 'waiting') return { text: `Waiting ${relMs(age)}`, tone: age >= ESCALATE_MS ? 'hot' : 'warm', rest: true }
   if (model.liveness === 'stale') return { text: `Later ${relMs(age)}`, tone: 'muted' }
-  return { text: `Queued ${relMs(age)}`, tone: 'neutral' }
+  return { text: `Queued ${relMs(age)}`, tone: 'neutral', rest: true }
+}
+
+// An age as the Dashboard's Needs you lane and the Inbox row show it: now, 10m, 3h, 2d.
+export function shortAge(ms) {
+  const age = relMs(ms)
+  return age === 'moments' ? 'now' : age
 }
 
 export function relMs(ms) {

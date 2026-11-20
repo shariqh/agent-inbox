@@ -3379,3 +3379,20 @@ body.hub-reconnecting #status { display: none; }
 :is(.card, .nrow-card-compose) > .actions button { border-color: transparent; background: transparent; color: var(--app-muted); }
 :is(.card, .nrow-card-compose) > .actions:has(> .disposition-menu) button { border-color: var(--app-border); background: var(--app-surface); color: var(--app-text); }
 :is(.card, .nrow-card-compose) > .actions button:hover { border-color: var(--app-border); color: var(--app-text); }
+/* The Inbox list row at rest is one line: the project dot, the title, the change marker, a chip that says
+   something other than "waiting on you", and the short age. The rest is in the open card, and every part
+   stays in the DOM. Scoped to the row's own lines: the open card under it and the session panel reuse
+   some of these classes. */
+.nrow > .nrow-l1 { display: flex; flex-wrap: nowrap; }
+.nrow > .nrow-l1 > .nrow-primary { flex: 1 1 auto; width: auto; min-width: 0; }
+.nrow > .nrow-l1 > .nrow-meta { flex: 0 1 auto; flex-wrap: nowrap; width: auto; min-width: 0; margin-left: auto; padding-left: 0; }
+.nrow > .nrow-l1 .nrow-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nrow > .nrow-l1 .chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nrow > .nrow-l1 :is(.nrow-proj, .nrow-glyph, .nrow-owner, .nrow-session, .chip-rest, .nrow-src),
+.nrow > .nrow-l2:not(:has(.undo-btn)) { display: none; }
+.nrow > .nrow-l1 .nrow-asked { min-width: 3ch; text-align: end; font-variant-numeric: tabular-nums; }
+/* ★, ✕ and the caret show on hover, on the keyboard-selected row and on the open row; a staged state
+   ("Sent: … — Undo") always shows, and so does a snoozed or pinned row's Wake. */
+.nrow > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret) { opacity: 0; }
+.nrow:is(:hover, :focus-within, .selected, [data-open="1"]) > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret),
+.nrow > .nrow-l1 .nrow-star:has(.undo-btn) { opacity: 1; }

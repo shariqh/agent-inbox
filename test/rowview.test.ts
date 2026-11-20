@@ -4,7 +4,7 @@ import {
   secondaryLine, streamCounts, agentCounts, rowModel, urgencyChip, relMs,
   FRESH_MS, AGING_MS, freshnessTone, needsYouEntries, staleFoldLabel,
   SECONDARY_BUDGET, rowStarOption, stagedLabel, undoRefusal, handledUndoRefusal, repliedEntries,
-  ASK_SORT_OPTIONS, currentAskAt, askTimeModel, sortNeedsYouByAsk, sortLaterEntries, laterBreakdown,
+  ASK_SORT_OPTIONS, currentAskAt, askTimeModel, shortAge, sortNeedsYouByAsk, sortLaterEntries, laterBreakdown,
 } from '../public/rowview.js'
 import type { RowItem, Entry } from '../public/rowview.js'
 import { attentionCount } from '../public/attention.js'
@@ -233,15 +233,25 @@ describe('urgencyChip', () => {
     ({ ...rowModel({ kind: 'item', item: item(), liveness: 'waiting' }), ...over })
 
   it('is warm for a young waiting item and hot past the escalation age', () => {
-    expect(urgencyChip(model(), T0 + 10 * 60_000)).toEqual({ text: 'Waiting 10m', tone: 'warm' })
-    expect(urgencyChip(model(), T0 + 90 * 60_000)).toEqual({ text: 'Waiting 1h', tone: 'hot' })
+    expect(urgencyChip(model(), T0 + 10 * 60_000)).toEqual({ text: 'Waiting 10m', tone: 'warm', rest: true })
+    expect(urgencyChip(model(), T0 + 90 * 60_000)).toEqual({ text: 'Waiting 1h', tone: 'hot', rest: true })
   })
   it('is neutral for parked and muted for stale', () => {
     expect(urgencyChip(model({ liveness: 'parked' }), T0 + 3 * 3600_000).tone).toBe('neutral')
     expect(urgencyChip(model({ liveness: 'stale' }), T0 + 100 * 3600_000).tone).toBe('muted')
   })
+  // UX pass, slice 1: a chip that only says the ask waits on the person is
+  // marked `rest`, and the Inbox row hides it at rest; any other chip shows.
+  it('marks rest only the chips that say the ask is waiting on you', () => {
+    expect(urgencyChip(model({ liveness: 'parked' }), T0 + 3 * 3600_000)).toEqual({ text: 'Queued 3h', tone: 'neutral', rest: true })
+    expect(urgencyChip(model({ liveness: 'stale' }), T0 + 100 * 3600_000).rest).toBeUndefined()
+    expect(urgencyChip(model({ answered: true }), T0).rest).toBeUndefined()
+    expect(urgencyChip(model({ kind: 'row', answered: true, pickedUp: false }), T0).rest).toBeUndefined()
+    expect(urgencyChip(model({ liveness: 'later', later: 'pinned', pinnedAt: null }), T0).rest).toBeUndefined()
+  })
+
   it('is blocked for a board row and muted once answered', () => {
-    expect(urgencyChip(model({ kind: 'row' }), T0)).toEqual({ text: 'Needs input', tone: 'blocked' })
+    expect(urgencyChip(model({ kind: 'row' }), T0)).toEqual({ text: 'Needs input', tone: 'blocked', rest: true })
     expect(urgencyChip(model({ answered: true }), T0).tone).toBe('muted')
   })
 
@@ -440,7 +450,14 @@ describe('current ask timestamps and list-only sorting (#64)', () => {
       expect(time).toMatchObject({
         datetime: '2026-07-24T09:00:00.000Z',
         text: 'Asked 3h ago',
+        short: '3h',
       })
+      // UX pass, slice 1: the Inbox row's short age, the Dashboard lane's own
+      expect(askTimeModel(new Date(T0 - 20_000).toISOString(), T0)?.short).toBe('now')
+      expect(askTimeModel(new Date(T0 - 10 * 60_000).toISOString(), T0)?.short).toBe('10m')
+      expect(askTimeModel(new Date(T0 - 2 * 24 * 3600_000).toISOString(), T0)?.short).toBe('2d')
+      expect(shortAge(20_000)).toBe('now')
+      expect(shortAge(10 * 60_000)).toBe('10m')
       expect(time?.exact).toContain('2026')
       expect(time?.accessibleLabel).toContain(time!.exact)
       expect(askTimeModel('not-a-date', T0)).toBeNull()

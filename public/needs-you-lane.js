@@ -13,7 +13,7 @@
 import { isOpenHandoff } from './attention.js'
 import { actionPresentation } from './card.js'
 import { pinLaneOrder } from './lanes.js'
-import { currentAskAt, relMs } from './rowview.js'
+import { currentAskAt, shortAge } from './rowview.js'
 import { hostLabel } from './sessions.js'
 import { isReservedProject } from './reserved-projects.js'
 
@@ -140,8 +140,7 @@ export function installNeedsYouLane(deps) {
     const agent = typeof owner?.agent === 'string' && owner.agent ? hostLabel(owner.agent) : ''
     const branch = typeof owner?.stream === 'string' ? owner.stream : ''
     const at = Date.parse(currentAskAt(entry) ?? '')
-    const rel = Number.isFinite(at) ? relMs(Math.max(0, nowMs - at)) : ''
-    const age = rel === 'moments' ? 'now' : rel
+    const age = Number.isFinite(at) ? shortAge(Math.max(0, nowMs - at)) : ''
     const tag = deps.sessionTag?.(entry) ?? ''
     const step = typeof entity?.next_step === 'string' ? entity.next_step.trim() : ''
     const next = presentation.headlineField !== 'next-step' && step ? step : presentation.detail

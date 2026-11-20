@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, listBoards, upsertBoard } from '../../src/store.js'
+import { insertItem, listBoards, replyItem, upsertBoard } from '../../src/store.js'
 import {
   answerInput, attachStylesheet, bootApp, buttonLabelled, click, freshDb, pollTick, repaint, row, settle, showInbox,
   type, useDomTest,
@@ -203,5 +203,67 @@ describe('the answer area (UX ask, point 3)', () => {
     expect([...actions.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Resolve', 'Dismiss', 'Note'])
     expect(actions.querySelector('[data-shortcut-id="resolve"]')).not.toBeNull()
     expect(rule(':is(.card, .nrow-card-compose) > .actions button')).toMatch(/border-color:\s*transparent/)
+  })
+})
+
+describe('the Inbox list row (UX ask, point 4)', () => {
+  const chip = (id: string) => row(id)!.querySelector<HTMLElement>('.nrow-meta > .chip')!
+
+  it('marks chip-rest only on a chip that says the ask waits on you', async () => {
+    db = freshDb()
+    const queued = question(db)
+    const answered = question(db, { title: 'Already answered' })
+    replyItem(db, answered, 'Canary')
+    upsertBoard(db, { ...AGENT, title: 'Launch', rows: [{ label: 'Upload', status: 'blocked', note: 'Ready.' }] })
+    const rowId = listBoards(db)[0]!.rows[0]!.id
+    await bootApp(db)
+    await showInbox()
+    expect(chip(queued).textContent).toContain('Queued')
+    expect(chip(queued).classList.contains('chip-rest')).toBe(true)
+    expect(chip(rowId).textContent).toContain('Needs input')
+    expect(chip(rowId).classList.contains('chip-rest')).toBe(true)
+    expect(chip(answered).textContent).toContain('Answered')
+    expect(chip(answered).classList.contains('chip-rest')).toBe(false)
+  })
+
+  it('draws a row as one line at rest: dot, title, change marker, a telling chip and the short age', async () => {
+    db = freshDb()
+    const id = question(db, { detail: 'A second line that stays in the DOM.' })
+    upsertBoard(db, { ...AGENT, title: 'Launch', rows: [{ label: 'Upload', status: 'blocked', note: 'Ready.' }] })
+    const rowId = listBoards(db)[0]!.rows[0]!.id
+    attachStylesheet()
+    await bootApp(db)
+    await showInbox()
+    const display = (el: Element | null) => (el ? getComputedStyle(el).display : 'absent')
+    for (const target of [id, rowId]) {
+      const el = row(target)!
+      for (const selector of ['.nrow-proj', '.nrow-glyph', '.nrow-owner', '.nrow-session', '.chip-rest', '.nrow-src', '.nrow-l2']) {
+        const part = el.querySelector(selector)
+        if (part) expect(display(part), `${selector} on ${target}`).toBe('none')
+      }
+      for (const selector of ['.pdot', '.nrow-title', '.nrow-asked']) expect(display(el.querySelector(selector)), selector).not.toBe('none')
+    }
+    expect(row(id)!.querySelector('.nrow-l2')?.textContent).toContain('A second line')
+    expect(getComputedStyle(row(id)!.querySelector('.nrow-title')!).whiteSpace).toBe('nowrap')
+  })
+
+  it('shows ★, ✕ and the caret on the selected and the open row only; Wake and a staged state always', async () => {
+    db = freshDb()
+    const id = question(db)
+    const other = question(db, { title: 'Second' })
+    attachStylesheet()
+    await bootApp(db)
+    await showInbox()
+    const opacity = (target: string, selector: string) => getComputedStyle(row(target)!.querySelector(selector)!).opacity
+    expect(rule('.nrow > .nrow-l1 :is(.nrow-star, .nrow-dismiss, .nrow-caret)')).toMatch(/opacity:\s*0/)
+    click(row(id))
+    await settle()
+    for (const selector of ['.nrow-star', '.nrow-dismiss', '.nrow-caret']) {
+      expect(opacity(id, selector), selector).toBe('1')
+      expect(opacity(other, selector), selector).toBe('0')
+    }
+    expect(block).toMatch(/\.nrow-star:has\(\.undo-btn\)/)
+    expect(block).toMatch(/\.nrow > \.nrow-l2:not\(:has\(\.undo-btn\)\)/)
+    expect(block).not.toMatch(/\.nrow-wake[^{]*\{[^}]*(?:opacity:\s*0|display:\s*none)/)
   })
 })

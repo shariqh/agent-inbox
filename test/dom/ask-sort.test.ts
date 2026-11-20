@@ -66,9 +66,13 @@ describe('current ask time and queue sorting (#64)', () => {
     const { oldId, rowId } = seedMixedQueue(d)
     await bootApp(d)
 
-    expect(askedTime(oldId).textContent).toBe('Asked 3h ago')
-    expect(askedTime(rowId).textContent).toBe('Asked 1h ago')
+    // UX pass, slice 1: the row shows the short age; the long form is its title and label
+    expect(askedTime(oldId).textContent).toBe('3h')
+    expect(askedTime(oldId).title).toBe('Asked 3h ago')
+    expect(askedTime(rowId).textContent).toBe('1h')
+    expect(askedTime(rowId).title).toBe('Asked 1h ago')
     for (const time of [askedTime(oldId), askedTime(rowId)]) {
+      expect(time.getAttribute('aria-label')).toContain(time.title)
       expect(time.dateTime).toMatch(/^\d{4}-/)
       expect(time.tabIndex).toBe(0)
       expect(time.dataset.exact).toBeTruthy()
@@ -118,7 +122,8 @@ describe('current ask time and queue sorting (#64)', () => {
     await bootApp(d)
 
     const time = askedTime(current.id)
-    expect(time.textContent).toBe('Asked moments ago')
+    expect(time.textContent).toBe('now')
+    expect(time.title).toBe('Asked moments ago')
     expect(time.dateTime).toBe(new Date(current.action_started_at).toISOString())
     expect(time.dateTime).not.toBe(new Date(current.created_at).toISOString())
   })

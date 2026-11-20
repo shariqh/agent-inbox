@@ -8112,7 +8112,7 @@ function needsRowEl(m, entry, nowMs) {
   const sessionBit = session ? `<span class="nrow-session${session.live ? ' live' : ''}">${esc(session.text)}</span>` : ''
   const asked = askTimeModel(m.askedAt, nowMs)
   const askedBit = asked
-    ? `<time class="nrow-asked" datetime="${esc(asked.datetime)}" data-exact="${esc(asked.exact)}" aria-label="${esc(asked.accessibleLabel)}" tabindex="0">${esc(asked.text)}</time>`
+    ? `<time class="nrow-asked" datetime="${esc(asked.datetime)}" data-exact="${esc(asked.exact)}" title="${esc(asked.text)}" aria-label="${esc(asked.accessibleLabel)}" tabindex="0">${esc(asked.short)}</time>`
     : ''
   // omit line 2 entirely when it would be blank — no secondary text, no agent
   // chip, no stream — otherwise it leaves a padded empty line under the row.
@@ -8133,7 +8133,7 @@ function needsRowEl(m, entry, nowMs) {
         ${changeBit}
         ${askedBit}
         ${sessionBit}
-        <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
+        <span class="chip chip-${chip.tone}${chip.rest ? ' chip-rest' : ''}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
         <span class="nrow-src">${sourceChipsHtml(linkIndex, sourceIdentity, nowMs, sourceOptions(sourceAction, sourceIdentity))}</span>
         <span class="nrow-star"></span>
         ${wakeBit}

@@ -16,15 +16,15 @@
 //    /var/folders, /private/var/folders), ends in a listed document extension and has no segment that
 //    starts with `.` (`not_a_document`). After symbolic links are resolved, the target must be a
 //    regular file (`not_found`) under an allowed root or the real home folder, whose own name ends in
-//    a listed extension and whose path has no hidden segment (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The file opened
-//    is the one checked: same device and inode, opened without following a link.
+//    a listed extension and whose path has no hidden segment (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The file is
+//    opened with no link allowed anywhere in its resolved path, and its type and size are read from the opened descriptor.
 // 4. It goes out as a download, never as a page, streamed with its length; a file that changes size
 //    while it is read is cut off and the request fails.
 //
 // Nothing here writes to the hub's disk, lists a folder or reads a pattern, and no refusal says more
 // than its word: never whether a path exists outside the rule. Nothing is logged.
 // Architecture notes: docs/architecture/remote-inbox.md ("Opening a card's files from another Mac").
-import { closeSync, constants, fstatSync, lstatSync, openSync, read as fsRead, realpathSync } from 'node:fs'
+import { closeSync, constants, fstatSync, openSync, read as fsRead, realpathSync } from 'node:fs'
 import type { IncomingMessage } from 'node:http'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
@@ -176,15 +176,20 @@ export function linkedFiles(db: Database.Database): (kind: FileKind, id: string)
 export type OpenedFile = { ok: true; fd: number; size: number } | { ok: false; reason: Exclude<FileRefusal, 'bad_request' | 'not_linked'> }
 
 const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants
+// macOS: O_NOFOLLOW_ANY (sys/fcntl.h, not in fs.constants) fails with ELOOP on a link in ANY component,
+// where O_NOFOLLOW covers only the last one. The kernel refuses the two flags together (EINVAL), so it replaces it.
+const O_NOFOLLOW_ANY = 0x20000000
+const OPEN_FLAGS = O_RDONLY | O_NONBLOCK | (process.platform === 'darwin' ? O_NOFOLLOW_ANY : O_NOFOLLOW)
 const errorCode = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | undefined)?.code
-const MISSING = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENAMETOOLONG'])
+const MISSING = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENAMETOOLONG', 'ENXIO'])
 
 /**
  * Opens the file a linked path names, or says why not. `~/` is under `home`. Symbolic links are
- * resolved first; the target must have a listed extension and no hidden segment, be a regular file and be at most
- * FILE_MAX. Then it is opened without following a link and must be the same file (device and
- * inode) that was checked, so a file swapped between the check and the open is `not_found`.
- * `seam.beforeOpen` runs between the two, for tests.
+ * resolved first; the target must have a listed extension and no hidden segment. Then it is opened
+ * with no link allowed anywhere in the resolved path (macOS: O_NOFOLLOW_ANY; elsewhere the last
+ * component only), so a folder swapped for a link after the check is `not_found`. Its type and size
+ * are those of the opened descriptor: a regular file of at most FILE_MAX.
+ * `seam.beforeOpen` runs between the checks and the open, for tests.
  */
 export function openLinkedFile(path: string, home: string, seam: { beforeOpen?: () => void } = {}): OpenedFile {
   const full = path.startsWith('~/') ? join(home, path.slice(2)) : path
@@ -201,24 +206,16 @@ export function openLinkedFile(path: string, home: string, seam: { beforeOpen?: 
     // a home that cannot be resolved counts only as written
   }
   if (!allowedPath(real, realHome) || !documentName(lastSegment(real)) || hiddenPath(real)) return { ok: false, reason: 'not_a_document' }
-  let checked
-  try {
-    checked = lstatSync(real)
-  } catch (error) {
-    return { ok: false, reason: MISSING.has(errorCode(error) ?? '') ? 'not_found' : 'unreadable' }
-  }
-  if (!checked.isFile()) return { ok: false, reason: 'not_found' }
-  if (checked.size > FILE_MAX) return { ok: false, reason: 'too_large' }
   seam.beforeOpen?.()
   let fd: number
   try {
-    fd = openSync(real, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    fd = openSync(real, OPEN_FLAGS)
   } catch (error) {
     return { ok: false, reason: MISSING.has(errorCode(error) ?? '') ? 'not_found' : 'unreadable' }
   }
   try {
     const opened = fstatSync(fd)
-    if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino) {
+    if (!opened.isFile()) {
       closeSync(fd)
       return { ok: false, reason: 'not_found' }
     }

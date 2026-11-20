@@ -414,12 +414,73 @@ describe('openLinkedFile: the file checks after links are resolved', () => {
     expect(opened).toEqual({ ok: false, reason: 'not_found' })
   })
 
-  it('refuses a file replaced by another file between the check and the open', () => {
+  // the open is the check: type and size come from the descriptor, so a file swapped for another file
+  // at the same checked path is the file at that path, which the same path rules already allowed
+  it('serves the file at the checked path when another file replaces it before the open', () => {
     const dir = home()
     writeFileSync(join(dir, 'spec.md'), 'fine')
-    writeFileSync(join(dir, 'other.md'), 'other')
+    writeFileSync(join(dir, 'other.md'), 'other!')
     const opened = openLinkedFile(join(dir, 'spec.md'), dir, { beforeOpen: () => renameSync(join(dir, 'other.md'), join(dir, 'spec.md')) })
+    expect(opened).toMatchObject({ ok: true, size: 6 })
+    close(opened)
+  })
+
+  it('takes the size from the opened file, not from an earlier look at the path', () => {
+    const dir = home()
+    writeFileSync(join(dir, 'spec.md'), 'fine')
+    writeFileSync(join(dir, 'big.md'), '')
+    truncateSync(join(dir, 'big.md'), FILE_MAX + 1)
+    expect(openLinkedFile(join(dir, 'spec.md'), dir, { beforeOpen: () => renameSync(join(dir, 'big.md'), join(dir, 'spec.md')) })).toEqual({ ok: false, reason: 'too_large' })
+  })
+
+  it('refuses a named pipe that replaces the file before the open, without waiting on it', () => {
+    const dir = home()
+    writeFileSync(join(dir, 'spec.md'), 'fine')
+    const opened = openLinkedFile(join(dir, 'spec.md'), dir, {
+      beforeOpen: () => { renameSync(join(dir, 'spec.md'), join(dir, 'moved.md')); execFileSync('/usr/bin/mkfifo', [join(dir, 'spec.md')]) },
+    })
     expect(opened).toEqual({ ok: false, reason: 'not_found' })
+  })
+
+  // A folder on the way swapped for a link after the path was resolved and checked (world-writable
+  // places such as /tmp allow it) must not widen what is served: the open fails on any link in the path.
+  describe.skipIf(process.platform !== 'darwin')('a folder swapped for a link after the path was checked (macOS)', () => {
+    it('refuses a file in a hidden folder', () => {
+      const dir = home()
+      mkdirSync(join(dir, 'a'))
+      mkdirSync(join(dir, '.vault'))
+      writeFileSync(join(dir, 'a', 'x.md'), 'benign')
+      writeFileSync(join(dir, '.vault', 'x.md'), 'SECRET-FROM-HIDDEN-FOLDER')
+      const opened = openLinkedFile(join(dir, 'a', 'x.md'), dir, {
+        beforeOpen: () => { renameSync(join(dir, 'a'), join(dir, 'a-old')); symlinkSync(join(dir, '.vault'), join(dir, 'a')) },
+      })
+      expect(opened).toEqual({ ok: false, reason: 'not_found' })
+    })
+
+    it('refuses a file outside every allowed root', () => {
+      const outside = mkdtempSync('/var/tmp/remote-file-outside-')
+      try {
+        const dir = home()
+        mkdirSync(join(dir, 'a'))
+        writeFileSync(join(dir, 'a', 'x.md'), 'benign')
+        writeFileSync(join(outside, 'x.md'), 'OUTSIDE-THE-ROOTS')
+        const opened = openLinkedFile(join(dir, 'a', 'x.md'), dir, {
+          beforeOpen: () => { renameSync(join(dir, 'a'), join(dir, 'a-old')); symlinkSync(outside, join(dir, 'a')) },
+        })
+        expect(opened).toEqual({ ok: false, reason: 'not_found' })
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('refuses a file swapped for a link, as before', () => {
+      const dir = home()
+      writeFileSync(join(dir, 'spec.md'), 'fine')
+      writeFileSync(join(dir, 'other.md'), 'other')
+      expect(openLinkedFile(join(dir, 'spec.md'), dir, {
+        beforeOpen: () => { renameSync(join(dir, 'spec.md'), join(dir, 'moved.md')); symlinkSync(join(dir, 'other.md'), join(dir, 'spec.md')) },
+      })).toEqual({ ok: false, reason: 'not_found' })
+    })
   })
 })
 

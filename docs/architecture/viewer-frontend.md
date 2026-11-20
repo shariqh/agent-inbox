@@ -414,9 +414,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
      **Discard**. An entry stored with no reason reads "Kept from before you set this
      aside." (`setAside`) or "Your text was not sent.". A refused option click is not
      kept as text: it says the step changed and nothing was applied; on a step that
-     was closed or removed meanwhile it is one entry of its own (`choice`, stored as
-     `row-recovery:<row>:<revision>:choice`): `Your choice "<label>" was not applied:
-     this step was closed first.`, with **Discard** alone.
+     was closed or removed, or whose project was closed, meanwhile it is one entry of
+     its own (`choice`, stored as `row-recovery:<row>:<revision>:choice`):
+     `Your choice "<label>" was not applied: this step was closed first.` (or `this
+     project was closed first.`), with **Discard** alone. An option click that gets no
+     answer leaves typed text alone and says "Your choice was not applied. Nothing was
+     lost; choose again."; with nothing typed its label goes into the editor with the
+     ordinary write-failed line, so Send retries it and a pending viewer restart waits.
   A note typed on a step that is not `blocked` (the Plans panel) follows the same rules
   with `typedFor.blocked` false: still not blocked and nothing it reads changed is
   `same` (sent again by the page); still not blocked but something it reads changed is
@@ -424,7 +428,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   again, then send."); the row blocked meanwhile is `asked` (kept beside the row with
   "This step now has an ask. Your note was not sent."). A draft the released version
   stored has no hashes: once its row moved under the same action it is `answered` when
-  the row holds a response and `edited` otherwise, never `same`. The fold's help line
+  the row holds a response and `edited` otherwise, never `same`; one stored without the
+  `blocked` flag whose row is not blocked now says "This step changed before your text
+  was sent." (it may have been typed either way). The fold's help line
   (`staleDraftsHelp`) names each button for what it works on: "Retry sends a response
   again; Use this text puts a step’s text in its editor; Copy copies a step’s text;
   Discard removes an entry for good.", naming only those shown.

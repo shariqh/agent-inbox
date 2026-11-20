@@ -721,6 +721,25 @@ describe('what a Send or a click says and leaves', () => {
     expect(fold()).toBeNull()
   })
 
+  it('says an option click was not applied when its project was closed meanwhile, in one entry with Discard only', async () => {
+    const { d, rowId } = seed(true)
+    const bridge = await bootApp(d)
+    await showInbox()
+    click(row(rowId))
+    await settle()
+    agentWrite(d, { issue: { repo: 'example/repo', number: 7 } })
+    expect(closeProject(d, 'alpha')).toBe(true)
+    click(pill(rowId, 'Hold'))
+    await settle()
+
+    expect(annotation(d)).toBeNull()
+    expect(annotatePosts(bridge)).toHaveLength(1)
+    const lines = [...fold()!.querySelectorAll<HTMLElement>('.stale-draft-line')]
+    expect(lines).toHaveLength(1)
+    expect(lines[0]!.textContent).toContain('Your choice "Hold" was not applied: this project was closed first.')
+    expect([...lines[0]!.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Discard'])
+  })
+
   it('keeps typed text and an unapplied click as two entries, and Discard removes only its own', async () => {
     const { d, rowId } = seed(true)
     await bootApp(d)

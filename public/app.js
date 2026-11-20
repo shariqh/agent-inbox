@@ -4806,8 +4806,8 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       // unsent responses, with what happened.
       rowAskNotices.delete(r.id)
       if (choice) {
-        if (fate === 'closed' || fate === 'removed') {
-          // the card left the queue with the step: one entry says the click did nothing
+        if (fate === 'closed' || fate === 'removed' || fate === 'projectClosed') {
+          // the card left the queue with the step, or its project: one entry says the click did nothing
           staleRowDrafts[rowChoiceRecoveryKey(r.id, r.revision)] = {
             rowId: r.id,
             revision: r.revision,
@@ -4817,7 +4817,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
             boardTitle: b.title,
             label: r.label,
             context: r.context ?? '',
-            reason: `Your choice "${choice.text}" was not applied: this step was closed first.`,
+            reason: `Your choice "${choice.text}" was not applied: this ${fate === 'projectClosed' ? 'project' : 'step'} was closed first.`,
           }
           requestDraftRecovery(null)
           showWriteError(r.id, '')

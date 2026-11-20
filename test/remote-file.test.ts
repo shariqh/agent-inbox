@@ -345,8 +345,8 @@ describe('openLinkedFile: the file checks after links are resolved', () => {
     ['a link to a folder', (dir: string) => { mkdirSync(join(dir, 'real')); symlinkSync(join(dir, 'real'), join(dir, 'dir.md')); return join(dir, 'dir.md') }, 'not_a_document'],
     ['a path through a linked folder to a type off the list', (dir: string) => { mkdirSync(join(dir, 'real')); writeFileSync(join(dir, 'real', 'x.sh'), 'x'); symlinkSync(join(dir, 'real', 'x.sh'), join(dir, 'real', 'x.md')); symlinkSync(join(dir, 'real'), join(dir, 'via')); return join(dir, 'via', 'x.md') }, 'not_a_document'],
     ['a link to a type off the list', (dir: string) => { writeFileSync(join(dir, 'page.html'), '<p>'); symlinkSync(join(dir, 'page.html'), join(dir, 'page.md')); return join(dir, 'page.md') }, 'not_a_document'],
-    ['a visible name that resolves into a hidden folder', (dir: string) => { mkdirSync(join(dir, '.secret')); writeFileSync(join(dir, '.secret', 'keys.json'), '{}'); symlinkSync(join(dir, '.secret', 'keys.json'), join(dir, 'keys.json')); return join(dir, 'keys.json') }, 'not_a_document'],
-    ['a visible name that resolves to a hidden file', (dir: string) => { writeFileSync(join(dir, '.env.json'), '{}'); symlinkSync(join(dir, '.env.json'), join(dir, 'env.json')); return join(dir, 'env.json') }, 'not_a_document'],
+    ['a visible name that resolves into a hidden folder', (dir: string) => { mkdirSync(join(dir, '.secret')); writeFileSync(join(dir, '.secret', 'keys.json'), '{}'); symlinkSync(join(dir, '.secret', 'keys.json'), join(dir, 'keys.json')); return join(dir, 'keys.json') }, 'not_found'],
+    ['a visible name that resolves to a hidden file', (dir: string) => { writeFileSync(join(dir, '.env.json'), '{}'); symlinkSync(join(dir, '.env.json'), join(dir, 'env.json')); return join(dir, 'env.json') }, 'not_found'],
     ['a link to a file with no extension', (dir: string) => { writeFileSync(join(dir, 'secret'), 'x'); symlinkSync(join(dir, 'secret'), join(dir, 'note.txt')); return join(dir, 'note.txt') }, 'not_a_document'],
     ['a dangling link', (dir: string) => { symlinkSync(join(dir, 'gone.md'), join(dir, 'dangling.md')); return join(dir, 'dangling.md') }, 'not_found'],
     ['a link loop', (dir: string) => { symlinkSync(join(dir, 'b.md'), join(dir, 'a.md')); symlinkSync(join(dir, 'a.md'), join(dir, 'b.md')); return join(dir, 'a.md') }, 'not_found'],
@@ -362,14 +362,45 @@ describe('openLinkedFile: the file checks after links are resolved', () => {
   it.skipIf(systemFile === undefined)('refuses a link in the home folder to a listed file in a system location', () => {
     const dir = home()
     symlinkSync(systemFile!, join(dir, `system${extname(systemFile!)}`))
-    expect(openLinkedFile(`~/system${extname(systemFile!)}`, dir)).toEqual({ ok: false, reason: 'not_a_document' })
-    expect(openLinkedFile(join(dir, `system${extname(systemFile!)}`), dir)).toEqual({ ok: false, reason: 'not_a_document' })
+    expect(openLinkedFile(`~/system${extname(systemFile!)}`, dir)).toEqual({ ok: false, reason: 'not_found' })
+    expect(openLinkedFile(join(dir, `system${extname(systemFile!)}`), dir)).toEqual({ ok: false, reason: 'not_found' })
   })
 
   it('refuses a link in the home folder to a folder outside the allowed roots', () => {
     const dir = home()
     symlinkSync('/etc', join(dir, 'etc'))
-    expect(openLinkedFile('~/etc/hosts.txt', dir)).toEqual({ ok: false, reason: existsSync('/etc/hosts.txt') ? 'not_a_document' : 'not_found' })
+    expect(openLinkedFile('~/etc/hosts.txt', dir)).toEqual({ ok: false, reason: 'not_found' })
+  })
+
+  // A target outside the rule answers as a missing one does, so a refusal never says whether it exists.
+  it('answers a target outside the rule, or hidden, as it answers a missing one', () => {
+    const dir = home()
+    const outside = mkdtempSync('/var/tmp/remote-file-oracle-')
+    try {
+      writeFileSync(join(outside, 'there.md'), 'x')
+      writeFileSync(join(outside, 'there.sh'), 'x')
+      mkdirSync(join(dir, '.hidden'))
+      writeFileSync(join(dir, '.hidden', 'there.md'), 'x')
+      symlinkSync(outside, join(dir, 'out'))
+      symlinkSync(join(dir, '.hidden'), join(dir, 'hid'))
+      const missing = { ok: false, reason: 'not_found' }
+      for (const [there, gone] of [
+        ['out/there.md', 'out/gone.md'], ['out/there.sh', 'out/gone.sh'], ['hid/there.md', 'hid/gone.md'],
+      ] as const) {
+        expect(openLinkedFile(join(dir, gone), dir)).toEqual(missing)
+        expect(openLinkedFile(join(dir, there), dir)).toEqual(missing)
+        expect(openLinkedFile(`~/${there}`, dir)).toEqual(missing)
+      }
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps not_a_document for a type off the list inside the rule', () => {
+    const dir = home()
+    writeFileSync(join(dir, 'page.html'), '<p>')
+    symlinkSync(join(dir, 'page.html'), join(dir, 'page.md'))
+    expect(openLinkedFile(join(dir, 'page.md'), dir)).toEqual({ ok: false, reason: 'not_a_document' })
   })
 
   it('serves a path under /tmp that resolves to /private/tmp', () => {

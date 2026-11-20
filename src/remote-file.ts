@@ -15,8 +15,9 @@
 // 3. The path in the card is under an allowed root (`~/`, /Users, /Volumes, /tmp, /private/tmp,
 //    /var/folders, /private/var/folders), ends in a listed document extension and has no segment that
 //    starts with `.` (`not_a_document`). After symbolic links are resolved, the target must be a
-//    regular file (`not_found`) under an allowed root or the real home folder, whose own name ends in
-//    a listed extension and whose path has no hidden segment (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The file is
+//    regular file (`not_found`) under an allowed root or the real home folder with no hidden segment (else
+//    `not_found`, as for a missing target, so a refusal never says whether a target outside the rule exists),
+//    whose own name ends in a listed extension (`not_a_document`), of at most 25 MB (`too_large`), and readable (`unreadable`). The file is
 //    opened with no link allowed anywhere in its resolved path, and its type and size are read from the opened descriptor.
 // 4. It goes out as a download, never as a page, streamed with its length; a file that changes size
 //    while it is read is cut off and the request fails.
@@ -185,7 +186,8 @@ const MISSING = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENAMETOOLONG', 'ENXIO'])
 
 /**
  * Opens the file a linked path names, or says why not. `~/` is under `home`. Symbolic links are
- * resolved first; the target must have a listed extension and no hidden segment. Then it is opened
+ * resolved first; the target must be under an allowed root with no hidden segment (else `not_found`,
+ * as for a missing target) and have a listed extension (else `not_a_document`). Then it is opened
  * with no link allowed anywhere in the resolved path (macOS: O_NOFOLLOW_ANY; elsewhere the last
  * component only), so a folder swapped for a link after the check is `not_found`. Its type and size
  * are those of the opened descriptor: a regular file of at most FILE_MAX.
@@ -205,7 +207,10 @@ export function openLinkedFile(path: string, home: string, seam: { beforeOpen?: 
   } catch {
     // a home that cannot be resolved counts only as written
   }
-  if (!allowedPath(real, realHome) || !documentName(lastSegment(real)) || hiddenPath(real)) return { ok: false, reason: 'not_a_document' }
+  // A target outside the rule (outside the roots, or with a hidden segment) answers as a missing one
+  // does, so a refusal never says whether such a path exists; an unlisted type inside the rule is not_a_document.
+  if (!allowedPath(real, realHome) || hiddenPath(real)) return { ok: false, reason: 'not_found' }
+  if (!documentName(lastSegment(real))) return { ok: false, reason: 'not_a_document' }
   seam.beforeOpen?.()
   let fd: number
   try {

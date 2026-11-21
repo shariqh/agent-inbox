@@ -1465,13 +1465,18 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .nrow-card-close { display: grid; flex: 0 0 auto; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font-size: 20px; cursor: pointer; }
 .nrow-card:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 34%, transparent); outline-offset: 2px; }
 /* UX pass, slice 1 (from the real app's screens): the open ask hugs its content, so the question, its one
-   line, Details and the answers read top to bottom with no empty band between them. A long Details scrolls
-   inside the card and the answers stay in view; when both are long they give way together, so neither
-   pushes the other out of sight. These sit here, not in the slice's block at the end of the file, because
-   the one responsive block below has to come after them: it lays the card out again for tablet and phone. */
-.nrow-card { bottom: auto; max-height: calc(100dvh - 220px); padding: var(--sp-5) 24px; }
-.nrow-card-scroll { flex: 0 1 auto; }
-.nrow-card-compose { flex: 0 1 auto; min-height: 160px; max-height: none; margin-top: var(--sp-4); padding-top: var(--sp-4); }
+   line, Details and the answers read top to bottom with no empty band between them. It may grow to the
+   same margin from the window's foot as from its side. The card has no fixed height, so the question's cap
+   is a share of the tallest the card can be (--card-max), not of the card. When the parts do not fit,
+   Details gives way first (it scrolls in place and keeps a line), then the answers, which keep a floor; the
+   floors are shares of --card-max too, so a short window cannot push a part out of the card.
+   These sit here, not in the slice's block at the end of the file, because the one responsive block below
+   has to come after them: it lays the card out again for tablet and phone. */
+.nrow-card { --card-max: calc(100dvh - 144px); bottom: auto; max-height: var(--card-max); padding: var(--sp-5) 24px; }
+.nrow-card-head { max-height: calc(var(--card-max) * .4); }
+/* the weight is large on purpose: until Details is down to its line, the answers give up less than a pixel */
+.nrow-card-scroll { flex: 0 100000 auto; min-height: min(44px, calc(var(--card-max) * .12)); }
+.nrow-card-compose { flex: 0 1 auto; min-height: min(120px, calc(var(--card-max) * .3)); max-height: none; margin-top: var(--sp-4); padding-top: var(--sp-4); }
 /* More and an item's own actions share one quiet line while More is closed and ends the answer area */
 .nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions { margin-top: -44px; justify-content: flex-end; pointer-events: none; }
 .nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions > * { pointer-events: auto; }
@@ -3245,6 +3250,7 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     .nrow-card-head {
       display: flex;
       min-height: 62px;
+      max-height: 40%;
       flex: 0 0 auto;
       align-items: flex-start;
       justify-content: space-between;
@@ -3387,13 +3393,15 @@ body.hub-reconnecting #status { display: none; }
 :is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-pill { width: 100%; min-height: 44px; font-size: 15px; font-weight: 600; line-height: 1.3; }
 :is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-detail { margin: var(--sp-1) 0 0; padding: 0 2px; color: var(--app-muted); font-size: 13px; line-height: 1.4; }
 :is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .options:not(.comparing) .opt-detail { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
-/* The answer area. The context editor waits out of sight, still in the DOM and focusable, until focus
-   enters this ask's answer area or it holds text, so a draft is never hidden. */
-:is(.card, .nrow-card-compose) > .options:not(:focus-within) > .reply-context-row:not(:has(> .reply-context-input:not(:placeholder-shown))) {
+/* The answer area. The context editor waits out of sight, still in the DOM and focusable, until the person
+   has worked in this ask's answer area (app.js marks it .shown after a click or on keyboard focus) or it
+   holds text, so a draft is never hidden. Never on :focus or :focus-within: focus arrives on the press, and
+   a row that enters the layout between a press and its release moves the control under the pointer. */
+:is(.card, .nrow-card-compose) > .options > .reply-context-row:not(.shown, :has(> .reply-context-input:not(:placeholder-shown))) {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
 }
-/* A task row's "I've done my part" is its main control: drawn first and filled, in place in the DOM. */
-.reply-row > .handled-btn:not(.undo-btn) { order: -1; border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+/* A task row's "I've done my part" is its main control: first on its line (app.js builds it there) and filled. */
+.reply-row > .handled-btn:not(.undo-btn) { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
 .reply-row > .handled-btn:not(.undo-btn):hover { border-color: var(--app-accent-hover); background: var(--app-accent-hover); color: var(--app-on-accent); }
 /* Resolve, Dismiss, Note and Change answer stay, quieter. A hand-off's Acknowledge (beside its menu) keeps its weight. */
 :is(.lb-card > .card, .nrow-card-compose) > .actions button { border-color: transparent; background: transparent; color: var(--app-muted); }
@@ -3404,18 +3412,24 @@ body.hub-reconnecting #status { display: none; }
    stays in the DOM. Scoped to the row's own lines: the open card under it and the session panel reuse
    some of these classes. */
 .nrow > .nrow-l1 { display: flex; flex-wrap: nowrap; }
-.nrow > .nrow-l1 > .nrow-primary { flex: 1 1 auto; width: auto; min-width: 0; }
+/* The title takes what the rest of the line leaves (never under a third of it) and is the part that is cut;
+   the controls keep their size, so a long title cannot squeeze one onto another. A long chip is cut too. */
+.nrow > .nrow-l1 > .nrow-primary { flex: 1 1 0; width: auto; min-width: 30%; }
 .nrow > .nrow-l1 > .nrow-meta { flex: 0 1 auto; flex-wrap: nowrap; width: auto; min-width: 0; margin-left: auto; padding-left: 0; }
+.nrow > .nrow-l1 :is(.nrow-glyph, .nrow-dismiss, .nrow-wake, .nrow-star:not(:has(.undo-btn))) { flex: 0 0 auto; }
 .nrow > .nrow-l1 .nrow-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nrow > .nrow-l1 .chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.nrow > .nrow-l1 :is(.nrow-proj, .nrow-glyph, .nrow-owner, .nrow-session, .chip-rest, .nrow-src),
+.nrow > .nrow-l1 :is(.nrow-proj, .nrow-owner, .nrow-session, .chip-rest, .nrow-src),
 .nrow > .nrow-l2:not(:has(.undo-btn)) { display: none; }
 .nrow > .nrow-l1 .nrow-asked { min-width: 3ch; text-align: end; font-variant-numeric: tabular-nums; }
 /* ★ and ✕ take the row's right corner on hover, on the keyboard-selected row and on the open row; at rest
-   the age ends the line, at the same place in every row. A staged state ("Sent: … — Undo") always shows,
-   and so does a snoozed or pinned row's Wake. The caret is not drawn: the open row is the highlighted one. */
+   the age ends the line, at the same place in every row. A plan step's "Plan" button (the way to its plan)
+   shows with them, after the title, so the title does not move. A staged state ("Sent: … — Undo") always
+   shows, and so does a snoozed or pinned row's Wake. The caret is not drawn: the open row is the
+   highlighted one. */
 .nrow > .nrow-l1 .nrow-caret { display: none; }
-.nrow:not(:is(:hover, :focus-within, .selected, [data-open="1"])) > .nrow-l1 :is(.nrow-dismiss, .nrow-star:not(:has(.undo-btn))) { display: none; }
+.nrow > .nrow-l1 .nrow-glyph { order: 1; }
+.nrow:not(:is(:hover, :focus-within, .selected, [data-open="1"])) > .nrow-l1 :is(.nrow-glyph, .nrow-dismiss, .nrow-star:not(:has(.undo-btn))) { display: none; }
 /* The Dashboard's Needs you card: its meta line at rest is the project dot, the project, the age and the
    Hand-off and Draft markers. Each separator belongs to the part it precedes, so a hidden part takes its
    own along; the age drops its separator when it is the first text left. */
@@ -3448,13 +3462,8 @@ body.hub-reconnecting #status { display: none; }
    above the answers. */
 .nrow-card-scroll .card-context { margin-top: var(--sp-1); border-top: 0; }
 /* A plan step's answers read in the order a question's do: the answers, Compare options, the editor, then
-   More. The order is visual only; the DOM, and so the drafts and the shortcuts, are as they were. */
+   More. app.js builds them in that order, so Tab follows what is drawn. */
 :is(.nrow-card-compose, .lb-row-card, .row-panel) > .row-answer { display: flex; flex-direction: column; }
-:is(.nrow-card-compose, .lb-row-card, .row-panel) > .row-answer > * { order: 5; }
-:is(.nrow-card-compose, .lb-row-card, .row-panel) > .row-answer > .row-options { order: 1; }
-:is(.nrow-card-compose, .lb-row-card, .row-panel) > .row-answer > .compare-toggle { order: 2; }
-:is(.nrow-card-compose, .lb-row-card, .row-panel) > .row-answer > .ask-edited { order: 3; }
-:is(.nrow-card-compose, .lb-row-card, .row-panel) > .row-answer > .reply-row { order: 4; }
 /* The recommended answer is the filled one wherever an ask is answered, not only in the Inbox. */
 :is(.lb-card, .lb-row-card, .row-panel) .opt-pill { background: var(--app-soft); }
 :is(.lb-card, .lb-row-card, .row-panel) .opt-pill.rec { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }

@@ -195,13 +195,13 @@ an explicit error state, or assistive text in `aria-label`/tooltips.
 
 ## Action Surfaces
 
-Action comes before explanation:
+An ask at rest is its question, one line of why and its answers:
 
-1. next step;
-2. response controls;
-3. why now / after this;
-4. TL;DR and background;
-5. receipts, history, and outcome.
+1. next step (the question);
+2. TL;DR, then the links the ask names;
+3. receipts, your own answer, and outcome;
+4. **Details**: why now / after this, who acts, background, and history;
+5. response controls.
 
 The desktop inspector keeps one scrolling context body and a persistent response
 footer. At phone widths the same `.nrow-card` remains under its owning row in the
@@ -211,8 +211,13 @@ DOM but becomes a full-viewport fixed surface. It has:
 - one primary scroll body;
 - a bounded response footer;
 - 2–4 direct options;
-- optional comparison detail;
-- secondary snooze/clarify/decline actions behind **More responses**.
+- one line of detail under each option, in full behind **Compare options**;
+- secondary snooze/clarify/decline actions behind **More**.
+
+A wide window's inspector is as tall as its content and grows to the window's
+margin; when it does not fit, Details scrolls in place before the answers do.
+Nothing enters or leaves an answer area on focus alone, so a press never moves
+the control under the pointer.
 
 No portal or duplicate action component is permitted.
 

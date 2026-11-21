@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, listBoards, replyItem, upsertBoard } from '../../src/store.js'
+import { insertItem, listBoards, markRowHandled, replyItem, upsertBoard } from '../../src/store.js'
 import {
   answerInput, attachStylesheet, bootApp, buttonLabelled, click, freshDb, pollTick, repaint, row, settle, showInbox,
   type, useDomTest,
@@ -24,10 +24,15 @@ const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
 // the slice's own block at the end of the stylesheet
 const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public', 'style.css'), 'utf8')
 const block = css.slice(css.indexOf('/* UX pass, slice 1: the ask */'))
-const rule = (selector: string) => {
-  const at = block.indexOf(`${selector} {`)
-  return at < 0 ? '' : block.slice(at, block.indexOf('}', at) + 1)
+const rule = (selector: string, source = block) => {
+  const at = source.indexOf(`${selector} {`)
+  return at < 0 ? '' : source.slice(at, source.indexOf('}', at) + 1)
 }
+// the open card's wide-window layout sits beside its base rules, ahead of the one responsive block
+const responsiveAt = css.indexOf('@media (max-width: 1279px)')
+const wide = css.slice(css.indexOf('/* UX pass, slice 1 (from the real app'), responsiveAt)
+const press = (el: Element) => el.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+const release = (el: Element) => el.dispatchEvent(new window.Event('pointerup', { bubbles: true }))
 
 function question(d: Database.Database, extra: Record<string, unknown> = {}): string {
   return insertItem(d, {
@@ -117,7 +122,9 @@ describe('the answer area (UX ask, point 3)', () => {
   // jsdom keeps a computed style until the DOM changes, so a focus change is read
   // through the rule's own selector, against the live document
   const hideRule = block.match(/([^{}]*\.reply-context-row[^{}]*)\{([^}]*)\}/)!
-  const shown = (el: HTMLElement) => !el.matches(hideRule[1]!.trim())
+  // the selector alone, without the comment above it
+  const hideSelector = hideRule[1]!.split('*/').pop()!.trim()
+  const shown = (el: HTMLElement) => !el.matches(hideSelector)
 
   it('hides it with a rule that keeps it in the DOM and focusable', () => {
     expect(hideRule[2]).toMatch(/position:\s*absolute/)
@@ -125,7 +132,12 @@ describe('the answer area (UX ask, point 3)', () => {
     expect(hideRule[2]).not.toMatch(/display:\s*none|visibility:\s*hidden/)
   })
 
-  it('hides the context editor at rest, shows it while focus is in the answer area or it holds text', async () => {
+  it('never ties the context editor to focus: a row that enters the layout on a press moves the control under the pointer', () => {
+    expect(hideSelector).not.toMatch(/:focus/)
+    expect(hideSelector).toMatch(/:not\(\.shown, :has\(> \.reply-context-input:not\(:placeholder-shown\)\)\)/)
+  })
+
+  it('keeps the context editor out of sight through a press, and shows it once the click lands', async () => {
     db = freshDb()
     const id = question(db)
     attachStylesheet()
@@ -136,12 +148,60 @@ describe('the answer area (UX ask, point 3)', () => {
     expect(contextInput(id).isConnected).toBe(true)
     expect(shown(contextRow(id))).toBe(false)
     expect(getComputedStyle(contextRow(id)).position).toBe('absolute')
+    // the press moves focus into the answer area: nothing may enter the layout yet
+    const more = row(id)!.querySelector<HTMLElement>('.nrow-card-compose .disposition-menu > summary')!
+    press(more)
+    more.focus()
+    expect(shown(contextRow(id))).toBe(false)
+    release(more)
+    expect(shown(contextRow(id))).toBe(false)
+    click(more)
+    expect(shown(contextRow(id))).toBe(true)
+    // and it does not leave again when focus does: that would move the controls under the next press
+    ;(document.activeElement as HTMLElement).blur()
+    expect(shown(contextRow(id))).toBe(true)
+    await repaint()
+    expect(shown(contextRow(id))).toBe(true)
+  })
+
+  it('shows the context editor on keyboard focus, and draws it shown after a control that repaints', async () => {
+    db = freshDb()
+    const id = question(db)
+    const second = question(db, { title: 'Second' })
+    attachStylesheet()
+    await bootApp(db)
+    await showInbox()
+    click(row(id))
+    await settle()
     answerInput(id)!.focus()
     expect(shown(contextRow(id))).toBe(true)
-    ;(document.activeElement as HTMLElement).blur()
+    // another ask opens at rest, and so does this one when it is opened again
+    click(row(second))
+    await settle()
+    expect(shown(contextRow(second))).toBe(false)
+    click(buttonLabelled('Compare options', row(second)!))
+    await settle()
+    expect(shown(contextRow(second))).toBe(true)
+    click(row(id))
+    await settle()
     expect(shown(contextRow(id))).toBe(false)
+  })
+
+  it('always shows a context editor that holds text', async () => {
+    db = freshDb()
+    const id = question(db)
+    const second = question(db, { title: 'Second' })
+    attachStylesheet()
+    await bootApp(db)
+    await showInbox()
+    click(row(id))
+    await settle()
     type(contextInput(id), 'Ship on Friday')
-    ;(document.activeElement as HTMLElement)?.blur?.()
+    click(row(second))
+    await settle()
+    click(row(id))
+    await settle()
+    expect(contextInput(id).value).toBe('Ship on Friday')
     expect(shown(contextRow(id))).toBe(true)
   })
 
@@ -176,7 +236,7 @@ describe('the answer area (UX ask, point 3)', () => {
     expect(row(rowId)!.querySelector('.disposition-menu > summary')?.textContent).toBe('More')
   })
 
-  it('makes I’ve done my part the main control of a task row without moving it in the DOM', async () => {
+  it('makes I’ve done my part the main control of a task row: first on its line, so Tab reaches it first', async () => {
     db = freshDb()
     upsertBoard(db, { ...AGENT, title: 'Launch', rows: [{ label: 'Upload', status: 'blocked', note: 'Ready.' }] })
     const rowId = listBoards(db)[0]!.rows[0]!.id
@@ -186,10 +246,51 @@ describe('the answer area (UX ask, point 3)', () => {
     await settle()
     const replyRow = row(rowId)!.querySelector('.nrow-card-compose .reply-row')!
     expect([...replyRow.children].map((el) => el.className || el.textContent))
-      .toEqual(['reply-input', 'Send', 'handled-btn', 'write-error'])
+      .toEqual(['handled-btn', 'reply-input', 'Send', 'write-error'])
     expect(buttonLabelled('I’ve done my part', replyRow)?.className).toBe('handled-btn')
-    expect(rule('.reply-row > .handled-btn:not(.undo-btn)')).toMatch(/order:\s*-1/)
+    // where it is drawn is where it is in the DOM: no rule reorders the line
+    expect(rule('.reply-row > .handled-btn:not(.undo-btn)')).not.toMatch(/order:/)
     expect(rule('.reply-row > .handled-btn:not(.undo-btn)')).toMatch(/background:\s*var\(--app-accent\)/)
+  })
+
+  it('keeps the undo of I’ve done my part after Send', async () => {
+    db = freshDb()
+    upsertBoard(db, { ...AGENT, title: 'Launch', rows: [{ label: 'Upload', status: 'blocked', note: 'Ready.' }] })
+    const rowId = listBoards(db)[0]!.rows[0]!.id
+    markRowHandled(db, rowId)
+    await bootApp(db)
+    await showInbox()
+    click(row(rowId))
+    await settle()
+    const replyRow = row(rowId)!.querySelector('.nrow-card-compose .reply-row')!
+    expect([...replyRow.children].map((el) => el.className || el.textContent))
+      .toEqual(['reply-input', 'Send', 'handled-btn undo-btn', 'write-error'])
+  })
+
+  it('builds a plan step’s answer area in the order it is drawn, so Tab follows what is seen', async () => {
+    db = freshDb()
+    upsertBoard(db, {
+      ...AGENT,
+      title: 'Launch',
+      rows: [{
+        label: 'Region',
+        status: 'blocked',
+        note: 'Two regions fit.',
+        next_step: 'Choose the region.',
+        action_owner: 'decision',
+        impact: 'The server waits.',
+        options: [{ label: 'Near', detail: 'Faster.', recommended: true }, { label: 'Cheap', detail: 'Slower.' }],
+      }],
+    })
+    const rowId = listBoards(db)[0]!.rows[0]!.id
+    await bootApp(db)
+    await showInbox()
+    click(row(rowId))
+    await settle()
+    const answer = row(rowId)!.querySelector('.nrow-card-compose > .row-answer')!
+    expect([...answer.children].map((el) => el.className.split(' ')[0]))
+      .toEqual(['options', 'compare-toggle', 'reply-row', 'disposition-menu', 'wait-stop'])
+    expect(css).not.toMatch(/\.row-answer > [^{]*\{[^}]*\border:/)
   })
 
   it('keeps the card’s actions, quieter', async () => {
@@ -237,7 +338,7 @@ describe('the Inbox list row (UX ask, point 4)', () => {
     const display = (el: Element | null) => (el ? getComputedStyle(el).display : 'absent')
     for (const target of [id, rowId]) {
       const el = row(target)!
-      for (const selector of ['.nrow-proj', '.nrow-glyph', '.nrow-owner', '.nrow-session', '.chip-rest', '.nrow-src', '.nrow-l2']) {
+      for (const selector of ['.nrow-proj', '.nrow-owner', '.nrow-session', '.chip-rest', '.nrow-src', '.nrow-l2']) {
         const part = el.querySelector(selector)
         if (part) expect(display(part), `${selector} on ${target}`).toBe('none')
       }
@@ -268,6 +369,64 @@ describe('the Inbox list row (UX ask, point 4)', () => {
     expect(block).toMatch(/\.nrow-star:not\(:has\(\.undo-btn\)\)/)
     expect(block).toMatch(/\.nrow > \.nrow-l2:not\(:has\(\.undo-btn\)\)/)
     expect(block).not.toMatch(/\.nrow-wake[^{]*\{[^}]*(?:opacity:\s*0|display:\s*none)/)
+  })
+
+  it('keeps a plan step’s way to its plan: the Plan button shows on the row you are on, after the title', async () => {
+    db = freshDb()
+    const id = question(db)
+    upsertBoard(db, { ...AGENT, title: 'Launch', rows: [{ label: 'Upload', status: 'blocked', note: 'Ready.' }] })
+    const rowId = listBoards(db)[0]!.rows[0]!.id
+    attachStylesheet()
+    await bootApp(db)
+    await showInbox()
+    const plan = () => row(rowId)!.querySelector<HTMLElement>('.nrow-glyph')!
+    // the keyboard's row is one you are on; with another row open, this one is at rest
+    click(row(id))
+    await settle()
+    expect(row(rowId)!.classList.contains('selected')).toBe(false)
+    expect(getComputedStyle(plan()).display).toBe('none')
+    click(row(rowId))
+    await settle()
+    expect(getComputedStyle(plan()).display).not.toBe('none')
+    expect(getComputedStyle(plan()).order).toBe('1')
+    click(plan())
+    await settle()
+    expect(document.querySelector<HTMLElement>('.tab[aria-selected="true"]')?.dataset.tab).toBe('boards')
+  })
+
+  it('cuts the title, never a control: a long title cannot squeeze ★ onto ✕', () => {
+    expect(rule('.nrow > .nrow-l1 > .nrow-primary')).toMatch(/flex:\s*1 1 0;[^}]*min-width:\s*30%/)
+    expect(rule('.nrow > .nrow-l1 :is(.nrow-glyph, .nrow-dismiss, .nrow-wake, .nrow-star:not(:has(.undo-btn)))')).toMatch(/flex:\s*0 0 auto/)
+    expect(rule('.nrow > .nrow-l1 .nrow-title')).toMatch(/overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/)
+  })
+})
+
+describe('the open card in a wide window (UX ask, from the real app)', () => {
+  it('hugs its content up to a height it names, and caps the question by that height, not by the card’s', () => {
+    expect(rule('.nrow-card', wide)).toMatch(/--card-max:\s*calc\(100dvh - 144px\);[^}]*bottom:\s*auto;[^}]*max-height:\s*var\(--card-max\)/)
+    // a share of an auto-height card is no cap at all
+    expect(rule('.nrow-card-head', wide)).toMatch(/max-height:\s*calc\(var\(--card-max\) \* \.4\)/)
+    expect(rule('.nrow-card-head', wide)).not.toMatch(/%/)
+  })
+
+  it('lets Details give way before the answers, and keeps a floor under each', () => {
+    expect(rule('.nrow-card-scroll', wide)).toMatch(/flex:\s*0 100000 auto;[^}]*min-height:\s*min\(44px, calc\(var\(--card-max\) \* \.12\)\)/)
+    expect(rule('.nrow-card-compose', wide)).toMatch(/flex:\s*0 1 auto;[^}]*min-height:\s*min\(120px, calc\(var\(--card-max\) \* \.3\)\)/)
+  })
+
+  it('leaves the phone sheet, which has a height, its own cap on the question', () => {
+    const phone = css.slice(css.indexOf('@container needs-queue (max-width: 440px)', responsiveAt))
+    expect(rule('.nrow-card-head', phone)).toMatch(/max-height:\s*40%/)
+  })
+})
+
+describe('the Inbox list row, continued (UX ask, point 4)', () => {
+  it('keeps the row’s other parts in the DOM', async () => {
+    db = freshDb()
+    const id = question(db, { detail: 'A second line that stays in the DOM.' })
+    await bootApp(db)
+    await showInbox()
+    expect(row(id)!.querySelector('.nrow-l2')?.textContent).toContain('A second line')
   })
 })
 

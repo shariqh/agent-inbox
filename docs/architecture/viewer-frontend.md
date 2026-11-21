@@ -104,11 +104,29 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   detail is one line until Compare (`openCompares`/`openRowCompares` hold the asks
   opened; the compact session panel keeps `compactCompares`). The rest is CSS in one
   block at the end of `public/style.css`: the context editor stays in the DOM, out of
-  sight until focus enters the answer area or it holds text; the Inbox row is one line
-  (`chip-rest` marks a chip that only says the ask waits on you); and shortcut tiles
-  draw only under `.keys-shown`, which `keyboard-ui.js` sets on the root while Show
-  keys is on. Hide with CSS, never by removing DOM: shortcuts, drafts, focus restore
-  and the inspector's lift of the answer area all bind to the markup.
+  sight until the person works in the answer area or it holds text (`answerEl` marks
+  its row `.shown` after a click or on keyboard focus, and `contextEditorFor` keeps
+  that until another ask opens); the Inbox row is one line
+  (`chip-rest` marks a chip that only says the ask waits on you; the title is the part
+  that is cut, and ★, ✕ and a plan step's Plan button show on the row you are on); and
+  shortcut tiles draw only under `.keys-shown`, which `keyboard-ui.js` sets on the root
+  while Show keys is on. Hide with CSS, never by removing DOM: shortcuts, drafts, focus
+  restore and the inspector's lift of the answer area all bind to the markup.
+- Nothing may enter or leave the layout on `:focus` or `:focus-within`. Focus moves on
+  the press, so the control under the pointer moves before the release and the browser
+  gives the click to a common ancestor: the answer is not sent and the menu does not
+  open. Show a part after the click, on keyboard focus (`pressedAt` is null), or from
+  what the person typed.
+- The open ask in a wide window is as tall as its content, up to `--card-max` on
+  `.nrow-card`. Its head is capped by a share of `--card-max`, because a share of an
+  auto-height card is no cap; when the parts do not fit, Details (`.nrow-card-scroll`)
+  gives way first and the answers after it, each down to a floor. These rules sit
+  beside the card's base rules, ahead of the one responsive block, which lays the
+  card out again for the inline card and the phone sheet.
+- An answer area is built in the order it is drawn (`answerEl`, and `rowAnswerEl`
+  outside the compact surface): the answers, Compare options, the editor, then More,
+  with a task's "I've done my part" first on its line. Do not reorder it with CSS
+  `order`: Tab follows the DOM.
 
 ## Invariants in detail
 

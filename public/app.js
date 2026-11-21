@@ -305,6 +305,9 @@ async function withPendingResponse(action) {
 // order pinning appends new arrivals at the foot, and the press/scroll guards
 // protect clicks and trackpad momentum.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
+// UX pass, slice 1: the item whose optional-context editor is showing because the
+// human worked in its answer area (answerEl); forgotten when another ask opens.
+let contextEditorFor = null
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
 let openRowHeadScrollTop = 0
 let openRowComposeScrollTop = 0
@@ -538,6 +541,7 @@ function setOpenRow(id, { resume = true } = {}) {
     openRowHeadScrollTop = 0
     openRowComposeScrollTop = 0
     clearScrollActivity()
+    contextEditorFor = null // each ask opens at rest (answerEl)
   }
   openRowId = id
   // another row opened (or none): the way back belonged to the ask that was open (§3.2)
@@ -4888,8 +4892,13 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
     await reloadAndPaint()
   })
   const options = r.status === 'blocked' ? optionOrder(r.options) : []
+  // the parts of the answer area, appended in one place below
+  let choices = null
+  let compare = null
+  let notice = null
+  const more = []
   if (options.length) {
-    const choices = document.createElement('div')
+    choices = document.createElement('div')
     choices.className = `options row-options${comparing(openRowCompares, r.id, surface) ? ' comparing' : ''}`
     for (const option of options) {
       const box = document.createElement('div')
@@ -4908,14 +4917,12 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       choices.appendChild(box)
     }
     if (options.some((option) => option.detail)) {
-      const compare = btn(comparing(openRowCompares, r.id, surface) ? 'Hide option details' : 'Compare options', () => {
+      compare = btn(comparing(openRowCompares, r.id, surface) ? 'Hide option details' : 'Compare options', () => {
         toggleCompare(openRowCompares, r.id, surface)
         forceRender()
       })
       compare.className = 'compare-toggle'
-      wrap.appendChild(compare)
     }
-    wrap.appendChild(choices)
   }
   const keyPrefix = surface ? `${surface}:` : ''
   if (r.status === 'blocked' && !r.annotation && !r.annotation_kind && !r.handled_at) {
@@ -4927,7 +4934,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       surface || !pinOffered(r, 'row') ? null : () => pinAsk(entry, { onSaved }),
       surface ? { label: 'More…' } : {},
     )
-    wrap.appendChild(menu)
+    more.push(menu)
     const waitStop = waitStopEl(r, {
       key: `${keyPrefix}wait:row:${r.id}`,
       onStop: async (until) => {
@@ -4944,10 +4951,13 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
         await reloadAndPaint()
       },
     })
-    if (waitStop) (surface ? menu.querySelector('.disposition-actions') : wrap).appendChild(waitStop)
+    if (waitStop) {
+      if (surface) menu.querySelector('.disposition-actions').appendChild(waitStop)
+      else more.push(waitStop)
+    }
   } else if (r.status === 'blocked') {
     const reminder = waitStopEl(r, { answered: true, pickedUp: rowPickup(r).pickedUp })
-    if (reminder) wrap.appendChild(reminder)
+    if (reminder) more.push(reminder)
   }
   bindReplyEditor(input, () => save())
   // #636 case 2: this ask moved under its draft (until a send of it lands). A
@@ -4961,18 +4971,25 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   if (!noticeText && isRowAskSentence(writeErrors[r.id])) delete writeErrors[r.id]
   // drawn once: the slot already says it right after a Send or a click
   if (noticeText && !isRowAskSentence(writeErrors[r.id])) {
-    const notice = document.createElement('p')
+    notice = document.createElement('p')
     notice.className = 'ask-edited'
     notice.dataset.noticeFor = r.id
     notice.textContent = noticeText
-    wrap.appendChild(notice)
   }
+  // UX pass, slice 1: "I've done my part" is a task's main control, so it leads its
+  // line; its Undo, and the reason it cannot be undone, stay after Send.
+  const handled = rowHandledEl(b, r)
+  const handledLeads = Boolean(handled?.matches('.handled-btn:not(.undo-btn)'))
+  if (handledLeads) row.appendChild(handled)
   row.appendChild(input)
   row.appendChild(btn('Send', () => save(), 'submit'))
-  const handled = rowHandledEl(b, r)
-  if (handled) row.appendChild(handled)
+  if (handled && !handledLeads) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
-  wrap.appendChild(row)
+  // UX pass, slice 1: built in the order a question's answer area is drawn (the
+  // answers, Compare options, the editor, then More), so Tab follows what is seen.
+  // The compact surface keeps the order it had.
+  const parts = surface ? [compare, choices, ...more, notice, row] : [choices, compare, notice, row, ...more]
+  for (const part of parts) if (part) wrap.appendChild(part)
   for (const [key, recovery] of rowRecoveries) {
     if (recovery.revision !== r.revision) {
       wrap.appendChild(rowRecoveryEl(key, recovery))
@@ -10310,6 +10327,19 @@ function answerEl(it, { surface = null } = {}) {
   bindReplyEditor(ctxInput, submit)
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
+  // UX pass, slice 1: the context editor is out of sight (style.css) until the human
+  // works in this answer area or it holds text, and then stays while the ask is open.
+  // It comes in after a click or on keyboard focus, never on a press and never on
+  // focus alone: a row that enters or leaves the layout between a press and its
+  // release moves the control under the pointer, and the click is lost.
+  const showContextEditor = () => {
+    contextEditorFor = it.id
+    ctxRow.classList.add('shown')
+  }
+  if (contextEditorFor === it.id) ctxRow.classList.add('shown')
+  // on the way down, so a control that repaints (Compare options) draws it shown
+  wrap.addEventListener('click', showContextEditor, true)
+  wrap.addEventListener('focusin', () => { if (pressedAt === null) showContextEditor() })
   // Change answer's prefill was not typed here: pin it to the question it is shown against.
   if (itemDraftMeta[it.id]?.answer === undefined
     && (draftReplies[it.id] !== undefined || draftReplyContexts[it.id] !== undefined)) rememberDraftOwner()

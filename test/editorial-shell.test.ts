@@ -95,7 +95,9 @@ describe('the editorial desk shell', () => {
   })
 
   it('wraps action headlines and option labels without clipping warnings or crowding touch controls', () => {
-    expect(css).toMatch(/\.nrow-title\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s)
+    // UX pass, slice 1: the list row's title is one line, cut with an ellipsis; the open card wraps it in full
+    expect(css).toMatch(/\.nrow > \.nrow-l1 \.nrow-title\s*\{[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/s)
+    expect(css).toMatch(/\.card-title\s*\{[^}]*overflow-wrap:\s*anywhere/s)
     expect(css).toMatch(/\.opt-pill\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s)
     expect(css).toMatch(/\.card-tldr,\s*\.card-impact,\s*\.card-after\s*\{[^}]*padding:\s*0[^}]*border:\s*0[^}]*background:\s*transparent/s)
     expect(css).toMatch(/\.nrow-card-head\s*\{[^}]*display:\s*flex/s)

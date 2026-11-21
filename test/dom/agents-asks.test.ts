@@ -554,11 +554,11 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     expect(options().classList.contains('comparing')).toBe(true)
     expect([...block(id)!.querySelectorAll('.opt-detail')].map((el) => el.textContent)).toEqual(['Safer.', 'Faster.'])
     expect(buttonLabelled('Hide option details', block(id)!)).not.toBeNull()
-    // the Inbox keeps its own default: details shown
+    // the Inbox keeps its own state: one-line details until Compare there (UX pass, slice 1)
     await showInbox()
     click(row(id))
     await settle()
-    expect(row(id)!.querySelector('.options')?.classList.contains('comparing')).toBe(true)
+    expect(row(id)!.querySelector('.options')?.classList.contains('comparing')).toBe(false)
   })
 
   it('opens the panel under its card’s row in a narrow window, and goes back to the split on close', async () => {

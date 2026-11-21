@@ -144,7 +144,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   snoozed one does) and in `board_get`; the Copilot watcher ignores it. *(Slice 2)* The one
   predicate drops a pinned ask (`isPinnedForLater`, see "Snooze and pin are demotions"), so the
   title and dock badges, tab counts, rail, Review queue, Dashboard and Handoffs all follow.
-  "Pin for later" is the first choice in More responses on an unanswered open
+  "Pin for later" is the first choice in More on an unanswered open
   question or an unanswered blocked row of an active plan, and is not drawn on one already
   pinned; it posts to the `later` route with the row and board revisions and ends in
   `reloadAndPaint()`, like every human write. Every deferral, pin or snooze, goes through

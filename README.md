@@ -34,9 +34,11 @@ share one SQLite database on your machine.
 | **Local security boundary** | A loopback-only viewer with strict Host, Origin, Fetch Metadata, and anti-framing checks |
 
 Pending requests use the stated next step as their headline when one is available.
-Cards keep explanations, warnings, and option tradeoffs visible, with response
-controls close at hand. Open **Details & history** for the original tracking title,
-branch, background, and delivery timeline.
+A card shows the question, one line of why, its PR and issue, its links and its
+answers, with each option's tradeoff on one line (**Compare options** shows them in
+full). Warnings and your own answer stay in view. Open **Details** for why it matters,
+what happens next, who acts, the original tracking title, branch, background, and
+delivery timeline.
 
 ## Quick start
 
@@ -404,7 +406,7 @@ how it is built: [`docs/architecture/driven-sessions.md`](docs/architecture/driv
 
 ## Setting requests aside
 
-A request's **More responses** menu can set it aside. **Pin for later** keeps it
+A request's **More** menu can set it aside. **Pin for later** keeps it
 with no return time. **Not now · 4h**, **Tomorrow** and **Next week** snooze it
 until then. A request you set aside leaves the title badge, the tab count and the
 app icon badge, but it stays on screen.

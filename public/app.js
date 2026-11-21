@@ -305,6 +305,9 @@ async function withPendingResponse(action) {
 // order pinning appends new arrivals at the foot, and the press/scroll guards
 // protect clicks and trackpad momentum.
 let openRowId = null    // the single inline-expanded Needs-you row (§4)
+// UX pass, slice 1: the item whose optional-context editor is showing because the
+// human worked in its answer area (answerEl); forgotten when another ask opens.
+let contextEditorFor = null
 let openRowScrollTop = 0 // the inspector's viewport survives the 3s DOM rebuild
 let openRowHeadScrollTop = 0
 let openRowComposeScrollTop = 0
@@ -538,6 +541,7 @@ function setOpenRow(id, { resume = true } = {}) {
     openRowHeadScrollTop = 0
     openRowComposeScrollTop = 0
     clearScrollActivity()
+    contextEditorFor = null // each ask opens at rest (answerEl)
   }
   openRowId = id
   // another row opened (or none): the way back belonged to the ask that was open (§3.2)
@@ -1357,12 +1361,13 @@ function focusItem(id, source = null) {
     openRows.add(source.rowId)
     if (board) showDoneBoards.add(board.id)
   }
-  if (source?.field === 'context') {
+  // UX pass, slice 1: Why it matters, Then and who acts sit inside Details too
+  if (['context', 'impact', 'next', 'owner'].includes(source?.field)) {
     openContexts.add(source.rowId ? `row:${source.rowId}` : `item:${id}`)
   }
   if (source?.field === 'option-detail') {
-    if (source.rowId) closedRowCompares.delete(source.rowId)
-    else closedCompares.delete(id)
+    if (source.rowId) openRowCompares.add(source.rowId)
+    else openCompares.add(id)
   }
   projectFilter = target.project
   agentFilter = null
@@ -4373,7 +4378,7 @@ const UNHANDLED_LABEL = 'Not done after all'
 // snooze choices it replaces.
 // `label` names the menu: the compact surface (#303, #454) calls it "More…",
 // since its host already shows Snooze and Pin.
-function dispositionEl(onResponse, onSnooze, key, onPin = null, { label = 'More responses' } = {}) {
+function dispositionEl(onResponse, onSnooze, key, onPin = null, { label = 'More' } = {}) {
   const menu = document.createElement('details')
   menu.className = 'disposition-menu'
   menu.open = openDispositionMenus.has(key)
@@ -4887,9 +4892,14 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
     await reloadAndPaint()
   })
   const options = r.status === 'blocked' ? optionOrder(r.options) : []
+  // the parts of the answer area, appended in one place below
+  let choices = null
+  let compare = null
+  let notice = null
+  const more = []
   if (options.length) {
-    const choices = document.createElement('div')
-    choices.className = `options row-options${comparing(closedRowCompares, r.id, surface) ? ' comparing' : ''}`
+    choices = document.createElement('div')
+    choices.className = `options row-options${comparing(openRowCompares, r.id, surface) ? ' comparing' : ''}`
     for (const option of options) {
       const box = document.createElement('div')
       box.className = 'option'
@@ -4907,14 +4917,12 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       choices.appendChild(box)
     }
     if (options.some((option) => option.detail)) {
-      const compare = btn(comparing(closedRowCompares, r.id, surface) ? 'Hide option details' : 'Compare options', () => {
-        toggleCompare(closedRowCompares, r.id, surface)
+      compare = btn(comparing(openRowCompares, r.id, surface) ? 'Hide option details' : 'Compare options', () => {
+        toggleCompare(openRowCompares, r.id, surface)
         forceRender()
       })
       compare.className = 'compare-toggle'
-      wrap.appendChild(compare)
     }
-    wrap.appendChild(choices)
   }
   const keyPrefix = surface ? `${surface}:` : ''
   if (r.status === 'blocked' && !r.annotation && !r.annotation_kind && !r.handled_at) {
@@ -4926,7 +4934,7 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
       surface || !pinOffered(r, 'row') ? null : () => pinAsk(entry, { onSaved }),
       surface ? { label: 'More…' } : {},
     )
-    wrap.appendChild(menu)
+    more.push(menu)
     const waitStop = waitStopEl(r, {
       key: `${keyPrefix}wait:row:${r.id}`,
       onStop: async (until) => {
@@ -4943,10 +4951,13 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
         await reloadAndPaint()
       },
     })
-    if (waitStop) (surface ? menu.querySelector('.disposition-actions') : wrap).appendChild(waitStop)
+    if (waitStop) {
+      if (surface) menu.querySelector('.disposition-actions').appendChild(waitStop)
+      else more.push(waitStop)
+    }
   } else if (r.status === 'blocked') {
     const reminder = waitStopEl(r, { answered: true, pickedUp: rowPickup(r).pickedUp })
-    if (reminder) wrap.appendChild(reminder)
+    if (reminder) more.push(reminder)
   }
   bindReplyEditor(input, () => save())
   // #636 case 2: this ask moved under its draft (until a send of it lands). A
@@ -4960,28 +4971,39 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   if (!noticeText && isRowAskSentence(writeErrors[r.id])) delete writeErrors[r.id]
   // drawn once: the slot already says it right after a Send or a click
   if (noticeText && !isRowAskSentence(writeErrors[r.id])) {
-    const notice = document.createElement('p')
+    notice = document.createElement('p')
     notice.className = 'ask-edited'
     notice.dataset.noticeFor = r.id
     notice.textContent = noticeText
-    wrap.appendChild(notice)
   }
+  // UX pass, slice 1: "I've done my part" is a task's main control, so it leads its
+  // line; its Undo, and the reason it cannot be undone, stay after Send.
+  const handled = rowHandledEl(b, r)
+  const handledLeads = Boolean(handled?.matches('.handled-btn:not(.undo-btn)'))
+  if (handledLeads) row.appendChild(handled)
   row.appendChild(input)
   row.appendChild(btn('Send', () => save(), 'submit'))
-  const handled = rowHandledEl(b, r)
-  if (handled) row.appendChild(handled)
+  if (handled && !handledLeads) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
-  wrap.appendChild(row)
+  // what is kept from an earlier ask, or was not sent, reads directly under the editor it is about
+  const kept = []
   for (const [key, recovery] of rowRecoveries) {
     if (recovery.revision !== r.revision) {
-      wrap.appendChild(rowRecoveryEl(key, recovery))
+      kept.push(rowRecoveryEl(key, recovery))
       continue
     }
     const warning = document.createElement('div')
     warning.className = 'write-error stale-draft'
     warning.textContent = 'Not sent because the board changed. Review the preserved draft and send again.'
-    wrap.appendChild(warning)
+    kept.push(warning)
   }
+  // UX pass, slice 1: built in the order a question's answer area is drawn (the
+  // answers, Compare options, the editor, then More), so Tab follows what is seen.
+  // The compact surface keeps the order it had.
+  const parts = surface
+    ? [compare, choices, ...more, notice, row, ...kept]
+    : [choices, compare, notice, row, ...kept, ...more]
+  for (const part of parts) if (part) wrap.appendChild(part)
   return wrap
 }
 
@@ -5153,10 +5175,15 @@ function sourceOptions(entity, identity = entity) {
   }
 }
 
+// UX pass, slice 1: one "Details" holds everything but the question, its one
+// line of why and its answers: Why it matters and Then first, then who acts and
+// the PR, issue and waits chips, then the tracking record.
 function cardDetailsHtml(entity, identity, key, presentation, { includeAsked = true } = {}) {
   const metadata = [identity.project, identity.agent, identity.stream].filter(Boolean)
   return `<details class="card-context" data-context-key="${esc(key)}"${openContexts.has(key) ? ' open' : ''}>
-    <summary class="card-context-label">Details &amp; history</summary>
+    <summary class="card-context-label">Details</summary>
+    ${actionWhyHtml(presentation, textContext(identity, entity))}
+    ${cardSourcesHtml(entity, identity)}
     <div class="card-tracking-label">Original ${entity.label === undefined ? 'title' : 'label'}</div>
     <div class="card-original-title">${esc(presentation.originalTitle)}</div>
     <div class="meta card-meta">${metadata.map(esc).join(' · ')}</div>
@@ -5199,9 +5226,14 @@ function openIssueActivity(id, rowId) {
   focusItem(id, rowId ? { rowId } : null)
 }
 
+// The TL;DR, the one line of why an ask shows at rest.
 function actionBlocksHtml(presentation, ctx) {
+  return presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail, ctx)}</div></div>` : ''
+}
+
+// Why it matters and Then, the first blocks inside Details (cardDetailsHtml).
+function actionWhyHtml(presentation, ctx) {
   return `
-    ${presentation.detail ? `<div class="card-tldr"><div class="card-tldr-body">${renderStructuredText(presentation.detail, ctx)}</div></div>` : ''}
     ${presentation.impact ? `<div class="card-impact"><div class="card-section-label">Why it matters</div>${renderStructuredText(presentation.impact, ctx)}</div>` : ''}
     ${presentation.nextAfter ? `<div class="card-after"><div class="card-section-label">Then</div>${renderStructuredText(presentation.nextAfter, ctx)}</div>` : ''}`
 }
@@ -5231,14 +5263,26 @@ function cardLinksHtml(entity, identity) {
   })
 }
 
+// At rest the origin names the project (where the card shows one), a row's plan
+// and the PR and issue chips, which say where an approval stands (and carry an
+// approval's Preview); '' when it has none of them. Who acts and a row's waits
+// chip are in Details.
 function cardOriginHtml(entity, identity, { showProject = true } = {}) {
-  return `<div class="card-origin">
-    ${showProject ? `<span>${esc(identity.project)}</span>` : ''}
-    ${entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : ''}
-    ${entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : ''}
-    ${sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true })}
-    ${entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : ''}
-  </div>${cardLinksHtml(entity, identity)}`
+  const parts = [
+    showProject ? `<span>${esc(identity.project)}</span>` : '',
+    entity.label !== undefined ? `<span>Plan · ${esc(identity.title)}</span>` : '',
+    sourceChipsHtml(linkIndex, identity, Date.now(), { ...sourceOptions(entity, identity), tabbable: true }),
+  ].filter((part) => part.trim())
+  return parts.length ? `<div class="card-origin">${parts.join('')}</div>` : ''
+}
+
+// Inside Details: who acts, and a row's waits chip.
+function cardSourcesHtml(entity, identity) {
+  const parts = [
+    entity.action_owner ? `<span class="action-owner">${esc(actionOwnerLabel(entity))}</span>` : '',
+    entity !== identity && Array.isArray(identity.rows) ? rowWaitsChipHtml(entity, identity, Date.now(), { issues: issueView, tabbable: true }) : '',
+  ].filter((part) => part.trim())
+  return parts.length ? `<div class="card-sources">${parts.join('')}</div>` : ''
 }
 
 function lifecycleHtml(entity, { includeAsked = true } = {}) {
@@ -5285,6 +5329,7 @@ function rowPanelEl(b, r, readOnly = false) {
     ${cardHeadingHtml(presentation, textContext(b, r))}
     ${cardOriginHtml(r, b)}
     ${actionBlocksHtml(presentation, textContext(b, r))}
+    ${cardLinksHtml(r, b)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome, r.outcome_at, textContext(b, r))}
     ${rowWaitsHtml(r, b, Date.now(), { issues: issueView })}
@@ -5308,6 +5353,7 @@ function rowCardEl(b, r, onSaved, { includeAsked = true, header = true } = {}) {
     ${header ? cardHeadingHtml(presentation, textContext(b, r)) : ''}
     ${cardOriginHtml(r, b, { showProject: header })}
     ${actionBlocksHtml(presentation, textContext(b, r))}
+    ${cardLinksHtml(r, b)}
     ${rowHumanStateHtml(r)}
     ${outcomeHtml(r.outcome, r.outcome_at, textContext(b, r))}
     ${cardDetailsHtml(r, b, `row:${r.id}`, presentation, { includeAsked })}`
@@ -8089,7 +8135,7 @@ function needsRowEl(m, entry, nowMs) {
   const sessionBit = session ? `<span class="nrow-session${session.live ? ' live' : ''}">${esc(session.text)}</span>` : ''
   const asked = askTimeModel(m.askedAt, nowMs)
   const askedBit = asked
-    ? `<time class="nrow-asked" datetime="${esc(asked.datetime)}" data-exact="${esc(asked.exact)}" aria-label="${esc(asked.accessibleLabel)}" tabindex="0">${esc(asked.text)}</time>`
+    ? `<time class="nrow-asked" datetime="${esc(asked.datetime)}" data-exact="${esc(asked.exact)}" title="${esc(asked.text)}" aria-label="${esc(asked.accessibleLabel)}" tabindex="0">${esc(asked.short)}</time>`
     : ''
   // omit line 2 entirely when it would be blank — no secondary text, no agent
   // chip, no stream — otherwise it leaves a padded empty line under the row.
@@ -8110,7 +8156,7 @@ function needsRowEl(m, entry, nowMs) {
         ${changeBit}
         ${askedBit}
         ${sessionBit}
-        <span class="chip chip-${chip.tone}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
+        <span class="chip chip-${chip.tone}${chip.rest ? ' chip-rest' : ''}"><span aria-hidden="true">${livenessGlyph(m.liveness).glyph}</span> ${esc(chip.text)}</span>
         <span class="nrow-src">${sourceChipsHtml(linkIndex, sourceIdentity, nowMs, sourceOptions(sourceAction, sourceIdentity))}</span>
         <span class="nrow-star"></span>
         ${wakeBit}
@@ -8251,8 +8297,9 @@ function rowCardBodyEl(entry, m, nowMs) {
   title.setAttribute('role', 'heading')
   title.setAttribute('aria-level', '2')
   title.innerHTML = renderStructuredText(m.title, entry.kind === 'row' ? textContext(entry.board, entry.row) : textContext(entry.item))
+  // UX pass, slice 1: the project only; the agent is in Details' meta line
   const meta = document.createElement('span')
-  meta.textContent = [m.project, m.agent].filter(Boolean).join(' · ')
+  meta.textContent = m.project ?? ''
   heading.append(title, meta)
   // #454 A.2: the ask's session, and the way to its card on the Agents view,
   // offered only where a session card can open it (the lanes design §6)
@@ -8771,14 +8818,16 @@ function archiveBtn(board) {
 }
 
 // answer-back UI state that must survive the 3s poll rebuild
-const closedCompares = new Set() // option details stay visible until the human collapses them
-const closedRowCompares = new Set()
+// UX pass, slice 1: every ask opens with each option's detail cut to one line;
+// Compare shows them in full, per ask, until the human hides them again.
+const openCompares = new Set()
+const openRowCompares = new Set()
 // The compact surface (the session panel, #454 A.2) opens with the options
 // alone; Compare stacks each option's tradeoff under it.
 const compactCompares = new Set()
-const comparing = (closed, id, surface) => (surface ? compactCompares.has(id) : !closed.has(id))
-function toggleCompare(closed, id, surface) {
-  const set = surface ? compactCompares : closed
+const comparing = (open, id, surface) => (surface ? compactCompares : open).has(id)
+function toggleCompare(open, id, surface) {
+  const set = surface ? compactCompares : open
   if (set.has(id)) set.delete(id)
   else set.add(id)
 }
@@ -10182,7 +10231,7 @@ function optionPillHtml(option, surface = null) {
 // `surface: 'compact'`: the session panel's ask (#454); see rowAnswerEl.
 function answerEl(it, { surface = null } = {}) {
   const wrap = document.createElement('div')
-  wrap.className = `options${comparing(closedCompares, it.id, surface) ? ' comparing' : ''}`
+  wrap.className = `options${comparing(openCompares, it.id, surface) ? ' comparing' : ''}`
   setHintOwner(wrap, it)
   let editorGeneration = itemDraftGenerations[it.id] ?? 0
   const opts = optionOrder(it.options)
@@ -10210,8 +10259,8 @@ function answerEl(it, { surface = null } = {}) {
   const row = document.createElement('div')
   row.className = 'reply-row'
   if (opts.some((o) => o.detail)) {
-    const cmp = btn(comparing(closedCompares, it.id, surface) ? 'Hide option details' : 'Compare options', () => {
-      toggleCompare(closedCompares, it.id, surface)
+    const cmp = btn(comparing(openCompares, it.id, surface) ? 'Hide option details' : 'Compare options', () => {
+      toggleCompare(openCompares, it.id, surface)
       forceRender()
     })
     cmp.className = 'compare-toggle'
@@ -10282,6 +10331,19 @@ function answerEl(it, { surface = null } = {}) {
   bindReplyEditor(ctxInput, submit)
   ctxRow.appendChild(ctxInput)
   wrap.appendChild(ctxRow)
+  // UX pass, slice 1: the context editor is out of sight (style.css) until the human
+  // works in this answer area or it holds text, and then stays while the ask is open.
+  // It comes in after a click or on keyboard focus, never on a press and never on
+  // focus alone: a row that enters or leaves the layout between a press and its
+  // release moves the control under the pointer, and the click is lost.
+  const showContextEditor = () => {
+    contextEditorFor = it.id
+    ctxRow.classList.add('shown')
+  }
+  if (contextEditorFor === it.id) ctxRow.classList.add('shown')
+  // on the way down, so a control that repaints (Compare options) draws it shown
+  wrap.addEventListener('click', showContextEditor, true)
+  wrap.addEventListener('focusin', () => { if (!pressHeld(pressedAt, Date.now())) showContextEditor() })
   // Change answer's prefill was not typed here: pin it to the question it is shown against.
   if (itemDraftMeta[it.id]?.answer === undefined
     && (draftReplies[it.id] !== undefined || draftReplyContexts[it.id] !== undefined)) rememberDraftOwner()
@@ -10375,6 +10437,7 @@ function itemCardEl(it, {
     ${cardOriginHtml(it, it, { showProject: header })}
     ${s.handoff && it.title && it.title !== presentation.headline ? '<div class="card-finished"></div>' : ''}
     ${actionBlocksHtml(presentation, textContext(it))}
+    ${cardLinksHtml(it, it)}
     ${itemAnnotationHtml(s.annotationReceipt)}
     ${s.recWarning ? `<div class="rec-warning">Review: ${esc(s.recWarning)}</div>` : ''}
     ${s.reply || it.reply_kind ? `<div class="reply-block"><strong>${esc(responseLabel(it) || 'You answered')}:</strong> ${esc(s.reply ?? '')}${it.reply_context ? `<div class="reply-context">Context: ${esc(it.reply_context)}</div>` : ''}${it.reply_source === 'agent' ? '<span class="reply-source">via chat</span>' : ''}${s.showPickup ? `<span class="pickup ${it.reply_seen_at ? 'picked' : 'awaiting'}"${it.reply_seen_at ? ' title="Delivery does not confirm the asking agent has resumed."' : ''}>${it.reply_seen_at ? 'Delivered to an agent' : 'Saved · waiting for delivery'}</span>` : ''}</div>` : ''}

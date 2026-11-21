@@ -75,6 +75,8 @@ export function createKeyboardUI({ getScope, getActionScope, navigate }) {
   const hints = createKeyHints({
     getScope: () => root.isConnected ? getScope() : root,
     onChange(active) {
+      // UX pass, slice 1: shortcut tiles are drawn only while keys are shown (style.css)
+      page.documentElement.classList.toggle('keys-shown', active)
       hintsButton.setAttribute('aria-pressed', String(active))
       hintsButton.textContent = active ? 'Hide keys' : 'Show keys'
       if (!active) announce('')

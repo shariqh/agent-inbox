@@ -148,9 +148,13 @@ export function askTimeModel(askedAt: string | null, nowMs: number): {
   datetime: string
   exact: string
   text: string
+  /** The short age the Inbox row shows: now, 10m, 3h, 2d. */
+  short: string
   accessibleLabel: string
 } | null
-export function urgencyChip(model: RowModel, nowMs: number): { text: string; tone: string }
+export function urgencyChip(model: RowModel, nowMs: number): { text: string; tone: string; rest?: true }
+/** An age as the Dashboard lane and the Inbox row show it: now, 10m, 3h, 2d. */
+export function shortAge(ms: number): string
 export function relMs(ms: number): string
 export const FRESH_MS: number
 export const AGING_MS: number

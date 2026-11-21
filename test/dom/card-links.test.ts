@@ -87,7 +87,7 @@ const fileCalls = (open: ReturnType<typeof bridge>) => open.mock.calls.filter(([
 const status = () => document.getElementById('linkOpenStatus')?.textContent ?? ''
 
 describe('the Links strip (issue #300)', () => {
-  it('lists the card’s links under its origin: own PR and issue first, then first appearance, once each', async () => {
+  it('lists the card’s links under its TL;DR: own PR and issue first, then first appearance, once each', async () => {
     bridge()
     db = freshDb()
     const id = seed(db)
@@ -98,8 +98,11 @@ describe('the Links strip (issue #300)', () => {
     const strip = stripOf(card)!
     expect(strip.getAttribute('role')).toBe('group')
     expect(strip.getAttribute('aria-label')).toBe('Links')
-    expect(strip.previousElementSibling?.classList.contains('card-origin')).toBe(true)
-    expect(strip.compareDocumentPosition(card.querySelector('.card-tldr')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // UX pass, slice 1: the strip follows the TL;DR; the PR and issue chips stay at rest in the origin line
+    expect(strip.previousElementSibling?.classList.contains('card-tldr')).toBe(true)
+    const ownPr = card.querySelector('.card-origin a[href="https://github.com/shariqh/agent-inbox/pull/284"]')
+    expect(ownPr).not.toBeNull()
+    expect(ownPr?.closest('details')).toBeNull()
 
     const pr = strip.querySelector<HTMLAnchorElement>('a[data-link-kind="pr"]')!
     expect(pr.href).toBe('https://github.com/shariqh/agent-inbox/pull/284')

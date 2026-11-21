@@ -1464,6 +1464,25 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .nrow-card-compose .reply-input { background: var(--app-bg); }
 .nrow-card-close { display: grid; flex: 0 0 auto; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font-size: 20px; cursor: pointer; }
 .nrow-card:focus { outline: 2px solid color-mix(in srgb, var(--app-focus) 34%, transparent); outline-offset: 2px; }
+/* UX pass, slice 1 (from the real app's screens): the open ask hugs its content, so the question, its one
+   line, Details and the answers read top to bottom with no empty band between them. It may grow to the
+   same margin from the window's foot as from its side. The card has no fixed height, so the question's cap
+   is a share of the tallest the card can be (--card-max), not of the card. When the parts do not fit,
+   the closed Details gives way first (it scrolls in place and keeps a line), then the answers, which keep
+   a floor; an opened Details shares the room with the answers. The floors are shares of --card-max too,
+   so a short window cannot push a part out of the card.
+   These sit here, not in the slice's block at the end of the file, because the one responsive block below
+   has to come after them: it lays the card out again for tablet and phone. */
+.nrow-card { --card-max: calc(100dvh - 144px); bottom: auto; max-height: var(--card-max); padding: var(--sp-5) 24px; }
+.nrow-card-head { max-height: calc(var(--card-max) * .4); }
+/* the weight is large on purpose: until Details is down to its line, the answers give up less than a pixel */
+.nrow-card-scroll { flex: 0 100000 auto; min-height: min(44px, calc(var(--card-max) * .12)); }
+/* opened, Details is what the person is reading: it shares the room with the answers instead of giving it all up */
+.nrow-card-scroll:has(.card-context[open]) { flex-shrink: 1; }
+.nrow-card-compose { flex: 0 1 auto; min-height: min(120px, calc(var(--card-max) * .3)); max-height: none; margin-top: var(--sp-4); padding-top: var(--sp-4); }
+/* More and an item's own actions share one quiet line while More is closed and ends the answer area */
+.nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions { margin-top: -44px; justify-content: flex-end; pointer-events: none; }
+.nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions > * { pointer-events: auto; }
 .card, .lb-row-card, .row-panel { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .card-title { margin: 0 0 8px; font-size: 18px; font-weight: 650; line-height: 1.35; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .nrow-card-head .card-title { margin: 0; }
@@ -3123,6 +3142,7 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     inset: auto;
     width: 100%;
     max-width: none;
+    max-height: none;
     margin: 10px 0 0;
     overflow: visible;
     padding: 16px 4px 4px 18px;
@@ -3139,12 +3159,15 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     .nrow-card-scroll,
     .nrow-card-compose {
       flex: 0 0 auto;
+      min-height: 0;
       max-height: none;
       overflow: visible;
       overscroll-behavior: auto;
     }
   }
   .nrow-owner { display: inline-flex; }
+  /* the desktop card's one-line footer (More beside the actions) is not for the inline card or the phone sheet */
+  #needsYouList .nrow-card-compose > .actions { margin-top: 8px; justify-content: flex-start; pointer-events: auto; }
 
   @container compact-masthead (max-width: 620px) {
     .sidebar-shell {
@@ -3230,6 +3253,7 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     .nrow-card-head {
       display: flex;
       min-height: 62px;
+      max-height: 40%;
       flex: 0 0 auto;
       align-items: flex-start;
       justify-content: space-between;
@@ -3262,6 +3286,8 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
       scroll-padding-block-end: 32px;
     }
     .nrow-card-compose {
+      flex: 0 0 auto;
+      min-height: 0;
       max-height: min(42dvh, 320px);
       margin: 0;
       overflow-y: auto;
@@ -3274,6 +3300,9 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     .nrow-card-compose .options { display: grid; grid-template-columns: minmax(0, 1fr); }
     .nrow-card-compose .options:not(.comparing):has(.option:nth-child(3)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .nrow-card-compose .options.comparing { grid-template-columns: minmax(0, 1fr); }
+    /* UX pass, slice 1: asks now start with their details on one line, so two columns of answers is the
+       usual state here; Compare options, the editor and More keep the full width under them */
+    .nrow-card-compose .options > :not(.option) { grid-column: 1 / -1; }
     .nrow-card-compose .option { width: 100%; }
     .nrow-card-compose .opt-pill { width: 100%; min-height: 44px; text-align: left; }
   }
@@ -3354,3 +3383,92 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
 .hub-reconnecting { color: var(--app-warning); font-size: var(--fs-body); font-weight: 600; }
 /* the line says the page is reconnecting; the page's own "disconnected" would say it twice */
 body.hub-reconnecting #status { display: none; }
+
+/* UX pass, slice 1: the ask */
+/* An ask at rest is its question, one line of why and its answers; the rest sits behind one Details. */
+.card-sources { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); margin: var(--sp-2) 0; color: var(--app-text-soft); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.card-sources .action-owner { margin-top: 0; }
+.card-context > .card-impact, .card-context > .card-after { margin: var(--sp-1) 0 var(--sp-2); }
+/* Option details (outside the session panel's compact asks): each a full-width answer with its detail
+   cut to one line at rest; Compare (.comparing) shows every detail in full. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .options:not(.comparing) { flex-direction: column; align-items: stretch; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .option { width: 100%; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-pill { width: 100%; min-height: 44px; font-size: 15px; font-weight: 600; line-height: 1.3; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .opt-detail { margin: var(--sp-1) 0 0; padding: 0 2px; color: var(--app-muted); font-size: 13px; line-height: 1.4; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .options:not(.comparing) .opt-detail { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
+/* The answer area. The context editor waits out of sight, still in the DOM and focusable, until the person
+   has worked in this ask's answer area (app.js marks it .shown after a click or on keyboard focus) or it
+   holds text, so a draft is never hidden. Never on :focus or :focus-within: focus arrives on the press, and
+   a row that enters the layout between a press and its release moves the control under the pointer. */
+:is(.card, .nrow-card-compose) > .options > .reply-context-row:not(.shown, :has(> .reply-context-input:not(:placeholder-shown))) {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+/* A task row's "I've done my part" is its main control: first on its line (app.js builds it there) and filled. */
+.reply-row > .handled-btn:not(.undo-btn) { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+.reply-row > .handled-btn:not(.undo-btn):hover { border-color: var(--app-accent-hover); background: var(--app-accent-hover); color: var(--app-on-accent); }
+/* Resolve, Dismiss, Note and Change answer stay, quieter. A hand-off's Acknowledge (beside its menu) keeps its weight. */
+:is(.lb-card > .card, .nrow-card-compose) > .actions button { border-color: transparent; background: transparent; color: var(--app-muted); }
+:is(.lb-card > .card, .nrow-card-compose) > .actions:has(> .disposition-menu) button { border-color: var(--app-border); background: var(--app-surface); color: var(--app-text); }
+:is(.lb-card > .card, .nrow-card-compose) > .actions button:hover { border-color: var(--app-border); color: var(--app-text); }
+/* The Inbox list row at rest is one line: the project dot, the title, the change marker, a chip that says
+   something other than "waiting on you", and the short age. The rest is in the open card, and every part
+   stays in the DOM. Scoped to the row's own lines: the open card under it and the session panel reuse
+   some of these classes. */
+.nrow > .nrow-l1 { display: flex; flex-wrap: nowrap; }
+/* The title takes what the rest of the line leaves (never under a third of it) and is the part that is cut;
+   the controls keep their size, so a long title cannot squeeze one onto another. A long chip is cut too. */
+.nrow > .nrow-l1 > .nrow-primary { flex: 1 1 0; width: auto; min-width: 30%; }
+.nrow > .nrow-l1 > .nrow-meta { flex: 0 1 auto; flex-wrap: nowrap; width: auto; min-width: 0; margin-left: auto; padding-left: 0; }
+.nrow > .nrow-l1 :is(.nrow-glyph, .nrow-dismiss, .nrow-wake, .nrow-star:not(:has(.undo-btn))) { flex: 0 0 auto; }
+.nrow > .nrow-l1 .nrow-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nrow > .nrow-l1 .chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nrow > .nrow-l1 :is(.nrow-proj, .nrow-owner, .nrow-session, .chip-rest, .nrow-src),
+.nrow > .nrow-l2:not(:has(.undo-btn)) { display: none; }
+.nrow > .nrow-l1 .nrow-asked { min-width: 3ch; text-align: end; font-variant-numeric: tabular-nums; }
+/* ★ and ✕ take the row's right corner on hover, on the keyboard-selected row and on the open row; at rest
+   the age ends the line, at the same place in every row. A plan step's "Plan" button (the way to its plan)
+   shows with them, after the title, so the title does not move. A staged state ("Sent: … — Undo") always
+   shows, and so does a snoozed or pinned row's Wake. The caret is not drawn: the open row is the
+   highlighted one. */
+.nrow > .nrow-l1 .nrow-caret { display: none; }
+.nrow > .nrow-l1 .nrow-glyph { order: 1; }
+.nrow:not(:is(:hover, :focus-within, .selected, [data-open="1"])) > .nrow-l1 :is(.nrow-glyph, .nrow-dismiss, .nrow-star:not(:has(.undo-btn))) { display: none; }
+/* The Dashboard's Needs you card: its meta line at rest is the project dot, the project, the age and the
+   Hand-off and Draft markers. Each separator belongs to the part it precedes, so a hidden part takes its
+   own along; the age drops its separator when it is the first text left. */
+.ny-card :is(.ny-agent, .ny-branch, .ny-session, .ny-plan) { display: none; }
+.ny-meta > .ny-project[hidden] ~ .ny-age::before { content: none; }
+/* The inspector's head: the opened ask's title leads; the session token and Show on Agents › stay, quietly. */
+/* :where() keeps these at one class, so the phone sheet's smaller head title (in the 1279px block) still wins */
+:where(.nrow-card-head > div, .lb-card > .card, .lb-row-card, .row-panel) > .card-title { font-size: 24px; font-weight: 700; line-height: 1.2; }
+:where(.nrow-card-scroll, .lb-card, .row-panel) .card-tldr-body { color: var(--app-text-soft); font-size: 15px; line-height: 1.45; }
+.nrow-card-head .nrow-card-session { gap: var(--sp-2); }
+.nrow-card-head .nrow-session { border-color: transparent; padding: 0; }
+.nrow-card-head .nrow-session:not(.live) { color: var(--app-text-soft); }
+.nrow-card-head .nrow-show-agents { color: var(--app-text-soft); font-size: var(--fs-meta); font-weight: 500; }
+.nrow-card-head .nrow-show-agents:hover { color: var(--app-accent); }
+/* Shortcut tiles are drawn only while Show keys is on (keyboard-ui.js sets .keys-shown on the root);
+   every shortcut works either way, and the Keyboard help panel's own keys are unchanged. */
+:root:not(.keys-shown) [data-shortcut]::after { display: none; }
+:root:not(.keys-shown) .reply-row[data-shortcut] { padding-inline-start: 0; }
+:root:not(.keys-shown) .floating-search-key { display: none; }
+
+/* Each answer and its one line read as a pair, with more room between pairs than inside one. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .option + .option { margin-top: var(--sp-1); }
+/* Compare options is a quiet line of its own between the answers and the editor, not a second button beside Send. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .compare-toggle { min-height: 32px; padding: 0 2px; border: 0; background: none; color: var(--app-text-soft); font-size: 12.5px; font-weight: 600; text-align: start; }
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .compare-toggle:hover { color: var(--app-text); }
+:is(.card, .nrow-card-compose) .reply-row > .compare-toggle { flex: 0 0 100%; order: -1; }
+/* Send waits quietly until there is something to send. */
+:is(.card, .lb-row-card, .row-panel, .nrow-card-compose) .reply-row > .reply-input:placeholder-shown ~ button:not(.handled-btn, .compare-toggle) { opacity: .6; }
+/* In the open ask, Details is a quiet line under the question's one line; the only rule left is the one
+   above the answers. */
+.nrow-card-scroll .card-context { margin-top: var(--sp-1); border-top: 0; }
+/* A plan step's answers read in the order a question's do: the answers, Compare options, the editor, then
+   More. app.js builds them in that order, so Tab follows what is drawn. */
+:is(.nrow-card-compose, .lb-row-card, .row-panel) > .row-answer { display: flex; flex-direction: column; }
+/* The recommended answer is the filled one wherever an ask is answered, not only in the Inbox. */
+:is(.lb-card, .lb-row-card, .row-panel) .opt-pill { background: var(--app-soft); }
+:is(.lb-card, .lb-row-card, .row-panel) .opt-pill.rec { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+/* In Plans the row above the panel already carries the headline, so the panel's own title stays smaller. */
+.row-panel > .card-title { font-size: 18px; }

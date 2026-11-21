@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Issue #247: "Pin for later" in the More responses menu sets an unanswered ask
+// Issue #247: "Pin for later" in the More menu sets an unanswered ask
 // aside with no return time. The one attention predicate drops it, so every
 // count follows at once, and it waits in the Later section (slice 3, on by
 // default) until the human brings it back or the ask ends. With the Later
@@ -78,7 +78,7 @@ const menuChoices = (id: string) => [...(row(id)?.querySelectorAll('.disposition
   .map((button) => button.textContent)
 
 describe('Pin for later (#247)', () => {
-  it('pins a question from More responses into Later, out of every count, and brings it back', async () => {
+  it('pins a question from More into Later, out of every count, and brings it back', async () => {
     const d = open()
     const id = question(d)
     const before = getItem(d, id)!

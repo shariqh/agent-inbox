@@ -1383,13 +1383,14 @@ describe('direct overlay draft reconciliation', () => {
     await settle()
 
     const lightbox = document.getElementById('lightbox')!
-    const compare = buttonLabelled('Hide option details', lightbox)!
+    // UX pass, slice 1: an ask starts with one-line details, so the toggle starts as Compare
+    const compare = buttonLabelled('Compare options', lightbox)!
     compare.focus()
     click(compare)
     await settle()
 
     expect(document.activeElement).toBe(lightbox.querySelector('.lb-panel'))
-    expect(buttonLabelled('Compare options', lightbox)).not.toBeNull()
+    expect(buttonLabelled('Hide option details', lightbox)).not.toBeNull()
   })
 
   it('does not transfer focus from a removed Review queue entry to the next row', async () => {

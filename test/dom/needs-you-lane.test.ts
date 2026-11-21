@@ -14,7 +14,7 @@ import { installDashHead } from '../../public/dash-head.js'
 import { installAgentsHome } from '../../public/agents-home.js'
 import { NEEDS_YOU_EMPTY, installNeedsYouLane } from '../../public/needs-you-lane.js'
 import {
-  advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, changedPollTick, click, collapseRow, freshDb,
+  advanceClock, answerInput, attachStylesheet, badgeCount, bootApp, buttonLabelled, changedPollTick, click, collapseRow, freshDb,
   pollTick, row, rows, searchFor, sendButton, settle, setViewport, showInbox, type, useDomTest,
 } from './harness.js'
 
@@ -151,6 +151,26 @@ describe('the Needs you lane holds every ask once (§3.2, §8)', () => {
     for (const el of laneCards()) expect(el.querySelector('button, input, textarea, select, a, .row-answer, .options')).toBeNull()
     // no action card on the Dashboard: one per ask, under its Inbox row (DESIGN.md)
     expect(document.querySelector('#dashboard .nrow-card, #dashboard .reply-input')).toBeNull()
+  })
+
+  // UX pass, slice 1: the parts stay in the DOM (and in the card's label); CSS
+  // hides the agent, branch, session and plan line at rest
+  it('shows only the project, the age and the Hand-off and Draft markers on its meta line at rest, and holds no control', async () => {
+    db = freshDb()
+    const step = blockedRow(db, 'Rotate the token')
+    live(db, 'drv-2')
+    const item = question(db, 'Which release?', { next_step: 'Pick one.', agent: 'claude-code', stream: 'feat/x', session: 'drv-2' })
+    advanceClock(5 * 60_000)
+    attachStylesheet()
+    await bootApp(db)
+    const display = (id: string, cls: string) => getComputedStyle(laneCard(id)!.querySelector(cls)!).display
+    for (const id of [item, step]) {
+      for (const cls of ['.ny-agent', '.ny-branch', '.ny-session', '.ny-plan']) expect(display(id, cls), `${cls} on ${id}`).toBe('none')
+      for (const cls of ['.ny-dot', '.ny-project', '.ny-age', '.ny-title']) expect(display(id, cls), `${cls} on ${id}`).not.toBe('none')
+      expect(laneCard(id)!.querySelector('button, input, textarea, select, a, summary, .row-answer, .options')).toBeNull()
+    }
+    expect(laneCard(item)!.getAttribute('aria-label')).toContain('Claude Code')
+    expect(laneCard(step)!.querySelector('.ny-plan')?.textContent).toContain('Plan for Rotate the token')
   })
 
   it('says the empty text and keeps the lane; Later shows only when N > 0; Review queue stays in both', async () => {

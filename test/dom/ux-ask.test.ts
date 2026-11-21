@@ -412,6 +412,8 @@ describe('the open card in a wide window (UX ask, from the real app)', () => {
   it('lets Details give way before the answers, and keeps a floor under each', () => {
     expect(rule('.nrow-card-scroll', wide)).toMatch(/flex:\s*0 100000 auto;[^}]*min-height:\s*min\(44px, calc\(var\(--card-max\) \* \.12\)\)/)
     expect(rule('.nrow-card-compose', wide)).toMatch(/flex:\s*0 1 auto;[^}]*min-height:\s*min\(120px, calc\(var\(--card-max\) \* \.3\)\)/)
+    // opened, Details is being read: it shares the room instead of shrinking to its line
+    expect(rule('.nrow-card-scroll:has(.card-context[open])', wide)).toMatch(/flex-shrink:\s*1/)
   })
 
   it('leaves the phone sheet, which has a height, its own cap on the question', () => {

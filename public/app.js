@@ -4985,21 +4985,25 @@ function rowAnswerEl(b, r, onSaved, { surface = null } = {}) {
   row.appendChild(btn('Send', () => save(), 'submit'))
   if (handled && !handledLeads) row.appendChild(handled)
   row.appendChild(writeErrorEl(r.id))
-  // UX pass, slice 1: built in the order a question's answer area is drawn (the
-  // answers, Compare options, the editor, then More), so Tab follows what is seen.
-  // The compact surface keeps the order it had.
-  const parts = surface ? [compare, choices, ...more, notice, row] : [choices, compare, notice, row, ...more]
-  for (const part of parts) if (part) wrap.appendChild(part)
+  // what is kept from an earlier ask, or was not sent, reads directly under the editor it is about
+  const kept = []
   for (const [key, recovery] of rowRecoveries) {
     if (recovery.revision !== r.revision) {
-      wrap.appendChild(rowRecoveryEl(key, recovery))
+      kept.push(rowRecoveryEl(key, recovery))
       continue
     }
     const warning = document.createElement('div')
     warning.className = 'write-error stale-draft'
     warning.textContent = 'Not sent because the board changed. Review the preserved draft and send again.'
-    wrap.appendChild(warning)
+    kept.push(warning)
   }
+  // UX pass, slice 1: built in the order a question's answer area is drawn (the
+  // answers, Compare options, the editor, then More), so Tab follows what is seen.
+  // The compact surface keeps the order it had.
+  const parts = surface
+    ? [compare, choices, ...more, notice, row, ...kept]
+    : [choices, compare, notice, row, ...kept, ...more]
+  for (const part of parts) if (part) wrap.appendChild(part)
   return wrap
 }
 
@@ -10339,7 +10343,7 @@ function answerEl(it, { surface = null } = {}) {
   if (contextEditorFor === it.id) ctxRow.classList.add('shown')
   // on the way down, so a control that repaints (Compare options) draws it shown
   wrap.addEventListener('click', showContextEditor, true)
-  wrap.addEventListener('focusin', () => { if (pressedAt === null) showContextEditor() })
+  wrap.addEventListener('focusin', () => { if (!pressHeld(pressedAt, Date.now())) showContextEditor() })
   // Change answer's prefill was not typed here: pin it to the question it is shown against.
   if (itemDraftMeta[it.id]?.answer === undefined
     && (draftReplies[it.id] !== undefined || draftReplyContexts[it.id] !== undefined)) rememberDraftOwner()

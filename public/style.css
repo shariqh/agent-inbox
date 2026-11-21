@@ -1468,14 +1468,17 @@ body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
    line, Details and the answers read top to bottom with no empty band between them. It may grow to the
    same margin from the window's foot as from its side. The card has no fixed height, so the question's cap
    is a share of the tallest the card can be (--card-max), not of the card. When the parts do not fit,
-   Details gives way first (it scrolls in place and keeps a line), then the answers, which keep a floor; the
-   floors are shares of --card-max too, so a short window cannot push a part out of the card.
+   the closed Details gives way first (it scrolls in place and keeps a line), then the answers, which keep
+   a floor; an opened Details shares the room with the answers. The floors are shares of --card-max too,
+   so a short window cannot push a part out of the card.
    These sit here, not in the slice's block at the end of the file, because the one responsive block below
    has to come after them: it lays the card out again for tablet and phone. */
 .nrow-card { --card-max: calc(100dvh - 144px); bottom: auto; max-height: var(--card-max); padding: var(--sp-5) 24px; }
 .nrow-card-head { max-height: calc(var(--card-max) * .4); }
 /* the weight is large on purpose: until Details is down to its line, the answers give up less than a pixel */
 .nrow-card-scroll { flex: 0 100000 auto; min-height: min(44px, calc(var(--card-max) * .12)); }
+/* opened, Details is what the person is reading: it shares the room with the answers instead of giving it all up */
+.nrow-card-scroll:has(.card-context[open]) { flex-shrink: 1; }
 .nrow-card-compose { flex: 0 1 auto; min-height: min(120px, calc(var(--card-max) * .3)); max-height: none; margin-top: var(--sp-4); padding-top: var(--sp-4); }
 /* More and an item's own actions share one quiet line while More is closed and ends the answer area */
 .nrow-card-compose:has(> .options > .disposition-menu:last-child:not([open])) > .actions { margin-top: -44px; justify-content: flex-end; pointer-events: none; }

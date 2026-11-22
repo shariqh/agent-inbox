@@ -4,10 +4,13 @@
 // the lane chips and the Inbox tab are gone.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { getItem, insertItem, listBoards, upsertActivity, upsertBoard } from '../../src/store.js'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { getItem, insertItem, listBoards, recordActivityCall, replyItem, resolveItem, snoozeItem, upsertActivity, upsertBoard } from '../../src/store.js'
 import { installAgentsHome } from '../../public/agents-home.js'
 import {
-  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, sendButton, settle, showInbox, type, useDomTest,
+  advanceClock, answerInput, bootApp, buttonLabelled, changedPollTick, click, collapseRow, freshDb, navigateToHash, pollTick, row, rows,
+  searchFor, sendButton, settle, setViewport, showInbox, T0, tabCount, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -330,5 +333,272 @@ describe('the list’s header is quiet (step 3)', () => {
     await bootApp(db)
     expect(document.querySelector('#needsYouList .calm-head')?.textContent).toBe('Nothing needs you')
     expect(count().hidden).toBe(true)
+  })
+})
+
+describe('one Home (step 1)', () => {
+  it('names the tabs Home, Plans, Notes, History, Chats; Home carries the count; the page is Home with no kicker', async () => {
+    db = freshDb()
+    question(db, 'One')
+    question(db, 'Two', { project: 'harbor' })
+    await bootApp(db)
+    expect([...document.querySelectorAll('#tabs .tab:not([hidden]) .tab-name')].map((el) => el.textContent))
+      .toEqual(['Home', 'Plans', 'Notes', 'History', 'Chats'])
+    expect(document.querySelector('[data-tab="needsYou"]')).toBeNull()
+    expect(tabCount('dashboard')).toBe('2')
+    // filter-blind: a lens narrows the list, never Home's count
+    click(document.querySelector('#rail button.rail-tab[data-project="harbor"]'))
+    await settle()
+    expect(rows()).toHaveLength(1)
+    expect(tabCount('dashboard')).toBe('2')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Home')
+    expect(document.getElementById('pageKicker')?.hidden).toBe(true)
+    expect(document.getElementById('pageKicker')?.textContent).toBe('')
+  })
+
+  it('shows the list and the lanes together on Home, the list first; hides both on Plans and under Settings', async () => {
+    db = freshDb()
+    await bootApp(db)
+    const list = document.getElementById('needsYou')!
+    const lanes = document.getElementById('dashboard')!
+    expect([list.hidden, lanes.hidden]).toEqual([false, false])
+    expect(list.compareDocumentPosition(lanes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(list.getAttribute('role')).toBe('region')
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    expect([list.hidden, lanes.hidden]).toEqual([true, true])
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Plans')
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect([list.hidden, lanes.hidden]).toEqual([false, false])
+    click(document.getElementById('gear'))
+    await settle()
+    expect(document.getElementById('setup')?.hidden).toBe(false)
+    expect([list.hidden, lanes.hidden]).toEqual([true, true])
+  })
+
+  it('lands a deep link, a search result and G I on Home with the ask open (G I: the first row focused), from Plans too', async () => {
+    db = freshDb()
+    question(db, 'First ask')
+    const second = question(db, 'Second ask about the harbor')
+    const third = question(db, 'Third ask')
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    navigateToHash(`#item/${second}`)
+    await settle()
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(openIds()).toEqual([second])
+    expect(row(second)?.querySelector('.nrow-card')).not.toBeNull()
+
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    await searchFor('Third ask')
+    click(document.querySelector(`#searchResults [role="option"][data-search-target="${third}"]`))
+    await settle()
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(openIds()).toEqual([third])
+
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', bubbles: true, cancelable: true }))
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'i', bubbles: true, cancelable: true }))
+    await settle()
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(rows()[0])
+  })
+})
+
+describe('the ask in front (step 4)', () => {
+  const front = () => document.body.classList.contains('ask-front')
+
+  it('opens the first waiting ask at the first paint with data on a wide window, moving no focus and scrolling nothing', async () => {
+    db = freshDb()
+    const first = question(db, 'First ask')
+    question(db, 'Second ask')
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const scrollTo = vi.spyOn(window, 'scrollTo')
+    const bridge = await bootApp(db)
+    expect(openIds()).toEqual([first])
+    expect(rows()[0]?.dataset.cardId).toBe(first)
+    expect(row(first)?.querySelector('.nrow-card')).not.toBeNull()
+    expect(front()).toBe(true)
+    expect(document.activeElement).toBe(document.body)
+    expect(scroll).not.toHaveBeenCalled()
+    expect(scrollTo).not.toHaveBeenCalled()
+    expect(bridge.posts.filter((post) => !post.url.includes('/api/mesh'))).toEqual([])
+    // the keyboard's row is the ask in front
+    expect(row(first)?.classList.contains('selected')).toBe(true)
+  })
+
+  it('opens nothing when only answered asks or asks in a closed fold are listed', async () => {
+    db = freshDb()
+    const answered = question(db, 'Answered')
+    replyItem(db, answered, 'Yes')
+    const snoozed = question(db, 'Snoozed')
+    snoozeItem(db, snoozed, new Date(T0 + 24 * 60 * 60_000).toISOString())
+    await bootApp(db)
+    expect(row(answered)).not.toBeNull()
+    expect(row(snoozed)?.closest('details:not([open])')).not.toBeNull()
+    expect(openIds()).toEqual([])
+    expect(front()).toBe(false)
+    await changedPollTick(db)
+    expect(openIds()).toEqual([])
+  })
+
+  it('opens nothing by itself on a narrow window, and never sets the class', async () => {
+    setViewport('narrow')
+    db = freshDb()
+    const id = question(db, 'Narrow ask')
+    await bootApp(db)
+    expect(openIds()).toEqual([])
+    expect(front()).toBe(false)
+    await changedPollTick(db)
+    expect(openIds()).toEqual([])
+    click(row(id))
+    await settle()
+    expect(openIds()).toEqual([id])
+    expect(front(), 'the inline card is not the ask in front').toBe(false)
+    setViewport('wide')
+  })
+
+  it('stays closed after ✕ or Esc across later polls; a click on a row opens it again; Plans and back brings it forward', async () => {
+    db = freshDb()
+    const first = question(db, 'First ask')
+    const second = question(db, 'Second ask')
+    await bootApp(db)
+    expect(openIds()).toEqual([first])
+    click(row(first)!.querySelector('.nrow-card-close'))
+    await settle()
+    expect(openIds()).toEqual([])
+    expect(front()).toBe(false)
+    await changedPollTick(db)
+    await changedPollTick(db)
+    expect(openIds(), 'the person closed the front').toEqual([])
+    click(row(second))
+    await settle()
+    expect(openIds()).toEqual([second])
+    await collapseRow(second)
+    expect(openIds()).toEqual([])
+    await changedPollTick(db)
+    expect(openIds()).toEqual([])
+    click(document.querySelector('.tab[data-tab="boards"]'))
+    await settle()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    expect(openIds()).toEqual([first])
+    expect(front()).toBe(true)
+  })
+
+  it('brings a new ask to the front when nothing was waiting', async () => {
+    db = freshDb()
+    await bootApp(db)
+    expect(openIds()).toEqual([])
+    const id = question(db, 'Arrives later')
+    await pollTick()
+    expect(openIds()).toEqual([id])
+    expect(front()).toBe(true)
+  })
+
+  // the resolve-by-key case lives in ux-home-keys.test.ts: jsdom keeps every earlier boot's
+  // document listeners in one file, so only a file's first test can press E
+  it('opens nothing by itself while a frame is held by a press', async () => {
+    db = freshDb()
+    await bootApp(db)
+    question(db, 'Arrived under a press')
+    await vi.advanceTimersByTimeAsync(3000 - ((Date.now() - T0) % 3000) - 100)
+    document.getElementById('needsYouTitle')!.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }))
+    await vi.advanceTimersByTimeAsync(200)
+    expect(openIds()).toEqual([])
+    window.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true }))
+    await pollTick()
+    expect(openIds()).toHaveLength(1)
+  })
+
+  it('opens nothing by itself while a session composer holds the frame', async () => {
+    db = freshDb()
+    upsertActivity(db, { ...AGENT, session: 'mcp-a', doing: 'Working', idle: false, receives_messages: true })
+    recordActivityCall(db, 'mcp-a')
+    await bootApp(db)
+    const card = sessionCard('session:mcp-a')!
+    click(card.querySelector('[data-ah-action="message"]'))
+    await settle()
+    const box = panel().querySelector<HTMLTextAreaElement>('.msg-composer textarea')!
+    box.focus()
+    type(box, 'Half a thought')
+    question(db, 'Arrives while typing')
+    await pollTick()
+    expect(openIds()).toEqual([])
+    expect(document.activeElement).toBe(box)
+  })
+
+  it('keeps one thing in front on a wide window: a session panel closes the ask, an ask closes the panel', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const id = question(db, 'Ask in front')
+    await bootApp(db)
+    expect(openIds()).toEqual([id])
+    click(sessionCard('session:here')!.querySelector('.sc-doing'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(openIds()).toEqual([])
+    expect(front()).toBe(false)
+    await changedPollTick(db)
+    expect(openIds(), 'nothing comes to the front while the panel is open').toEqual([])
+    click(row(id))
+    await settle()
+    expect(openIds()).toEqual([id])
+    expect(panel().hidden).toBe(true)
+    expect(front()).toBe(true)
+  })
+
+  it('keeps both inline on a narrow window', async () => {
+    setViewport('narrow')
+    db = freshDb()
+    live(db, 'here')
+    const id = question(db, 'Inline ask')
+    await bootApp(db)
+    click(row(id))
+    await settle()
+    click(sessionCard('session:here')!.querySelector('.sc-doing'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(openIds()).toEqual([id])
+    setViewport('wide')
+  })
+
+  it('resolving an ask in front from elsewhere leaves it out, and the next comes forward', async () => {
+    db = freshDb()
+    const first = question(db, 'First ask')
+    const second = question(db, 'Second ask')
+    await bootApp(db)
+    expect(openIds()).toEqual([first])
+    resolveItem(db, first)
+    await pollTick()
+    expect(openIds()).toEqual([second])
+    expect(document.activeElement, 'no focus was in the list, so none moves').toBe(document.body)
+  })
+})
+
+describe('the stylesheet (step 4)', () => {
+  const css = readFileSync(resolve(process.cwd(), 'public/style.css'), 'utf8')
+  it('keeps the ask-front rules before the one responsive @media block', () => {
+    const media = css.indexOf('@media (max-width: 1279px)')
+    expect(media).toBeGreaterThan(-1)
+    for (const rule of [
+      'body.ask-front #needsYouList, body.ask-front #dashboard { padding-right: calc(var(--inspector-width) + 28px); }',
+      'body.ask-front :is(.plans-lane, .dashboard-outcomes, .dashboard-activity) { display: none; }',
+      'body.ask-front .inspector-resizer { display: block; }',
+    ]) {
+      const at = css.indexOf(rule)
+      expect(at, rule).toBeGreaterThan(-1)
+      expect(at, rule).toBeLessThan(media)
+    }
+    expect(css.slice(media)).not.toContain('ask-front')
+    expect(css).toMatch(/\n\.inspector-resizer \{ display: none; \}/)
+    expect(css).not.toMatch(/#needsYou(List)?\s*\{[^}]*min-height/)
   })
 })

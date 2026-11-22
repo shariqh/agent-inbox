@@ -35,7 +35,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   whatever moved its ask there (the clock included), and the human closing that
   fold closes the card (keeping its draft).
   Every deferral goes through `deferAsk`: an ask that holds a draft keeps or
-  takes the open card (switching to the Inbox when the Review queue was opened
+  takes the open card (selecting Home when the Review queue was opened
   on another tab), and one without a draft closes it, so only the human's own
   close can put a draft that pauses the list out of sight.
   Clarify/decline are response kinds, not outcomes. `board_advance` is the only
@@ -75,8 +75,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   and `listOpenAsks` (open questions and open hand-offs) feeds `?scope=attention`,
   so the dock badge and notifications need no change. `ambientChips` counts
   milestones without hand-offs. Acknowledge resolves it, which ends it everywhere
-  (`POST /api/items/:id/acknowledge`); the Needs you lane card carries a
-  "Hand-off" label. Nothing is rewritten for older items: an old open milestone
+  (`POST /api/items/:id/acknowledge`), offered on its card in Home's list (the
+  Needs you lane's "Hand-off" label went with the lane, UX pass slice 2). Nothing is rewritten for older items: an old open milestone
   with a real next step stays in History.
 - The agent tab (cards view V5) never carries a count, and nothing in the strip or Run history
   reaches attention.
@@ -176,10 +176,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   state survives rebuilds and `revealDetailsAncestors` opens it for a deep link or draft
   recovery), headed `Later · N` with `laterBreakdown` (`2 pinned · 1 snoozed, next back in
   2h`). N follows the lens and the action filters, like every list surface, and never
-  reaches the badge, a tab or a session card; the Dashboard's entry to it is the Needs you
-  lane header's "Later N ›", shown only above 0 (dashboard lanes design §3.2; the Agents
-  header's before it, #454 A.2, and the rail's "N in Later" before that; `openLater`), which
-  opens the Inbox with the section open. Its order is `sortLaterEntries` (snoozed soonest back
+  reaches the badge, a tab or a session card. It sits at the foot of Home's list of asks
+  (UX pass, slice 2, which retired the Needs you lane's "Later N ›" entry to it, `openLater`;
+  the Agents header's before it, #454 A.2, and the rail's "N in Later" before that), and the
+  calm line names it when nothing else waits ("Nothing needs you · N in Later"). Its order is `sortLaterEntries` (snoozed soonest back
   first, then pinned oldest first, ties by a stable key), never the Sort menu. Rows are
   ordinary `.nrow`s whose way back is always "Back to inbox"; only their lines are dimmed,
   never the section (nor the snoozed, pinned or stale fold, which dim their summary and row
@@ -202,9 +202,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   exactly what the stop checked; do not reorder the halves. Nothing in the schema changed,
   and an older process's statements meet the existing triggers (`test/mixed-version.test.ts`
   pins its re-send keeping both halves and its new action ending both). A deferral from a
-  Review queue opened on another tab with `t` switches to the Inbox (`selectTab(…, { paint:
+  Review queue opened on another tab with `t` selects Home (`selectTab('dashboard', { paint:
   false })`, no focus move) only when the ask holds a draft and the write succeeded, and the
-  queue then returns focus to the Inbox's Review queue button, not to the tab it left.
+  queue then returns focus to the list header's Review queue button (its tools shown first),
+  not to the tab it left.
 
 ## History (shipped since v1)
 

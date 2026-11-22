@@ -570,7 +570,7 @@ const rowBuilds = new WeakMap()
 // the poll paints again once they no longer are (frameInputs).
 let frontWaitsOnLanes = false
 const lanesHoldFocus = () => Boolean(activeFocusElement()?.closest?.('#dashboard'))
-const lanesUnderPointer = () => Boolean(document.querySelector('#dashboard:hover'))
+const lanesUnderPointer = () => Boolean(document.querySelector('#needsYou:hover, #dashboard:hover'))
 const lanesInUse = () => lanesHoldFocus() || (pollPaint && editablePanesPainted && lanesUnderPointer())
 
 // body.ask-front: exactly while the window is wide, Home is showing and a row is
@@ -589,12 +589,14 @@ function syncAskFront() {
 // first row drawn outside a closed fold that still waits on the person opens,
 // its card drawn in this frame. It moves no focus, scrolls nothing and writes
 // nothing, except that a keyboard user already in the list lands on that row.
-// While the lanes are in use it waits (lanesInUse: focus rests in them, or the
-// pointer is over them on a later poll's frame): an ask coming forward narrows
-// them under whatever the person is using there. The one exception is
-// `fromPanel`: the person just closed the session panel, focus is back on that
-// session's card, and the ask they had in front returns now (closeSessionFocus).
-function bringAskToFront({ fromPanel = false } = {}) {
+// While the page is in use it waits (lanesInUse: focus rests in the lanes, or the
+// pointer is over the list or the lanes on a later poll's frame): an ask coming
+// forward narrows them under whatever the person is using there. Two exceptions:
+// `fromPanel`, the person just closed the session panel, focus is back on that
+// session's card, and the ask they had in front returns now (closeSessionFocus);
+// and `steady`, the ask in front left the list in this frame, so the next one
+// takes its place without moving anything beside it.
+function bringAskToFront({ fromPanel = false, steady = false } = {}) {
   frontWaitsOnLanes = false
   if (layout !== 'wide' || activeTab !== 'dashboard' || settingsOpen()) return
   const waiting = new Set(attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
@@ -608,9 +610,11 @@ function bringAskToFront({ fromPanel = false } = {}) {
   // a native dialog (New session…) carries no aria-modal, so keyboardScope() does not see it
   if (triageDeck || relayOpen || missionBoardId || missionDetailRowId || keyboardScope() !== document
     || document.querySelector('dialog[open]')) return
-  // The lanes are in use: focus rests in them, or, on a poll's frame after the first, the
-  // pointer is over them (an ask coming forward narrows them under the pointer before a press).
-  if (!fromPanel && lanesInUse()) {
+  // The page is in use: focus rests in the lanes, or, on a poll's frame after the first, the
+  // pointer is over the list or the lanes (an ask coming forward narrows both under the pointer
+  // before a press). `steady`: an ask was in front when this frame began and left the list, so
+  // the next one takes its place and nothing beside it moves.
+  if (!fromPanel && !steady && lanesInUse()) {
     frontWaitsOnLanes = true
     return
   }
@@ -3798,8 +3802,9 @@ function render() {
   if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
+  const hadFront = document.body.classList.contains('ask-front')
   const restoreQueueView = paintEditableSurfaces(frame)
-  bringAskToFront()
+  bringAskToFront({ steady: hadFront })
   pagedFocusId = null
   if (ownsFocus) {
     if (missionFocus && missionBoardId) {
@@ -10989,7 +10994,8 @@ function initKeys() {
     const intent = keyAction(e.key, {
       typing,
       deckOpen: !!triageDeck,
-      expanded: openRowId != null,
+      // from the lanes or the session panel, Esc never closes the list's ask in front (keyTargetItem)
+      expanded: openRowId != null && !lanesHoldFocus(),
       peeking: !!projectFilter && closedSet().has(projectFilter),
       optionCount: optionOrder(keyTargetItem()?.options).length,
     })

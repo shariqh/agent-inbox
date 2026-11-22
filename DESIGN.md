@@ -125,10 +125,11 @@ front is resolved, dismissed, snoozed or pinned, the next one comes forward; an 
 ask stays. While an ask is in front, the list and every lane sit in a column beside it;
 with nothing in front they use the full width. The ask and the session panel never show
 together: opening one closes the other, and closing the panel brings the ask back at once.
-While the lanes are in use (focus rests in them, or the pointer is over them) the list keeps
-updating, and an ask waits to come forward until they no longer are, so the column never
-narrows under a control in use. Keys pressed in the lanes or the session panel never reach
-the list's selected ask. Below 1280px
+While the page is in use (focus rests in the lanes, or the pointer is over the list or the
+lanes) the list keeps updating, and an ask waits to come forward until it no longer is, so
+nothing narrows under a control in use; an ask that replaces one that just left comes
+forward at once, since nothing beside it moves. Keys pressed in the lanes or the session
+panel, Esc included, never reach the list's selected ask. Below 1280px
 nothing opens by itself: Home is one column, the list with its inline card or phone sheet,
 then the lanes.
 

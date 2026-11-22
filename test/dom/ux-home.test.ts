@@ -569,6 +569,22 @@ describe('the ask in front (step 4)', () => {
     expect(front()).toBe(true)
   })
 
+  it('lets the next ask take the place of one that left, even while focus rests in the lanes: nothing beside it moves', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const first = question(db, 'First ask')
+    const second = question(db, 'Second ask')
+    await bootApp(db)
+    expect(openIds()).toEqual([first])
+    const control = sessionCard('session:here')!.querySelector<HTMLElement>('[data-ah-action]')!
+    control.focus()
+    resolveItem(db, first)
+    await pollTick()
+    expect(openIds()).toEqual([second])
+    expect(front()).toBe(true)
+    expect(document.activeElement).toBe(control)
+  })
+
   it('brings the ask back to the front as soon as the session panel is closed, focus on that session’s card', async () => {
     db = freshDb()
     live(db, 'here')

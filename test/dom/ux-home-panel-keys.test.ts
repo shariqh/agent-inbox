@@ -24,7 +24,7 @@ const selected = () => document.querySelector<HTMLElement>('#needsYouList .nrow.
 const press = (key: string) => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
 
 describe('keys in the lanes and the session panel', () => {
-  it('never answer, resolve, dismiss, move or open the list’s ask; the panel’s own ask still takes its digits', async () => {
+  it('never answer, resolve, dismiss, move, open or close the list’s ask; the panel’s own ask still takes its digits', async () => {
     db = freshDb()
     for (const session of ['here', 'other']) {
       upsertActivity(db, { ...AGENT, session, doing: 'Working on it', idle: false })
@@ -88,5 +88,19 @@ describe('keys in the lanes and the session panel', () => {
     await settle()
     expect(getItem(db, panelAsk)?.reply).toBe('Yes')
     expect(getItem(db, listAsk)?.reply ?? null).toBeNull()
+
+    // with the ask in front again and focus in the lanes, Esc leaves it alone: no close, no focus
+    // move, no scroll up to the list
+    click(panel.querySelector('.dash-focus-close'))
+    await settle()
+    expect(openIds()).toEqual([listAsk])
+    heading.focus()
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    press('Escape')
+    await settle()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(openIds(), 'Esc in the lanes closed the ask in front').toEqual([listAsk])
+    expect(document.activeElement).toBe(heading)
+    expect(scroll).not.toHaveBeenCalled()
   })
 })

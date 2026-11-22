@@ -98,13 +98,16 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   ask, `setOpenRow(id, { resume: false })`, and its card is mounted in the same frame from the
   model its row was drawn from (`rowBuilds`). It moves no focus (except that a keyboard user
   already in the list or the card lands on that row), scrolls nothing and writes nothing; it
-  never runs while a frame is held, and never from the ambient painter. While the lanes are in
+  never runs while a frame is held, and never from the ambient painter. While the page is in
   use it waits (`lanesInUse`: focus rests inside `#dashboard`, or, on a poll's frame after the
-  first, the pointer is over it), because an ask coming forward narrows the lanes under
-  whatever the person is using there: `frontWaitsOnLanes` joins `frameInputs()`, so the tick
-  after they stop being in use paints and brings the ask forward even when it reads nothing
-  new. The one exception is closing the session panel (`closeSessionFocus`): the first
-  waiting ask returns to the front at once, with focus back on that session's card. An open
+  first, the pointer is over `#needsYou` or `#dashboard`), because an ask coming forward
+  narrows the list and the lanes under whatever the person is using there:
+  `frontWaitsOnLanes` joins `frameInputs()`, so the tick after they stop being in use paints
+  and brings the ask forward even when it reads nothing new. Two exceptions: closing the
+  session panel (`closeSessionFocus`), where the first waiting ask returns to the front at
+  once with focus back on that session's card; and `steady`, where an ask was in front when
+  the frame began and left the list, so the next one takes its place and nothing beside it
+  moves. An open
   native `<dialog>` (New session…) counts as a modal here, although it carries no
   `aria-modal`. `frontClosed` turns
   true when the person closes the card on a wide window (its ✕ or Esc, `collapseRow(id, {
@@ -117,8 +120,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   while focus is inside `#dashboard` (a lane, a heading, the session panel) no key reaches
   the list's selected ask: `keyTargetItem()` answers nothing there, `keyboardActionScope()`
   is the focused `[data-panel-ask]` or nothing, and `runIntent`'s `move` and `expand` do
-  nothing. So 1–4, E, X, J, K and Enter in the session panel act on the panel's own ask or
-  on nothing, as they did when the list was on another page. A poll's frame also never moves
+  nothing, and Esc does not count the ask in front as open (`expanded` is false there), so it
+  neither closes it nor pulls focus and the page up to the list. So 1–4, E, X, J, K, Enter
+  and Esc in the session panel act on the panel's own ask or on nothing, as they did when the
+  list was on another page. A poll's frame also never moves
   focus out of the lanes (the draft and recovery focus restores are skipped there).
   `test/dom/ux-home-panel-keys.test.ts` pins this. When the ask in front leaves the list (resolved, dismissed,
   snoozed, pinned), the same `render()` brings the next one forward, so 1–4, R, E and X act on

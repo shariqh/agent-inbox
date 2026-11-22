@@ -267,9 +267,10 @@ separate Inbox page.
   a request is in front, the rest of Home sits in a column beside it; close the request
   and the page uses the full width. A session panel and a request never show together
   there: opening one closes the other, and closing the panel brings the request back.
-  While you are working in the sessions or the plans below (your focus or your pointer
-  is there), a new request appears in the list and waits to come forward until you
-  leave them, and the number keys, `E` and `X` never act on a request from there. In a narrower window a
+  While you are working in the sessions or the plans below (your focus is there, or your
+  pointer is over the page), a new request appears in the list and waits to come forward
+  until you leave them, and the number keys, `E`, `X` and `Esc` never act on a request
+  from there. In a narrower window a
   request opens under its row when you click it, and nothing opens by itself.
 - **Working** has a card for every session with live work, grouped by project: what
   it reports, its agent, branch and time since its last call, its plan's progress

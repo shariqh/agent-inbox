@@ -566,10 +566,12 @@ let frontAutoId = null
 // The model and entry each list row was drawn from, so a frame can draw the
 // card of the ask it brings to the front (bringAskToFront).
 const rowBuilds = new WeakMap()
-// An ask is ready to come forward and only focus resting in the lanes holds it
-// back: the poll paints again once that focus has left (frameInputs).
-let frontWaitsOnFocus = false
+// An ask is ready to come forward and only the lanes being in use holds it back:
+// the poll paints again once they no longer are (frameInputs).
+let frontWaitsOnLanes = false
 const lanesHoldFocus = () => Boolean(activeFocusElement()?.closest?.('#dashboard'))
+const lanesUnderPointer = () => Boolean(document.querySelector('#dashboard:hover'))
+const lanesInUse = () => lanesHoldFocus() || (pollPaint && editablePanesPainted && lanesUnderPointer())
 
 // body.ask-front: exactly while the window is wide, Home is showing and a row is
 // open and drawn in the list (not in a closed fold). The CSS keeps the list and
@@ -587,24 +589,29 @@ function syncAskFront() {
 // first row drawn outside a closed fold that still waits on the person opens,
 // its card drawn in this frame. It moves no focus, scrolls nothing and writes
 // nothing, except that a keyboard user already in the list lands on that row.
-// While focus rests in the lanes it waits: an ask coming forward narrows them
-// under whatever the person is using there. The one exception is `fromPanel`:
-// the person just closed the session panel, focus is back on that session's
-// card, and the ask they had in front returns now (closeSessionFocus).
+// While the lanes are in use it waits (lanesInUse: focus rests in them, or the
+// pointer is over them on a later poll's frame): an ask coming forward narrows
+// them under whatever the person is using there. The one exception is
+// `fromPanel`: the person just closed the session panel, focus is back on that
+// session's card, and the ask they had in front returns now (closeSessionFocus).
 function bringAskToFront({ fromPanel = false } = {}) {
-  frontWaitsOnFocus = false
+  frontWaitsOnLanes = false
   if (layout !== 'wide' || activeTab !== 'dashboard' || settingsOpen()) return
   const waiting = new Set(attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
     .map(needsEntryId))
+  // the person's close holds until nothing waits anywhere: a lens or a filter that shows no
+  // waiting ask must not bring back, on the way out of it, the ask they closed
+  if (!waiting.size) frontClosed = false
   const first = rowEls().find((el) => waiting.has(el.dataset.cardId))
-  if (!first) {
-    frontClosed = false
-    return
-  }
+  if (!first) return
   if (openRowId !== null || focusSession || frontClosed) return
-  if (triageDeck || relayOpen || missionBoardId || missionDetailRowId || keyboardScope() !== document) return
-  if (!fromPanel && lanesHoldFocus()) {
-    frontWaitsOnFocus = true
+  // a native dialog (New session…) carries no aria-modal, so keyboardScope() does not see it
+  if (triageDeck || relayOpen || missionBoardId || missionDetailRowId || keyboardScope() !== document
+    || document.querySelector('dialog[open]')) return
+  // The lanes are in use: focus rests in them, or, on a poll's frame after the first, the
+  // pointer is over them (an ask coming forward narrows them under the pointer before a press).
+  if (!fromPanel && lanesInUse()) {
+    frontWaitsOnLanes = true
     return
   }
   const build = rowBuilds.get(first)
@@ -3725,8 +3732,8 @@ function frameInputs() {
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available(),
     triageHeld,
-    // an ask held back by focus in the lanes comes forward on the tick after that focus leaves
-    frontWaitsOnFocus && lanesHoldFocus(),
+    // an ask held back while the lanes were in use comes forward on the tick after they no longer are
+    frontWaitsOnLanes && (lanesHoldFocus() || lanesUnderPointer()),
     agentsHome.state(),
     meshAgentPage.state(),
     chatsView.state(),
@@ -3798,6 +3805,8 @@ function render() {
     if (missionFocus && missionBoardId) {
       restoreMissionFocus(missionFocus)
     } else if (!restoreDashboardFocus(dashboardFocus)
+      // a poll's frame never takes focus out of the lanes (it used to be held while focus was there)
+      && !(pollPaint && lanesHoldFocus())
       && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus) && !restorePagedCardFocus(pagedFocus)
       && plansHeaderFocusId) {
       document.getElementById(plansHeaderFocusId)?.focus({ preventScroll: true })
@@ -10743,6 +10752,9 @@ function keyTargetItem() {
     if (data?.r) return { kind: 'row', board: data.b, row: data.r, options: data.r.options }
     return null
   }
+  // Home shows the list and the lanes together (UX pass, slice 2): while focus is in the
+  // lanes or the session panel, a key never reaches across to the list's selected ask.
+  if (lanesHoldFocus()) return null
   const operable = rowEls()
   const focused = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
   const focusedId = focused && operable.includes(focused) ? focused.dataset.cardId : null
@@ -10762,7 +10774,8 @@ function runIntent(intent) {
   const it = target?.kind === 'item' ? target.item : null
   switch (intent.type) {
     case 'move': {
-      if (!ids.length) return
+      // the lanes own their keys: J, K and Enter from there never move or open the list's ask
+      if (!ids.length || lanesHoldFocus()) return
       const at = ids.indexOf(selectedId)
       const from = at < 0 ? (intent.delta > 0 ? -1 : ids.length) : at
       selectRow(ids[Math.max(0, Math.min(ids.length - 1, from + intent.delta))])
@@ -10770,7 +10783,7 @@ function runIntent(intent) {
     }
     case 'expand': {
       // A real row click shares pointer activation and focus-into-card behavior.
-      if (!selectedId) return
+      if (!selectedId || lanesHoldFocus()) return
       rowEls().find((el) => el.dataset.cardId === selectedId)?.click()
       return
     }
@@ -10859,6 +10872,8 @@ function keyboardActionScope() {
     '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item, #dashFocus [data-panel-ask]',
   )
   if (focused && !focused.closest('[hidden]')) return focused
+  // in the lanes the scope is the focused panel ask above or nothing: never the list's row
+  if (lanesHoldFocus()) return null
   const rows = rowEls()
   return rows.find((element) => element.dataset.cardId === selectedId)
     ?? rows.find((element) => element.dataset.cardId === openRowId)

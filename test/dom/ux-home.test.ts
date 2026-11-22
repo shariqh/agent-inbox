@@ -606,6 +606,47 @@ describe('the ask in front (step 4)', () => {
     setViewport('wide')
   })
 
+  it('keeps the front closed through a lens that shows nothing waiting, until nothing waits anywhere', async () => {
+    db = freshDb()
+    const first = question(db, 'Atlas ask')
+    live(db, 'elsewhere', { project: 'harbor' })
+    await bootApp(db)
+    expect(openIds()).toEqual([first])
+    click(row(first)!.querySelector('.nrow-card-close'))
+    await settle()
+    expect(openIds()).toEqual([])
+    // a project with nothing waiting, then back to all of them
+    click(document.querySelector('#rail .rail-tab[data-project="harbor"]'))
+    await settle()
+    expect(row(first)).toBeNull()
+    click(document.querySelector('#rail .rail-tab'))
+    await settle()
+    await changedPollTick(db)
+    expect(row(first)).not.toBeNull()
+    expect(openIds(), 'the ask the person closed did not come back by itself').toEqual([])
+    // once nothing waits anywhere, the next ask to arrive comes forward again
+    resolveItem(db, first)
+    await pollTick()
+    const next = question(db, 'Arrives later')
+    await pollTick()
+    expect(openIds()).toEqual([next])
+  })
+
+  it('brings no ask forward behind an open native dialog', async () => {
+    db = freshDb()
+    await bootApp(db)
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    document.body.appendChild(dialog)
+    const id = question(db, 'Arrives behind the dialog')
+    await pollTick()
+    expect(row(id)).not.toBeNull()
+    expect(openIds()).toEqual([])
+    dialog.remove()
+    await changedPollTick(db)
+    expect(openIds()).toEqual([id])
+  })
+
   it('keeps one thing in front on a wide window: a session panel closes the ask, an ask closes the panel', async () => {
     db = freshDb()
     live(db, 'here')
@@ -670,6 +711,20 @@ describe('the stylesheet (step 4)', () => {
     expect(css.slice(media)).not.toContain('ask-front')
     // every lane stays in the column beside the ask in front: none is left out
     expect(css).not.toMatch(/ask-front[^{]*\{[^}]*display:\s*none/)
+  })
+
+  it('gives Home one gap between sections through the lane-gap variable, and lets a project’s cards fill its share', () => {
+    const media = css.indexOf('@media (max-width: 1279px)')
+    const slice = css.slice(css.indexOf('/* UX pass, slice 2: one Home.'))
+    expect(css.indexOf('/* UX pass, slice 2: one Home.')).toBeGreaterThan(media)
+    // set on the variable: the narrow window's session panel is placed against the same gap
+    expect(slice).toContain('.dashboard-grid { --lane-gap: var(--sp-6); }')
+    expect(slice).not.toMatch(/\.dashboard-grid \{[^}]*row-gap/)
+    // projects share a row; the cards fill a project's share at every width (after the block that
+    // gives a narrow window two fixed card columns, so this wins there too)
+    expect(slice).toContain('.ah-groups { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-4); }')
+    expect(slice).toContain('.ah-group { min-width: 0; flex: 1 1 340px; }')
+    expect(slice).toContain('.ah-cards { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }')
     expect(css).toMatch(/\n\.inspector-resizer \{ display: none; \}/)
     expect(css).not.toMatch(/#needsYou(List)?\s*\{[^}]*min-height/)
     // an empty kicker draws nothing: its own display would beat the UA's [hidden]

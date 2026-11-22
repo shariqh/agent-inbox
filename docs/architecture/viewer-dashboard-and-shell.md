@@ -71,9 +71,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Just landed and Today share one quiet heading (`--fs-body`, soft text) and sit on the page
   itself, edge to edge with the list: `.dashboard .dashboard-card` has no border, padding or
   background, and `#dashboard` has no side padding. A project's sessions keep one small label
-  line (`.ah-group-head`), and the projects sit side by side where there is room (`.ah-groups`
-  is a grid of columns at least 340px wide), so a wide overview shows three across and the
-  column beside an ask shows one. The new-notes chip is as wide as its words.
+  line (`.ah-group-head`), and the projects sit side by side where there is room: `.ah-groups`
+  is a wrapping flex row, each `.ah-group` takes an equal share of at least 340px, and its
+  cards fill that share at every width (`.ah-cards` auto-fill, restated after the narrow
+  block's two fixed columns). A wide overview shows three projects across, one busy project
+  still spreads over the row, and the column beside an ask shows one. The gap between
+  sections is `--lane-gap` set to `--sp-6` on `.dashboard-grid`, so the narrow window's
+  session panel, which is placed against that variable, follows. The new-notes chip is as wide as its words.
 - **The ask in front** (slice 2, wide windows only). `body.ask-front` is set exactly while
   `layout === 'wide'`, Home is showing (not under Settings) and a row is open and drawn in the
   list outside a closed fold; `syncAskFront()` keeps it, called from `setOpenRow` (the single
@@ -94,16 +98,29 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   ask, `setOpenRow(id, { resume: false })`, and its card is mounted in the same frame from the
   model its row was drawn from (`rowBuilds`). It moves no focus (except that a keyboard user
   already in the list or the card lands on that row), scrolls nothing and writes nothing; it
-  never runs while a frame is held, and never from the ambient painter. While focus rests
-  inside `#dashboard` it waits (an ask coming forward narrows the lanes under whatever the
-  person is using there): `frontWaitsOnFocus` joins `frameInputs()`, so the tick after that
-  focus leaves paints and brings the ask forward even when it reads nothing new. The one
-  exception is closing the session panel (`closeSessionFocus`): the first waiting ask returns
-  to the front at once, with focus back on that session's card. `frontClosed` turns
+  never runs while a frame is held, and never from the ambient painter. While the lanes are in
+  use it waits (`lanesInUse`: focus rests inside `#dashboard`, or, on a poll's frame after the
+  first, the pointer is over it), because an ask coming forward narrows the lanes under
+  whatever the person is using there: `frontWaitsOnLanes` joins `frameInputs()`, so the tick
+  after they stop being in use paints and brings the ask forward even when it reads nothing
+  new. The one exception is closing the session panel (`closeSessionFocus`): the first
+  waiting ask returns to the front at once, with focus back on that session's card. An open
+  native `<dialog>` (New session…) counts as a modal here, although it carries no
+  `aria-modal`. `frontClosed` turns
   true when the person closes the card on a wide window (its ✕ or Esc, `collapseRow(id, {
   explicit: true })`) and false when a row opens by any path (`setOpenRow` with an id), when
-  Home is entered from another tab, and whenever a paint finds no waiting ask, so the next ask
-  to arrive comes to the front. When the ask in front leaves the list (resolved, dismissed,
+  Home is entered from another tab, and whenever a paint finds that nothing waits anywhere
+  (the unlensed attention set is empty), so the next ask to arrive comes to the front. A lens
+  or a filter that merely shows no waiting ask does not reset it: the ask the person closed
+  does not come back on the way out of that lens.
+- **Keys stay on their side of Home** (slice 2). The list and the lanes share the page, so
+  while focus is inside `#dashboard` (a lane, a heading, the session panel) no key reaches
+  the list's selected ask: `keyTargetItem()` answers nothing there, `keyboardActionScope()`
+  is the focused `[data-panel-ask]` or nothing, and `runIntent`'s `move` and `expand` do
+  nothing. So 1–4, E, X, J, K and Enter in the session panel act on the panel's own ask or
+  on nothing, as they did when the list was on another page. A poll's frame also never moves
+  focus out of the lanes (the draft and recovery focus restores are skipped there).
+  `test/dom/ux-home-panel-keys.test.ts` pins this. When the ask in front leaves the list (resolved, dismissed,
   snoozed, pinned), the same `render()` brings the next one forward, so 1–4, R, E and X act on
   it; an answered ask keeps its row and its open card. The first click or Enter on an ask that
   came to the front by itself (`frontAutoId`) moves focus into its card, as opening any row

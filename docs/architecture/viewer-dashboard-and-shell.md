@@ -36,9 +36,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   sections together, `#needsYou` (the list of asks, `role="region"` labelled by
   `#needsYouTitle`) and then `#dashboard` (the lanes); DOM order is reading and Tab order,
   the asks first. `showPanel('dashboard')` shows both; every other tab and Settings hide
-  both. The list stays outside `#dashboard` on purpose: focus inside `#dashboard` holds the
-  editable repaint (`dashboardInteractionActive`), and the fixed card must stay out of the
-  `operations-desk` size container. The internal names stay (`dashboard`, `needsYou`,
+  both. The list stays outside `#dashboard`: the fixed card must stay out of the
+  `operations-desk` size container, and the lanes' own focus bookkeeping
+  (`dashboardFocusBookmark`) never sees a row. The internal names stay (`dashboard`, `needsYou`,
   `needsYouList`, `g.needsYou`). `PAGE_META.dashboard` is `{ kicker: '', title: 'Home' }`
   (an empty kicker is hidden) and is the fallback for an unknown id. Every way into the old
   Inbox tab lands on Home: `tabForItem`'s default, `openAskInInbox`, `holdTriage`,
@@ -65,15 +65,24 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`restoreTriageReturnFocus`, the hold line's fallbacks, a discarded recovery line) goes
   through `focusQueueControl`, and `holdTriage` and `keepDraftInView` call
   `showQueueTools()`. The calm line reads "Nothing needs you" (or "Nothing needs you · N in
-  Later").
+  Later") and is one line on the page: it carries no count chips (`ambientChips` is gone; the
+  plans, milestones and answered asks it counted are on the page under it or in History).
+- **Home's sections look alike** (slice 2). Needs you, Working, Quiet, Plans in progress,
+  Just landed and Today share one quiet heading (`--fs-body`, soft text) and sit on the page
+  itself, edge to edge with the list: `.dashboard .dashboard-card` has no border, padding or
+  background, and `#dashboard` has no side padding. A project's sessions keep one small label
+  line (`.ah-group-head`), and the projects sit side by side where there is room (`.ah-groups`
+  is a grid of columns at least 340px wide), so a wide overview shows three across and the
+  column beside an ask shows one. The new-notes chip is as wide as its words.
 - **The ask in front** (slice 2, wide windows only). `body.ask-front` is set exactly while
   `layout === 'wide'`, Home is showing (not under Settings) and a row is open and drawn in the
   list outside a closed fold; `syncAskFront()` keeps it, called from `setOpenRow` (the single
   writer of `openRowId`), `showPanel`, the layout change and the end of `render()`. Only with
   it do `#needsYouList` and `#dashboard` keep clear of the fixed card (`padding-right:
-  calc(var(--inspector-width) + 28px)`), are Plans in progress, Just landed and the ribbon
-  not drawn, and does `#inspectorResize` show; without it the list and the lanes use the
-  full width. The card's default width is 640px (`PANE_DEFAULTS.inspector`). One thing in
+  calc(var(--inspector-width) + 28px)`) and does `#inspectorResize` show; without it the
+  list and the lanes use the full width. Every lane stays drawn in the column beside the
+  ask: the lanes' own container queries (`operations-desk`, `dash-lanes`) give them their
+  narrow layouts there. The card's default width is 640px (`PANE_DEFAULTS.inspector`). One thing in
   front: opening a session panel (`openSessionFocus`, `jumpToSession`) closes the open row
   (`closeFrontAsk`), and opening a row by any path closes the session panel
   (`closeSessionPanelQuietly`, moving no focus); under 1280px both stay inline. Inside
@@ -85,7 +94,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   ask, `setOpenRow(id, { resume: false })`, and its card is mounted in the same frame from the
   model its row was drawn from (`rowBuilds`). It moves no focus (except that a keyboard user
   already in the list or the card lands on that row), scrolls nothing and writes nothing; it
-  never runs while a frame is held, and never from the ambient painter. `frontClosed` turns
+  never runs while a frame is held, and never from the ambient painter. While focus rests
+  inside `#dashboard` it waits (an ask coming forward narrows the lanes under whatever the
+  person is using there): `frontWaitsOnFocus` joins `frameInputs()`, so the tick after that
+  focus leaves paints and brings the ask forward even when it reads nothing new. The one
+  exception is closing the session panel (`closeSessionFocus`): the first waiting ask returns
+  to the front at once, with focus back on that session's card. `frontClosed` turns
   true when the person closes the card on a wide window (its ✕ or Esc, `collapseRow(id, {
   explicit: true })`) and false when a row opens by any path (`setOpenRow` with an id), when
   Home is entered from another tab, and whenever a paint finds no waiting ask, so the next ask
@@ -93,7 +107,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   snoozed, pinned), the same `render()` brings the next one forward, so 1–4, R, E and X act on
   it; an answered ask keeps its row and its open card. The first click or Enter on an ask that
   came to the front by itself (`frontAutoId`) moves focus into its card, as opening any row
-  does. `test/dom/ux-home.test.ts` and `test/dom/ux-home-keys.test.ts` pin Home.
+  does. When the window turns narrow, such an ask closes if the person has not touched it
+  (no focus in its row, no unsent answer), so nobody gets an inline card or a phone sheet
+  they did not open. `test/dom/ux-home.test.ts` and `test/dom/ux-home-keys.test.ts` pin Home.
 - The Plans in progress lane (dashboard lanes PR 6, §3.5; `public/plans-lane.js`) follows Working
   and Quiet in the grid, then Just landed and the Today ribbon, each a full-width lane
   (`grid-column: 1 / -1` in one rule), the ribbon last. DOM order is page order, so Tab follows
@@ -366,11 +382,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 ## Invariants in detail
 
-- **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
-  and native range selector once, then refresh session cards, recent outcomes, history and
-  the list's count through the ambient painter. The list of asks itself is an editable
-  surface: on Home, focus inside `#dashboard` (a lane control, the range, the session panel)
-  holds its repaint like any other editable frame, until focus leaves. Preserve the
+- **Dashboard focus must not freeze monitoring detail, or the list of asks.** Mount the
+  structural frame and native range selector once, then refresh session cards, recent
+  outcomes, history and the list's count through the ambient painter. Focus resting inside
+  `#dashboard` (a lane control, the range, the session panel) holds no frame: the list of
+  asks shares the page and keeps repainting under the ordinary rules (a held press, an
+  unsent answer, a scroll in progress). Only bringing an ask to the front waits for that
+  focus to leave. Preserve the
   range control's identity, value and focus across polls and history error/recovery.
   Reuse a focused outcome button while its result remains present; move focus to an
   adjacent control only when that result actually leaves and the viewer owns focus.

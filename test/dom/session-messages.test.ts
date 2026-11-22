@@ -234,10 +234,8 @@ describe('the session panel’s composer (#411, #454)', () => {
     expect(input('mcp-a')).toBe(box)
     expect(document.activeElement).toBe(box)
     expect([box.selectionStart, box.selectionEnd]).toEqual([2, 6])
-    // the list of asks keeps updating: a message draft is not a typed answer. On Home the
-    // list shares the page with the composer, and focus inside #dashboard holds every
-    // editable repaint (dashboardInteractionActive), so the person's focus leaves it first.
-    box.blur()
+    // the list of asks keeps updating: a message draft is not a typed answer, and focus in the
+    // composer holds nothing although the list shares its page
     await showInbox()
     insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'A new question' })
     await pollTick()
@@ -389,8 +387,6 @@ describe('durable message drafts (#411, #279)', () => {
     await pollTick()
     await vi.advanceTimersByTimeAsync(300)
     expect(Object.keys(stored())).toEqual(['message-recovery:mcp-a'])
-    // focus left on the card's control after Esc holds Home's editable repaint (dashboardInteractionActive)
-    ;(document.activeElement as HTMLElement | null)?.blur()
     await showInbox()
     expect(document.querySelector('.stale-draft-line[data-recovery-line="message:mcp-a"]')?.textContent)
       .toContain('Not sent: this session is no longer running · Message: Written before it went quiet')

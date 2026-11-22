@@ -24,7 +24,7 @@ import {
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
-import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
+import { partitionNotes, unreadNoteCount, seenWatermark, markSeenIds } from '/notes.js'
 import { sessionBuild, sessionsSummary, activityFrameKey } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
@@ -454,8 +454,8 @@ function renderIfIdle() {
     // the badge, rail and Sessions line above keep reporting fresh data. Before the
     // first editable frame no editor exists to protect, so a draft restored at
     // boot (#279) cannot leave the lists blank.
-    if (editablePanesPainted && (dashboardInteractionActive()
-      || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now))) {
+    if (editablePanesPainted
+      && shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
       renderDirty = true
       showPauseHint()
       restoreSelection(textSelection)
@@ -566,6 +566,10 @@ let frontAutoId = null
 // The model and entry each list row was drawn from, so a frame can draw the
 // card of the ask it brings to the front (bringAskToFront).
 const rowBuilds = new WeakMap()
+// An ask is ready to come forward and only focus resting in the lanes holds it
+// back: the poll paints again once that focus has left (frameInputs).
+let frontWaitsOnFocus = false
+const lanesHoldFocus = () => Boolean(activeFocusElement()?.closest?.('#dashboard'))
 
 // body.ask-front: exactly while the window is wide, Home is showing and a row is
 // open and drawn in the list (not in a closed fold). The CSS keeps the list and
@@ -577,13 +581,18 @@ function syncAskFront() {
   document.body.classList.toggle('ask-front', on)
 }
 
-// Inside render() only, after the list is painted and reconciled, so never while a
+// From render(), after the list is painted and reconciled, so never while a
 // frame is held and never from the ambient painter: on a wide window with Home
 // showing and nothing in front (no open row, no session panel, no modal), the
 // first row drawn outside a closed fold that still waits on the person opens,
 // its card drawn in this frame. It moves no focus, scrolls nothing and writes
 // nothing, except that a keyboard user already in the list lands on that row.
-function bringAskToFront() {
+// While focus rests in the lanes it waits: an ask coming forward narrows them
+// under whatever the person is using there. The one exception is `fromPanel`:
+// the person just closed the session panel, focus is back on that session's
+// card, and the ask they had in front returns now (closeSessionFocus).
+function bringAskToFront({ fromPanel = false } = {}) {
+  frontWaitsOnFocus = false
   if (layout !== 'wide' || activeTab !== 'dashboard' || settingsOpen()) return
   const waiting = new Set(attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
     .map(needsEntryId))
@@ -594,6 +603,10 @@ function bringAskToFront() {
   }
   if (openRowId !== null || focusSession || frontClosed) return
   if (triageDeck || relayOpen || missionBoardId || missionDetailRowId || keyboardScope() !== document) return
+  if (!fromPanel && lanesHoldFocus()) {
+    frontWaitsOnFocus = true
+    return
+  }
   const build = rowBuilds.get(first)
   if (!build) return
   const id = first.dataset.cardId
@@ -2262,10 +2275,6 @@ function dashboardEntryProject(entry) {
   return entry?.kind === 'row' ? entry.board?.project : entry?.item?.project
 }
 
-function dashboardInteractionActive() {
-  return activeTab === 'dashboard' && Boolean(activeFocusElement()?.closest?.('#dashboard'))
-}
-
 function dashboardFocusBookmark() {
   return activeFocusElement()?.closest?.('#dashboard [data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null
 }
@@ -2360,7 +2369,17 @@ const agentsHome = installAgentsHome({
   // "Asking you · N": that session's first waiting ask, opened in front on Home as a click on its row opens it
   showAsk: (id) => {
     const entry = id ? waitingAskEntry(id) : null
-    if (entry) openAskInInbox(entry)
+    if (!entry) return
+    // already drawn in the list: open it where it is, as a click on its row does, changing
+    // no lens (a deep link's narrowing to the ask's project would hide the other projects)
+    const drawn = needsYouRowEl(id)
+    if (drawn && !drawn.closest('[hidden], details:not([open])')) {
+      selectRow(id)
+      setOpenRow(id)
+      forceRender()
+      return
+    }
+    openAskInInbox(entry)
   },
   // a card's action that failed says why in the launch's panel
   launchAction: (id, action) => launchUi?.run(id, action).then((noted) => {
@@ -3080,6 +3099,8 @@ function closeSessionFocus() {
   paintSessionFocus()
   // "Message · draft" on the card the panel leaves
   agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
+  // UX pass, slice 2: with the panel gone, the first waiting ask is in front again
+  bringAskToFront({ fromPanel: true })
   if (!owned || !document.hasFocus()) return
   const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
   ;[own?.querySelector('[data-ah-action]'), title]
@@ -3704,6 +3725,8 @@ function frameInputs() {
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available(),
     triageHeld,
+    // an ask held back by focus in the lanes comes forward on the tick after that focus leaves
+    frontWaitsOnFocus && lanesHoldFocus(),
     agentsHome.state(),
     meshAgentPage.state(),
     chatsView.state(),
@@ -6122,6 +6145,11 @@ function initResponsive() {
   const apply = () => {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
+    // An ask that came to the front by itself and that the person has not touched (no click on
+    // its row, no focus in it, no unsent answer) does not stay open as an inline card or a
+    // phone sheet nobody asked for when the window turns narrow.
+    if (next === 'narrow' && frontAutoId !== null && openRowId === frontAutoId && !holdsDraft(frontAutoId)
+      && !needsYouRowEl(frontAutoId)?.contains(activeFocusElement())) setOpenRow(null, { resume: false })
     layout = next
     syncAskFront()
     applySidebarCollapse()
@@ -7784,30 +7812,8 @@ function renderEmptyState(host, laterCount = 0) {
   head.className = 'calm-head'
   head.textContent = laterCount ? `Nothing needs you · ${laterCount} in Later` : 'Nothing needs you'
   panel.appendChild(head)
-  // the unread-note count already has its own actionable footer button
-  // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
-  // number shown twice for the same fact.
-  // Honest note: because that filter drops the ONLY chip `notesSeenIds` can
-  // change, passing it here is inert TODAY. It is passed anyway so that dropping
-  // the filter can never resurrect a chip that disagrees with the tab count —
-  // the two note numbers disagreeing is precisely fix round 2's I3.
-  // issue #32: read visibleData, so the calm panel's chips agree with the
-  // suppressed badge. The existing justification above holds verbatim for a
-  // closed project too — a project the human retired is, by definition, not
-  // something that needs them, so the claim stays true.
-  const chips = ambientChips(allItems(visibleData.g), visibleData.boards, Date.now(), notesSeenAt, notesSeenIds)
-    .filter((c) => c.key !== 'notes')
-  if (chips.length) {
-    const row = document.createElement('div')
-    row.className = 'calm-chips'
-    for (const c of chips) {
-      const s = document.createElement('span')
-      s.className = `calm-chip chip-${c.key}`
-      s.textContent = c.label // ambient labels are agent-derived counts — textContent, never innerHTML
-      row.appendChild(s)
-    }
-    panel.appendChild(row)
-  }
+  // One calm line and nothing else (UX pass, slice 2): the counts it used to carry (plans,
+  // milestones, answers awaiting pickup) are on the page under it or in History.
   host.appendChild(panel)
 }
 

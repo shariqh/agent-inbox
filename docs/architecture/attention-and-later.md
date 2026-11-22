@@ -73,8 +73,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `sortNeedsYou` keeps it below the asks an agent waits on. A milestone with `action_owner: 'task'` and no
   marker stays out. `groupItems` moves an open hand-off from `done` to `needsYou`,
   and `listOpenAsks` (open questions and open hand-offs) feeds `?scope=attention`,
-  so the dock badge and notifications need no change. `ambientChips` counts
-  milestones without hand-offs. Acknowledge resolves it, which ends it everywhere
+  so the dock badge and notifications need no change. Acknowledge resolves it, which ends it everywhere
   (`POST /api/items/:id/acknowledge`), offered on its card in Home's list (the
   Needs you lane's "Hand-off" label went with the lane, UX pass slice 2). Nothing is rewritten for older items: an old open milestone
   with a real next step stays in History.

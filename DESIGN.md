@@ -122,11 +122,19 @@ open, the first ask waiting on you comes to the front by itself at the first pai
 no focus and scrolling nothing; the person's ✕ or Esc keeps it closed until they open an
 ask again, come back to Home, or a new ask arrives when none was waiting. After the ask in
 front is resolved, dismissed, snoozed or pinned, the next one comes forward; an answered
-ask stays. While an ask is in front, the list and the lanes keep clear of it, and Plans in
-progress, Just landed and the ribbon (overview content) step aside; with nothing in front
-the list and the lanes use the full width. The ask and the session panel never show
-together: opening one closes the other. Below 1280px nothing opens by itself: Home is one
-column, the list with its inline card or phone sheet, then the lanes.
+ask stays. While an ask is in front, the list and every lane sit in a column beside it;
+with nothing in front they use the full width. The ask and the session panel never show
+together: opening one closes the other, and closing the panel brings the ask back at once.
+While focus rests in the lanes the list keeps updating, and an ask waits to come forward
+until that focus leaves, so the column never narrows under a control in use. Below 1280px
+nothing opens by itself: Home is one column, the list with its inline card or phone sheet,
+then the lanes.
+
+**One look for Home's sections.** Needs you, Working, Quiet, Plans in progress, Just landed
+and Today share one quiet heading and sit on the page itself, edge to edge; only what a
+section holds (an ask's row, a session's card) is boxed. Projects with working sessions sit
+side by side where there is room. When nothing waits, the list is one line, "Nothing needs
+you", with no count chips.
 
 A session card never shows an ask. A session that has asks carries a pink "Asking you · N"
 chip, which puts its first waiting ask in front. An ask in the list names its session
@@ -267,8 +275,8 @@ with the message kept. Escape and Cancel close it and return focus to the row's 
 - **440px and below:** full-viewport action card. Verify at 320px, 375px, and
   430px. Project and agent selectors remain side by side rather than adding a
   fourth masthead row.
-- **Every width:** the Today ribbon is Home's last lane, at full width (not drawn while an
-  ask is in front on a wide window).
+- **Every width:** the Today ribbon is Home's last lane, as wide as the lanes are (the column
+  beside an ask in front on a wide window, the full width otherwise).
 
 Responsive design reflows meaning. It never removes ownership, attention, actions,
 outcomes, or global counts.

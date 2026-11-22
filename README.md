@@ -264,10 +264,12 @@ separate Inbox page.
   request again, come back to Home from another page, or a new request arrives when
   nothing was waiting. Once you answer, the request stays in front; once you resolve,
   dismiss, snooze or pin it, the next one comes forward, and the keys work on it. While
-  a request is in front, the plans, Just landed and the ribbon step aside. A session
-  panel and a request never show together there: opening one closes the other. In a
-  narrower window a request opens under its row when you click it, and nothing opens
-  by itself.
+  a request is in front, the rest of Home sits in a column beside it; close the request
+  and the page uses the full width. A session panel and a request never show together
+  there: opening one closes the other, and closing the panel brings the request back.
+  While you are working in the sessions or the plans below, a new request appears in
+  the list and waits to come forward until you leave them. In a narrower window a
+  request opens under its row when you click it, and nothing opens by itself.
 - **Working** has a card for every session with live work, grouped by project: what
   it reports, its agent, branch and time since its last call, its plan's progress
   (done, in progress, waiting on you, to do), its subagents and a small trace of its

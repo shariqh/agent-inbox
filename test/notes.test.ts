@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { partitionNotes, unreadNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '../public/notes.js'
+import { partitionNotes, unreadNotes, unreadNoteCount, seenWatermark, markSeenIds } from '../public/notes.js'
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z')
 const ago = (ms: number) => new Date(NOW - ms).toISOString()
@@ -96,46 +96,6 @@ describe('markSeenIds', () => {
 
   it('is empty when nothing is live at all', () => {
     expect(markSeenIds(['a', 'b'], [note('a', DAY)], [])).toEqual([])
-  })
-})
-
-describe('ambientChips', () => {
-  const items = [
-    { ...note('n1', DAY) },
-    { id: 'q1', kind: 'question', status: 'open', project: 'api', title: 'q', created_at: ago(DAY), reply: 'yes', reply_seen_at: null },
-    { id: 'q2', kind: 'question', status: 'open', project: 'api', title: 'q', created_at: ago(DAY), reply: 'yes', reply_seen_at: ago(60e3) },
-    { id: 'm1', kind: 'done', status: 'open', project: 'api', title: 'shipped', created_at: ago(DAY), reply: null, reply_seen_at: null },
-  ]
-  const boards = [
-    { id: 'b1', project: 'api', progress: { done: 2, countable: 2, fraction: 1 } },
-    { id: 'b2', project: 'api', progress: { done: 1, countable: 4, fraction: 0.25 } },
-  ]
-
-  it('returns discrete chips, not one joined string', () => {
-    const chips = ambientChips(items, boards, NOW, null)
-    expect(chips.map((c) => c.key)).toEqual(['awaiting', 'notes', 'milestones', 'boards'])
-    expect(chips.map((c) => c.label)).toEqual([
-      '1 answered · awaiting agent', '1 new note', '1 milestone', '2 boards · 1 complete',
-    ])
-  })
-  it('drops chips whose count is zero', () => {
-    expect(ambientChips([], [], NOW, null)).toEqual([])
-  })
-  it('counts milestones without hand-offs (#612: a hand-off is an ask, not a milestone)', () => {
-    const handoff = { id: 'h1', kind: 'done', handoff: 1, status: 'open', project: 'api', title: 'ready', created_at: ago(DAY), reply: null, reply_seen_at: null }
-    expect(ambientChips([...items, handoff], boards, NOW, null).find((c) => c.key === 'milestones')!.label).toBe('1 milestone')
-    expect(ambientChips([handoff], [], NOW, null).map((c) => c.key)).not.toContain('milestones')
-  })
-  it('drops the notes chip once they have been seen', () => {
-    expect(ambientChips(items, boards, NOW, ago(0)).map((c) => c.key)).not.toContain('notes')
-  })
-  it('honours the per-id seen set for the new-notes chip', () => {
-    expect(ambientChips(items, boards, NOW, null).map((c) => c.key)).toContain('notes')
-    expect(ambientChips(items, boards, NOW, null, ['n1']).map((c) => c.key)).not.toContain('notes')
-  })
-  it('pluralises', () => {
-    const two = [note('n1', DAY), note('n2', DAY)]
-    expect(ambientChips(two, [], NOW, null)[0]!.label).toBe('2 new notes')
   })
 })
 

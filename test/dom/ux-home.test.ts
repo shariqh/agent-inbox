@@ -135,6 +135,20 @@ describe('the ask and the session panel (moved from the Needs you lane tests)', 
     expect(panel().hidden).toBe(true)
   })
 
+  it('the chip opens an ask already in the list where it is: no project lens, no filter change', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const elsewhere = question(db, 'Another project’s ask', { project: 'harbor' })
+    const mine = question(db, 'Mine', { session: 'here' })
+    await bootApp(db)
+    expect(rows().map((el) => el.dataset.cardId).sort()).toEqual([elsewhere, mine].sort())
+    click(sessionCard('session:here')!.querySelector('.sc-asking'))
+    await settle()
+    expect(openIds()).toEqual([mine])
+    expect(row(elsewhere), 'the other project’s ask is still listed').not.toBeNull()
+    expect(document.querySelector('#rail [aria-selected="true"]')?.textContent).toContain('All')
+  })
+
   it('a launch card’s chip never runs a launch action', () => {
     const host = document.createElement('div')
     host.className = 'dashboard'
@@ -535,6 +549,63 @@ describe('the ask in front (step 4)', () => {
     expect(document.activeElement).toBe(box)
   })
 
+  it('keeps the list current while focus rests in the lanes, and brings the ask forward once that focus has left', async () => {
+    db = freshDb()
+    live(db, 'here')
+    await bootApp(db)
+    const control = sessionCard('session:here')!.querySelector<HTMLElement>('[data-ah-action]')!
+    control.focus()
+    const id = question(db, 'Arrives while focus is in the lanes')
+    await pollTick()
+    expect(row(id), 'focus in the lanes holds no repaint of the list').not.toBeNull()
+    expect(openIds(), 'nothing narrows the lanes under the person').toEqual([])
+    expect(front()).toBe(false)
+    expect(document.activeElement).toBe(control)
+    expect(document.getElementById('pauseHint')?.textContent).toBe('')
+    // a tick that reads nothing new still paints once the focus has left
+    control.blur()
+    await pollTick()
+    expect(openIds()).toEqual([id])
+    expect(front()).toBe(true)
+  })
+
+  it('brings the ask back to the front as soon as the session panel is closed, focus on that session’s card', async () => {
+    db = freshDb()
+    live(db, 'here')
+    const id = question(db, 'Ask in front')
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    click(sessionCard('session:here')!.querySelector('[data-ah-action]'))
+    await settle()
+    expect(panel().hidden).toBe(false)
+    expect(openIds()).toEqual([])
+    click(panel().querySelector('.dash-focus-close'))
+    expect(panel().hidden).toBe(true)
+    expect(openIds(), 'no poll was needed').toEqual([id])
+    expect(front()).toBe(true)
+    expect(document.activeElement?.closest('[data-session-card]')).toBe(sessionCard('session:here'))
+  })
+
+  it('closes an ask that came forward by itself when the window turns narrow, and keeps one the person opened', async () => {
+    db = freshDb()
+    const first = question(db, 'First ask')
+    const second = question(db, 'Second ask')
+    await bootApp(db)
+    expect(openIds()).toEqual([first])
+    setViewport('narrow')
+    await settle()
+    expect(openIds(), 'nobody asked for an inline card or a phone sheet').toEqual([])
+    setViewport('wide')
+    await settle()
+    click(row(second))
+    await settle()
+    expect(openIds()).toEqual([second])
+    setViewport('narrow')
+    await settle()
+    expect(openIds(), 'the person opened this one').toEqual([second])
+    setViewport('wide')
+  })
+
   it('keeps one thing in front on a wide window: a session panel closes the ask, an ask closes the panel', async () => {
     db = freshDb()
     live(db, 'here')
@@ -590,7 +661,6 @@ describe('the stylesheet (step 4)', () => {
     expect(media).toBeGreaterThan(-1)
     for (const rule of [
       'body.ask-front #needsYouList, body.ask-front #dashboard { padding-right: calc(var(--inspector-width) + 28px); }',
-      'body.ask-front :is(.plans-lane, .dashboard-outcomes, .dashboard-activity) { display: none; }',
       'body.ask-front .inspector-resizer { display: block; }',
     ]) {
       const at = css.indexOf(rule)
@@ -598,6 +668,8 @@ describe('the stylesheet (step 4)', () => {
       expect(at, rule).toBeLessThan(media)
     }
     expect(css.slice(media)).not.toContain('ask-front')
+    // every lane stays in the column beside the ask in front: none is left out
+    expect(css).not.toMatch(/ask-front[^{]*\{[^}]*display:\s*none/)
     expect(css).toMatch(/\n\.inspector-resizer \{ display: none; \}/)
     expect(css).not.toMatch(/#needsYou(List)?\s*\{[^}]*min-height/)
     // an empty kicker draws nothing: its own display would beat the UA's [hidden]

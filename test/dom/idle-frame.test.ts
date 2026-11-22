@@ -201,7 +201,7 @@ describe('an idle tick (#298)', () => {
 // in frameInputs()/pollMaySkipPaint is the only thing that brings it to screen
 // before the 30 s clock; every case below fails without its guard.
 describe('changes outside the poll still reach an idle window (#298)', () => {
-  it('paints a theme change a focused Dashboard control held back, once focus leaves', async () => {
+  it('paints a theme change a held press held back, once the press ends', async () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'Colour me' })
     await bootApp(d)
@@ -212,16 +212,15 @@ describe('changes outside the poll still reach an idle window (#298)', () => {
     const wash = () => row(id)?.style.getPropertyValue('--wash')
     const light = wash()
     expect(light).toBeTruthy()
-    // A frame painted while a Dashboard control holds keyboard focus.
-    document.querySelector<HTMLElement>('#dashboard [data-dashboard-focus-key="activity-range"]')!.focus()
     await repaint()
     await pollTick()
-    // The OS switches theme: the Dashboard focus holds the editable frame (renderDirty).
+    // The OS switches theme under a held press: the press holds the frame (renderDirty).
+    // (Focus in Home's lanes no longer holds one: the list of asks is on the same page.)
+    document.getElementById('needsYouTitle')!.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }))
     setSystemDark(true)
     expect(wash()).toBe(light)
-    // The window loses focus; the next tick reads only 304s.
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
-    window.dispatchEvent(new Event('blur'))
+    // The press ends; the next tick reads only 304s.
+    window.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true }))
     await pollTick()
     expect(wash()).toBeTruthy()
     expect(wash(), 'rows kept the old theme’s project colours').not.toBe(light)

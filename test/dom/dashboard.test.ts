@@ -359,6 +359,8 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(chip('needs')).toBe('6')
     expect(chip('working')).toBe('0')
+    // the list of asks is on the same page and keeps up while focus rests in the lanes
+    expect(askCount()).toBe(6)
     expect(working()).toHaveLength(0)
     expect(cards().map((card) => card.querySelector('.sc-state')?.textContent)).toEqual(['Quiet'])
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Checks completed.')
@@ -481,6 +483,7 @@ describe('Live Operations Desk dashboard', () => {
     await pollTick()
     expect(document.title).toBe('(4) Agent Inbox')
     expect(chip('needs')).toBe('2')
+    expect(askCount()).toBe(2)
     expect(cards().map((card) => card.dataset.sessionCard)).toEqual(['session:alpha'])
     expect(document.activeElement).toBe(range)
   })
@@ -501,6 +504,7 @@ describe('Live Operations Desk dashboard', () => {
     range.dispatchEvent(new Event('pointerup', { bubbles: true }))
     await pollTick()
     expect(chip('needs')).toBe('2')
+    expect(askCount()).toBe(2)
     expect(document.querySelector('.dashboard-range')).toBe(range)
   })
 

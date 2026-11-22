@@ -235,7 +235,8 @@ describe('31.2 · read-marking records ids as well as a watermark', () => {
   })
 
   it('every reader of the unread count is fed the id set, so no two note numbers can disagree', () => {
-    for (const reader of ['function paintTabCounts(', 'function renderNeedsYouExtras(', 'function renderEmptyState(']) {
+    // (the calm line no longer carries a notes count: UX pass, slice 2)
+    for (const reader of ['function paintTabCounts(', 'function renderNeedsYouExtras(']) {
       expect(topLevelFn(reader), `${reader} still reads the watermark alone`).toMatch(/notesSeenIds/)
     }
   })
@@ -257,11 +258,12 @@ describe('31.4 · the dead helpers are gone, not merely untested', () => {
     expect(files).not.toMatch(/export interface LiveActivity/)
   })
 
-  it('the ambient awaiting count stays where it was — this was not an excuse for a second predicate', () => {
-    // notes.js's inline `kind === 'question' && reply && !reply_seen_at` is AMBIENT,
-    // explicitly not the attention set (tenet 3 does not reach it), and public/
-    // attention.js is untouched by this workstream.
+  it('the ambient awaiting count went with the calm line’s chips, and no second predicate replaced it', () => {
+    // notes.js held an inline `kind === 'question' && reply && !reply_seen_at` for the calm
+    // panel's "answered · awaiting agent" chip. The chips are gone (UX pass, slice 2: the list
+    // shows those answers itself), and nothing else restates what awaits pickup.
     const notes = readFileSync(new URL('../public/notes.js', import.meta.url), 'utf8')
-    expect(notes).toMatch(/i\.kind === 'question' && i\.reply && !i\.reply_seen_at/)
+    expect(notes).not.toMatch(/reply_seen_at/)
+    expect(files).not.toMatch(/ambientChips/)
   })
 })

@@ -490,7 +490,9 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
 
   it('refreshes ambient signals before the draft gate, but defers everything during a held press (#39)', () => {
     const body = sourceFn('function renderIfIdle()', '\n// called whenever a draft may have cleared')
-    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*dashboardInteractionActive\(\)[\s\S]*shouldDeferRender\(/)
+    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*shouldDeferRender\(/)
+    // focus resting in Home's lanes holds nothing: the list of asks shares the page (UX pass, slice 2)
+    expect(body).not.toContain('dashboardInteractionActive')
 
     const ambient = sourceFn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
     // #411, #454: the Dashboard (its session panel holds the composer) is ambient

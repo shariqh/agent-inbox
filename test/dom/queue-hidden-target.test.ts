@@ -34,7 +34,7 @@ describe('hidden queue shortcut targeting', () => {
     await settle()
     expect(listItems(db).find((item) => item.id === current)?.status).toBe('open')
 
-    click(document.querySelector('#tabs [data-tab="needsYou"]'))
+    click(document.querySelector('#tabs [data-tab="dashboard"]'))
     resolveItem(db, current)
     await pollTick()
     navigateToHash(`#item/${stale}`)

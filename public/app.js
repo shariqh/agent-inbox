@@ -1318,11 +1318,12 @@ function restorePagedCardFocus(bookmark) {
   return false
 }
 
-// Which tab holds an item — a deep link must land on the right one.
+// Which tab holds an item — a deep link must land on the right one. An open ask
+// is on Home, in its list of asks.
 function tabForItem(it) {
   if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
   if (lastData.g.done.some((x) => x.id === it.id)) return 'done'
-  return 'needsYou'
+  return 'dashboard'
 }
 
 // Notification click / URL hash entry point (spec §11): select the item's
@@ -2624,7 +2625,7 @@ function approvalHtml(entry, granted) {
     ? options.map((label, index) => focusButton(`approve:${id}:${index}`, label, () => answerInPanel(id, label),
       { className: index === 0 ? 'sp-option rec' : 'sp-option', attrs: held })).join('')
     : `<p class="dash-focus-none">Answer it from Agent Inbox’s own window.</p>` +
-      focusButton(`item:${id}`, 'Open in Inbox', () => openAskInInbox(entry))
+      focusButton(`item:${id}`, 'Open ask', () => openAskInInbox(entry))
   const error = writeErrors[id] ?? ''
   return `<div class="sp-appr" data-focus-approval="${esc(id)}"><strong class="sp-appr-title">${esc(it.title ?? '')}</strong>` +
     `<div class="sp-appr-options">${buttons}</div>` +
@@ -2750,7 +2751,7 @@ function panelAskEl(entry, nowMs) {
   if (pinOffered(ask, entry.kind)) {
     actions.appendChild(askIconButton('pin', 'Pin', 'Pin for later: it waits in Later until you bring it back', () => pinAsk(entry)))
   }
-  actions.appendChild(askIconButton('open', 'Open in Inbox', 'Open in Inbox', () => openAskInInbox(entry)))
+  actions.appendChild(askIconButton('open', 'Open ask', 'Open ask', () => openAskInInbox(entry)))
   block.appendChild(actions)
   return block
 }
@@ -3178,7 +3179,7 @@ function dashRibbonEl() {
   const range = document.createElement('select')
   range.className = 'dashboard-range'
   range.dataset.dashboardFocusKey = 'activity-range'
-  range.setAttribute('aria-label', 'Dashboard activity range')
+  range.setAttribute('aria-label', 'Home activity range')
   for (const [value, [label]] of RIBBON_RANGES) {
     const option = document.createElement('option')
     option.textContent = label === 'Today' ? '24 hours' : label.replace('Last ', '')
@@ -3463,8 +3464,8 @@ function openAskInInbox(entry) {
   actionFilter = 'all'
   changedOnly = false
   resetSearch()
-  selectTab('needsYou', { paint: false })
-  // a protected id, so the first page always holds it, however far down the Inbox sorts it
+  selectTab('dashboard', { paint: false })
+  // a protected id, so the first page always holds it, however far down the list sorts it
   selectedId = id
   forceRender()
   const target = needsYouRowEl(id)
@@ -4217,7 +4218,7 @@ function holdTriage() {
   if (triageDeck) closeTriage({ restoreFocus: false })
   if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
-  selectTab('needsYou', { paint: false })
+  selectTab('dashboard', { paint: false })
   forceRender()
   paintTriageHold()
   const show = needsYouHeaderNode?.querySelector('.triage-hold-show')
@@ -4488,15 +4489,12 @@ function holdsDraft(id) {
 // renders open. From the Review queue or a plan panel it was not the open card,
 // and those ignore the list's filters, so widen any filter that would hide it.
 // A Review queue opened with `t` on another tab would return there when it
-// closes, so the Inbox becomes the visible tab and the queue returns to its
+// closes, so Home becomes the visible page and the queue returns to its
 // Review queue button instead; nothing is focused now.
 function keepDraftInView(entry) {
-  if (triageDeck && activeTab !== 'needsYou') {
-    selectTab('needsYou', { paint: false })
+  if (triageDeck && activeTab !== 'dashboard') {
+    selectTab('dashboard', { paint: false })
     triageReturnFocus = { kind: 'triageButton' }
-  } else if (activeTab === 'dashboard') {
-    // #303, #454: no card shows a deferred ask, so its draft goes to the Inbox card.
-    selectTab('needsYou', { paint: false })
   }
   const ask = entryEntity(entry)
   if (openRowId === ask.id) return
@@ -5478,7 +5476,7 @@ function focusRelayEntry(entry, lane) {
     focusItem(entry.board.id, { rowId: entry.row.id })
     return
   }
-  jumpToCard('needsYou', entry.row.id)
+  jumpToCard('dashboard', entry.row.id)
 }
 
 function relayCardEl(entry, lane) {
@@ -5862,9 +5860,9 @@ function selectTab(id, { paint = true, open = true } = {}) {
   archivedLookup = null
   if (id !== 'done') historyTabPinned = false
   activeTab = id
-  if (id !== 'needsYou') triageHeld = false
-  // leaving the Inbox gives up the way back to the Dashboard (§3.2)
-  if (id !== 'needsYou') dashReturn = null
+  // the Review queue's hold line is in Home's list header: leaving Home ends it
+  if (id !== 'dashboard') triageHeld = false
+  if (id !== 'dashboard') dashReturn = null
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
@@ -5877,7 +5875,7 @@ function selectTab(id, { paint = true, open = true } = {}) {
     forceRender()
     requestHistoryPaint()
   }
-  if (id === 'needsYou') restoreRowSelection(false)
+  if (id === 'dashboard') restoreRowSelection(false)
   // An open, from the last known /api/version (agent cards view §4.5); never re-selecting the
   // Dashboard, and never from a session panel's own navigation (`open: false`), which posts none.
   if (open && id === 'dashboard' && from !== 'dashboard') meshOpen()
@@ -5909,9 +5907,9 @@ function filterData({ g, boards, archived }) {
   }
 }
 
+// An empty kicker draws nothing.
 const PAGE_META = {
-  dashboard: { kicker: 'Monitor', title: 'Live Operations Desk' },
-  needsYou: { kicker: 'Inbox', title: 'Your queue' },
+  dashboard: { kicker: '', title: 'Home' },
   boards: { kicker: 'Workspace', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
   done: { kicker: 'Workspace', title: 'History' },
@@ -6671,7 +6669,7 @@ function renderClosedBanner() {
   bar.className = 'closed-banner'
   const text = document.createElement('span')
   // textContent — project names are agent-authored
-  text.textContent = `${name} is closed — these items are not included in your Inbox count or Review queue.`
+  text.textContent = `${name} is closed — these items are not included in your Needs you count or Review queue.`
   const reopen = btn('Reopen', () => reopenProjectAction(name))
   reopen.className = 'closed-reopen'
   bar.append(text, reopen)
@@ -6849,11 +6847,15 @@ function showPanel(id) {
   }
   const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   const panel = id === 'agent' ? 'agentPage' : id
-  for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== panel
+  // Home is two panels, the list of asks and then the lanes, shown and hidden together
+  const shows = (p) => p.id === panel || (panel === 'dashboard' && p.id === 'needsYou')
+  for (const p of document.querySelectorAll('main > .panel')) p.hidden = !shows(p)
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
   document.body.classList.toggle('settings-open', id === 'setup')
-  const page = PAGE_META[id] ?? PAGE_META.needsYou
-  document.getElementById('pageKicker').textContent = page.kicker
+  const page = PAGE_META[id] ?? PAGE_META.dashboard
+  const kicker = document.getElementById('pageKicker')
+  kicker.textContent = page.kicker
+  kicker.hidden = !page.kicker
   document.getElementById('pageTitle').textContent = id === 'agent' ? meshAgentPage.current()?.name ?? '' : page.title
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
@@ -7432,7 +7434,7 @@ function renderSessionsIndicator(activity) {
   setHidden(older, !s.older)
   const title = ['Sessions', s.label, s.sub, older.textContent].filter(Boolean).join(' · ')
   setAttr(el, 'title', title)
-  setAttr(el, 'aria-label', `${title}. Open the Dashboard’s sessions`)
+  setAttr(el, 'aria-label', `${title}. Show the sessions on Home`)
 }
 
 // The indicator and G L: the Dashboard, its Working lane's heading focused.
@@ -7440,7 +7442,7 @@ function renderSessionsIndicator(activity) {
 // "Later N ›" (#454 A.2, the rail's "N in Later" before it): the Inbox, its Later section open.
 function openLater() {
   openDeferredFolds.add('later')
-  selectTab('needsYou')
+  selectTab('dashboard')
   const fold = document.querySelector('#needsYouList [data-deferred-fold="later"]')
   fold?.scrollIntoView?.({ block: 'nearest' })
   fold?.querySelector('summary')?.focus({ preventScroll: true })
@@ -7558,6 +7560,13 @@ function needsYouHeader() {
   }
   const bar = document.createElement('div')
   bar.className = 'tab-header'
+  // Home's list of asks has no tab of its own: this heading names it (the
+  // region's label, and where G I's tile sits)
+  const title = document.createElement('h2')
+  title.id = 'needsYouTitle'
+  title.className = 'queue-title'
+  title.tabIndex = -1
+  title.textContent = 'Needs you'
   const filters = document.createElement('div')
   filters.className = 'queue-filter-group'
   for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
@@ -7610,7 +7619,7 @@ function needsYouHeader() {
   holdShow.className = 'triage-hold-show'
   holdShow.hidden = true
   hold.append(holdText, holdShow)
-  bar.append(filters, tools, hold)
+  bar.append(title, filters, tools, hold)
   needsYouHeaderNode = bar
   syncNeedsYouHeader(bar)
   return bar
@@ -8315,7 +8324,7 @@ function rowCardBodyEl(entry, m, nowMs) {
       })
       show.type = 'button'
       show.className = 'nrow-show-agents'
-      show.title = 'Open this ask in its session’s panel on the Dashboard'
+      show.title = 'Open this ask in its session’s panel'
       where.append(show)
     }
     if (where.childElementCount) heading.append(where)
@@ -9113,7 +9122,7 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
   if (triageDeck) closeTriage({ restoreFocus: false })
   if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
-  selectTab('needsYou', { paint: false })
+  selectTab('dashboard', { paint: false })
 }
 
 function restoreDraftRecoveryFocus() {
@@ -10754,6 +10763,7 @@ function keyboardActionScope() {
 
 function focusKeyboardPanel(id) {
   if (window.scrollY !== 0) window.scrollTo(0, 0)
+  // G I: Home's list of asks, its first operable row focused
   const firstRow = id === 'needsYou' ? rowEls()[0] : null
   if (firstRow) { firstRow.focus(); return }
   const panel = document.getElementById(id)
@@ -10772,6 +10782,10 @@ function navigateKeyboard(destination) {
     focusProjectFallback(projectFilter)
   } else if (destination === 'sessions') {
     showAgentsHome()
+  } else if (destination === 'needsYou') {
+    // G I: the asks on Home, no longer a tab of their own
+    selectTab('dashboard')
+    if (activeTab === 'dashboard') focusKeyboardPanel('needsYou')
   } else if (TAB_IDS.includes(destination)) {
     selectTab(destination)
     // selectTab refuses an empty agent tab; focus stays where it was

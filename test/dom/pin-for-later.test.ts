@@ -85,7 +85,7 @@ describe('Pin for later (#247)', () => {
     await bootApp(d)
     await showInbox()
     expect(badgeCount()).toBe(1)
-    expect(tabCount('needsYou')).toBe('1')
+    expect(tabCount('dashboard')).toBe('1')
 
     click(row(id))
     await settle()
@@ -96,7 +96,7 @@ describe('Pin for later (#247)', () => {
 
     expect(getItem(d, id)).toMatchObject({ pinned_at: expect.any(String), updated_at: before.updated_at })
     expect(badgeCount()).toBe(0)
-    expect(tabCount('needsYou')).toBe('')
+    expect(tabCount('dashboard')).toBe('')
     expect(row(id)?.closest('.later-section')).toBe(later())
     expect(laterTitle()).toBe('Later · 1')
     expect(later()?.open).toBe(false)
@@ -342,7 +342,7 @@ describe('Pin for later (#247)', () => {
     }
     const surfaces = async () => ({
       badge: badgeCount(),
-      tab: Number(tabCount('needsYou') || 0),
+      tab: Number(tabCount('dashboard') || 0),
       queue: rows().filter((el) => !el.closest('details')).length,
       dock: await dockCount(),
     })

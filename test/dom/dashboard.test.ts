@@ -70,7 +70,7 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(document.getElementById('pageTitle')?.textContent).toBe('Live Operations Desk')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Home')
     expect(chip('working')).toBe('1')
     expect(chip('needs')).toBe('1')
     expect(chip('quiet')).toBe('0')
@@ -278,7 +278,7 @@ describe('Live Operations Desk dashboard', () => {
     })
     await bootApp(d)
 
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     click(row(first))
     await settle()

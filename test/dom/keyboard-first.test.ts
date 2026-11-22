@@ -41,7 +41,9 @@ describe('keyboard-first workspace', () => {
       ['h', 'done', 'G H'], ['c', 'chats', 'G C'], ['d', 'dashboard', 'G D'],
     ] as const
     for (const [key, id, label] of destinations) {
-      expect(document.querySelector(`[data-tab="${id}"]`)?.getAttribute('data-shortcut')).toBe(label)
+      // G I has no tab: Home's list of asks carries its tile on the list's heading
+      const tile = id === 'needsYou' ? document.getElementById('needsYouTitle') : document.querySelector(`[data-tab="${id}"]`)
+      expect(tile?.getAttribute('data-shortcut')).toBe(label)
       press('g')
       press(key)
       expect(document.getElementById(id)?.hidden).toBe(false)

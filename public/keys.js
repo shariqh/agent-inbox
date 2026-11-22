@@ -11,8 +11,9 @@ export const KEYBOARD_COMMANDS = [
   { id: 'hints', key: 'f', display: 'F', label: 'Show keys for the controls on screen', group: 'Start here', selector: '#keyboardHints' },
   { id: 'help', key: '?', display: '?', label: 'Open keyboard shortcuts', group: 'Start here', selector: '#keyboardHelp' },
   { id: 'search', key: 'mod+k', display: 'Mod K', label: 'Search this workspace (or press /)', group: 'Start here', legacy: true },
-  { id: 'dashboard', key: 'd', prefix: 'g', display: 'G D', label: 'Dashboard', group: 'Go to', selector: '#tabs [data-tab="dashboard"]' },
-  { id: 'needsYou', key: 'i', prefix: 'g', display: 'G I', label: 'Inbox', group: 'Go to', selector: '#tabs [data-tab="needsYou"]' },
+  { id: 'dashboard', key: 'd', prefix: 'g', display: 'G D', label: 'Home', group: 'Go to', selector: '#tabs [data-tab="dashboard"]' },
+  // Home's list of asks (no tab of its own): its tile sits on the list's heading
+  { id: 'needsYou', key: 'i', prefix: 'g', display: 'G I', label: 'Needs you', group: 'Go to', selector: '#needsYouTitle' },
   { id: 'boards', key: 'p', prefix: 'g', display: 'G P', label: 'Plans', group: 'Go to', selector: '#tabs [data-tab="boards"]' },
   { id: 'notes', key: 'n', prefix: 'g', display: 'G N', label: 'Notes', group: 'Go to', selector: '#tabs [data-tab="notes"]' },
   { id: 'done', key: 'h', prefix: 'g', display: 'G H', label: 'History', group: 'Go to', selector: '#tabs [data-tab="done"]' },

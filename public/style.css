@@ -1333,24 +1333,6 @@ main { width: 100%; max-width: 1460px; margin: 0 auto; padding: 0 32px 64px; }
 .panel { min-width: 0; }
 #needsYou { position: relative; min-height: calc(100vh - 150px); }
 #needsYouList { min-height: 420px; padding-right: calc(var(--inspector-width) + 28px); container: needs-queue / inline-size; }
-.inspector-empty {
-  position: fixed;
-  top: 116px;
-  right: 28px;
-  bottom: 104px;
-  display: grid;
-  width: var(--inspector-width);
-  align-content: center;
-  padding: 32px;
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--app-surface) 72%, transparent);
-  color: var(--app-text-soft);
-  text-align: center;
-}
-.inspector-empty span { color: var(--app-text); font-size: 14px; font-weight: 600; }
-.inspector-empty p { margin: 7px auto 0; max-width: 250px; font-size: 12.5px; }
-body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
 .tab-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--app-border); }
 .queue-filter-group, .queue-tool-group { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .queue-tool-group { justify-content: flex-end; }
@@ -3136,7 +3118,6 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
   #dashboard { padding: 0 0 64px; }
   #needsYou { min-height: 0; }
   #needsYouList { min-height: 0; padding-right: 0; }
-  .inspector-empty { display: none; }
   #needsYouList .nrow-card {
     position: static;
     inset: auto;

@@ -366,7 +366,7 @@ describe('changes outside the poll still reach an idle window (#298)', () => {
     // A tab change paints; draft recovery inside that frame moves the lens to the Inbox.
     click(document.querySelector('.tab[data-tab="done"]'))
     await settle()
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     const before = document.querySelector('#needsYouList .stale-drafts-fold')
     expect(before?.textContent).toContain('An answer the agent never reads')
     await pollTick()

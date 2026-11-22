@@ -83,7 +83,7 @@ describe('C1 · a deep link must never freeze the poll', () => {
 
     expect(rowTitles()).toContain('SECOND question')
     expect(document.title).toBe('(3) Agent Inbox')
-    expect(tabCount('needsYou')).toBe('3')
+    expect(tabCount('dashboard')).toBe('3')
   })
 
   it('a deep link to a NOTES item leaves the poll running', async () => {

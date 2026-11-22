@@ -1450,7 +1450,7 @@ describe('session cards for launches (#454, #412)', () => {
     // its card keeps its own state and counts the approval; the Inbox's Show on Agents › opens its panel there (lanes design §6)
     expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Idle')
     expect(card(id)?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     click(row(ask.itemId))
     await settle()

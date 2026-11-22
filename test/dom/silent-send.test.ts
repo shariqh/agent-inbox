@@ -426,7 +426,7 @@ describe('#38 · §10 protects typed work without hiding new inbox items', () =>
     expect(answerInput(id)?.value).toBe('half a thought')
     expect(pauseHint()).toBe("paused — updating when you're done")
     expect(badgeCount(), 'the global attention badge must stay live while the list is paused').toBe(2)
-    expect(tabCount('needsYou'), 'the Needs-you count must stay live while the list is paused').toBe('2')
+    expect(tabCount('dashboard'), 'the Needs-you count must stay live while the list is paused').toBe('2')
     expect(document.querySelector('.rail-tab[data-project="alpha"] .rail-badge')?.textContent,
       'the project rail count must stay live while the list is paused').toBe('2')
     expect(document.querySelector('#sessionsIndicator .si-v')?.textContent,

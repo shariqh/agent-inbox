@@ -171,7 +171,7 @@ describe('the Later section (#247)', () => {
     expect(chipText(pinnedOld)).toBe('Pinned moments ago')
     expect(row(stale)?.closest('.stale-fold')).not.toBeNull()
     expect(badgeCount()).toBe(11)
-    expect(tabCount('needsYou')).toBe('11')
+    expect(tabCount('dashboard')).toBe('11')
   })
 
   it('orders Later by return and pin time, not by the Sort menu, and keeps that order across polls', async () => {
@@ -269,7 +269,7 @@ describe('the Later section (#247)', () => {
     await showInbox()
     expect(laterTitle()).toBe('Later · 2')
     expect(badgeCount()).toBe(1)
-    expect(tabCount('needsYou')).toBe('1')
+    expect(tabCount('dashboard')).toBe('1')
     const railBadge = (project: string) => document.querySelector(`#rail .rail-tab[data-project="${project}"] .rail-badge`)?.textContent
     expect(railBadge('beta')).toBe('1')
     expect(railBadge('alpha') ?? '').toBe('')
@@ -280,7 +280,7 @@ describe('the Later section (#247)', () => {
     expect(inLater(betaPinned)).toBe(true)
     expect(inQueue(kept)).toBe(true)
     expect(badgeCount()).toBe(1)
-    expect(tabCount('needsYou')).toBe('1')
+    expect(tabCount('dashboard')).toBe('1')
   })
 
   it('keeps the badge, tab count, queue and dock projection in agreement with pins, with the setting on and off', async () => {
@@ -300,7 +300,7 @@ describe('the Later section (#247)', () => {
     }
     const surfaces = async () => ({
       badge: badgeCount(),
-      tab: Number(tabCount('needsYou') || 0),
+      tab: Number(tabCount('dashboard') || 0),
       queue: rows().filter((el) => !el.closest('details')).length,
       dock: await dockCount(),
     })
@@ -958,8 +958,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
   it.each([
     ['Notes', 'notes'],
     ['History', 'done'],
-    ['Dashboard', 'dashboard'],
-  ])('switches to the Inbox from %s, without moving focus, once the write succeeds', async (_label, tab) => {
+  ])('switches to Home from %s, without moving focus, once the write succeeds', async (_label, tab) => {
     const d = open()
     const id = question(d)
     await bootApp(d)
@@ -973,7 +972,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     click(buttonLabelled('Pin for later', lightbox()))
     await settle()
 
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
     expect(document.getElementById(tab)?.hidden).toBe(true)
     expect(lightbox().hidden, 'the Review queue stays open').toBe(false)
@@ -1001,7 +1000,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
     click(buttonLabelled('Pin for later', lightbox()))
     await settle()
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.activeElement, 'the switch moves no focus').toBe(before)
 
     hasFocus.mockRestore()
@@ -1023,7 +1022,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     await settle()
     expect(getItem(d, id)!.pinned_at).not.toBeNull()
     expect(document.getElementById('notes')?.hidden).toBe(false)
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('false')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('false')
   })
 
   it('stays on the tab when the deferral is refused', async () => {
@@ -1042,7 +1041,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     await settle()
     expect(getItem(d, id)!.pinned_at).toBeNull()
     expect(document.getElementById('notes')?.hidden).toBe(false)
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('false')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('false')
     expect(deckInput()?.value).toBe('Half an answer')
   })
 
@@ -1062,7 +1061,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
 
     expect(getBoard(d, 'alpha', 'Release')!.rows[0]!.pinned_at).not.toBeNull()
     expect(document.getElementById('boards')?.hidden).toBe(false)
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('false')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('false')
     expect(panel()?.querySelector<HTMLTextAreaElement>('.reply-input')?.value).toBe('Half an answer')
   })
 

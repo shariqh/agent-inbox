@@ -302,7 +302,7 @@ describe('one-shot activity motion (#304: no infinite animation)', () => {
     work(d, 'a', 'Working')
     const started = shots()
     await bootApp(d)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     advanceClock()
     recordActivityCall(d, 'a')

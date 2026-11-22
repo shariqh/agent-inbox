@@ -1556,7 +1556,7 @@ describe('a send over a newer reply this window has not shown (#321)', () => {
     expect(row(id)?.textContent).not.toContain('Later Y')
     const posts = replyPosts(bridge, id).length
     const before = getItem(db, id)
-    const attention = [badgeCount(), tabCount('needsYou')]
+    const attention = [badgeCount(), tabCount('dashboard')]
 
     click(sendButton(id))
     await settle()
@@ -1566,7 +1566,7 @@ describe('a send over a newer reply this window has not shown (#321)', () => {
     expect(editorNotice(id)?.getAttribute('role')).toBe('status')
     expect(answerInput(id)?.value, 'the text stays in its editor').toBe('Original X')
     expect(getItem(db, id), 'Later Y and its pickup are untouched').toEqual(before)
-    expect([badgeCount(), tabCount('needsYou')], 'a notice is not attention').toEqual(attention)
+    expect([badgeCount(), tabCount('dashboard')], 'a notice is not attention').toEqual(attention)
     await pollTick()
     await pollTick()
     expect(replyPosts(bridge, id), 'nothing is sent without a click').toHaveLength(posts)
@@ -1584,7 +1584,7 @@ describe('a send over a newer reply this window has not shown (#321)', () => {
     await draftAnswer(id, 'Mine.')
     laterYPickedUp(db, id)
     const before = getItem(db, id)
-    const attention = [badgeCount(), tabCount('needsYou')]
+    const attention = [badgeCount(), tabCount('dashboard')]
 
     click(sendButton(id))
     await settle()
@@ -1594,7 +1594,7 @@ describe('a send over a newer reply this window has not shown (#321)', () => {
     expect(getItem(db, id), 'and the server refused it').toEqual(before)
     expect(editorNotice(id)?.textContent).toBe(notice('Later Y'))
     expect(answerInput(id)?.value).toBe('Mine.')
-    expect([badgeCount(), tabCount('needsYou')]).toEqual(attention)
+    expect([badgeCount(), tabCount('dashboard')]).toEqual(attention)
 
     click(sendButton(id))
     await settle()
@@ -1840,7 +1840,7 @@ describe('a send over a newer reply this window has not shown (#321)', () => {
     retry.focus()
     const posts = replyPosts(bridge, id).length
     const before = getItem(db, id)
-    const attention = [badgeCount(), tabCount('needsYou'), rowTitles()]
+    const attention = [badgeCount(), tabCount('dashboard'), rowTitles()]
 
     click(retry)
     await settle()
@@ -1848,7 +1848,7 @@ describe('a send over a newer reply this window has not shown (#321)', () => {
     expect(getItem(db, id)).toEqual(before)
     expect(lineNotice()?.textContent).toBe(notice('Later Y', 'Retry'))
     expect(document.activeElement, 'focus stays on Retry').toBe(retry)
-    expect([badgeCount(), tabCount('needsYou'), rowTitles()], 'a notice is not attention').toEqual(attention)
+    expect([badgeCount(), tabCount('dashboard'), rowTitles()], 'a notice is not attention').toEqual(attention)
     await pollTick()
     expect(replyPosts(bridge, id), 'nothing is sent without a click').toHaveLength(posts)
 

@@ -23,9 +23,10 @@ describe('the editorial desk shell', () => {
   it('moves navigation into a real sidebar and gives the work area an editorial heading', () => {
     expect(html).toContain('class="sidebar-shell"')
     expect(html).toContain('id="pageTitle"')
-    expect(html).toContain('Live Operations Desk')
-    expect(html).toContain('class="tab-name">Dashboard</span>')
-    expect(html).toContain('class="tab-name">Inbox</span><span class="tab-count"')
+    expect(html).toContain('<h1 id="pageTitle">Home</h1>')
+    // Home carries the count the Inbox tab carried; there is no Inbox tab
+    expect(html).toContain('class="tab-name">Home</span><span class="tab-count"')
+    expect(html).not.toContain('class="tab-name">Inbox</span>')
     expect(html).toContain('class="tab-name">Plans</span><span class="tab-count"')
     expect(html).toContain('class="tab-name">History</span><span class="tab-count"')
   })

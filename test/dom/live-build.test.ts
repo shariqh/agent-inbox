@@ -339,7 +339,7 @@ describe('the Agents home shows the build each session runs (#197, #454)', () =>
 
     // exactly the two open questions — the two older builds add nothing
     expect(badgeCount()).toBe(2)
-    expect(tabCount('needsYou')).toBe('2')
+    expect(tabCount('dashboard')).toBe('2')
     expect(rows()).toHaveLength(2)
     // the asking session is still live, so its question is still waiting on you
     expect(rows().find((r) => r.dataset['cardId'] === asked)?.textContent).toContain('Waiting')

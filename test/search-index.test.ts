@@ -79,7 +79,7 @@ describe('buildSearchResults', () => {
       tab,
       sectionLabel,
     }))).toEqual([
-      { targetId: 'q1', kind: 'Open item', tab: 'needsYou', sectionLabel: 'Open items' },
+      { targetId: 'q1', kind: 'Open item', tab: 'dashboard', sectionLabel: 'Open items' },
       { targetId: 'n1', kind: 'Note', tab: 'notes', sectionLabel: 'Notes' },
       { targetId: 'b2', kind: 'Archived plan', tab: 'boards', sectionLabel: 'Archived plans' },
     ])

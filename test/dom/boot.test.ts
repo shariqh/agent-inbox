@@ -31,10 +31,10 @@ describe('viewer boots against a real DB', () => {
     expect(rowTitles()).toEqual(['hello'])
     expect(document.title).toBe('(1) Agent Inbox')
     expect(badgeCount()).toBe(1)
-    expect(tabCount('needsYou')).toBe('1')
+    expect(tabCount('dashboard')).toBe('1')
   })
 
-  it('cold-opens Dashboard across all projects and agents without restoring stale filters', async () => {
+  it('cold-opens Home across all projects and agents without restoring stale filters', async () => {
     const d = open()
     insertItem(d, { project: 'alpha', stream: 'main', agent: 'claude', kind: 'question', title: 'alpha decision' })
     advanceClock()
@@ -60,7 +60,7 @@ describe('viewer boots against a real DB', () => {
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.querySelector('#rail [data-project="__all__"]')?.getAttribute('aria-selected')).toBe('true')
     expect((document.getElementById('agentSelect') as HTMLSelectElement).value).toBe('')
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     expect(rowTitles().sort()).toEqual(['Complete the handoff.', 'alpha decision'])
     expect(document.querySelector('.header-toggle.active')?.textContent).toBe('All')
@@ -97,13 +97,14 @@ describe('viewer boots against a real DB', () => {
     await bootApp(d)
 
     expect(document.querySelector('.brand')?.textContent).toContain('Agent Inbox')
-    expect(document.getElementById('pageTitle')?.textContent).toBe('Live Operations Desk')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Home')
+    expect(document.getElementById('pageKicker')?.hidden, 'an empty kicker draws nothing').toBe(true)
     // the agent tab (cards view V5c1) stays hidden until a mesh agent is opened
     expect([...document.querySelectorAll('#tabs .tab:not([hidden]) .tab-name')].map((tab) => tab.textContent))
-      .toEqual(['Dashboard', 'Inbox', 'Plans', 'Notes', 'History', 'Chats'])
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+      .toEqual(['Home', 'Plans', 'Notes', 'History', 'Chats'])
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
-    expect(document.getElementById('pageTitle')?.textContent).toBe('Your queue')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Home')
     expect(document.querySelector('#needsYouList .tab-header')?.textContent)
       .toContain('AllDecisionsTo doUpdatesSortPriorityNewestOldestHandoffsReview queue')
     expect(document.querySelectorAll('#needsYouList .queue-filter-group > .header-toggle')).toHaveLength(4)
@@ -292,7 +293,7 @@ describe('spec §7 · a rail filter narrows the LIST, never the GLOBAL signal', 
 
     expect(rowTitles()).toEqual(['a-question'])
     expect(badgeCount(), 'the rail must never scope the badge').toBe(2)
-    expect(tabCount('needsYou'), 'nor the Needs-you tab count').toBe('2')
+    expect(tabCount('dashboard'), 'nor the Needs-you tab count').toBe('2')
   })
 })
 

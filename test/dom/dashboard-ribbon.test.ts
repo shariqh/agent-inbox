@@ -425,7 +425,7 @@ describe('Just landed (#305)', () => {
     await pollTick()
     expect(started.titles()).toEqual(['First new'])
     await pollTick()
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
@@ -461,7 +461,7 @@ describe('Just landed (#305)', () => {
     ['reduced motion', () => { (window.matchMedia('(prefers-reduced-motion: reduce)') as { matches: boolean }).matches = true }],
     ['Calm', () => { localStorage.setItem('agent-inbox-motion', 'calm') }],
     ['a hidden page', () => { vi.spyOn(document, 'hidden', 'get').mockReturnValue(true) }],
-    ['another tab', () => { click(document.querySelector('.tab[data-tab="needsYou"]')) }],
+    ['another tab', () => { click(document.querySelector('.tab[data-tab="boards"]')) }],
   ] as const)('starts no highlight under %s, nor once that ends', async (name, set) => {
     const d = open()
     if (name === 'Calm') set()
@@ -510,7 +510,7 @@ describe('Since you last looked (#305)', () => {
     expect(since().hidden).toBe(true)
     land(d, 'Later outcome')
     await pollTick()
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
@@ -545,7 +545,7 @@ describe('Since you last looked (#305)', () => {
     land(d, 'Away outcome')
     insertItem(d, { ...A, kind: 'question', title: 'Away ask' })
     await bootApp(d)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     expect(document.getElementById('dashboard')!.hidden).toBe(true)
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))

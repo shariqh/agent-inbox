@@ -38,7 +38,7 @@ describe('the Review queue opened with `t` on another tab (#247)', () => {
     await settle()
 
     expect(getItem(db, id)!.pinned_at).not.toBeNull()
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
     expect(document.getElementById('notes')?.hidden).toBe(true)
     expect(lightbox.contains(document.activeElement), 'focus stays in the Review queue').toBe(true)

@@ -47,7 +47,7 @@ async function surfaces() {
   return {
     title: document.title,
     badge: badgeCount(),
-    tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
+    tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount),
     needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
   }
 }
@@ -92,13 +92,12 @@ describe('the Agents home (#454)', () => {
       ['demo', ['session:c2']],
     ])
     expect(quietRows()).toEqual(['session:k2'])
-    // one count per lane, on the chips; no filter, group-by or count beside a heading
-    expect(['working', 'quiet'].map((k) => document.querySelector(`#dashboard [data-dash-chip="${k}"] .dash-chip-count`)?.textContent)).toEqual(['3', '1'])
+    // no filter, group-by or count beside a heading
+    expect([document.querySelectorAll('#dashboard .working-lane .ah-cards [data-session-card]').length, document.querySelectorAll('#dashboard .quiet-lane .qt-rows [data-session-card]').length]).toEqual([3, 1])
     expect(document.querySelector('.agents-home [data-ah-filter], .agents-home .ah-count, .agents-home .ah-group-by')).toBeNull()
-    // a question naming no session is in the Needs you lane only
-    const orphan = [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.dataset.nyAsk === ids.retry)!
-    expect([orphan.querySelector('.ny-session')?.textContent, orphan.querySelector('.ny-agent')?.textContent, orphan.querySelector('.ny-title')?.textContent])
-      .toEqual(['no session', 'Claude Code', 'Retry 4xx?'])
+    // a question naming no session is in Home's list only
+    const orphan = document.querySelector<HTMLElement>(`#needsYouList .nrow[data-card-id="${ids.retry}"]`)!
+    expect([orphan.querySelector('.nrow-session'), orphan.querySelector('.nrow-title')?.textContent]).toEqual([null, 'Retry 4xx?'])
     expect(document.querySelector('#dashboard [data-session-card^="ask:"]')).toBeNull()
     const ask = card('session:k1')!
     // k1's ask is a row of its linked plan: its card keeps its state and counts it
@@ -207,8 +206,8 @@ describe('the Agents home (#454)', () => {
     expect(home.querySelector<HTMLElement>('.ah-empty')?.hidden).toBe(false)
     expect(home.querySelector('.ah-empty-text')?.textContent).toBe('No sessions yet. A Claude Code or Copilot session appears here once Agent Inbox’s MCP server starts in it.')
     expect(home.querySelector('.working-lane .ah-empty')).not.toBeNull()
-    // with the switch off (a browser), no New session either (it sits in the page head, §3.1)
-    expect(document.querySelector<HTMLElement>('#dashboard .dash-head .ah-new')?.hidden).toBe(true)
+    // with the switch off (a browser), no New session either (it sits in the Working lane's head)
+    expect(document.querySelector<HTMLElement>('#dashboard .working-lane > .ah-lane-head .ah-new')?.hidden).toBe(true)
   })
 
   it('a card’s Message opens the session panel with that session’s composer, focused (#411)', async () => {

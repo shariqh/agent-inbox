@@ -50,9 +50,11 @@ const cardIds = (lane: 'working' | 'quiet'): string[] =>
 const openCard = (session: string): void => click(card(session)?.querySelector('.sc-doing'))
 const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus')
 // the page head's lane chips (dashboard lanes design §3.1)
-const chip = (key: 'needs' | 'working' | 'quiet'): string =>
-  document.querySelector(`#dashboard [data-dash-chip="${key}"] .dash-chip-count`)?.textContent ?? ''
-const laneCard = (id: string) => [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.dataset.nyAsk === id) ?? null
+// The lane chips are gone (UX slice 2): a lane's size is its cards, and Needs you
+// is the asks in Home's list that still wait on the person.
+const chip = (key: 'needs' | 'working' | 'quiet'): string => String(key === 'needs'
+  ? document.querySelectorAll('#needsYouList > .nrow:not(.answered)').length
+  : document.querySelectorAll(key === 'working' ? '#dashboard .working-lane .ah-cards [data-session-card]' : '#dashboard .quiet-lane .qt-rows [data-session-card]').length)
 
 function keydown(target: Element, key: string): void {
   target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
@@ -65,14 +67,14 @@ async function attentionSurfaces() {
   return {
     title: document.title,
     badge: badgeCount(),
-    tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
+    tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount),
     waiting: chip('needs'),
     dock: [await dock.text(), await plans.text()],
   }
 }
 
 describe('the Working and Quiet lanes split the cards (#307, #454, dashboard lanes design §3.3, §3.4)', () => {
-  it('a session that stops moves to Quiet, never moving the Needs you lane, the rail or attention', async () => {
+  it('a session that stops moves to Quiet, never moving the list of asks, the rail or attention', async () => {
     const d = open()
     work(d, 'a', 'Alpha work')
     work(d, 'b', 'Beta work', { project: 'beta', agent: 'claude-code' })
@@ -89,19 +91,19 @@ describe('the Working and Quiet lanes split the cards (#307, #454, dashboard lan
     expect([cardIds('working').sort(), cardIds('quiet')]).toEqual([['a', 'c'], ['b']])
     expect([chip('working'), chip('quiet')]).toEqual(['2', '1'])
     // its ask still shows once, in Needs you; the row only counts it
-    expect(document.querySelectorAll('#dashboard .ny-card')).toHaveLength(2)
+    expect(document.querySelectorAll('#needsYouList > .nrow:not(.answered)')).toHaveLength(2)
     expect(card('b')?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
     expect(await attentionSurfaces()).toEqual(before)
   })
 })
 
 describe('keyboard help (#307)', () => {
-  it('lists the Dashboard keys', async () => {
+  it('lists the keys of Home’s lanes', async () => {
     const d = open()
     await bootApp(d)
     click(document.getElementById('keyboardHelp'))
     const section = [...document.querySelectorAll('#keyboardbox .keyboard-groups section')]
-      .find((el) => el.querySelector('h3')?.textContent === 'Dashboard')
+      .find((el) => el.querySelector('h3')?.textContent === 'Home')
     expect(section).toBeTruthy()
     const keys = [...section!.querySelectorAll('kbd')].map((kbd) => kbd.textContent)
     expect(keys).toEqual(['J / K', 'Enter', '1-4', 'S', 'P', 'R', 'Esc'])
@@ -206,7 +208,7 @@ describe('the session focus panel (#307)', () => {
     expect(document.getElementById('boards')?.hidden).toBe(false)
   })
 
-  it("a card's Asking you chip goes to its ask in Needs you, Enter opens its panel, and the card answers nothing", async () => {
+  it("a card's Asking you chip opens its ask in front on Home, Enter opens its panel, and the card answers nothing", async () => {
     const d = open()
     const { ask } = seed(d)
     await bootApp(d)
@@ -214,8 +216,10 @@ describe('the session focus panel (#307)', () => {
     expect(card('mine')!.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
     expect(card('mine')!.querySelector('[data-ah-action="review"]')).toBeNull()
     click(card('mine')!.querySelector('.sc-asking'))
+    await settle()
     expect(panel()!.hidden).toBe(true)
-    expect(document.activeElement).toBe(laneCard(ask))
+    expect(row(ask)?.dataset.open).toBe('1')
+    expect(row(ask)?.contains(document.activeElement)).toBe(true)
     card('mine')!.focus()
     keydown(card('mine')!, 'Enter')
     expect(panel()!.hidden).toBe(false)

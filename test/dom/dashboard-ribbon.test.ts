@@ -364,9 +364,9 @@ describe('older history for a longer ribbon range (#392)', () => {
     insertItem(d, { ...A, kind: 'question', title: 'Ship it?' })
     const { reads, interceptFetch } = recorder()
     await bootApp(d, { interceptFetch })
-    const before = { title: document.title, badge: badgeCount(), tabs: ['needsYou', 'notes', 'boards'].map(tabCount) }
+    const before = { title: document.title, badge: badgeCount(), tabs: ['dashboard', 'notes', 'boards'].map(tabCount) }
     await pick(7 * DAY)
-    expect({ title: document.title, badge: badgeCount(), tabs: ['needsYou', 'notes', 'boards'].map(tabCount) }).toEqual(before)
+    expect({ title: document.title, badge: badgeCount(), tabs: ['dashboard', 'notes', 'boards'].map(tabCount) }).toEqual(before)
     await pick(DAY)
     reads.length = 0
     await pollTick()
@@ -535,7 +535,7 @@ describe('Since you last looked (#305)', () => {
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', metaKey: true, bubbles: true }))
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }))
     expect(since().hidden).toBe(false)
-    document.querySelector('.dash-head')!.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    document.getElementById('dashLandedTitle')!.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     expect(since().hidden).toBe(true)
   })
 
@@ -576,7 +576,7 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     title: document.title,
     badge: badgeCount(),
     // History's count follows the outcome that landed; the attention tabs never move.
-    tabs: ['needsYou', 'notes', 'boards'].map(tabCount),
+    tabs: ['dashboard', 'notes', 'boards'].map(tabCount),
     dock: [await (await fetch('/api/items?scope=attention')).text(), await (await fetch('/api/boards?scope=attention')).text()],
   })
 

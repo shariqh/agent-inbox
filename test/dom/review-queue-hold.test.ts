@@ -96,20 +96,12 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(rowRecovery(before.id, before.revision, before.action_version, 'Approve the old ask.'))
     await bootApp(db)
 
-    // the Dashboard's rail button
-    click(document.querySelector('.ny-review'))
-    await settle()
-    expect(lightbox().hidden).toBe(false)
-    expect(lightbox().textContent).toContain('Approve launch')
-    await closeDeck()
-
-    // the Inbox toolbar's button
-    click(document.querySelector('.tab[data-tab="dashboard"]'))
-    await settle()
+    // the list's toolbar button on Home (the Needs you lane's own button went with the lane)
     expect(fold()?.textContent).toContain('Approve the old ask.')
     click(buttonLabelled('Review queue'))
     await settle()
     expect(lightbox().hidden).toBe(false)
+    expect(lightbox().textContent).toContain('Approve launch')
     await closeDeck()
 
     // and `t`
@@ -131,7 +123,7 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(itemRecovery(closed, 'Friday.', QUESTION_CLOSED))
     await bootApp(db)
 
-    click(document.querySelector('.ny-review'))
+    click(document.querySelector('#needsYouList .triage-btn'))
     await settle()
     expect(lightbox().hidden).toBe(false)
     expect(lightbox().textContent).toContain('Other ask')
@@ -145,7 +137,7 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(itemRecovery(id, 'Friday.', QUESTION_CHANGED))
     await bootApp(db)
 
-    const railButton = document.querySelector<HTMLButtonElement>('.ny-review')!
+    const railButton = document.querySelector<HTMLButtonElement>('#needsYouList .triage-btn')!
     railButton.focus()
     click(railButton)
     await settle()
@@ -219,7 +211,7 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(rowRecovery(r.id, r.revision, r.action_version, 'Approve the same ask.'))
     await bootApp(db)
 
-    click(document.querySelector('.ny-review'))
+    click(document.querySelector('#needsYouList .triage-btn'))
     await settle()
     expect(lightbox().hidden).toBe(true)
     expect(holdText()).toBe('Finish or discard the 1 unsent response first.')

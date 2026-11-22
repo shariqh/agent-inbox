@@ -153,7 +153,7 @@ describe('archived plans in brief (issue #299)', () => {
     // A project whose only plans are archived keeps its rail tab.
     expect(document.querySelector('#rail button.rail-tab[data-project="retired"]')).not.toBeNull()
     await pollTick()
-    await selectTab('needsYou')
+    await selectTab('dashboard')
     await pollTick()
     await selectTab('boards')
     expect(fold()?.open).toBe(false)
@@ -530,7 +530,7 @@ describe('a lingering plan reads only itself (issue #373)', () => {
     db = freshDb()
     const archive = archivedControl()
     await lingering(db, archive)
-    await selectTab('needsYou')
+    await selectTab('dashboard')
     await pollTick()
     await pollTick()
     expect(lingerReads(archive.control.reads)).toEqual([200])

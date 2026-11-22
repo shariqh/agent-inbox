@@ -234,7 +234,10 @@ describe('the session panel’s composer (#411, #454)', () => {
     expect(input('mcp-a')).toBe(box)
     expect(document.activeElement).toBe(box)
     expect([box.selectionStart, box.selectionEnd]).toEqual([2, 6])
-    // the Inbox keeps updating: a message draft is not a typed answer
+    // the list of asks keeps updating: a message draft is not a typed answer. On Home the
+    // list shares the page with the composer, and focus inside #dashboard holds every
+    // editable repaint (dashboardInteractionActive), so the person's focus leaves it first.
+    box.blur()
     await showInbox()
     insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'A new question' })
     await pollTick()
@@ -386,6 +389,8 @@ describe('durable message drafts (#411, #279)', () => {
     await pollTick()
     await vi.advanceTimersByTimeAsync(300)
     expect(Object.keys(stored())).toEqual(['message-recovery:mcp-a'])
+    // focus left on the card's control after Esc holds Home's editable repaint (dashboardInteractionActive)
+    ;(document.activeElement as HTMLElement | null)?.blur()
     await showInbox()
     expect(document.querySelector('.stale-draft-line[data-recovery-line="message:mcp-a"]')?.textContent)
       .toContain('Not sent: this session is no longer running · Message: Written before it went quiet')
@@ -616,12 +621,11 @@ describe('an older viewer and attention parity (#411)', () => {
       const items = await fetch('/api/items?scope=attention')
       const boards = await fetch('/api/boards?scope=attention')
       const dashboard = {
-        head: document.querySelector('#dashboard .dash-head')?.textContent,
         // the cards are presence: their doing lines say nothing of messages
         cards: [...document.querySelectorAll('#dashboard [data-session-card] .sc-doing')].map((el) => el.textContent),
       }
       const view = {
-        title: document.title, badge: badgeCount(), tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount), ...dashboard,
+        title: document.title, badge: badgeCount(), tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount), ...dashboard,
         dock: [items.headers.get('etag'), await items.text(), boards.headers.get('etag'), await boards.text()],
       }
       await showInbox()

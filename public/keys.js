@@ -30,16 +30,16 @@ export const KEYBOARD_COMMANDS = [
   { id: 'resolve', key: 'e', display: 'E', label: 'Resolve the current item', group: 'Work through items', legacy: true },
   { id: 'dismiss', key: 'x', display: 'X', label: 'Dismiss the current item with its undo window', group: 'Work through items', legacy: true },
   { id: 'review', key: 't', display: 'T', label: 'Open the review queue', group: 'Work through items', legacy: true },
-  // #307, #454 A.2: the Dashboard's own keys, listed here only (legacy: the
-  // Dashboard's lanes (Plans in progress too) and the session panel handle them where
-  // focus is, so they never collide with the Inbox's).
-  { id: 'cardMove', key: 'j', display: 'J / K', label: 'Move between the cards in a Dashboard lane (the arrows too)', group: 'Dashboard', legacy: true },
-  { id: 'cardOpen', key: 'Enter', display: 'Enter', label: 'Open a card: an ask in the Inbox, a session in its panel, a plan in Plans', group: 'Dashboard', legacy: true },
-  { id: 'askOption', key: '1-4', display: '1-4', label: "Choose an option of the panel's ask", group: 'Dashboard', legacy: true },
-  { id: 'askSnooze', key: 's', display: 'S', label: "Snooze the panel's ask for 4 hours", group: 'Dashboard', legacy: true },
-  { id: 'askPin', key: 'p', display: 'P', label: "Pin the panel's ask for later", group: 'Dashboard', legacy: true },
-  { id: 'askReply', key: 'r', display: 'R', label: "Write an answer to the panel's ask", group: 'Dashboard', legacy: true },
-  { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session panel, or an ask opened from the Dashboard, and return to its card', group: 'Dashboard', legacy: true },
+  // #307, #454 A.2: the keys of Home's lanes, listed here only (legacy: the
+  // lanes (Plans in progress too) and the session panel handle them where
+  // focus is, so they never collide with the list of asks').
+  { id: 'cardMove', key: 'j', display: 'J / K', label: 'Move between the cards in a lane on Home (the arrows too)', group: 'Home', legacy: true },
+  { id: 'cardOpen', key: 'Enter', display: 'Enter', label: 'Open a card: a session in its panel, a plan in Plans', group: 'Home', legacy: true },
+  { id: 'askOption', key: '1-4', display: '1-4', label: "Choose an option of the panel's ask", group: 'Home', legacy: true },
+  { id: 'askSnooze', key: 's', display: 'S', label: "Snooze the panel's ask for 4 hours", group: 'Home', legacy: true },
+  { id: 'askPin', key: 'p', display: 'P', label: "Pin the panel's ask for later", group: 'Home', legacy: true },
+  { id: 'askReply', key: 'r', display: 'R', label: "Write an answer to the panel's ask", group: 'Home', legacy: true },
+  { id: 'focusClose', key: 'Escape', display: 'Esc', label: 'Close the session panel and return to its card', group: 'Home', legacy: true },
   // #411: the message composer's keys, handled by the composer itself
   { id: 'messageSend', key: 'mod+Enter', display: 'Mod Enter', label: 'Send a message from its composer', group: 'Messages', legacy: true },
   { id: 'messageClose', key: 'Escape', display: 'Esc', label: 'Close the session panel from its composer: the text is kept', group: 'Messages', legacy: true },

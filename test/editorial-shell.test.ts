@@ -60,9 +60,11 @@ describe('the editorial desk shell', () => {
 
   it('presents an expanded queue card as the desktop inspector without moving its DOM', () => {
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*position:\s*fixed\s*;/s)
-    expect(css).toContain('--inspector-width: 520px')
+    expect(css).toContain('--inspector-width: 640px')
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*width:\s*var\(--inspector-width\)\s*;/s)
-    expect(css).toMatch(/#needsYouList\s*\{[^}]*padding-right:\s*calc\(var\(--inspector-width\)/s)
+    // UX pass, slice 2: the list and the lanes keep clear of the card only while an ask is in front
+    expect(css).toMatch(/body\.ask-front #needsYouList,\s*body\.ask-front #dashboard\s*\{\s*padding-right:\s*calc\(var\(--inspector-width\) \+ 28px\);\s*\}/)
+    expect(css).not.toMatch(/\n#needsYouList\s*\{[^}]*padding-right/)
     expect(css).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(50%,\s*360px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
   })
 

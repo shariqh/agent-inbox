@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
-import { bootApp, click, freshDb, row, settle, T0, useDomTest } from './harness.js'
+import { bootApp, click, collapseRow, freshDb, row, settle, T0, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -64,6 +64,9 @@ it('keeps polling normally during page scrolling when no row is expanded', async
   })
 
   await bootApp(db)
+  // UX slice 2: on a wide window the ask comes to the front by itself; close it, so no row is expanded
+  await collapseRow(id)
+  expect(row(id)?.dataset['open']).toBeUndefined()
   const before = row(id)
 
   // The tick has fresh data to paint, so only the scroll guard can hold it (#298).

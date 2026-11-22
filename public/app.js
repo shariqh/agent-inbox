@@ -542,8 +542,82 @@ function setOpenRow(id, { resume = true } = {}) {
     contextEditorFor = null // each ask opens at rest (answerEl)
   }
   openRowId = id
+  // only the frame that brought an ask to the front marks it so (bringAskToFront)
+  frontAutoId = null
+  if (id !== null) {
+    // UX pass, slice 2: a row opened by any path is the ask in front again
+    frontClosed = false
+    // one thing in front on a wide window: the ask, never with a session panel
+    if (layout === 'wide' && focusSession) closeSessionPanelQuietly()
+  }
+  syncAskFront()
   if (resume) resumeRender()
   else showPauseHint()
+}
+
+// ── the ask in front (UX pass, slice 2) ─────────────────────────────────────
+// The person closed the open card on a wide window (its ✕ or Esc): no waiting
+// ask comes to the front by itself until they open a row again, Home is
+// entered from another tab, or a paint finds nothing waiting.
+let frontClosed = false
+// The row that came to the front by itself and has not been clicked since: the
+// person's first click or Enter on it opens it as theirs, focus into its card.
+let frontAutoId = null
+// The model and entry each list row was drawn from, so a frame can draw the
+// card of the ask it brings to the front (bringAskToFront).
+const rowBuilds = new WeakMap()
+
+// body.ask-front: exactly while the window is wide, Home is showing and a row is
+// open and drawn in the list (not in a closed fold). The CSS keeps the list and
+// the lanes clear of the fixed card only then.
+function syncAskFront() {
+  const row = openRowId ? needsYouRowEl(openRowId) : null
+  const on = layout === 'wide' && activeTab === 'dashboard' && !settingsOpen()
+    && Boolean(row) && !row.closest('[hidden], details:not([open])')
+  document.body.classList.toggle('ask-front', on)
+}
+
+// Inside render() only, after the list is painted and reconciled, so never while a
+// frame is held and never from the ambient painter: on a wide window with Home
+// showing and nothing in front (no open row, no session panel, no modal), the
+// first row drawn outside a closed fold that still waits on the person opens,
+// its card drawn in this frame. It moves no focus, scrolls nothing and writes
+// nothing, except that a keyboard user already in the list lands on that row.
+function bringAskToFront() {
+  if (layout !== 'wide' || activeTab !== 'dashboard' || settingsOpen()) return
+  const waiting = new Set(attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
+    .map(needsEntryId))
+  const first = rowEls().find((el) => waiting.has(el.dataset.cardId))
+  if (!first) {
+    frontClosed = false
+    return
+  }
+  if (openRowId !== null || focusSession || frontClosed) return
+  if (triageDeck || relayOpen || missionBoardId || missionDetailRowId || keyboardScope() !== document) return
+  const build = rowBuilds.get(first)
+  if (!build) return
+  const id = first.dataset.cardId
+  const listFocus = Boolean(activeFocusElement()?.closest?.('#needsYouList .nrow[data-card-id]'))
+  selectedId = id
+  setOpenRow(id, { resume: false })
+  frontAutoId = id
+  first.dataset.open = '1'
+  first.setAttribute('aria-expanded', 'true')
+  first.appendChild(rowCardBodyEl(build.entry, build.m, build.nowMs))
+  markSelectedRow(id)
+  if (listFocus && document.activeElement !== first) first.focus({ preventScroll: true })
+  syncAskFront()
+}
+
+// Opening a session panel on a wide window closes the ask in front; its drafts
+// stay, as on any close.
+function closeFrontAsk() {
+  if (layout !== 'wide' || openRowId === null) return
+  const row = needsYouRowEl(openRowId)
+  setOpenRow(null, { resume: false })
+  row?.removeAttribute('data-open')
+  row?.setAttribute('aria-expanded', 'false')
+  row?.querySelector('.nrow-card')?.remove()
 }
 
 // Existing rows keep their relative order for the session; genuinely new work
@@ -2980,6 +3054,7 @@ function focusPanelPart(part, ask = null) {
 }
 
 function openSessionFocus(session, part = null, ask = null) {
+  closeFrontAsk()
   focusSession = session
   // #197: the build hint follows an install made since
   refreshLiveVersion()
@@ -3020,6 +3095,14 @@ function closeSessionFocus() {
 // layout, or held inline by focus) it is part of the page, with its own close
 // and Esc, so an outside click never closes it there: the cards below it would
 // jump up under the press.
+// A row opened on a wide window closes the session panel as closeSessionFocus
+// does, moving no focus into the lanes (one thing in front).
+function closeSessionPanelQuietly() {
+  focusSession = null
+  paintSessionFocus()
+  agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
+}
+
 function closeSessionFocusOnClick(event) {
   if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
   if (event.target.closest('#dashboard .dash-focus, #dashboard [data-session-card]')) return
@@ -3042,6 +3125,7 @@ function jumpToSession(session) {
   if (!row) return false
   projectFilter = row.project
   agentFilter = null
+  closeFrontAsk()
   focusSession = session
   resetSearch()
   selectTab('dashboard', { paint: false, open: false })
@@ -3685,6 +3769,7 @@ function render() {
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
   const restoreQueueView = paintEditableSurfaces(frame)
+  bringAskToFront()
   pagedFocusId = null
   if (ownsFocus) {
     if (missionFocus && missionBoardId) {
@@ -3700,6 +3785,7 @@ function render() {
   keyboardUI?.refresh()
   restoreQueueView()
   restoreSelection(textSelection)
+  syncAskFront()
   editablePanesPainted = true
   // Draft recovery may move navigationKey() part way (reconcileDraftOwners →
   // requestDraftRecovery): the panes then show data filtered for the old tab,
@@ -4186,6 +4272,8 @@ function revealHeldDraft() {
     ? needsYouRowEl(first.inline.rowId)?.querySelector('.reply-input[data-recovered-draft="1"]')
     : null)
     ?? document.querySelector(`.stale-drafts-fold .stale-draft-line[data-recovery-line="${CSS.escape(first.line)}"]`)
+    // a row's kept text shows beside its editor while its card is open (#636), as the ask in front's is
+    ?? document.querySelector(`#needsYouList .nrow-card .row-recovery[data-recovery-line="${CSS.escape(first.line)}"]`)
     ?? document.querySelector('.stale-drafts-fold summary')
   if (!target) return
   revealDetailsAncestors(target)
@@ -5803,6 +5891,8 @@ function selectTab(id, { paint = true, open = true } = {}) {
   activeTab = id
   // the Review queue's hold line is in Home's list header: leaving Home ends it
   if (id !== 'dashboard') triageHeld = false
+  // entering Home from another tab brings the first waiting ask forward again
+  if (id === 'dashboard' && from !== 'dashboard') frontClosed = false
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
@@ -6033,6 +6123,7 @@ function initResponsive() {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
     layout = next
+    syncAskFront()
     applySidebarCollapse()
     if (lastData) forceRender() // the rail's visible labels change, so rebuild it
   }
@@ -6797,6 +6888,7 @@ function showPanel(id) {
   kicker.textContent = page.kicker
   kicker.hidden = !page.kicker
   document.getElementById('pageTitle').textContent = id === 'agent' ? meshAgentPage.current()?.name ?? '' : page.title
+  syncAskFront()
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
@@ -8117,6 +8209,7 @@ function needsRowEl(m, entry, nowMs) {
   const sourceAction = entry.kind === 'row' ? entry.row : entry.item
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
+  rowBuilds.set(el, { m, entry, nowMs })
   setHintOwner(el, entry.kind === 'row' ? entry.row : entry.item, entry.kind === 'row' ? entry.board : null)
   el.setAttribute('role', 'listitem')
   el.setAttribute('aria-current', 'false')
@@ -8385,6 +8478,14 @@ function rowInteractiveDescendant(target, row) {
 // The fixed desktop inspector is selection, while the compact inline card keeps
 // its accordion toggle. `setOpenRow` remains the only writer of logical state.
 function activateRow(el, m, entry, nowMs) {
+  if (openRowId === m.id && frontAutoId === m.id && layout === 'wide') {
+    // the ask that came to the front by itself: this click opens it, as on any row
+    frontAutoId = null
+    selectedId = m.id
+    markSelectedRow(m.id)
+    focusOpenCard(m.id)
+    return
+  }
   if (openRowId === m.id) {
     if (layout !== 'wide') {
       collapseRow(m.id)
@@ -8412,8 +8513,12 @@ function activateRow(el, m, entry, nowMs) {
   liveEl.setAttribute('aria-expanded', 'true')
   liveEl.appendChild(rowCardBodyEl(entry, m, nowMs))
   resumeRender()
+  focusOpenCard(m.id)
+}
+
+function focusOpenCard(id) {
   requestAnimationFrame(() => {
-    const card = needsYouRowEl(m.id)?.querySelector('.nrow-card')
+    const card = needsYouRowEl(id)?.querySelector('.nrow-card')
     if (card && !card.contains(document.activeElement)) {
       card.tabIndex = -1
       card.focus({ preventScroll: true }) // focus moves into the card (spec §13)
@@ -8426,6 +8531,8 @@ function activateRow(el, m, entry, nowMs) {
 // `explicit`: the person closed the card (Esc or its ✕), never the narrow row toggle.
 function collapseRow(id, { explicit = false } = {}) {
   if (openRowId !== id) return
+  // closed by the person on a wide window: nothing comes to the front by itself
+  const closesFront = explicit && layout === 'wide'
   selectedId = id
   markSelectedRow(id)
   setOpenRow(null)
@@ -8433,6 +8540,7 @@ function collapseRow(id, { explicit = false } = {}) {
   el?.removeAttribute('data-open')
   el?.setAttribute('aria-expanded', 'false')
   el?.querySelector('.nrow-card')?.remove()
+  if (closesFront) frontClosed = true
   renderIfIdle()
   requestAnimationFrame(() => selectRow(id))
 }

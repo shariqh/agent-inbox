@@ -50,7 +50,7 @@
   --app-code-error: #b93643;
   --app-shadow: 0 1px 2px rgba(15, 23, 31, .12);
   --sidebar-width: 220px;
-  --inspector-width: 520px;
+  --inspector-width: 640px;
   /* Motion tokens (#302, proposal §10). Every transition takes its duration
      and easing from here; Dashboard animations use them for one-shots. */
   --motion-fast: 120ms;
@@ -1331,8 +1331,15 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
 }
 main { width: 100%; max-width: 1460px; margin: 0 auto; padding: 0 32px 64px; }
 .panel { min-width: 0; }
-#needsYou { position: relative; min-height: calc(100vh - 150px); }
-#needsYouList { min-height: 420px; padding-right: calc(var(--inspector-width) + 28px); container: needs-queue / inline-size; }
+#needsYou { position: relative; }
+#needsYouList { container: needs-queue / inline-size; }
+/* UX pass, slice 2: the ask in front. While a row is open on a wide window, Home
+   (app.js syncAskFront) keeps the list and the lanes clear of the fixed card, and
+   leaves out the overview lanes; with nothing in front both use the full width. */
+body.ask-front #needsYouList, body.ask-front #dashboard { padding-right: calc(var(--inspector-width) + 28px); }
+body.ask-front :is(.plans-lane, .dashboard-outcomes, .dashboard-activity) { display: none; }
+.inspector-resizer { display: none; }
+body.ask-front .inspector-resizer { display: block; }
 .tab-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--app-border); }
 .queue-filter-group, .queue-tool-group { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .queue-tool-group { justify-content: flex-end; }
@@ -3077,8 +3084,6 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
   .topbar-notices { min-height: 0; flex: 1 0 100%; margin-top: -4px; }
   main { padding: 0 16px 64px; }
   #dashboard { padding: 0 0 64px; }
-  #needsYou { min-height: 0; }
-  #needsYouList { min-height: 0; padding-right: 0; }
   #needsYouList .nrow-card {
     position: static;
     inset: auto;

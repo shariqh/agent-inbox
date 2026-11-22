@@ -217,7 +217,8 @@ describe('Review queue and unsent responses (#407)', () => {
     expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
     click(buttonLabelled('Show it'))
     await settle()
-    expect(document.activeElement?.closest('.stale-drafts-fold')).not.toBeNull()
+    // UX slice 2: on a wide window the row came to the front, so its kept text shows beside its editor (#636)
+    expect(document.activeElement?.closest('.stale-drafts-fold, .nrow-card .row-recovery')).not.toBeNull()
     expect(document.activeElement?.textContent).toContain('Approve the same ask.')
   })
 

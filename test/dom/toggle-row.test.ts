@@ -425,8 +425,9 @@ describe('C2 · a REFUSED change-answer must not freeze the viewer', () => {
     // The orphan named directly, in the two halves that make it an orphan:
     // the refusal built no answer surface, so there is no input anywhere that
     // could hold or clear a draft…
-    // (#454: the session panel may draw the SECOND question's own editor; only this item's counts.)
-    expect([...document.querySelectorAll('.reply-input')].filter((input) => !input.closest('#dashFocus')).length,
+    // (#454: the session panel may draw the SECOND question's own editor; UX slice 2: on a wide window the
+    // SECOND question comes to the front by itself, its card holding its own editor. Only this item's counts.)
+    expect([...document.querySelectorAll('.reply-input')].filter((input) => !input.closest('#dashFocus') && input.closest('.nrow')?.getAttribute('data-card-id') === id).length,
       'a refused change-answer leaves the item answered, so no answer surface is built').toBe(0)
     expect(document.querySelector(`#dashFocus [data-panel-ask="${id}"]`)).toBeNull()
     // …and #pauseHint is the app's own report of suspendReason(). Pre-fix this reads

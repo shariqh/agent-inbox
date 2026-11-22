@@ -64,7 +64,9 @@ describe('viewer boots against a real DB', () => {
     await settle()
     expect(rowTitles().sort()).toEqual(['Complete the handoff.', 'alpha decision'])
     expect(document.querySelector('.header-toggle.active')?.textContent).toBe('All')
-    expect(document.querySelector('.nrow[data-open="1"]')).toBeNull()
+    // UX slice 2: on a wide window the first waiting ask is in front from the first paint
+    expect(document.querySelectorAll('.nrow[data-open="1"]')).toHaveLength(1)
+    expect(document.querySelector('.nrow[data-open="1"]')).toBe(document.querySelector('#needsYouList .nrow[data-card-id]'))
     expect(localStorage.getItem('agent-inbox-project-filter')).toBeNull()
     expect(localStorage.getItem('agent-inbox-agent-filter')).toBeNull()
   })
@@ -148,7 +150,7 @@ describe('viewer boots against a real DB', () => {
 
     inspector.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     sidebar.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
-    expect(root.getPropertyValue('--inspector-width')).toBe('520px')
+    expect(root.getPropertyValue('--inspector-width')).toBe('640px')
     expect(root.getPropertyValue('--sidebar-width')).toBe('220px')
   })
 

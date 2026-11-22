@@ -167,6 +167,9 @@ async function draftAnswer(id: string, text: string, context = ''): Promise<void
   await showInbox()
   if (!row(id)?.querySelector('.nrow-card')) click(row(id))
   await settle()
+  // the person works in the card (UX slice 2: on a wide window the ask may have come to the front by itself, unfocused)
+  const card = row(id)?.querySelector<HTMLElement>('.nrow-card')
+  if (card && !card.contains(document.activeElement)) card.focus()
   type(answerInput(id), text)
   if (context) type(contextInput(id), context)
 }

@@ -125,7 +125,7 @@ describe('C1 layer 2 · render() reconciles openRowId against what it just rende
     const d = open()
     const aId = insertItem(d, { ...AGENT, kind: 'question', title: 'alpha question' })
     advanceClock()
-    insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'question', title: 'beta question' })
+    const bId = insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'question', title: 'beta question' })
     await bootApp(d)
 
     click(row(aId))
@@ -138,7 +138,8 @@ describe('C1 layer 2 · render() reconciles openRowId against what it just rende
     // the row is gone from the list, so nothing can ever toggle it shut again —
     // reconcileOpenRow (poll.js) is what stops that suspending the poll forever
     expect(rowTitles()).toEqual(['beta question'])
-    expect(document.querySelectorAll('.nrow[data-open="1"]').length).toBe(0)
+    // UX slice 2: the alpha card is gone; on a wide window the beta question then comes to the front by itself
+    expect([...document.querySelectorAll<HTMLElement>('.nrow[data-open="1"]')].map((el) => el.dataset['cardId'])).toEqual([bId])
 
     advanceClock()
     insertItem(d, { project: 'beta', stream: 'main', agent: 'claude', kind: 'question', title: 'beta second' })

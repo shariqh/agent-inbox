@@ -600,5 +600,7 @@ describe('the stylesheet (step 4)', () => {
     expect(css.slice(media)).not.toContain('ask-front')
     expect(css).toMatch(/\n\.inspector-resizer \{ display: none; \}/)
     expect(css).not.toMatch(/#needsYou(List)?\s*\{[^}]*min-height/)
+    // an empty kicker draws nothing: its own display would beat the UA's [hidden]
+    expect(css).toContain('.page-kicker[hidden] { display: none; }')
   })
 })

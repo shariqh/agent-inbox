@@ -1166,6 +1166,8 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   letter-spacing: .09em;
   text-transform: uppercase;
 }
+/* Home has no kicker: an empty one draws nothing (its display: block beats the UA's [hidden]) */
+.page-kicker[hidden] { display: none; }
 .page-heading h1 { margin: 0; font-size: clamp(22px, 2.3vw, 30px); font-weight: 650; letter-spacing: -.035em; line-height: 1.18; }
 .topbar-notices { grid-column: 1 / -1; min-height: 17px; margin-top: -2px; }
 #status { color: var(--app-danger); }

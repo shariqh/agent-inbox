@@ -53,7 +53,7 @@ const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus'
 // The lane chips are gone (UX slice 2): a lane's size is its cards, and Needs you
 // is the asks in Home's list that still wait on the person.
 const chip = (key: 'needs' | 'working' | 'quiet'): string => String(key === 'needs'
-  ? document.querySelectorAll('#needsYouList > .nrow:not(.answered)').length
+  ? Number(document.querySelector('#needsYouList .queue-count')?.textContent || 0)
   : document.querySelectorAll(key === 'working' ? '#dashboard .working-lane .ah-cards [data-session-card]' : '#dashboard .quiet-lane .qt-rows [data-session-card]').length)
 
 function keydown(target: Element, key: string): void {

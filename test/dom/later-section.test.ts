@@ -232,7 +232,7 @@ describe('the Later section (#247)', () => {
     snoozeItem(d, snoozed, new Date(Date.now() + HOUR).toISOString())
     await bootApp(d)
     await showInbox()
-    expect(calmHead()).toBe('Nothing needs you now · 2 in Later')
+    expect(calmHead()).toBe('Nothing needs you · 2 in Later')
 
     click(buttonLabelled('Back to inbox', row(pinned)!))
     await settle()
@@ -248,15 +248,15 @@ describe('the Later section (#247)', () => {
     const d = open()
     await bootApp(d)
     await showInbox()
-    expect(calmHead()).toBe('Your queue is clear')
+    expect(calmHead()).toBe('Nothing needs you')
 
     pinItem(d, question(d), true)
     await pollTick()
-    expect(calmHead()).toBe('Nothing needs you now · 1 in Later')
+    expect(calmHead()).toBe('Nothing needs you · 1 in Later')
     await chooseLater(false)
     await showInbox()
     expect(fold('pinned')).not.toBeNull()
-    expect(calmHead(), 'with the section off there is no Later to name').toBe('Your queue is clear')
+    expect(calmHead(), 'with the section off there is no Later to name').toBe('Nothing needs you')
   })
 
   it('counts Later in the current lens only, never in the badge, the tab or the rail', async () => {

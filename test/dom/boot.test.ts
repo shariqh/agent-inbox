@@ -105,8 +105,12 @@ describe('viewer boots against a real DB', () => {
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     expect(document.getElementById('pageTitle')?.textContent).toBe('Home')
-    expect(document.querySelector('#needsYouList .tab-header')?.textContent)
-      .toContain('AllDecisionsTo doUpdatesSortPriorityNewestOldestHandoffsReview queue')
+    // UX pass, slice 2: a quiet first line (the heading, its count, the Filter toggle); the
+    // filters, Sort, Handoffs and Review queue rest out of sight in one wrapper
+    expect(document.querySelector('#needsYouList .tab-header .queue-head')?.textContent).toBe('Needs you2Filter')
+    expect(document.querySelector<HTMLElement>('#needsYouList .queue-tools')?.hidden).toBe(true)
+    expect(document.querySelector('#needsYouList .queue-tools')?.textContent)
+      .toBe('AllDecisionsTo doUpdatesSortPriorityNewestOldestHandoffsReview queue')
     expect(document.querySelectorAll('#needsYouList .queue-filter-group > .header-toggle')).toHaveLength(4)
     expect(document.querySelector('#needsYouList .queue-tool-group .queue-sort')).not.toBeNull()
     expect(document.querySelector('#needsYouList .queue-tool-group .triage-btn')).not.toBeNull()

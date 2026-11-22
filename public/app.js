@@ -3507,6 +3507,7 @@ function paintAmbient() {
   // the agent tab, from the same body, whether or not mesh is still on (it then says the agent left)
   meshAgentPage.paint(lastData.mesh ?? null, Date.now(), lastData.runs ?? null)
   paintTabCounts(g, boards)
+  paintQueueCount(g, boards)
   paintLaterSectionHint()
   // #407: a poll held back by a draft, a press or a scroll still ends a stale
   // hold line; it writes in place and builds the deck only while held
@@ -4073,7 +4074,8 @@ function restoreTriageReturnFocus(bookmark) {
     target = document.querySelector('.triage-btn')
   }
   target ??= needsYouRowEl(selectedId) ?? document.querySelector('.triage-btn')
-  target?.focus({ preventScroll: true })
+  // the Review queue button rests out of sight: show the tools before it takes focus
+  focusQueueControl(target)
 }
 
 // Issue #407: the unsent responses that hold the Review queue back. The hold
@@ -4142,13 +4144,15 @@ function paintTriageHold() {
   show.hidden = !count
   if (hadFocus) {
     const next = document.querySelector('.stale-drafts-fold summary') ?? document.querySelector('.triage-btn')
-    next?.focus({ preventScroll: true })
+    focusQueueControl(next)
   }
   hold.classList.toggle('active', Boolean(count))
 }
 
 function holdTriage() {
   triageHeld = true
+  // the person asked for the Review queue: its button (and the hold line's way back to it) in view
+  showQueueTools()
   // nothing passive moves focus to the off-screen fold; the hold line does
   draftRecoveryFocusPending = false
   if (triageDeck) closeTriage({ restoreFocus: false })
@@ -4170,7 +4174,7 @@ function revealHeldDraft() {
   const first = heldDraftRecoveries()[0]
   if (!first) {
     paintTriageHold()
-    document.querySelector('.triage-btn')?.focus({ preventScroll: true })
+    focusQueueControl(document.querySelector('.triage-btn'))
     return
   }
   if (first.inline) {
@@ -4431,6 +4435,7 @@ function keepDraftInView(entry) {
   if (triageDeck && activeTab !== 'dashboard') {
     selectTab('dashboard', { paint: false })
     triageReturnFocus = { kind: 'triageButton' }
+    showQueueTools()
   }
   const ask = entryEntity(entry)
   if (openRowId === ask.id) return
@@ -7445,6 +7450,42 @@ let actionFilter = 'all'
 let changedOnly = false
 let askSort = savedAskSort()
 let needsYouHeaderNode = null
+// UX pass, slice 2: the filters, Sort, Handoffs and Review queue rest out of
+// sight behind the header's Filter toggle (in memory only). They show whatever
+// the toggle says while a filter or a non-default sort is in force.
+let queueToolsOpen = false
+// the asks in the list that still wait on the person, under the lens and the
+// filters (not the answered foot, not the folds); painted with the ambient frame
+let queueWaitingCount = 0
+
+function queueToolsForced() {
+  return actionFilter !== 'all' || changedOnly || askSort !== savedAskSort()
+}
+
+// Show the tools before anything focuses one of their controls: a hidden
+// control is never a focus target.
+function showQueueTools() {
+  if (queueToolsOpen) return
+  queueToolsOpen = true
+  if (needsYouHeaderNode) syncNeedsYouHeader(needsYouHeaderNode)
+}
+
+function focusQueueControl(el) {
+  if (!el) return
+  if (el.closest('.queue-tools')) showQueueTools()
+  el.focus({ preventScroll: true })
+}
+
+// The ambient count (#needsYouTitle's): a poll held back by a draft or a press
+// still keeps it current, as the badge and the tab count are.
+function paintQueueCount(g, boardsInView) {
+  const items = g.needsYou.flatMap((gr) => gr.items)
+  queueWaitingCount = filterActionEntries(attentionEntries(items, boardsInView, Date.now(), liveSessionIds())).length
+  const count = needsYouHeaderNode?.querySelector('.queue-count')
+  if (!count) return
+  setText(count, queueWaitingCount ? String(queueWaitingCount) : '')
+  setHidden(count, !queueWaitingCount)
+}
 
 function entryEntity(entry) {
   return entry.kind === 'row' ? entry.row : entry.item
@@ -7460,6 +7501,12 @@ function filterActionEntries(entries) {
 }
 
 function syncNeedsYouHeader(bar) {
+  const shown = queueToolsOpen || queueToolsForced()
+  setHidden(bar.querySelector('.queue-tools'), !shown)
+  setAttr(bar.querySelector('.queue-tools-toggle'), 'aria-expanded', String(shown))
+  const count = bar.querySelector('.queue-count')
+  setText(count, queueWaitingCount ? String(queueWaitingCount) : '')
+  setHidden(count, !queueWaitingCount)
   for (const filter of bar.querySelectorAll('[data-action-filter]')) {
     filter.classList.toggle('active', filter.dataset.actionFilter === actionFilter)
   }
@@ -7488,17 +7535,34 @@ function needsYouHeader() {
   const bar = document.createElement('div')
   bar.className = 'tab-header'
   // Home's list of asks has no tab of its own: this heading names it (the
-  // region's label, and where G I's tile sits)
+  // region's label, and where G I's tile sits), then its count and the Filter
+  // toggle at the right end of the line
+  const head = document.createElement('div')
+  head.className = 'queue-head'
   const title = document.createElement('h2')
   title.id = 'needsYouTitle'
   title.className = 'queue-title'
   title.tabIndex = -1
   title.textContent = 'Needs you'
+  const count = document.createElement('b')
+  count.className = 'queue-count'
+  count.hidden = true
+  const toggle = btn('Filter', () => {
+    queueToolsOpen = !(queueToolsOpen || queueToolsForced())
+    syncNeedsYouHeader(bar)
+  })
+  toggle.type = 'button'
+  toggle.className = 'queue-tools-toggle'
+  toggle.setAttribute('aria-controls', 'queueTools')
+  toggle.setAttribute('aria-expanded', 'false')
+  head.append(title, count, toggle)
   const filters = document.createElement('div')
   filters.className = 'queue-filter-group'
   for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
     const filter = btn(label, () => {
       actionFilter = value
+      // the tools stay in view under the hand that just used them
+      queueToolsOpen = true
       renderIfIdle()
     })
     filter.className = 'header-toggle'
@@ -7507,6 +7571,7 @@ function needsYouHeader() {
   }
   const changed = btn('Updates', () => {
     changedOnly = !changedOnly
+    queueToolsOpen = true
     renderIfIdle()
   })
   changed.className = 'header-toggle'
@@ -7525,6 +7590,7 @@ function needsYouHeader() {
   sort.addEventListener('change', () => {
     askSort = sort.value
     pinnedIds = []
+    queueToolsOpen = true
     renderIfIdle()
   })
   sortLabel.append(sortText, sort)
@@ -7546,7 +7612,13 @@ function needsYouHeader() {
   holdShow.className = 'triage-hold-show'
   holdShow.hidden = true
   hold.append(holdText, holdShow)
-  bar.append(title, filters, tools, hold)
+  // out of sight at rest, one wrapper; the hold line stays outside it, always in the document
+  const wrap = document.createElement('div')
+  wrap.className = 'queue-tools'
+  wrap.id = 'queueTools'
+  wrap.hidden = true
+  wrap.append(filters, tools)
+  bar.append(head, wrap, hold)
   needsYouHeaderNode = bar
   syncNeedsYouHeader(bar)
   return bar
@@ -7618,7 +7690,7 @@ function renderEmptyState(host, laterCount = 0) {
   panel.className = 'calm-panel'
   const head = document.createElement('div')
   head.className = 'calm-head'
-  head.textContent = laterCount ? `Nothing needs you now · ${laterCount} in Later` : 'Your queue is clear'
+  head.textContent = laterCount ? `Nothing needs you · ${laterCount} in Later` : 'Nothing needs you'
   panel.appendChild(head)
   // the unread-note count already has its own actionable footer button
   // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
@@ -7921,7 +7993,7 @@ function renderOrphanedDrafts(host) {
       else fold.remove()
       if (hadFocus) {
         const target = next ?? (fold.isConnected ? summary : null) ?? document.querySelector('.triage-btn')
-        target?.focus({ preventScroll: true })
+        focusQueueControl(target)
       }
       paintTriageHold()
       renderIfIdle()

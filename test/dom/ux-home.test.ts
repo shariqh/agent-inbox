@@ -7,7 +7,7 @@ import type Database from 'better-sqlite3'
 import { getItem, insertItem, listBoards, upsertActivity, upsertBoard } from '../../src/store.js'
 import { installAgentsHome } from '../../public/agents-home.js'
 import {
-  advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, sendButton, settle, showInbox, type, useDomTest,
+  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, sendButton, settle, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -195,5 +195,140 @@ describe('no lane, no chips (step 2)', () => {
     expect(head.lastElementChild).toBe(start)
     expect(head.nextElementSibling?.classList.contains('ah-note')).toBe(true)
     expect(document.querySelector('#dashboard .dashboard')?.firstElementChild?.classList.contains('dash-since')).toBe(true)
+  })
+})
+
+describe('the list’s header is quiet (step 3)', () => {
+  const header = () => document.querySelector<HTMLElement>('#needsYouList .tab-header')!
+  const tools = () => header().querySelector<HTMLElement>('.queue-tools')!
+  const toggle = () => header().querySelector<HTMLButtonElement>('.queue-tools-toggle')!
+  const count = () => header().querySelector<HTMLElement>('.queue-count')!
+  const visible = (el: Element | null) => Boolean(el) && !el!.closest('[hidden]')
+
+  it('rests on its heading, its count and Filter; the toggle shows and hides the tools', async () => {
+    db = freshDb()
+    question(db, 'One')
+    await bootApp(db)
+    const head = header().querySelector('.queue-head')!
+    expect([...head.children].map((el) => el.tagName + (el.id ? `#${el.id}` : `.${el.className}`)))
+      .toEqual(['H2#needsYouTitle', 'B.queue-count', 'BUTTON.queue-tools-toggle'])
+    expect(document.getElementById('needsYouTitle')?.textContent).toBe('Needs you')
+    expect(document.getElementById('needsYou')?.getAttribute('aria-labelledby')).toBe('needsYouTitle')
+    expect([toggle().textContent, toggle().getAttribute('aria-controls'), toggle().getAttribute('aria-expanded')])
+      .toEqual(['Filter', 'queueTools', 'false'])
+    expect(tools().id).toBe('queueTools')
+    expect(tools().hidden).toBe(true)
+    // the hold line stays outside the wrapper, always in the document
+    expect(header().querySelector(':scope > .triage-hold')).not.toBeNull()
+    expect(tools().querySelector('.triage-hold')).toBeNull()
+    click(toggle())
+    expect(tools().hidden).toBe(false)
+    expect(toggle().getAttribute('aria-expanded')).toBe('true')
+    await pollTick()
+    expect(tools().hidden, 'a poll keeps the open tools open').toBe(false)
+    click(toggle())
+    expect(tools().hidden).toBe(true)
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('shows the tools whatever the toggle says while a filter or a non-default sort is in force', async () => {
+    db = freshDb()
+    question(db, 'One')
+    await bootApp(db)
+    click(toggle())
+    click(header().querySelector('[data-action-filter="decision"]'))
+    await settle()
+    click(toggle())
+    expect(tools().hidden, 'an active filter is never out of sight').toBe(false)
+    expect(toggle().getAttribute('aria-expanded')).toBe('true')
+    click(header().querySelector('[data-action-filter="all"]'))
+    await settle()
+    // back to rest by the toggle, never under the hand on a filter
+    expect(tools().hidden).toBe(false)
+    click(toggle())
+    expect(tools().hidden).toBe(true)
+    const sort = header().querySelector<HTMLSelectElement>('.queue-sort select')!
+    sort.value = 'newest'
+    sort.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    click(toggle())
+    expect(tools().hidden, 'a non-default sort is never out of sight').toBe(false)
+    sort.value = 'priority'
+    sort.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    click(toggle())
+    expect(tools().hidden).toBe(true)
+  })
+
+  it('counts the asks that still wait under the lens and the filters, hidden at zero', async () => {
+    db = freshDb()
+    question(db, 'Alpha decision')
+    blockedRow(db, 'Alpha task')
+    question(db, 'Harbor decision', { project: 'harbor' })
+    const answered = question(db, 'Answered already')
+    await bootApp(db)
+    click(row(answered))
+    await settle()
+    type(answerInput(answered), 'Yes')
+    click(sendButton(answered))
+    await settle()
+    expect([count().hidden, count().textContent]).toEqual([false, '3'])
+    click(document.querySelector('#rail button.rail-tab[data-project="atlas"]'))
+    await settle()
+    expect(count().textContent).toBe('2')
+    click(header().querySelector('[data-action-filter="task"]'))
+    await settle()
+    expect(count().textContent).toBe('1')
+    click(document.querySelector('#rail button.rail-tab[data-project="harbor"]'))
+    await settle()
+    expect([count().hidden, count().textContent]).toEqual([true, ''])
+  })
+
+  // jsdom keeps every earlier boot's document listeners in one file, so these press no `t`
+  it('shows the tools before the Review queue’s way back focuses its button', async () => {
+    db = freshDb()
+    question(db, 'One')
+    await bootApp(db)
+    click(toggle())
+    const button = header().querySelector<HTMLButtonElement>('.triage-btn')!
+    button.focus()
+    click(button)
+    await settle()
+    const lightbox = document.getElementById('lightbox')!
+    expect(lightbox.hidden).toBe(false)
+    // the tools go out of sight while the deck is open; its close still lands on a shown button
+    click(toggle())
+    expect(tools().hidden).toBe(true)
+    click(lightbox.querySelector('.lb-close'))
+    await settle()
+    expect(document.activeElement).toBe(button)
+    expect(visible(document.activeElement), 'a hidden control is never a focus target').toBe(true)
+  })
+
+  it('the hold line focuses a control that is not hidden', async () => {
+    db = freshDb()
+    const id = question(db, 'Release day?')
+    localStorage.setItem('agent-inbox-drafts-v1', JSON.stringify({ v: 1, entries: {
+      [`item-recovery:page:${id}`]: { savedAt: Date.now() - 1000, draft: {
+        type: 'item-recovery', itemId: id, title: 'Release day?', text: 'Friday.', context: '', kind: 'answer', intent: null,
+        reason: 'Not sent because this question changed.',
+      } },
+    } }))
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    expect(tools().hidden).toBe(true)
+    click(header().querySelector('.triage-btn'))
+    await settle()
+    expect(document.getElementById('lightbox')!.hidden).toBe(true)
+    expect(document.activeElement).toBe(buttonLabelled('Show it'))
+    expect(visible(document.activeElement)).toBe(true)
+    expect(tools().hidden, 'the Review queue the person asked for is in view').toBe(false)
+  })
+
+  it('says "Nothing needs you" when nothing waits', async () => {
+    db = freshDb()
+    await bootApp(db)
+    expect(document.querySelector('#needsYouList .calm-head')?.textContent).toBe('Nothing needs you')
+    expect(count().hidden).toBe(true)
   })
 })

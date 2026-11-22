@@ -22,7 +22,7 @@ function open(): Database.Database {
 // The lane chips are gone (UX slice 2): a lane's size is its cards, and Needs you
 // is the asks in Home's list that still wait on the person.
 const chip = (key: 'needs' | 'working' | 'quiet'): string => String(key === 'needs'
-  ? document.querySelectorAll('#needsYouList > .nrow:not(.answered)').length
+  ? Number(document.querySelector('#needsYouList .queue-count')?.textContent || 0)
   : document.querySelectorAll(key === 'working' ? '#dashboard .working-lane .ah-cards [data-session-card]' : '#dashboard .quiet-lane .qt-rows [data-session-card]').length)
 
 // the Needs you lane: every ask once (§3.2)
@@ -297,7 +297,6 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.activeElement).toBe(range)
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.getElementById('pauseHint')?.textContent).toContain('paused')
-    expect(askCount()).toBe(2)
     expect(answerInput(first)?.value).toBe('unfinished answer')
   })
 
@@ -360,7 +359,6 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(chip('needs')).toBe('6')
     expect(chip('working')).toBe('0')
-    expect(askCount()).toBe(6)
     expect(working()).toHaveLength(0)
     expect(cards().map((card) => card.querySelector('.sc-state')?.textContent)).toEqual(['Quiet'])
     expect(document.querySelector('.dashboard-outcome')?.textContent).toContain('Checks completed.')
@@ -483,7 +481,6 @@ describe('Live Operations Desk dashboard', () => {
     await pollTick()
     expect(document.title).toBe('(4) Agent Inbox')
     expect(chip('needs')).toBe('2')
-    expect(askCount()).toBe(2)
     expect(cards().map((card) => card.dataset.sessionCard)).toEqual(['session:alpha'])
     expect(document.activeElement).toBe(range)
   })
@@ -504,7 +501,6 @@ describe('Live Operations Desk dashboard', () => {
     range.dispatchEvent(new Event('pointerup', { bubbles: true }))
     await pollTick()
     expect(chip('needs')).toBe('2')
-    expect(askCount()).toBe(2)
     expect(document.querySelector('.dashboard-range')).toBe(range)
   })
 

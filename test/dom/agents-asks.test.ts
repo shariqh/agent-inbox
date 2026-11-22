@@ -55,8 +55,8 @@ const editor = (id: string) => block(id)?.querySelector<HTMLTextAreaElement>('.r
 const askAction = (id: string, name: string) => block(id)?.querySelector<HTMLButtonElement>(`[data-ask-action="${name}"]`) ?? null
 const card = (key: string) => [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === key) ?? null
 // the page head's Needs you chip, which counts the lane (dashboard lanes design §3.1)
-// the asks in Home's list that still wait on the person (not the answered foot, not the folds)
-const needsYou = () => document.querySelectorAll('#needsYouList > .nrow:not(.answered)').length
+// the asks in Home's list that still wait on the person (not the answered foot, not the folds): the list's count
+const needsYou = () => Number(document.querySelector('#needsYouList .queue-count')?.textContent || 0)
 const body = (bridge: ViewerBridge, match: string): Record<string, unknown> =>
   JSON.parse(String(bridge.posts.find((post) => post.url.includes(match))?.init?.body ?? '{}'))
 // the card's click opens its session panel, whose Asking you section holds the card's asks

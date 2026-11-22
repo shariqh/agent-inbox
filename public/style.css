@@ -1336,6 +1336,17 @@ main { width: 100%; max-width: 1460px; margin: 0 auto; padding: 0 32px 64px; }
 .tab-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--app-border); }
 .queue-filter-group, .queue-tool-group { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .queue-tool-group { justify-content: flex-end; }
+/* UX pass, slice 2: the header's first line is the list's heading, its count and the
+   Filter toggle; the tools rest out of sight in one wrapper that leaves the grid to
+   its two groups while shown. Shown and hidden by state (app.js), never by focus. */
+.queue-head { grid-column: 1 / -1; display: flex; min-width: 0; align-items: baseline; gap: var(--sp-2); }
+.queue-title { margin: 0; color: var(--app-text); font-size: var(--fs-title); font-weight: 650; line-height: 1.3; }
+.queue-count { color: var(--app-attention); font-size: var(--fs-body); font-weight: 650; font-variant-numeric: tabular-nums; }
+.queue-count[hidden] { display: none; }
+.queue-tools-toggle { margin-left: auto; padding: var(--sp-1) var(--sp-3); border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: var(--app-muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.queue-tools-toggle:hover, .queue-tools-toggle[aria-expanded="true"] { border-color: var(--app-border-strong); color: var(--app-text); }
+.queue-tools { display: contents; }
+.queue-tools[hidden] { display: none; }
 /* #407: why the Review queue did not open. Out of sight but still in the
    accessibility tree while empty, so its live region announces a new message. */
 .triage-hold { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12.5px; color: var(--app-text); }

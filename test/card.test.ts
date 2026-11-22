@@ -209,7 +209,7 @@ describe('app.js wiring (source-level pins)', () => {
     const fn = js.slice(start, js.indexOf('\nfunction rowCardBodyEl('))
     expect(fn).toContain('activateRow(el, m, entry, nowMs)')
     // Esc on the row may return to the Dashboard it was opened from (dashboard lanes design §3.2)
-    expect(fn).toContain('collapseRow(m.id, { back: true })')
+    expect(fn).toContain('collapseRow(m.id, { explicit: true })')
     expect(fn).toMatch(/openRowId === m\.id/)
   })
 

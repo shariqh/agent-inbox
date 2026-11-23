@@ -1,7 +1,8 @@
 import type { SearchMatch, SearchResult } from './search-index.js'
 import type { StepState } from './lanes.js'
+import type { Chat } from './chats.js'
 
-export type FindChip = 'all' | 'answers' | 'notes' | 'plans'
+export type FindChip = 'all' | 'answers' | 'notes' | 'plans' | 'chats'
 export const FIND_CHIPS: FindChip[]
 export const FIND_PAGE: number
 
@@ -14,8 +15,9 @@ export type FindExtra =
 export interface FindRow {
   key: string
   id: string
-  type: 'answer' | 'note' | 'plan' | 'finished' | 'ask'
-  label: 'Answer' | 'Note' | 'Plan' | 'Finished' | 'Ask' | 'Hand-off'
+  type: 'answer' | 'note' | 'plan' | 'finished' | 'ask' | 'chat'
+  /** the type's word; a chat's is its tool's name ("Claude Code", "Copilot") */
+  label: string
   /** expand: opens in place; home: goes to the ask on Home; plans: goes to the plan */
   action: 'expand' | 'home' | 'plans'
   title: string
@@ -31,8 +33,20 @@ export interface FindRow {
   entity: any
 }
 
+/** A chat's row (step B): keyed `chat:<tool>:<id>`; its id is `<tool>:<id>`. */
+export interface FindChatRow extends FindRow {
+  type: 'chat'
+  tool: string
+  /** an automatic or missing title is drawn quietly, with `titleNote` saying why */
+  titleQuiet: boolean
+  titleNote: string | null
+  live: boolean
+  chat: Chat
+}
+
 export function findAge(ageMs: number): string
 export function findRow(entity: any, options?: { nowMs?: number; archived?: boolean; fromCounts?: boolean }): FindRow
+export function chatFindRow(chat: Chat): FindChatRow
 export function buildFindRows(data: any, options?: {
   chip?: FindChip
   query?: string
@@ -42,4 +56,8 @@ export function buildFindRows(data: any, options?: {
   archivedWhole?: boolean
   keep?: Iterable<string>
   previous?: string[]
+  /** the chat list read, sorted or not; null before any read */
+  chats?: readonly Chat[] | null
+  /** the Chats line's tool toggle, applied under the Chats chip only */
+  chatTool?: 'all' | 'claude' | 'copilot'
 }): { rows: FindRow[]; cut: number }

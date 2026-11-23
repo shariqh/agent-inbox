@@ -6,10 +6,17 @@
 // A row: a type (its icon and label), a title, one small extra, the project and a
 // stamp the page turns into an age. What a press does is the row's `action`:
 // `expand` opens it in place, `home` goes to the ask on Home, `plans` to the plan.
+//
+// Step B: chats (Claude Code and Copilot CLI conversations on this Mac) are rows too, keyed
+// `chat:<tool>:<id>`, from the list chats-view.js read. They are matched on their metadata only
+// (title, project, branch, folder) with the Chats page's substring rule; a chat's messages are
+// never read, so never matched. They ignore the project rail and the Agent select, and they are
+// never cut: they have no gap to wait on.
 import { buildSearchResults } from './search-index.js'
 import { planBarLabel, planSegments, planStepStates } from './lanes.js'
+import { filterChats, inferHome, sortChats, titleView, toolLabel } from './chats.js'
 
-export const FIND_CHIPS = ['all', 'answers', 'notes', 'plans']
+export const FIND_CHIPS = ['all', 'answers', 'notes', 'plans', 'chats']
 // rows per page, and per press of "Show 20 more"
 export const FIND_PAGE = 20
 // the plan bar's per-step limit in a row, as the Plans page's narrow bar
@@ -115,6 +122,29 @@ export function findRow(entity, { nowMs = Date.now(), archived = false, fromCoun
   return { ...row, type: 'finished', label: 'Finished', action: 'expand', stamp: closedStamp(entity), extra: finishedExtra(entity) }
 }
 
+/**
+ * One row for a chat: the tool's icon, the title (quiet when automatic or missing), a Live
+ * mark, the project and the age of its last activity. It opens in place.
+ */
+export function chatFindRow(chat) {
+  const title = titleView(chat)
+  return {
+    key: `chat:${chat.tool}:${chat.id}`, id: `${chat.tool}:${chat.id}`, type: 'chat', label: toolLabel(chat.tool), tool: chat.tool,
+    action: 'expand', title: title.text, titleQuiet: title.quiet, titleNote: title.title, project: chat.project ?? '',
+    stamp: ms(chat.lastActiveAt), open: false, cuttable: false, live: chat.live === true, extra: null, entity: null, chat,
+  }
+}
+
+// The chats a chip lists, newest active first. Under the Chats chip: the list as read (Show all's
+// hidden chats included) through the tool toggle. Under All, where neither the toggle nor Show all
+// is drawn: the default list, every tool.
+function chatRows(chats, { query, tool, all }) {
+  if (!Array.isArray(chats) || !chats.length) return []
+  const home = inferHome(chats)
+  const pool = all ? chats.filter((chat) => !chat.hidden?.length) : chats
+  return filterChats(sortChats(pool), { query, tool: all ? 'all' : tool, project: null }, home).map(chatFindRow)
+}
+
 // What each chip holds, as a predicate over rows.
 const CHIP_ROWS = {
   // with no query: no open asks, no asks closed without a reply, and no plans (each write
@@ -123,6 +153,7 @@ const CHIP_ROWS = {
   answers: (row) => row.type === 'answer',
   notes: (row) => row.type === 'note',
   plans: (row) => row.type === 'plan',
+  chats: (row) => row.type === 'chat',
 }
 
 // The same chip, applied inside each of search's sections (with a query, All also
@@ -191,26 +222,41 @@ function keepInPlace(rows, keptRows, previous) {
  * items and plans are never cut. With a query: search's order (current work first,
  * ranked inside each kind), the chip applied inside each section, no limit, no cut.
  *
+ * Chats (`chats`, the list read; `chatTool`, the Chats line's tool toggle): under the Chats
+ * chip, the field filters them by substring, newest active first, query or not. Under All with
+ * a query they are a section after the notes and before the finished things; with no query
+ * All leaves them out, as it leaves out plans. No other chip lists them.
+ *
  * `keep`: keys that stay listed whatever the chip or the query (the person acted on
  * them, or their editor holds text), in their `previous` place.
  */
 export function buildFindRows(data, {
   chip = 'all', query = '', searchFn = null, before = null, nowMs = Date.now(), archivedWhole = true,
-  keep = [], previous = [],
+  keep = [], previous = [], chats = null, chatTool = 'all',
 } = {}) {
   const pick = CHIP_ROWS[chip] ?? CHIP_ROWS.all
   const every = allRows(data ?? {}, { nowMs, archivedWhole })
   const byKey = new Map(every.map((row) => [row.key, row]))
+  for (const row of (Array.isArray(chats) ? chats : []).map(chatFindRow)) byKey.set(row.key, row)
   const needle = clean(query)
   let rows
   let cut = 0
-  if (needle && searchFn) {
-    rows = buildSearchResults(chipData(data ?? {}, chip), needle, searchFn, Infinity)
+  if (chip === 'chats') {
+    rows = chatRows(chats, { query: needle, tool: chatTool, all: false })
+  } else if (needle && searchFn) {
+    const results = buildSearchResults(chipData(data ?? {}, chip), needle, searchFn, Infinity)
+    rows = results
       .map((result) => {
         const row = byKey.get(result.key)
-        return row ? { ...row, source: result.source } : null
+        return row ? { ...row, source: result.source, section: result.section } : null
       })
       .filter(Boolean)
+    if (chip === 'all') {
+      const found = chatRows(chats, { query: needle, tool: 'all', all: true })
+      const at = rows.findIndex((row) => row.section === 'history' || row.section === 'archived')
+      rows.splice(at < 0 ? rows.length : at, 0, ...found)
+    }
+    for (const row of rows) delete row.section
   } else {
     const cutAt = before == null ? null : ms(before)
     rows = every.filter(pick).filter((row) => {

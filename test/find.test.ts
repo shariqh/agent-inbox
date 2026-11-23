@@ -3,7 +3,8 @@
 // the order with and without a query, more than 20 matches, and the age formatter.
 import { describe, expect, it } from 'vitest'
 import uFuzzy from '@leeoniya/ufuzzy'
-import { FIND_CHIPS, FIND_PAGE, buildFindRows, findAge, findRow } from '../public/find.js'
+import { FIND_CHIPS, FIND_PAGE, buildFindRows, chatFindRow, findAge, findRow } from '../public/find.js'
+import type { Chat } from '../public/chats.js'
 
 const uf = new uFuzzy({ intraMode: 1 })
 const fuzzy = (hay: string[], needle: string): Array<{ index: number; ranges: number[] }> | null => {
@@ -119,8 +120,8 @@ describe('findRow', () => {
 })
 
 describe('buildFindRows with no query', () => {
-  it('has the four chips, a page of 20', () => {
-    expect(FIND_CHIPS).toEqual(['all', 'answers', 'notes', 'plans'])
+  it('has the five chips (Chats since step B), a page of 20', () => {
+    expect(FIND_CHIPS).toEqual(['all', 'answers', 'notes', 'plans', 'chats'])
     expect(FIND_PAGE).toBe(20)
   })
 
@@ -222,5 +223,89 @@ describe('rows the person acted on stay where they were', () => {
     // not in the list under this chip: it leads
     const outside = build({ chip: 'plans', keep: ['item:n2'], previous: [] })
     expect(keys(outside.rows)[0]).toBe('item:n2')
+  })
+})
+
+// Step B: chats in Find. A chat is metadata only: what the chat index read from the tools' own files.
+const chat = (n: number, extra: Partial<Chat> = {}): Chat => ({
+  id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, tool: 'claude', title: `Chat ${n}`, titleAuto: false, project: 'atlas',
+  cwd: '/Users/tester/dev/atlas', branch: 'main', createdAt: at(30 * DAY), lastActiveAt: at(n * HOUR), live: false, pr: null, hidden: [], ...extra,
+})
+const chats: Chat[] = [
+  chat(3, { tool: 'copilot', title: 'Deploy notes', project: 'ledger', cwd: '/Users/tester/dev/ledger', branch: 'feat/deploy' }),
+  chat(1, { title: 'Backup job for ledger exports', live: true }),
+  chat(2, { title: null, project: 'harbor', cwd: '/Users/tester/dev/harbor' }),
+  chat(4, { tool: 'copilot', title: 'how do I rename', titleAuto: true, lastActiveAt: null }),
+  chat(5, { title: 'Scratch', cwd: '/private/tmp/x', hidden: ['temp'] }),
+]
+const chatKey = (n: number, tool = 'claude') => `chat:${tool}:00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+
+describe('chats (step B)', () => {
+  it('makes a chat row keyed chat:<tool>:<id>, with the tool as its label, a quiet automatic or missing title, Live and its last activity', () => {
+    const live = chatFindRow(chats[1]!)
+    expect([live.key, live.id, live.type, live.label, live.tool, live.action, live.title, live.titleQuiet, live.live, live.project, live.cuttable, live.extra])
+      .toEqual([chatKey(1), `claude:${chats[1]!.id}`, 'chat', 'Claude Code', 'claude', 'expand', 'Backup job for ledger exports', false, true, 'atlas', false, null])
+    expect(live.stamp).toBe(NOW - HOUR)
+    const auto = chatFindRow(chats[3]!)
+    expect([auto.label, auto.title, auto.titleQuiet, auto.titleNote, auto.stamp])
+      .toEqual(['Copilot', 'how do I rename', true, "Copilot's automatic name: the opening of the chat's first prompt", 0])
+    expect([chatFindRow(chats[2]!).title, chatFindRow(chats[2]!).titleQuiet]).toEqual(['Untitled', true])
+  })
+
+  it('lists the chats under the Chats chip, newest active first, a chat with no activity last, Show all’s hidden ones included', () => {
+    const { rows, cut } = build({ chip: 'chats', chats, before: at(1) })
+    expect(keys(rows)).toEqual([chatKey(1), chatKey(2), chatKey(3, 'copilot'), chatKey(5), chatKey(4, 'copilot')])
+    // never cut, whatever the history's gap
+    expect(cut).toBe(0)
+    // nothing else is under it
+    expect(rows.every((row) => row.type === 'chat')).toBe(true)
+    // none read yet: none listed
+    expect(build({ chip: 'chats', chats: null }).rows).toEqual([])
+  })
+
+  it('applies the tool toggle under the Chats chip only', () => {
+    expect(keys(build({ chip: 'chats', chats, chatTool: 'copilot' }).rows)).toEqual([chatKey(3, 'copilot'), chatKey(4, 'copilot')])
+    const all = build({ query: 'deploy', searchFn: fuzzy, chats, chatTool: 'claude' }).rows
+    expect(keys(all).filter((key) => key.startsWith('chat:'))).toEqual([chatKey(3, 'copilot')])
+  })
+
+  it('filters by substring over the title, project, branch and folder (as ~), never fuzzily, and never by the id or the tool', () => {
+    const find = (query: string) => keys(build({ chip: 'chats', chats, query, searchFn: fuzzy }).rows)
+    expect(find('BACKUP')).toEqual([chatKey(1)])
+    expect(find('harbor')).toEqual([chatKey(2)])
+    expect(find('feat/dep')).toEqual([chatKey(3, 'copilot')])
+    expect(find('~/dev/ledger')).toEqual([chatKey(3, 'copilot')])
+    // a fuzzy matcher would find "Backup job" for this; the Chats page's substring does not
+    expect(find('bkup')).toEqual([])
+    expect(find('00000000')).toEqual([])
+    expect(find('copilot')).toEqual([])
+  })
+
+  it('leaves chats out of All with no query and out of the other chips', () => {
+    for (const chip of ['all', 'answers', 'notes', 'plans']) {
+      expect(build({ chip, chats }).rows.some((row) => row.type === 'chat'), chip).toBe(false)
+      if (chip !== 'all') expect(build({ chip, chats, query: 'backup', searchFn: fuzzy }).rows.some((row) => row.type === 'chat'), chip).toBe(false)
+    }
+  })
+
+  it('puts them under All with a query after the notes and before the finished things, the default list only', () => {
+    const local = data({
+      needsYou: [item('qo2', { kind: 'question', title: 'Backup the ledger now?' })],
+      notes: [item('nb', { kind: 'note', title: 'Backup ran' })],
+      done: [item('mb', { kind: 'done', title: 'Backup shipped', status: 'resolved', resolved_at: at(HOUR) })],
+      archived: [plan('pb', { title: 'Backup drill', status: 'archived', rows: [] })],
+    })
+    const rows = buildFindRows(local, { nowMs: NOW, query: 'backup', searchFn: fuzzy, chats: [...chats, chat(6, { title: 'Backup scratch', hidden: ['temp'] })] }).rows
+    expect(keys(rows)).toEqual(['item:qo2', 'item:nb', chatKey(1), 'item:mb', 'board:pb'])
+    // with no notes or finished things matched, they go after the others
+    expect(keys(buildFindRows(local, { nowMs: NOW, query: 'ledger exports', searchFn: fuzzy, chats }).rows)).toEqual([chatKey(1)])
+  })
+
+  it('keeps a chat the person acted on in its painted place', () => {
+    const previous = [chatKey(1), chatKey(2), chatKey(3, 'copilot')]
+    // the chat moved to the top after a re-read, but the person pressed its Resume
+    const moved = chats.map((c) => (c.id === chats[3]!.id ? c : c.id === chats[2]!.id ? { ...c, lastActiveAt: at(1) } : c))
+    const rows = build({ chip: 'chats', chats: moved, keep: [chatKey(2)], previous }).rows
+    expect(keys(rows).slice(0, 3)).toEqual([chatKey(1), chatKey(2), chatKey(3, 'copilot')])
   })
 })

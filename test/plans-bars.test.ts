@@ -3,6 +3,7 @@
 // (public/boards.js).
 import { describe, expect, it } from 'vitest'
 import { planBarLabel, planSegments, planStepStates } from '../public/lanes.js'
+import type { StepState } from '../public/lanes.js'
 import { STALL_MS, planForm, planSections } from '../public/boards.js'
 import { pinOrder } from '../public/poll.js'
 
@@ -50,7 +51,7 @@ describe('planStepStates', () => {
 })
 
 describe('planSegments', () => {
-  const states = (n: number) => Array.from({ length: n }, (_, i) => (i < 3 ? 'done' : i === 3 ? 'needs' : i < 6 ? 'progress' : 'todo') as const)
+  const states = (n: number): StepState[] => Array.from({ length: n }, (_, i): StepState => (i < 3 ? 'done' : i === 3 ? 'needs' : i < 6 ? 'progress' : 'todo'))
 
   it('draws one segment per step up to the place limit, in step order', () => {
     const at24 = planSegments([...states(24)], 24)

@@ -223,10 +223,11 @@ describe('app.js wiring (source-level pins)', () => {
     expect(triageFn).toContain('itemCardEl(')
   })
 
-  it('itemEl delegates its body to itemCardEl rather than duplicating the card markup', () => {
-    const start = js.indexOf('function itemEl(')
-    const fn = js.slice(start, js.indexOf('\nfunction btn('))
-    expect(fn).toContain('itemCardEl(it, { done, header: false })')
+  // UX pass, slice 4: Notes' and History's itemEl went with their pages; a Find row opens into the same card
+  it('a Find row delegates its body to itemCardEl rather than duplicating the card markup', () => {
+    const start = js.indexOf('function updateFindRow(')
+    const fn = js.slice(start, js.indexOf('\nfunction reconcileFindList('))
+    expect(fn).toContain('itemCardEl(it, { done: it.status !== \'open\', header: false })')
   })
 
   it('the background block is identity-keyed, safely rendered, and rebound after rendering', () => {

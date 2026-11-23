@@ -93,7 +93,7 @@ describe('C1 · the editable frame reconciles openRowId against what it actually
 // built: the draft has no input to live in and no UI can ever clear it, so
 // suspendReason() reads 'draft' forever.
 describe('C2 · changeAnswer only stages the draft once the server accepted', () => {
-  const body = fn('async function changeAnswer(', '\n// notes / done keep')
+  const body = fn('async function changeAnswer(', '\n// ── keyboard (spec §13)')
 
   it('does not write the draft before the POST', () => {
     const post = body.indexOf('postItemReply(')
@@ -188,6 +188,6 @@ describe('C4 · postJSON fails loudly on a non-2xx response', () => {
     const branch = body.slice(body.indexOf('if (!res.ok)'), body.indexOf('return await res.json'))
     expect(branch).not.toMatch(/json\(\)/)
     // changeAnswer still reads the BODY's ok and shows the refusal copy
-    expect(fn('async function changeAnswer(', '\n// notes / done keep')).toMatch(/undoRefusal\(/)
+    expect(fn('async function changeAnswer(', '\n// ── keyboard (spec §13)')).toMatch(/undoRefusal\(/)
   })
 })

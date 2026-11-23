@@ -357,6 +357,13 @@ describe('A6 · paging and the cut', () => {
     expect(findRows()).toHaveLength(20)
     const more = buttonLabelled('Show 5 more', foot())
     expect(more).not.toBeNull()
+    // a poll keeps the foot's button, and the focus on it
+    more!.focus()
+    advanceClock()
+    insertItem(db, { ...LEDGER, kind: 'question', title: 'An unrelated ask' })
+    await pollTick()
+    expect(buttonLabelled('Show 5 more', foot())).toBe(more)
+    expect(document.activeElement).toBe(more)
     click(more)
     await settle()
     expect(findRows()).toHaveLength(25)

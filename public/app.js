@@ -8674,6 +8674,7 @@ let findNewIds = null          // unread notes on entering Find, marked New unti
 let findHistoryPinned = false  // "Show more" asked for the older history on this visit
 let findWaiting = false        // a query waits on older history or archived plans
 let findRowsByKey = new Map()  // the rows (and command rows) last painted, by key
+let findRevealKey = null       // the first row "Show 20 more" reveals
 const findDomIds = new Map()   // key → the stable id of its main button
 let findEntryTouch = false     // the last press on the tab strip was a touch
 
@@ -8963,6 +8964,7 @@ function renderFind() {
     list.setAttribute('aria-busy', 'true')
     setFindStatus(findWaitText())
     foot.replaceChildren()
+    foot.dataset.says = ''
     return
   }
   findWaiting = false
@@ -8991,19 +8993,25 @@ function renderFind() {
     const anything = findChip === 'all' ? 0 : buildFindRows(model.data, { chip: 'all', nowMs }).rows.length
     setFindStatus(anything ? FIND_EMPTY[findChip] : FIND_EMPTY.all)
   }
-  foot.replaceChildren()
-  if (rest > 0) {
-    const more = btn(`Show ${Math.min(FIND_PAGE, rest)} more`, () => showMoreInFind(rows[listed.length]?.key ?? null))
-    more.className = 'show-more find-more'
-    foot.appendChild(more)
-  } else if (olderWaits) {
-    if (findHistoryPinned) {
+  // the first row "Show 20 more" reveals; the foot is rebuilt only when what it says changes,
+  // so a poll never takes focus off its button
+  findRevealKey = rows.slice(shown.find).find((row) => !extra.has(row.key))?.key ?? null
+  const footSays = rest > 0 ? `more:${Math.min(FIND_PAGE, rest)}`
+    : olderWaits ? (findHistoryPinned ? `loading:${olderHistoryWaitText('Loading older history…')}` : 'older') : ''
+  if (foot.dataset.says !== footSays) {
+    foot.dataset.says = footSays
+    foot.replaceChildren()
+    if (rest > 0) {
+      const more = btn(`Show ${Math.min(FIND_PAGE, rest)} more`, showMoreInFind)
+      more.className = 'show-more find-more'
+      foot.appendChild(more)
+    } else if (olderWaits && findHistoryPinned) {
       const loading = document.createElement('p')
       loading.className = 'find-loading'
       loading.setAttribute('role', 'status')
       loading.textContent = olderHistoryWaitText('Loading older history…')
       foot.appendChild(loading)
-    } else {
+    } else if (olderWaits) {
       const older = btn('Show more', showOlderInFind)
       older.className = 'show-more find-older'
       foot.appendChild(older)
@@ -9013,7 +9021,8 @@ function renderFind() {
 }
 
 // "Show 20 more": the first row it reveals takes focus.
-function showMoreInFind(reveal) {
+function showMoreInFind() {
+  const reveal = findRevealKey
   shown.find += FIND_PAGE
   forceRender()
   if (reveal) document.querySelector(`#findList > [data-find-key="${CSS.escape(reveal)}"] > .find-row-main`)?.focus({ preventScroll: true })

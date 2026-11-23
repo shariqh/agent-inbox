@@ -604,8 +604,12 @@ personal hosts.
 saying so, and telling the sessions that share the project to prefix their board titles
 and to act only on what they raised themselves. A name is ASCII letters, digits, `.`, `_`
 and `-`, starting with a letter or a digit, at most 64 characters. Without `--project`
-the folder gets exactly the personal Claude Code registration and block. With
-`--uninstall`, `--project` is accepted and ignored.
+the folder gets exactly the personal Claude Code registration and block, unless its
+registration is already fixed to a project: the installer then refuses, since the block
+would no longer match the registration. Pass `--project <name>` again, or run
+`--apply --uninstall --target claude-config-dir --claude-config-dir <dir>` first (or
+`--apply --force` to replace it with the personal registration). With `--uninstall`,
+`--project` is accepted and ignored.
 
 The installer refuses, and changes nothing:
 

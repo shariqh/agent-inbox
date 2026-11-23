@@ -259,6 +259,25 @@ const READERS: Reader[] = [
     status: 1,
   },
   {
+    // without --project the same file is read, for a registration already fixed to a project
+    name: 'install-agents.sh --claude-config-dir without --project (dry run), the fixed registration check',
+    run: (f) => {
+      const second = secondFolderArgs(f)
+      return installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), second.args.slice(0, -2), second.env)
+    },
+    says: secondFolderSays,
+    status: 1,
+  },
+  {
+    name: 'install-agents.sh --apply --claude-config-dir without --project, the fixed registration check',
+    run: (f) => {
+      const second = secondFolderArgs(f)
+      return installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), ['--apply', ...second.args.slice(0, -2)], second.env)
+    },
+    says: secondFolderSays,
+    status: 1,
+  },
+  {
     name: 'install-agents.sh --apply --force --claude-config-dir, over a registration in the second folder',
     run: (f) => {
       const second = secondFolderArgs(f)

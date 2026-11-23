@@ -517,7 +517,10 @@ registration_config_file() {
 # (#641)? One Node step reads <dir>/.claude.json and prints nothing at all (a
 # JSON parse error would quote the file), answering by exit code only: 0 no
 # agent-inbox entry, 10 one whose args end with exactly --project <name>, 11
-# one without it or with another name, 12 unreadable, 13 not JSON.
+# one without it or with another name, 12 unreadable, 13 not JSON. With no
+# name passed (an empty one), an entry whose args end in --project <anything>
+# is 14, so a run without --project cannot leave the block and the
+# registration disagreeing; any other entry is 11.
 second_registration_project_status() {
   "$JSON_NODE" -e '
     const fs = require("node:fs")
@@ -528,7 +531,9 @@ second_registration_project_status() {
     const entry = parsed && parsed.mcpServers && parsed.mcpServers["agent-inbox"]
     if (!entry) process.exit(0)
     const args = Array.isArray(entry.args) ? entry.args : []
-    process.exit(args.length >= 2 && args[args.length - 2] === "--project" && args[args.length - 1] === process.argv[2] ? 10 : 11)
+    const fixed = args.length >= 2 && args[args.length - 2] === "--project"
+    if (process.argv[2] === "") process.exit(fixed ? 14 : 11)
+    process.exit(fixed && args[args.length - 1] === process.argv[2] ? 10 : 11)
   ' "$SECOND_DIR/.claude.json" "$FIXED_PROJECT" >/dev/null 2>&1
 }
 
@@ -537,6 +542,7 @@ second_registration_project_status() {
 second_registration_refusal() {
   local code="$1"
   case "$code" in
+    14) echo "install-agents: the registration in $SECOND_DIR is fixed to a project; pass --project <name> again, or uninstall the second folder first with \`--apply --uninstall --target claude-config-dir --claude-config-dir $SECOND_DIR\`" >&2 ;;
     11) echo "install-agents: the registration in $SECOND_DIR is not fixed to the project $FIXED_PROJECT; remove it with \`--apply --uninstall --target claude-config-dir --claude-config-dir $SECOND_DIR\`, then apply again" >&2 ;;
     12) echo "install-agents: could not read $SECOND_DIR/.claude.json (the file cannot be read)" >&2 ;;
     13) echo "install-agents: could not read $SECOND_DIR/.claude.json (it is not valid JSON)" >&2 ;;
@@ -1063,6 +1069,15 @@ if [ "$SECOND_DIR_COUNT" -eq 1 ]; then
         *) second_registration_refusal "$second_status"; exit 1 ;;
       esac
     fi
+  elif [ "$PROJECT_GIVEN" -eq 0 ] && [ "$UNINSTALL" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
+    # Without --project the block has no fixed-project section, so a
+    # registration already fixed to a project would be kept and disagree with it.
+    second_registration_project_status
+    second_status=$?
+    case "$second_status" in
+      0 | 11) ;;
+      *) second_registration_refusal "$second_status"; exit 1 ;;
+    esac
   fi
 fi
 
@@ -1494,6 +1509,16 @@ for target in "${TARGETS[@]}"; do
       fi
       exit 1
     fi
+  elif [ "$registration_state" = present ] && [ "$target" = claude-config-dir ] &&
+      [ "$PROJECT_GIVEN" -eq 0 ] && [ "$FORCE" -eq 0 ] && [ "$UNINSTALL" -eq 0 ]; then
+    # Checked again (#641): a registration kept without --project must not be
+    # one fixed to a project.
+    second_registration_project_status
+    second_status=$?
+    case "$second_status" in
+      0 | 11) ;;
+      *) rollback_transaction; second_registration_refusal "$second_status"; exit 1 ;;
+    esac
   fi
   if [ "$registration_state" = present ]; then
     had_user=1

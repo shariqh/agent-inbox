@@ -2974,6 +2974,103 @@ describe('preflight checks for a second Claude Code config folder (#641)', () =>
     expect(logLines(f)).toEqual([`claude@${second.dir} mcp get agent-inbox`])
   })
 
+  // A registration already fixed to a project, and an apply that leaves --project
+  // out: the registration would be kept but the block written without the
+  // fixed-project section, so the two would disagree. It is refused instead, and
+  // the message never carries what the folder's .claude.json holds.
+  const FIXED_REMEDY = (dir: string) => `install-agents: the registration in ${dir} is fixed to a project; pass --project <name> again, or uninstall the second folder first with \`--apply --uninstall --target claude-config-dir --claude-config-dir ${dir}\`\n`
+  const SECRET_PROJECT = 'zebra-proj'
+  const fixedSecond = (f: Fixture): SecondFolder => {
+    const second = secondFolder(f)
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir, '--project', SECRET_PROJECT]).code).toBe(0)
+    writeFileSync(f.log, '')
+    return second
+  }
+
+  for (const apply of [false, true]) {
+    for (const targets of [['--target', 'claude-config-dir'], []]) {
+      it(`refuses ${targets.length ? '--target claude-config-dir' : 'the default targets'} without --project over a fixed registration (${apply ? 'apply' : 'dry run'}), changing nothing`, () => {
+        const f = fixture()
+        const second = fixedSecond(f)
+        const before = tree(f.home)
+
+        const result = run(f, [...(apply ? ['--apply'] : []), ...targets, '--claude-config-dir', second.dir])
+
+        expect(result.code, result.err).toBe(1)
+        expect(result.err).toBe(FIXED_REMEDY(second.dir))
+        expect(result.err).not.toContain(SECRET_PROJECT)
+        expect(result.out).not.toContain(SECRET_PROJECT)
+        expect(logLines(f)).toEqual([])
+        expect(workDirs(f)).toEqual([])
+        const unlocked = (lines: string[]) => lines.filter((line) => !line.startsWith(join(f.home, '.agent-inbox')) &&
+          !line.startsWith(join(f.state, 'selftest-ran')))
+        expect(unlocked(tree(f.home))).toEqual(unlocked(before))
+        expect(readFileSync(second.target, 'utf8')).toContain(FIXED_SECTION)
+      })
+    }
+  }
+
+  it('still allows --force, --uninstall and the named remedy without --project over a fixed registration', () => {
+    const f = fixture()
+    const second = fixedSecond(f)
+    const bare = ['--target', 'claude-config-dir', '--claude-config-dir', second.dir]
+
+    const forced = run(f, ['--apply', '--force', ...bare])
+
+    expect(forced.code, forced.err).toBe(0)
+    expect(secondConfig(second).mcpServers['agent-inbox']!.args!).not.toContain('--project')
+    expect(readFileSync(second.target, 'utf8')).not.toContain(FIXED_SECTION)
+
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir, '--project', SECRET_PROJECT, '--force']).code).toBe(0)
+    expect(run(f, ['--apply', '--uninstall', ...bare]).code).toBe(0)
+    expect(secondConfig(second).mcpServers['agent-inbox']).toBeUndefined()
+    const plain = run(f, ['--apply', ...bare])
+    expect(plain.code, plain.err).toBe(0)
+    expect(secondConfig(second).mcpServers['agent-inbox']!.args!).not.toContain('--project')
+  })
+
+  it('keeps a plain registration without --project, as before', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const bare = ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir]
+    expect(run(f, bare).code).toBe(0)
+    writeFileSync(f.log, '')
+
+    const result = run(f, bare)
+
+    expect(result.code, result.err).toBe(0)
+    expect(logLines(f)).toEqual([`claude@${second.dir} mcp get agent-inbox`])
+  })
+
+  it('checks again where it keeps the registration, when the file changed after the preflight', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    // registered without a project, so the preflight passes
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir]).code).toBe(0)
+    const original = readFileSync(second.config, 'utf8')
+    // a front-of-PATH claude that, when the personal one is added, fixes the second folder's registration
+    const race = join(f.home, 'race-bin')
+    mkdirSync(race)
+    writeFileSync(join(race, 'claude'), `#!/bin/sh
+if [ -z "\${CLAUDE_CONFIG_DIR:-}" ] && [ "$1:$2" = "mcp:add" ]; then
+  "${process.execPath}" -e 'const fs=require("node:fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));j.mcpServers["agent-inbox"].args.push("--project","${SECRET_PROJECT}");fs.writeFileSync(process.argv[1],JSON.stringify(j))' "${second.config}"
+fi
+exec "${join(f.fakebin, 'claude')}" "$@"
+`)
+    chmodSync(join(race, 'claude'), 0o755)
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+
+    const result = spawnSync('bash', [SCRIPT, '--apply', '--claude-config-dir', second.dir], { encoding: 'utf8', env: { ...f.env, PATH: `${race}:${f.env.PATH}` } })
+
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stderr).toContain(FIXED_REMEDY(second.dir))
+    expect(result.stderr).not.toContain(SECRET_PROJECT)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(second.config, 'utf8')).not.toBe(original)
+    expect(readFileSync(second.target, 'utf8')).not.toContain(FIXED_SECTION)
+  })
+
   it('the source MCP entry names --project in code, which the entry check looks for', () => {
     const code = readFileSync(join(REPO, 'src', 'mcp-server.ts'), 'utf8').split('\n').filter((line) => !line.trimStart().startsWith('//')).join('\n')
     expect(code).toContain('--project')

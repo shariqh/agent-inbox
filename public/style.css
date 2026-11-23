@@ -2275,7 +2275,8 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .chats-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 0; color: var(--app-warning); font-size: var(--fs-meta); }
 .chats-state { margin: 0; }
 /* each of these sets a display, which would otherwise beat the UA's [hidden] rule */
-.chats-note[hidden], .chats-error[hidden], .chats-state[hidden], .chats-actions[hidden], .chats-facts [hidden], .chats-retry[hidden] { display: none; }
+.chats-note[hidden], .chats-error[hidden], .chats-state[hidden], .chats-actions[hidden], .chats-facts [hidden] { display: none; }
+.chats-retry[hidden] { display: none; }
 /* the foot's "Loading chats…" while the first read is in flight is not a warning */
 .chats-error.chats-reading { color: var(--app-muted); }
 .chats-quiet { color: var(--app-muted); }

@@ -2234,7 +2234,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ma-json { margin-top: 8px; }
 .ma-json > summary { color: var(--app-muted); font-size: 12px; cursor: pointer; }
 .ma-json-text { max-height: 360px; margin: 6px 0 0; padding: 8px; overflow: auto; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-soft); font-size: 11.5px; white-space: pre; user-select: text; }
-/* the agent tab (cards view V5c1): one slot after History, hidden with no agent open (`.tab`'s
+/* the agent tab (cards view V5c1): one slot at the end of the tabs, hidden with no agent open (`.tab`'s
    display would otherwise beat the UA's [hidden] rule); its icon is the agent's state dot; no count */
 .tab[hidden] { display: none; }
 .tab[data-tab="agent"] .ma-dot { margin-inline: 3.5px; }
@@ -3520,7 +3520,7 @@ body.hub-reconnecting #status { display: none; }
 .note-editor-actions button { min-height: 36px; padding: var(--sp-1) var(--sp-4); border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-body); font-weight: 600; cursor: pointer; }
 .note-editor-actions button:first-child { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
 .note-editor-actions button:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
-/* Step A: Find in place of Notes and History. One column of at most 780px: the field, the chips and
+/* Step A: Find, the page that took the place of the two older list pages. One column of at most 780px: the field, the chips and
    the list. A row is one button: the type's icon, the title, the extra, the project and the age, at the
    picture's sizes. Rows that open show the card under the button. Nothing enters or leaves the layout
    on hover or focus; the narrow row follows the column's own width (a container query, never a second width query). */
@@ -3576,6 +3576,10 @@ body.hub-reconnecting #status { display: none; }
 .find-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .find-age { flex: none; width: var(--find-age); color: var(--app-text-soft); font-size: var(--fs-meta); text-align: right; }
 .find-row-body { padding: 0 18px var(--sp-4) calc(18px + var(--find-icon) + 14px); }
+/* who wrote it: one quiet line above the card */
+.find-row-origin { margin: 0 0 var(--sp-2); color: var(--app-text-soft); font-size: var(--fs-meta); }
+/* while a query waits on older history, the previous list stays in place, dimmed and inert */
+.find-list[data-updating="true"] .find-row-main[aria-disabled="true"] { opacity: .55; cursor: default; }
 .find-row:has(> .find-row-body) { background: var(--app-surface); }
 .find-foot { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); padding: 0 var(--sp-4); }
 .find-foot:empty { display: none; }

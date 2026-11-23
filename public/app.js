@@ -9224,7 +9224,6 @@ function openFind({ chip = null, clearQuery = false, focus = 'field' } = {}) {
     findChip = chip
     findActiveKey = null
     shown.find = FIND_PAGE
-    endFindStay()
   }
   forceRender()
   requestHistoryPaint()

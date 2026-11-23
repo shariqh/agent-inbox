@@ -660,6 +660,26 @@ describe('A8 · a row that stays in place leaves its place with the chip or the 
     expect(findRowEl(`item:${milestone}`)?.querySelector('.find-row-body')).not.toBeNull()
   })
 
+  it('G N starts the list again: a note resolved under Notes goes back to its own place', async () => {
+    db = freshDb()
+    advanceClock()
+    const earlier = insertItem(db, { ...LEDGER, kind: 'note', title: 'An earlier open note' })
+    advanceClock()
+    const note = insertItem(db, { ...ATLAS, kind: 'note', title: 'Backups now run nightly' })
+    await bootApp(db)
+    await openFindTab()
+    await pressChip('notes')
+    const k = `item:${note}`
+    await pressRow(k)
+    click(buttonLabelled('Resolve', findRowEl(k)!.querySelector('.find-row-body')!))
+    await settle()
+    expect(findKeys(), 'it stays first, in its new state').toEqual([k, `item:${earlier}`])
+    field().blur()
+    await goKey('n')
+    expect(chip('notes')?.getAttribute('aria-pressed')).toBe('true')
+    expect(findKeys(), 'open notes lead again').toEqual([`item:${earlier}`, k])
+  })
+
   it('a press in an open row (Note, then Cancel) does not make it follow the person to another chip', async () => {
     db = freshDb()
     advanceClock()
@@ -918,6 +938,7 @@ describe('A2 · a query waiting on older history', () => {
     expect(field().hasAttribute('aria-activedescendant')).toBe(false)
     for (const el of findRows()) expect(el.querySelector(':scope > .find-row-main')?.getAttribute('aria-disabled')).toBe('true')
     click(mainOf(`item:${ids.alpha}`))
+    click(mainOf(`item:${ids.zebra}`))
     await settle()
     expect(findRowEl(`item:${ids.alpha}`)?.querySelector('.find-row-body'), 'a press on a stale row does nothing').toBeNull()
 
@@ -925,6 +946,7 @@ describe('A2 · a query waiting on older history', () => {
     await settle()
     await pollTick()
     expect(findKeys()).toEqual([`item:${ids.zebra}`])
+    expect(findRowEl(`item:${ids.zebra}`)?.querySelector('.find-row-body'), 'the press on a stale row recorded no choice').toBeNull()
     expect(list.hasAttribute('aria-busy')).toBe(false)
     expect(list.hasAttribute('data-updating')).toBe(false)
     expect(mainOf(`item:${ids.zebra}`)?.hasAttribute('aria-disabled')).toBe(false)

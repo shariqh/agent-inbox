@@ -15,6 +15,7 @@ import type { BootOptions, ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
   repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest, reach, writeItemNote,
+  findRowFor, openOnFind,
 } from './harness.js'
 
 useDomTest()
@@ -268,13 +269,10 @@ describe('a draft comes back where it was', () => {
     db = freshDb()
     const id = insertItem(db, { ...AGENT, kind: 'note', title: 'Agent update' })
     const first = await bootApp(db)
-    click(document.querySelector('.tab[data-tab="notes"]'))
-    await settle()
-    click(document.querySelector(`#notes [data-card-id="${id}"] > summary`))
-    await settle()
+    await openOnFind(id)
     first.failPostsWith(500)
     expectConsoleError(/annotate failed: HTTP 500/)
-    await writeItemNote(() => document.querySelector(`#notes [data-card-id="${id}"]`), 'Keep the rollback.')
+    await writeItemNote(() => findRowFor(id), 'Keep the rollback.')
     expect(recovery()?.textContent).toContain(UNCONFIRMED)
 
     const bridge = await reopen(db)
@@ -292,23 +290,22 @@ describe('a draft comes back where it was', () => {
     advanceClock()
     const same = insertItem(db, { ...AGENT, kind: 'note', title: 'Same update' })
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="notes"]'))
-    await settle()
     for (const [id, text] of [[kept, 'Half a note.'], [same, 'Already said.']] as const) {
-      click(buttonLabelled('Note', document.querySelector(`#notes [data-card-id="${id}"]`)!))
+      await openOnFind(id)
+      click(buttonLabelled('Note', findRowFor(id)!))
       await settle()
-      type(document.querySelector<HTMLTextAreaElement>(`#notes [data-card-id="${id}"] .note-editor textarea`), text)
+      type(findRowFor(id)!.querySelector<HTMLTextAreaElement>('.note-editor textarea'), text)
     }
     await saved()
     expect(storedTexts().sort()).toEqual(['Already said.', 'Half a note.'])
     annotateItem(db, same, 'Already said.')
 
     const bridge = await reopen(db)
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    click(document.querySelector('.tab[data-tab="find"]'))
     await settle()
-    expect(document.querySelector<HTMLTextAreaElement>(`#notes [data-card-id="${kept}"] .note-editor textarea`)?.value)
-      .toBe('Half a note.')
-    expect(document.querySelector(`#notes [data-card-id="${same}"] .note-editor`)).toBeNull()
+    // a row whose editor holds text is open on Find (UX pass, slice 4)
+    expect(findRowFor(kept)?.querySelector<HTMLTextAreaElement>('.note-editor textarea')?.value).toBe('Half a note.')
+    expect(findRowFor(same)?.querySelector('.note-editor')).toBeNull()
     expect(recovery()).toBeNull()
     expect(bridge.posts).toHaveLength(0)
   })
@@ -328,12 +325,9 @@ describe('a draft comes back where it was', () => {
         return next()
       },
     })
-    click(document.querySelector('.tab[data-tab="notes"]'))
-    await settle()
     for (const [id, text] of [[held, 'Held feedback.'], [landed, 'Landed feedback.']] as const) {
-      click(document.querySelector(`#notes [data-card-id="${id}"] > summary`))
-      await settle()
-      await writeItemNote(() => document.querySelector(`#notes [data-card-id="${id}"]`), text)
+      await openOnFind(id)
+      await writeItemNote(() => findRowFor(id), text)
     }
     expect(getItem(db, landed)?.annotation).toBe('Landed feedback.')
 

@@ -117,7 +117,7 @@ describe('Handoffs milestone', () => {
     await settle()
     click(document.querySelector('[data-relay-lane="outcome"] .relay-open'))
     await settle()
-    expect(document.querySelector('.tab[data-tab="done"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="find"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.querySelector(`[data-card-id="${doneItem}"]`)).not.toBeNull()
   })
 })

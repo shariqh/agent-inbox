@@ -3,7 +3,7 @@ import type { HaystackEntity } from './search.js'
 export interface SearchResult {
   key: string
   targetId: string
-  tab: 'dashboard' | 'boards' | 'notes' | 'done'
+  tab: 'dashboard' | 'boards' | 'find'
   section: 'open' | 'plans' | 'notes' | 'history' | 'archived'
   sectionLabel: 'Open items' | 'Active plans' | 'Notes' | 'History' | 'Archived plans'
   kind: 'Open item' | 'Active plan' | 'Note' | 'History' | 'Archived plan'

@@ -89,7 +89,7 @@ async function openChats() {
 }
 
 async function leaveAndReturn() {
-  click(document.querySelector('.tab[data-tab="done"]'))
+  click(document.querySelector('.tab[data-tab="find"]'))
   await settle()
   await openChats()
 }

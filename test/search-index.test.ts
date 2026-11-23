@@ -80,7 +80,8 @@ describe('buildSearchResults', () => {
       sectionLabel,
     }))).toEqual([
       { targetId: 'q1', kind: 'Open item', tab: 'dashboard', sectionLabel: 'Open items' },
-      { targetId: 'n1', kind: 'Note', tab: 'notes', sectionLabel: 'Notes' },
+      // UX pass, slice 4: notes and finished things are on Find
+      { targetId: 'n1', kind: 'Note', tab: 'find', sectionLabel: 'Notes' },
       { targetId: 'b2', kind: 'Archived plan', tab: 'boards', sectionLabel: 'Archived plans' },
     ])
   })

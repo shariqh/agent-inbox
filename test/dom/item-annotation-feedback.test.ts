@@ -7,7 +7,7 @@ import {
 } from '../../src/store.js'
 import {
   advanceClock, badgeCount, bootApp, buttonLabelled, click, expectConsoleError,
-  freshDb, noteEditor, pollTick, settle, type, useDomTest, writeItemNote,
+  freshDb, noteEditor, openOnFind, pollTick, settle, type, useDomTest, writeItemNote,
 } from './harness.js'
 
 useDomTest()
@@ -26,7 +26,12 @@ function scope(id: string): HTMLElement {
   return document.querySelector<HTMLElement>(`.panel:not([hidden]) [data-card-id="${id}"]`)!
 }
 
-async function showItem(id: string, tab: 'notes' | 'done' | 'dashboard') {
+// UX pass, slice 4: notes and finished things are rows on Find that open in place
+async function showItem(id: string, tab: 'find' | 'dashboard') {
+  if (tab === 'find') {
+    await openOnFind(id)
+    return
+  }
   click(document.querySelector(`.tab[data-tab="${tab}"]`))
   await settle()
   const host = scope(id)
@@ -45,7 +50,7 @@ describe('informational item feedback', () => {
     db = freshDb()
     const id = insertItem(db, { ...AGENT, kind, title: 'Agent update' })
     const bridge = await bootApp(db)
-    await showItem(id, kind === 'note' ? 'notes' : 'done')
+    await showItem(id, 'find')
     await writeItemNote(() => scope(id), HUMAN_TEXT)
 
     let saved = getItem(db, id)!
@@ -139,7 +144,7 @@ describe('informational item feedback', () => {
     const first = getItem(db, id)!
     markItemAnnotationDelivered(db, id, first.response_revision, 'reader')
     await bootApp(db)
-    await showItem(id, 'notes')
+    await showItem(id, 'find')
     expect(receipt(id)?.dataset.noteState).toBe('picked')
     vi.setSystemTime(Date.parse(first.annotated_at!))
     annotateItem(db, id, 'Second version.')
@@ -158,7 +163,7 @@ describe('informational item feedback', () => {
     const saved = getItem(db, id)!
     markItemAnnotationDelivered(db, id, saved.response_revision, 'reader')
     const bridge = await bootApp(db)
-    await showItem(id, 'notes')
+    await showItem(id, 'find')
     // the page still shows the item open: no poll has run since another actor closed it
     if (closed === 'resolved') resolveItem(db, id, 'Closed by another actor.')
     else dismissItem(db, id)
@@ -173,7 +178,7 @@ describe('informational item feedback', () => {
     expect(recovery?.querySelector('.pickup')).toBeNull()
     expect(buttonLabelled('Retry', recovery)).toBeNull()
     expect(badgeCount()).toBe(0)
-    await showItem(id, 'done')
+    await showItem(id, 'find')
     expect(buttonLabelled('Note', scope(id))).toBeNull()
     expect(receipt(id)?.textContent).toContain('Historical feedback.')
   })
@@ -197,7 +202,7 @@ describe('informational item feedback', () => {
         return response
       },
     })
-    await showItem(id, 'notes')
+    await showItem(id, 'find')
     expectConsoleError(/lost annotation response/)
     await writeItemNote(() => scope(id), '')
     expect(getItem(db, id)?.annotation).toBe('')
@@ -239,7 +244,7 @@ describe('informational item feedback', () => {
         return response
       },
     })
-    await showItem(id, 'done')
+    await showItem(id, 'find')
     expectConsoleError(/lost annotation response/)
     await writeItemNote(() => scope(id), 'Unconfirmed correction.')
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Unconfirmed correction.')
@@ -253,7 +258,7 @@ describe('informational item feedback', () => {
     expect(bridge.posts).toHaveLength(2)
     expect(getItem(db, id)?.annotation).toBe('Reviewed correction.')
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
-    await showItem(id, 'done')
+    await showItem(id, 'find')
     expect(receipt(id)?.dataset.noteState).toBe('waiting')
   })
 
@@ -276,7 +281,7 @@ describe('informational item feedback', () => {
         return next()
       },
     })
-    await showItem(id, 'notes')
+    await showItem(id, 'find')
     expectConsoleError(/lost annotation response/)
     await writeItemNote(() => scope(id), 'First attempted correction.')
     click(buttonLabelled('Retry', document.querySelector('.stale-drafts-fold')!))

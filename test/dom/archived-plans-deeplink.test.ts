@@ -82,14 +82,14 @@ describe('deep link to an archived plan (issue #299)', () => {
     hold = new Promise<void>((resolve) => { release = resolve })
     navigateToHash(focusHashFor(target))
     await settle()
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    click(document.querySelector('.tab[data-tab="find"]'))
     await settle()
 
     hold = null
     release()
     await settle()
     await pollTick()
-    expect(document.getElementById('notes')?.hidden).toBe(false)
+    expect(document.getElementById('find')?.hidden).toBe(false)
     expect(document.getElementById('boards')?.hidden).toBe(true)
     // nothing needs the list any more, so the poll stops reading it
     const settled = reads.length

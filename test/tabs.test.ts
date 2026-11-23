@@ -20,7 +20,8 @@ describe('tab model', () => {
     expect(DEFAULT_TAB).toBe('dashboard')
     // Home (`dashboard`) holds the asks: there is no separate Inbox tab.
     // `agent` (cards view V5 §3.3): the mesh agent tab, last, shown only while an agent is open
-    expect(TAB_IDS).toEqual(['dashboard', 'boards', 'notes', 'done', 'chats', 'agent'])
+    // UX pass, slice 4: Find in place of Notes and History, after Plans
+    expect(TAB_IDS).toEqual(['dashboard', 'boards', 'find', 'chats', 'agent'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 
@@ -30,29 +31,23 @@ describe('tab model', () => {
   // keeps looking load-bearing. Both are gone; test/livebar.test.ts covers the
   // real presence read. Issue #31.4.)
 
-  it('counts the scoped view for boards and done, and takes notes as a precomputed number', () => {
+  it('counts the scoped view for boards, and takes Find\'s unread notes as a precomputed number', () => {
     const c = tabCounts({
       globalAttention: 7,
       unreadNotes: 2,
-      scoped: { boards: [{ id: 'b1' }], done: [{ id: 'd1' }] },
+      scoped: { boards: [{ id: 'b1' }] },
     })
-    expect(c).toEqual({ dashboard: 7, boards: 1, notes: 2, done: 1 })
+    // UX pass, slice 4: History's total went with its page
+    expect(c).toEqual({ dashboard: 7, boards: 1, find: 2 })
   })
 
   it('never counts the agent tab (cards view V5 §3.3)', () => {
-    const c = tabCounts({ globalAttention: 7, unreadNotes: 2, scoped: { boards: [{ id: 'b1' }], done: [{ id: 'd1' }] } })
+    const c = tabCounts({ globalAttention: 7, unreadNotes: 2, scoped: { boards: [{ id: 'b1' }] } })
     expect('agent' in c).toBe(false)
   })
 
   it('treats a missing notes number as zero rather than NaN', () => {
-    expect(tabCounts({ globalAttention: 0, scoped: { boards: [], done: [] } }).notes).toBe(0)
-  })
-
-  // Issue #184: History counts the closed items the page omitted, so the tab
-  // reads the same with or without the complete history loaded.
-  it('adds the omitted closed history to the History count', () => {
-    const c = tabCounts({ globalAttention: 0, scoped: { boards: [], done: [{ id: 'd1' }] }, olderDone: 41 })
-    expect(c.done).toBe(42)
+    expect(tabCounts({ globalAttention: 0, scoped: { boards: [] } }).find).toBe(0)
   })
 })
 
@@ -61,8 +56,8 @@ describe('filter-blindness invariant (spec §7)', () => {
   const global = attentionCount(items as never, boards as never, NOW, live)
 
   it('Home\'s count ignores the project filter that empties the list', () => {
-    const scopedToApi = { boards: boards.filter((b) => b.project === 'api'), done: [] }
-    const scopedToNothing = { boards: [], done: [] }
+    const scopedToApi = { boards: boards.filter((b) => b.project === 'api') }
+    const scopedToNothing = { boards: [] }
     expect(global).toBeGreaterThan(1) // api + web both contribute
     expect(tabCounts({ globalAttention: global, unreadNotes: 0, scoped: scopedToApi }).dashboard).toBe(global)
     expect(tabCounts({ globalAttention: global, unreadNotes: 0, scoped: scopedToNothing }).dashboard).toBe(global)
@@ -70,10 +65,9 @@ describe('filter-blindness invariant (spec §7)', () => {
   })
 
   it('scoping to one project still narrows every non-global count', () => {
-    const apiOnly = tabCounts({ globalAttention: global, unreadNotes: 1, scoped: { boards: boards.filter((b) => b.project === 'api'), done: [] } })
+    const apiOnly = tabCounts({ globalAttention: global, unreadNotes: 1, scoped: { boards: boards.filter((b) => b.project === 'api') } })
     expect(apiOnly.boards).toBe(1)
-    expect(apiOnly.notes).toBe(1)
-    expect(apiOnly.done).toBe(0)
+    expect(apiOnly.find).toBe(1)
     expect(apiOnly.dashboard).toBe(global) // the one count the filter may never touch
   })
 })
@@ -102,21 +96,13 @@ describe('filter-blindness is pinned at the render() call site (spec §7)', () =
   })
 })
 
-describe('Notes count is unread-only (spec §8)', () => {
+describe('Find\'s count is unread notes only (spec §8)', () => {
   it('reports the unread note count, not how many notes are on screen', () => {
-    const c = tabCounts({
-      globalAttention: 0,
-      unreadNotes: 1,
-      scoped: { boards: [], notes: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], done: [] },
-    })
-    expect(c.notes).toBe(1)
+    const c = tabCounts({ globalAttention: 0, unreadNotes: 1, scoped: { boards: [] } })
+    expect(c.find).toBe(1)
   })
   it('is 0 once every note has been seen, even with notes in the list', () => {
-    const c = tabCounts({
-      globalAttention: 0,
-      unreadNotes: 0,
-      scoped: { boards: [], notes: [{ id: 'n1' }, { id: 'n2' }], done: [] },
-    })
-    expect(c.notes).toBe(0)
+    const c = tabCounts({ globalAttention: 0, unreadNotes: 0, scoped: { boards: [] } })
+    expect(c.find).toBe(0)
   })
 })

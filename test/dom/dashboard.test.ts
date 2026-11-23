@@ -440,9 +440,9 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.activeElement).toBe(focused)
     click(focused)
     await settle()
-    expect(document.getElementById('done')?.hidden).toBe(false)
-    expect(document.querySelector<HTMLDetailsElement>(`#done [data-card-id="${first}"]`)?.open).toBe(true)
-    expect(document.querySelector(`#done [data-card-id="${first}"]`)?.textContent).toContain('Updated result.')
+    expect(document.getElementById('find')?.hidden).toBe(false)
+    expect(document.querySelector(`#find [data-card-id="${first}"] > .find-row-body`)).not.toBeNull()
+    expect(document.querySelector(`#find [data-card-id="${first}"]`)?.textContent).toContain('Updated result.')
   })
 
   it.each([true, false])('handles a result leaving the recent list without stealing background focus (owns focus: %s)', async (ownsFocus) => {

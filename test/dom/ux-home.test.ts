@@ -357,7 +357,7 @@ describe('one Home (step 1)', () => {
     question(db, 'Two', { project: 'harbor' })
     await bootApp(db)
     expect([...document.querySelectorAll('#tabs .tab:not([hidden]) .tab-name')].map((el) => el.textContent))
-      .toEqual(['Home', 'Plans', 'Notes', 'History', 'Chats'])
+      .toEqual(['Home', 'Plans', 'Find', 'Chats'])
     expect(document.querySelector('[data-tab="needsYou"]')).toBeNull()
     expect(tabCount('dashboard')).toBe('2')
     // filter-blind: a lens narrows the list, never Home's count

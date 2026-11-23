@@ -593,6 +593,37 @@ export async function searchFor(query: string): Promise<void> {
   await vi.advanceTimersByTimeAsync(200)
 }
 
+/** An item's row on Find (UX pass, slice 4), or null when the list does not hold it. */
+export function findRowFor(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`#find .find-row[data-card-id="${cssEscape(id)}"]`)
+}
+
+/**
+ * Reach an item the way a person does on Find: open the Find tab, type `query` when given
+ * (or clear a query left in the field), and press the row's main button so it opens in
+ * place. Returns the open row; throws when the list does not hold the item or it will not
+ * open.
+ */
+export async function openOnFind(id: string, query = ''): Promise<HTMLElement> {
+  const tab = document.querySelector('.tab[data-tab="find"]')
+  if (tab?.getAttribute('aria-selected') !== 'true') {
+    click(tab)
+    await settle()
+  }
+  const field = document.getElementById('findQuery') as HTMLInputElement | null
+  if (query || field?.value) await findFor(query)
+  const row = findRowFor(id)
+  if (!row) throw new Error(`openOnFind(): Find lists no row for ${id}${query ? ` under "${query}"` : ''}`)
+  const main = row.querySelector(':scope > .find-row-main')
+  if (main?.getAttribute('aria-expanded') === 'false') {
+    click(main)
+    await settle()
+  }
+  const open = findRowFor(id)
+  if (!open?.querySelector(':scope > .find-row-body')) throw new Error(`openOnFind(): the row for ${id} does not open in place`)
+  return open
+}
+
 /** Type into Find's own field and advance past its debounce. Refuses while Find is not showing. */
 export async function findFor(query: string): Promise<void> {
   const input = document.getElementById('findQuery') as HTMLInputElement | null

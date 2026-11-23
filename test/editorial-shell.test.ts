@@ -28,7 +28,7 @@ describe('the editorial desk shell', () => {
     expect(html).toContain('class="tab-name">Home</span><span class="tab-count"')
     expect(html).not.toContain('class="tab-name">Inbox</span>')
     expect(html).toContain('class="tab-name">Plans</span><span class="tab-count"')
-    expect(html).toContain('class="tab-name">History</span><span class="tab-count"')
+    expect(html).toContain('class="tab-name">Find</span><span class="tab-count"')
   })
 
   it('keeps search and keyboard controls in the utility bar and the agent picker in the sidebar', () => {

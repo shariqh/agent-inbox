@@ -23,7 +23,8 @@ describe('the Review queue opened with `t` on another tab (#247)', () => {
       next_step: 'Choose whether to merge.', action_owner: 'approval', options: [{ label: 'Merge', recommended: true }],
     })
     await bootApp(db)
-    const notesTab = document.querySelector<HTMLElement>('.tab[data-tab="notes"]')!
+    // UX pass, slice 4: Notes is gone, and `t` does nothing on Find; Plans is the other tab here
+    const notesTab = document.querySelector<HTMLElement>('.tab[data-tab="boards"]')!
     click(notesTab)
     await settle()
     notesTab.focus()
@@ -40,12 +41,12 @@ describe('the Review queue opened with `t` on another tab (#247)', () => {
     expect(getItem(db, id)!.pinned_at).not.toBeNull()
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
-    expect(document.getElementById('notes')?.hidden).toBe(true)
+    expect(document.getElementById('boards')?.hidden).toBe(true)
     expect(lightbox.contains(document.activeElement), 'focus stays in the Review queue').toBe(true)
 
     click(lightbox.querySelector('.lb-close'))
     await settle()
-    expect(document.activeElement, 'not the Notes tab, which is no longer showing').toBe(document.querySelector('#needsYou .triage-btn'))
+    expect(document.activeElement, 'not the Plans tab, which is no longer showing').toBe(document.querySelector('#needsYou .triage-btn'))
     expect(document.querySelector<HTMLDetailsElement>('#needsYouList .later-section')?.open).toBe(true)
     expect(row(id)?.dataset.open).toBe('1')
     expect(answerInput(id)?.value).toBe('Half an answer')

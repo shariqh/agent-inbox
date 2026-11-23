@@ -621,7 +621,7 @@ describe('an older viewer and attention parity (#411)', () => {
         cards: [...document.querySelectorAll('#dashboard [data-session-card] .sc-doing')].map((el) => el.textContent),
       }
       const view = {
-        title: document.title, badge: badgeCount(), tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount), ...dashboard,
+        title: document.title, badge: badgeCount(), tabs: ['dashboard', 'find', 'boards'].map(tabCount), ...dashboard,
         dock: [items.headers.get('etag'), await items.text(), boards.headers.get('etag'), await boards.text()],
       }
       await showInbox()

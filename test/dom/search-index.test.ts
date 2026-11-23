@@ -883,7 +883,7 @@ describe('workspace search index', () => {
     type(input(), 'latest')
     expect(oldOption?.getAttribute('aria-disabled')).toBe('true')
     click(oldOption)
-    expect(document.getElementById('done')?.hidden).toBe(true)
+    expect(document.getElementById('find')?.hidden).toBe(true)
     await vi.advanceTimersByTimeAsync(200)
     expect(option(latest)).not.toBeNull()
     expect(option(history)).toBeNull()

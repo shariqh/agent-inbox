@@ -2124,38 +2124,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .board.in-group { margin-left: 14px; border-left: 3px solid var(--app-border-strong); }
 .board-table .row-parent-run th { padding: 6px 6px 2px; text-align: left; color: var(--app-muted); font-size: 11px; font-weight: 500; }
 
-/* Finished work is a ledger first and a full audit card only on demand. */
-#done .items { display: grid; max-width: 1120px; margin: 0 auto; }
-.history-row {
-  border-top: 1px solid var(--app-border);
-  background: transparent;
-}
-.history-row:first-child { border-top: 0; }
-.history-summary {
-  display: grid;
-  min-height: 70px;
-  grid-template-columns: 10px minmax(0, 1fr) minmax(180px, auto) 16px;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  cursor: pointer;
-  list-style: none;
-}
-.history-summary::-webkit-details-marker { display: none; }
-.history-summary:hover { background: var(--app-soft); }
-.history-summary:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
-.history-dot { width: 7px; height: 7px; border-radius: 50%; }
-.history-copy { display: grid; min-width: 0; gap: 3px; }
-.history-copy strong, .history-outcome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.history-copy strong { font-size: 12.5px; }
-.history-outcome { color: var(--app-muted); font-size: 11.5px; }
-.history-meta { display: grid; justify-items: end; color: var(--app-text-soft); font-size: 10.5px; }
-.history-meta time { color: var(--app-outcome); }
-.history-arrow { color: var(--app-text-soft); font-size: 18px; transition: transform var(--motion-base) var(--motion-ease-out); }
-.history-row[open] { margin: 6px 0; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); }
-.history-row[open] .history-arrow { transform: rotate(90deg); }
-.history-row > .card { padding: 2px 14px 16px 34px; }
-
 /* Dashboard lanes design §3.3, §3.4: the Working and Quiet lanes, drawn by
    public/agents-home.js (grown from the #454 Agents home), one lane gap apart
    after Needs you. Static but for the one-shot pulse a new call starts on a
@@ -2480,8 +2448,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   .dash-ribbon-lane { grid-template-columns: minmax(48px, 80px) minmax(0, 1fr); }
   .dash-ribbon-axis { padding-left: 90px; }
   .dash-ribbon-legend { display: none; }
-  .history-summary { grid-template-columns: 10px minmax(0, 1fr) 16px; }
-  .history-meta { grid-column: 2; justify-items: start; }
 }
 
 @container needs-queue (max-width: 760px) {

@@ -9,7 +9,7 @@ import { issueRelations } from '../../src/issue-graph.js'
 import { facts, snapshot } from '../issue-fixtures.js'
 import type { SnapshotOpts } from '../issue-fixtures.js'
 import {
-  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, showInbox, type, useDomTest, reach,
+  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, showInbox, type, useDomTest, reach, openOnFind,
 } from './harness.js'
 
 useDomTest()
@@ -112,10 +112,10 @@ describe('breadcrumbs and child progress (#103 PR3)', () => {
     const matrixRow = boardCard(adapter.id).querySelector(`.board-row[data-row-id="${adapterRow.id}"]`)!
     expect(chipKeys(matrixRow.querySelector('.row-note')!)).toEqual([K(117), K(119)])
 
-    // History keeps today's plain chip
-    await showTab('done')
-    expect(document.querySelector('#done')?.textContent).toContain('Earlier note')
-    expect(chipKeys(document.getElementById('done')!)).toEqual([])
+    // History keeps today's plain chip: on Find, the closed note's row opened in place
+    const closedRow = await openOnFind(history)
+    expect(closedRow.textContent).toContain('Earlier note')
+    expect(chipKeys(closedRow)).toEqual([])
   })
 
   it.each(['404', 'offline', 'malformed'] as const)('renders every surface exactly as today when /api/issues is %s', async (failure) => {

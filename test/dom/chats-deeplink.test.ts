@@ -68,7 +68,7 @@ describe('#chats deep link (#586 PR 2)', () => {
     navigateToHash(`#item/${encodeURIComponent(id)}`)
     await settle()
     expect(shown()).toBe(false)
-    expect(document.getElementById('notes')!.hidden).toBe(false)
+    expect(document.getElementById('find')!.hidden).toBe(false)
     expect(reads).toEqual([])
   })
 })

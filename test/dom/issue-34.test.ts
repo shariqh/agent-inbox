@@ -24,6 +24,7 @@ import {
   settle,
   type,
   useDomTest,
+  openOnFind,
 } from './harness.js'
 
 useDomTest()
@@ -169,7 +170,8 @@ describe('issue #34 · resolved answer receipt', () => {
     resolveItem(d, id)
     await bootApp(d)
 
-    const card = document.querySelector('#done .card')
+    // UX pass, slice 4: the closed answer is an Answers row on Find that opens into its card
+    const card = (await openOnFind(id)).querySelector('.card')
     expect(card?.querySelector('.reply-block')?.textContent).toContain('SQLite')
     expect(card?.querySelector('.reply-context')?.textContent).toContain('keep operations simple')
     expect(card?.querySelector('.reply-source')?.textContent).toBe('via chat')

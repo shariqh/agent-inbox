@@ -16,7 +16,7 @@ import {
   upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick, row, rowTitles, settle, useDomTest,
+  advanceClock, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick, row, rowTitles, settle, useDomTest, openOnFind,
 } from './harness.js'
 
 useDomTest()
@@ -226,9 +226,8 @@ describe('action lifecycle presentation', () => {
     advanceClock()
     resolveItem(d, id, 'Release published.')
     await pollTick()
-    click(document.querySelector('.tab[data-tab="done"]'))
-    await settle()
-    const result = document.querySelector(`[data-card-id="${id}"]`)
+    // UX pass, slice 4: the closed ask is an Answers row on Find that opens in place
+    const result = await openOnFind(id)
     expect(result?.textContent).toContain('Release published.')
     expect(result?.querySelector('.outcome-block')?.textContent).toContain('Release published.')
   })

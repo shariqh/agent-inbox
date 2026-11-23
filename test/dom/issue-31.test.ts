@@ -186,54 +186,62 @@ describe('31.1 · an accepted "Change answer" must show the surface it staged a 
 })
 
 // ── 31.2 ────────────────────────────────────────────────────────────────────
+// UX pass, slice 4: the unread-notes count is Find's, and the Notes chip with no query marks them read
+async function openFindNotes() {
+  click(document.querySelector('.tab[data-tab="find"]'))
+  await settle()
+  click(document.querySelector('#find [data-find-chip="notes"]'))
+  await settle()
+}
+
 describe('31.2 · the Notes count must come down once you have looked', () => {
   it('drops to the notes the pager actually hid, instead of staying pinned', async () => {
     const d = open()
-    // six notes > PAGE.notes (5): the pager hides the OLDEST, which is precisely the
-    // shape a single watermark cannot express.
-    for (let i = 0; i < 6; i++) {
+    // 21 notes > Find's page (20): the pager hides the OLDEST, which is precisely the
+    // shape a single watermark cannot express. (UX pass, slice 4: Notes paged by 5; Find by 20)
+    for (let i = 0; i < 21; i++) {
       insertItem(d, { ...AGENT, kind: 'note', title: `note ${i}` })
       advanceClock()
     }
     await bootApp(d)
-    expect(tabCount('notes')).toBe('6')
+    expect(tabCount('find')).toBe('21')
 
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    await openFindNotes()
     await pollTick() // read-marking happens in render(), which the poll drives
 
-    expect(document.querySelectorAll('#notes .groups .item').length, 'the pager should hide one').toBe(5)
-    expect(tabCount('notes'), 'only the note that stayed behind the pager is still new').toBe('1')
+    expect(document.querySelectorAll('#findList > .find-row').length, 'the pager should hide one').toBe(20)
+    expect(tabCount('find'), 'only the note that stayed behind the pager is still new').toBe('1')
   })
 
   it('stays down across a reload — the seen set is persisted, not per-session', async () => {
     const d = open()
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 21; i++) {
       insertItem(d, { ...AGENT, kind: 'note', title: `note ${i}` })
       advanceClock()
     }
     await bootApp(d)
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    await openFindNotes()
     await pollTick()
-    expect(tabCount('notes')).toBe('1')
+    expect(tabCount('find')).toBe('1')
 
     vi.resetModules() // a fresh page load against the same localStorage
     await bootApp(d)
-    expect(tabCount('notes')).toBe('1')
+    expect(tabCount('find')).toBe('1')
   })
 
   it('a genuinely new note still counts', async () => {
     const d = open()
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 21; i++) {
       insertItem(d, { ...AGENT, kind: 'note', title: `note ${i}` })
       advanceClock()
     }
     await bootApp(d)
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    await openFindNotes()
     await pollTick()
-    expect(tabCount('notes')).toBe('1') // note 0, the one the pager kept hidden
+    expect(tabCount('find')).toBe('1') // note 0, the one the pager kept hidden
 
-    // Leave the tab BEFORE the new note lands. Read-marking is gated on
-    // `activeTab === 'notes'`, so with Notes still open the new note renders and
+    // Leave the tab BEFORE the new note lands. Read-marking is gated on Find's
+    // Notes chip being on screen, so with it still open the new note renders and
     // the same tick marks it seen — the count would honestly stay at 1 and this
     // test would prove nothing about a new note counting. (That is exactly what
     // the first version asserted: `< 6`, which also passes at 0.)
@@ -246,7 +254,7 @@ describe('31.2 · the Notes count must come down once you have looked', () => {
 
     // 2 = the pager-hidden note 0 + the brand new one. The per-id seen set must
     // suppress the five already looked at and nothing more.
-    expect(tabCount('notes'), 'a note that arrived after you looked away is new').toBe('2')
+    expect(tabCount('find'), 'a note that arrived after you looked away is new').toBe('2')
   })
 })
 

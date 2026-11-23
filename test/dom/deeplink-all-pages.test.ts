@@ -27,14 +27,24 @@ async function excludeAlpha(): Promise<void> {
   await settle()
 }
 
-function card(id: string): HTMLDetailsElement | null {
-  return document.querySelector<HTMLDetailsElement>(`[data-card-id="${id}"]`)
+// UX pass, slice 4: a note or a finished item lands on its row on Find, a plan on Plans
+function card(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`#find .find-row[data-card-id="${id}"]`)
+    ?? document.querySelector<HTMLElement>(`[data-card-id="${id}"]`)
 }
+
+const onFind = (id: string) => Boolean(card(id)?.matches('.find-row'))
 
 function expectFocusedSummary(id: string): void {
   const target = card(id)
   expect(target).not.toBeNull()
-  expect(target?.open).toBe(true)
+  if (onFind(id)) {
+    // a Find row is open while its body is drawn; its main button takes focus
+    expect(target?.querySelector(':scope > .find-row-body')).not.toBeNull()
+    expect(document.activeElement).toBe(target?.querySelector(':scope > .find-row-main'))
+    return
+  }
+  expect((target as HTMLDetailsElement | null)?.open).toBe(true)
   expect(document.activeElement).toBe(target?.querySelector(':scope > summary'))
 }
 
@@ -45,11 +55,16 @@ describe('deep links across paginated tabs', () => {
     advanceClock()
     const skippedId = insertItem(db, { ...ALPHA, kind: 'note', title: 'Skipped newer note' })
     const normalPageIds: string[] = []
-    for (let i = 0; i < 5; i++) {
+    // UX pass, slice 4: Find's page is 20, and only its Notes chip marks notes read
+    for (let i = 0; i < 20; i++) {
       advanceClock()
       normalPageIds.push(insertItem(db, { ...ALPHA, kind: 'note', title: `Normal page ${i}` }))
     }
     await bootApp(db)
+    click(document.querySelector('.tab[data-tab="find"]'))
+    await settle()
+    click(document.querySelector('#find [data-find-chip="notes"]'))
+    await settle()
 
     navigateToHash(`#item/${targetId}`)
     await settle()
@@ -59,16 +74,17 @@ describe('deep links across paginated tabs', () => {
     expect(seenIds).not.toContain(skippedId)
   })
 
-  it('includes and focuses Notes, History, active Plans, and archived Plans beyond their caps', async () => {
+  it('includes and focuses notes and finished things on Find, active Plans, and archived Plans beyond their caps', async () => {
     db = freshDb()
     const noteId = insertItem(db, { ...ALPHA, kind: 'note', title: 'Old note target' })
-    for (let i = 0; i < 6; i++) {
+    // Find's page is 20 (UX pass, slice 4): 21 newer rows put each target beyond it
+    for (let i = 0; i < 21; i++) {
       advanceClock()
       insertItem(db, { ...ALPHA, kind: 'note', title: `Newer note ${i}` })
     }
     advanceClock()
     const doneId = insertItem(db, { ...ALPHA, kind: 'done', title: 'Old history target' })
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 21; i++) {
       advanceClock()
       insertItem(db, { ...ALPHA, kind: 'done', title: `Newer history ${i}` })
     }
@@ -97,13 +113,13 @@ describe('deep links across paginated tabs', () => {
     await excludeAlpha()
     navigateToHash(`#item/${noteId}`)
     await settle()
-    expect(document.getElementById('notes')?.hidden).toBe(false)
+    expect(document.getElementById('find')?.hidden).toBe(false)
     expectFocusedSummary(noteId)
 
     await excludeAlpha()
     navigateToHash(`#item/${doneId}`)
     await settle()
-    expect(document.getElementById('done')?.hidden).toBe(false)
+    expect(document.getElementById('find')?.hidden).toBe(false)
     expectFocusedSummary(doneId)
 
     await excludeAlpha()
@@ -148,7 +164,9 @@ describe('deep links across paginated tabs', () => {
 
       await changedPollTick(db)
 
-      expect(before?.isConnected).toBe(false)
+      // Plans rebuilds a plan and focus is restored; Find reconciles its rows by key, so the
+      // focused button itself is kept (UX pass, slice 4)
+      expect(before?.isConnected).toBe(onFind(id))
       expectFocusedSummary(id)
     }
 
@@ -157,26 +175,25 @@ describe('deep links across paginated tabs', () => {
     const background = card(noteId)?.querySelector<HTMLElement>('.card-context > summary')!
     background.focus()
     await changedPollTick(db)
-    expect(background.isConnected).toBe(false)
     expect(document.activeElement).toBe(card(noteId)?.querySelector('.card-context > summary'))
 
     const resolve = [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === 'Resolve')!
     resolve.focus()
     await changedPollTick(db)
-    expect(resolve.isConnected).toBe(false)
     expect(document.activeElement).toBe(
       [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
         .find((button) => button.textContent === 'Resolve'),
     )
 
-    // The search box is not rebuilt; the card around the old focus is, and the
-    // rebuild must not pull focus back to it.
-    const search = document.getElementById('search')!
+    // The search box is not rebuilt, and a frame must not pull focus back to the card.
+    // On Find that box is Find's own field (UX pass, slice 4).
+    const search = document.getElementById('findQuery')!
     const cardBefore = card(noteId)!
     search.focus()
     await changedPollTick(db)
-    expect(cardBefore.isConnected).toBe(false)
+    // on Find the top bar's search is not drawn; Find's own field stands in for it
+    expect(cardBefore.isConnected).toBe(true)
     expect(document.activeElement).toBe(search)
   })
 
@@ -248,7 +265,7 @@ describe('deep links across paginated tabs', () => {
     // a Moving plan rests closed: the person opens it before reaching its Plan flow
     click(card(targetId)!.querySelector(':scope > summary'))
     await settle()
-    const target = card(targetId)!
+    const target = card(targetId) as HTMLDetailsElement
     expect(target.open).toBe(true)
     const planFlow = buttonLabelled('Plan flow', target)!
     expect(planFlow.closest('[hidden], details:not([open])')).toBeNull()

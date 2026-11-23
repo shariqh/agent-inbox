@@ -67,7 +67,7 @@ async function attentionSurfaces() {
   return {
     title: document.title,
     badge: badgeCount(),
-    tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount),
+    tabs: ['dashboard', 'find', 'boards'].map(tabCount),
     waiting: chip('needs'),
     dock: [await dock.text(), await plans.text()],
   }

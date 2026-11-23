@@ -80,7 +80,7 @@ import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
 import { isReservedProject } from '/reserved-projects.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
-import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
+import { knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 import { DRAFTS_KEY, draftEntry, draftExpired, draftKey, mergeDrafts, readDrafts } from '/drafts.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
@@ -115,7 +115,7 @@ function nativeKeyOwner(event) {
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
 // UX pass, slice 3: Moving pages by 12; `boards` stays the grouped list's page (and its "(continued)" heads)
-const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, moving: 12, archived: 5, find: FIND_PAGE }
+const PAGE = { needsYou: 10, boards: 5, moving: 12, archived: 5, find: FIND_PAGE }
 let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
@@ -158,7 +158,6 @@ let appliedClosedGeneration = 0
 // items. Older closed history is read from /api/items/history only while some
 // surface needs it (historyWanted); these record needs no rendered state shows.
 let historyLookup = null // a deep link to an item the page omitted
-let historyTabPinned = false // History keeps an omitted target until the tab changes
 let historyRequestedFor = -1 // the applied tick an early poll was requested for
 let historyLoadScheduled = false // that early poll has not started yet
 let historyPaintRequestedFor = -1 // the applied tick a human's history read-and-paint started for
@@ -1375,7 +1374,7 @@ function restoreAskedTimeFocus(id) {
 
 function pagedCardFocusBookmark() {
   const active = activeFocusElement()
-  const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id], #find [data-card-id]')
+  const card = active?.closest?.('#boards [data-card-id], #find [data-card-id]')
   if (!card) return null
   const rowId = active.closest('[data-row-id]')?.dataset.rowId ?? null
   if (rowId) {
@@ -1529,11 +1528,6 @@ function focusItem(id, source = null) {
     resetSearch()
   }
   selectTab(tab, { paint: false }) // the explicit forceRender below paints the target
-  // A History target the page alone cannot place keeps the complete history
-  // loaded while History stays open (#184).
-  if (activeTab === 'done') {
-    historyTabPinned = !knownHistory(pageView().g.done, lastData.pageHistory?.before).some((entry) => entry.id === id)
-  }
   const hash = focusHashFor(id)
   if (location.hash !== hash) {
     // the hashchange this write fires runs focusItem again with no source; a
@@ -2155,9 +2149,6 @@ function historyWanted(view = lastData) {
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
   if (activeTab === 'find' && older.items > 0 && findHistoryPinned) return true
-  if (activeTab === 'done' && older.items > 0) {
-    return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
-  }
   // Recent outcomes, and the ribbon at a range longer than the default (#392).
   if (activeTab === 'dashboard' && (older.outcomes > 0 || (older.items > 0 && ribbonReadsOlder()))) {
     const model = dashboardModel(pageView(view), summary, lensActivity(view))
@@ -3689,10 +3680,6 @@ function paintAmbient() {
   const agents = collectAgents(projectScoped(visibleData),
     olderHistory(lastData.older, { project: projectFilter, hidden: dashboardClosedProjects() }).agents)
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
-  // prune collapse state against ALL cards, not the filtered view (nor the
-  // closure-narrowed one), so switching tabs never drops state for cards the
-  // filter is hiding
-  liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   const filtered = filterData(visibleData)
   const { g, boards, archived } = filtered
   const live = liveInLens()
@@ -3765,8 +3752,7 @@ function paintTabCounts(g, boards) {
   const counts = tabCounts({
     globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
     unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds),
-    scoped: { boards, done: g.done },
-    olderDone: olderHistory(lastData.older, olderLens()).items,
+    scoped: { boards },
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
 }
@@ -3780,15 +3766,12 @@ function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAl
   // panes skip ordinary polls; boot and explicit human repaints remain complete.
   const restoreQueueView = renderNeedsYou(g, boards, Date.now())
   if (paintAllPanes || !document.getElementById('find').hidden) renderFind()
-  if (paintAllPanes || !document.getElementById('notes').hidden) renderGroups('notes', g.notes)
-  if (paintAllPanes || !document.getElementById('done').hidden) renderDone(g.done)
   if (paintAllPanes || !document.getElementById('chats').hidden) chatsView.paint()
   for (const board of boards) sessionActiveBoards.add(board.id)
   if (paintAllPanes || !document.getElementById('boards').hidden) renderBoards(boards, archived)
-  // renderGroups may have marked visible notes read. Recount only on a full
+  // renderFind may have marked visible notes read. Recount only on a full
   // editable frame; a draft-gated ambient frame must never mark unseen notes.
   paintTabCounts(g, boards)
-  pruneCollapsedCards()
   // The render that just happened is the authority on what remains collapsible.
   // A deep link or filter can name a board, a hidden item, or a paged-away row;
   // reconcile stale open state now so it cannot leak into a later render.
@@ -6011,7 +5994,6 @@ function selectTab(id, { paint = true, open = true } = {}) {
   // keeping loaded (#184, #299).
   historyLookup = null
   archivedLookup = null
-  if (id !== 'done') historyTabPinned = false
   if (from === 'find' && id !== 'find') leaveFind()
   activeTab = id
   if (id === 'find' && from !== 'find') enterFind()
@@ -6075,8 +6057,6 @@ const PAGE_META = {
   boards: { kicker: '', title: 'Plans' },
   // the heading stays for structure and is visually hidden: Find's field is what shows first
   find: { kicker: '', title: 'Find' },
-  notes: { kicker: 'Workspace', title: 'Notes' },
-  done: { kicker: 'Workspace', title: 'History' },
   chats: { kicker: 'Workspace', title: 'Chats' },
   // the title is the open agent's name
   agent: { kicker: 'Mesh agent', title: '' },
@@ -8241,7 +8221,7 @@ function revealDetailsAncestors(target) {
     // the next frame keeps it; one already open keeps the form it was drawn in
     if (node.matches('#boards details.board')) {
       if (!wasOpen) planOpen.set(node.dataset.cardId, true)
-    } else if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
+    }
     if (node.classList.contains('stalled-fold')) stalledOpen = true
     if (node.dataset.deferredFold) openDeferredFolds.add(node.dataset.deferredFold)
     else if (node.classList.contains('stale-fold')) staleFoldOpen = true
@@ -8675,98 +8655,6 @@ function collapseRow(id, { explicit = false } = {}) {
 }
 
 // notes keep a card list, but flat: no project h3, no agent h4 (§15)
-function renderGroups(sectionId, groups) {
-  const host = document.querySelector(`#${sectionId} .groups`)
-  const items = groups.flatMap((gr) => gr.items)
-  const { visible, remaining, viewed } = paginateWithPending(items, sectionId)
-  host.innerHTML = items.length ? '' : '<p class="empty">Nothing here.</p>'
-  for (const it of visible) host.appendChild(itemEl(it))
-  if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
-  // fix round 2 (I3): mark seen only what was actually on screen. The hidden set
-  // is the GLOBAL note list minus what rendered — a note behind the "Show N
-  // more" pager and a note behind the rail's project filter were equally unseen,
-  // and there is one watermark covering every scope.
-  if (sectionId === 'notes' && !document.getElementById('notes').hidden) {
-    const shownIds = new Set(viewed.map((it) => it.id))
-    const all = lastData.g.notes.flatMap((gr) => gr.items)
-    markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
-  }
-}
-
-const openHistoryItems = new Set()
-
-function historyItemEl(it) {
-  const el = document.createElement('details')
-  el.className = `history-row item ${it.kind}`
-  el.dataset.cardId = it.id
-  liveCardIds.add(it.id)
-  el.open = openHistoryItems.has(it.id) || pendingFocusId === it.id || pagedFocusId === it.id
-  el.addEventListener('toggle', () => {
-    if (el.open) openHistoryItems.add(it.id)
-    else openHistoryItems.delete(it.id)
-  })
-
-  const summary = document.createElement('summary')
-  summary.className = 'history-summary'
-  const color = pcolor(it.project)
-  const dot = document.createElement('span')
-  dot.className = 'history-dot'
-  dot.style.background = color.dot
-  dot.setAttribute('aria-hidden', 'true')
-  const copy = document.createElement('span')
-  copy.className = 'history-copy'
-  const title = document.createElement('strong')
-  title.textContent = it.title
-  const outcome = document.createElement('span')
-  outcome.className = 'history-outcome'
-  outcome.textContent = it.outcome
-    || (it.reply ? `You answered: ${it.reply}` : '')
-    || it.detail
-    || (it.status === 'dismissed' ? 'Dismissed' : 'Completed')
-  copy.append(title, outcome)
-  const meta = document.createElement('span')
-  meta.className = 'history-meta'
-  meta.textContent = `${it.project} · ${it.agent}`
-  const stamp = it.outcome_at ?? it.resolved_at ?? it.updated_at ?? it.created_at
-  const time = document.createElement('time')
-  time.dateTime = stamp
-  time.textContent = rel(stamp)
-  meta.appendChild(time)
-  const arrow = document.createElement('span')
-  arrow.className = 'history-arrow'
-  arrow.setAttribute('aria-hidden', 'true')
-  arrow.textContent = '›'
-  summary.append(dot, copy, meta, arrow)
-  el.append(summary, itemCardEl(it, { done: it.status !== 'open', header: false }))
-  return el
-}
-
-function renderDone(items) {
-  const host = document.querySelector('#done .items')
-  // Issue #184: until the closed history the page omits has been read, only the
-  // leading entries nothing omitted can precede are in their final place.
-  const older = olderHistory(lastData.older, olderLens()).items
-  const known = older ? knownHistory(items, lastData.older.before) : items
-  const { visible } = paginateWithPending(known, 'done')
-  // A focus target the page carries outside that prefix still shows at once,
-  // after the known page, as any target beyond the page cap does.
-  const protectedId = pendingFocusId ?? pagedFocusId
-  const target = known !== items && protectedId && !visible.some((it) => it.id === protectedId)
-    ? items.find((it) => it.id === protectedId)
-    : null
-  const listed = target ? [...visible, target] : visible
-  const total = items.length + older
-  host.innerHTML = total ? '' : '<p class="empty">Nothing yet.</p>'
-  for (const it of listed) host.appendChild(historyItemEl(it))
-  if (older && (historyTabPinned || shown.done > known.length)) {
-    const loading = document.createElement('p')
-    loading.className = 'empty history-loading'
-    loading.setAttribute('role', 'status')
-    loading.textContent = olderHistoryWaitText('Loading older history…')
-    host.appendChild(loading)
-  } else if (total > listed.length) host.appendChild(moreButton('done', total - listed.length))
-}
-
 // ── UX pass, slice 4: Find ─────────────────────────────────────────────────
 // One list in place of Notes and History; public/find.js builds its rows from the
 // data the page already holds. The field and the chips are static markup. Every
@@ -9104,12 +8992,7 @@ function renderFind() {
   }
   foot.replaceChildren()
   if (rest > 0) {
-    const more = btn(`Show ${Math.min(FIND_PAGE, rest)} more`, () => {
-      const reveal = rows[listed.length]?.key ?? null
-      shown.find += FIND_PAGE
-      forceRender()
-      if (reveal) document.querySelector(`#findList > [data-find-key="${CSS.escape(reveal)}"] > .find-row-main`)?.focus({ preventScroll: true })
-    })
+    const more = btn(`Show ${Math.min(FIND_PAGE, rest)} more`, () => showMoreInFind(rows[listed.length]?.key ?? null))
     more.className = 'show-more find-more'
     foot.appendChild(more)
   } else if (olderWaits) {
@@ -9120,17 +9003,27 @@ function renderFind() {
       loading.textContent = olderHistoryWaitText('Loading older history…')
       foot.appendChild(loading)
     } else {
-      const older = btn('Show more', () => {
-        findHistoryPinned = true
-        forceRender()
-        document.getElementById('findList')?.focus({ preventScroll: true })
-        requestHistoryPaint()
-      })
+      const older = btn('Show more', showOlderInFind)
       older.className = 'show-more find-older'
       foot.appendChild(older)
     }
   }
   markFindNotesSeen(listed, model.query)
+}
+
+// "Show 20 more": the first row it reveals takes focus.
+function showMoreInFind(reveal) {
+  shown.find += FIND_PAGE
+  forceRender()
+  if (reveal) document.querySelector(`#findList > [data-find-key="${CSS.escape(reveal)}"] > .find-row-main`)?.focus({ preventScroll: true })
+}
+
+// "Show more" past the cut: the complete history is read while the person stays on Find.
+function showOlderInFind() {
+  findHistoryPinned = true
+  forceRender()
+  document.getElementById('findList')?.focus({ preventScroll: true })
+  requestHistoryPaint()
 }
 
 // A fresh note counts as read when its row is drawn under the Notes chip with no query,
@@ -9192,7 +9085,7 @@ function setFindChip(chip) {
   findActiveKey = null
   shown.find = FIND_PAGE
   forceRender()
-  requestHistory()
+  requestHistoryPaint()
 }
 
 function focusFindField({ select = false } = {}) {
@@ -9237,6 +9130,8 @@ function leaveFind() {
 function openFind({ chip = null, clearQuery = false, focus = 'field' } = {}) {
   selectTab('find', { paint: false })
   if (activeTab !== 'find') return
+  // a go-to destination starts at the top, as every tab's does (focusKeyboardPanel)
+  if (window.scrollY !== 0) window.scrollTo(0, 0)
   if (clearQuery) setFindQueryText('')
   if (chip && chip !== findChip) {
     findChip = chip
@@ -9271,6 +9166,8 @@ function prepareFindLanding(item) {
   }
   findLandingKey = key
   findOpen.add(key)
+  // a target only the complete history holds keeps it loaded while the person stays on Find
+  if (!allItems(lastData.page).some((other) => other.id === item.id)) findHistoryPinned = true
 }
 
 function initFind() {
@@ -9289,6 +9186,9 @@ function initFind() {
       findActiveKey = null
       shown.find = FIND_PAGE
       forceRender()
+      // the person's own query asked for this frame: what it searches is read and painted
+      // outside the poll's gate, as an unrelated draft must not hide it (#38)
+      requestHistoryPaint()
     }, 120)
     // overlap reading what a query searches with the debounce, as the top bar does
     requestHistory()
@@ -9383,33 +9283,6 @@ function stepMark(r, needs, archived) {
 // boards where the human clicked "show" on hidden done rows, overriding the
 // global hide-completed pill for that board only
 const showDoneBoards = new Set()
-
-// collapsed cards (items + boards) by id — same rebuild problem, but also persisted
-const CARDS_KEY = 'agent-inbox-cards-collapsed'
-let collapsedCards = {}
-try { collapsedCards = JSON.parse(localStorage.getItem(CARDS_KEY)) || {} } catch { /* fresh start */ }
-let liveCardIds = new Set() // ids seen in the current render, for pruning stale keys
-
-function setCardCollapsed(id, collapsed) {
-  if (collapsed) collapsedCards[id] = true
-  else delete collapsedCards[id]
-  localStorage.setItem(CARDS_KEY, JSON.stringify(collapsedCards))
-}
-
-function pruneCollapsedCards() {
-  let changed = false
-  for (const id of Object.keys(collapsedCards)) {
-    if (!liveCardIds.has(id)) { delete collapsedCards[id]; changed = true }
-  }
-  if (changed) localStorage.setItem(CARDS_KEY, JSON.stringify(collapsedCards))
-}
-
-function cardify(el, id) {
-  el.dataset.cardId = id
-  liveCardIds.add(id)
-  if (!collapsedCards[id]) el.open = true
-  el.addEventListener('toggle', () => setCardCollapsed(id, !el.open))
-}
 
 let showArchived = false            // session-only: the archived fold is not persisted
 const sessionActiveBoards = new Set() // board ids seen active at some point this session (§9)
@@ -11924,22 +11797,6 @@ async function changeAnswer(it, msgEl) {
   //     unconditionally, outside the gate.
   setOpenRow(it.id)
   await reloadAndPaint()
-}
-
-// notes / done keep a collapsible card; the body is the same component
-function itemEl(it, done = false) {
-  const el = document.createElement('details')
-  const answered = it.kind === 'question' && it.status === 'open' && it.reply
-  el.className = `item ${it.kind}${answered ? ' answered' : ''}`
-  const stream = it.stream ? ` · ${esc(it.stream)}` : ''
-  el.innerHTML = `
-    <summary class="card-summary">
-      <div class="meta"><span class="caret"></span>${esc(it.agent)}${stream}</div>
-      <div class="title">${esc(it.title)}</div>
-    </summary>`
-  cardify(el, it.id)
-  el.appendChild(itemCardEl(it, { done, header: false }))
-  return el
 }
 
 // ── keyboard (spec §13) ─────────────────────────────────────────────────────

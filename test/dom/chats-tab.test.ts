@@ -95,9 +95,10 @@ function stubClipboard() {
 }
 
 describe('Chats tab (#586 PR 2)', () => {
-  it('sits after History, with G C', async () => {
+  it('sits after Find, with G C', async () => {
     await boot()
-    expect([...document.querySelectorAll<HTMLElement>('#tabs .tab')].map((t) => t.dataset.tab).slice(-3)).toEqual(['done', 'chats', 'agent'])
+    // UX pass, slice 4: Find in place of Notes and History; Chats stays its own tab until step B
+    expect([...document.querySelectorAll<HTMLElement>('#tabs .tab')].map((t) => t.dataset.tab).slice(-3)).toEqual(['find', 'chats', 'agent'])
     const tab = document.querySelector('[data-tab="chats"]')!
     expect(tab.getAttribute('data-shortcut')).toBe('G C')
     expect(tab.querySelector('.tab-count')).toBeNull()
@@ -123,14 +124,14 @@ describe('Chats tab (#586 PR 2)', () => {
     await pollTick()
     expect(reads).toHaveLength(1)
     // back within a minute: the list is kept
-    await openTab('done')
+    await openTab('find')
     await openTab('chats')
     expect(reads).toHaveLength(1)
     // re-selecting the open tab reads nothing either
     await openTab('chats')
     expect(reads).toHaveLength(1)
     advanceClock(61_000)
-    await openTab('done')
+    await openTab('find')
     await openTab('chats')
     expect(reads).toHaveLength(2)
     click(q('.chats-refresh'))
@@ -386,15 +387,15 @@ describe('Chats tab (#586 PR 2)', () => {
     const { reads } = await boot()
     insertItem(db!, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'note', title: 'A note' })
     await pollTick()
-    await openTab('notes')
+    await openTab('find')
     await openChats()
-    const note = document.querySelector('#notes .groups')!.firstElementChild
+    const note = document.querySelector('#findList')!.firstElementChild
     const dashboard = document.querySelector('#dashboard .dashboard')!.firstElementChild
     expect(note).not.toBeNull()
     click(q('.chats-refresh'))
     await settle()
     expect(reads).toHaveLength(2)
-    expect(document.querySelector('#notes .groups')!.firstElementChild).toBe(note)
+    expect(document.querySelector('#findList')!.firstElementChild).toBe(note)
     expect(document.querySelector('#dashboard .dashboard')!.firstElementChild).toBe(dashboard)
   })
 

@@ -95,7 +95,7 @@ describe('C1 · a deep link must never freeze the poll', () => {
 
     navigateToHash(`#item/${noteId}`)
     await settle()
-    expect(document.querySelector('#notes')?.hasAttribute('hidden'), 'the deep link should land on the Notes tab').toBe(false)
+    expect(document.querySelector('#find')?.hasAttribute('hidden'), 'the deep link should land on Find').toBe(false)
 
     advanceClock()
     insertItem(d, { ...AGENT, kind: 'question', title: 'SECOND question' })

@@ -358,12 +358,12 @@ describe('changes outside the poll still reach an idle window (#298)', () => {
     click(row(id))
     await settle()
     type(answerInput(id), 'An answer the agent never reads')
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     resolveItem(d, id)
     await pollTick() // the draft holds the editable frame
     // A tab change paints; draft recovery inside that frame moves the lens to the Inbox.
-    click(document.querySelector('.tab[data-tab="done"]'))
+    click(document.querySelector('.tab[data-tab="find"]'))
     await settle()
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     const before = document.querySelector('#needsYouList .stale-drafts-fold')

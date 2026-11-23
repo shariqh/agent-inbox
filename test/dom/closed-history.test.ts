@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listItems, replyItem, resolveItem } from '../../src/store.js'
 import {
-  advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick, row,
-  searchFor, settle, showInbox, tabCount, type, useDomTest,
+  advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, findFor, findRowFor, freshDb, navigateToHash,
+  pollTick, row, searchFor, settle, showInbox, tabCount, type, useDomTest,
 } from './harness.js'
 import type { BootOptions } from './harness.js'
 
@@ -96,8 +96,11 @@ function seedHub(d: Database.Database): { archive: string[]; alpha: string[] } {
   return { archive, alpha }
 }
 
+// UX pass, slice 4: History is Find's list (All, no query unless a test types one)
 const historyTitles = (): string[] =>
-  [...document.querySelectorAll('#done .history-row .history-copy strong')].map((el) => el.textContent ?? '')
+  [...document.querySelectorAll('#findList > .find-row .find-title')].map((el) => el.textContent ?? '')
+const findFoot = (): HTMLElement => document.getElementById('findFoot')!
+const findShown = (): boolean => document.getElementById('find')?.hidden === false
 // The Dashboard's outcome count left with the Now strip (dashboard lanes design
 // §3.1); buildDashboard().signals.outcomes still counts what is omitted, and
 // test/dashboard.test.ts proves it. Just landed's proven list is what shows.
@@ -147,12 +150,12 @@ describe('paged closed history (issue #184)', () => {
 
     click(option)
     await settle()
-    expect(document.getElementById('done')?.hidden).toBe(false)
-    const card = document.querySelector<HTMLDetailsElement>(`#done [data-card-id="${archive[1]}"]`)
-    expect(card?.open).toBe(true)
+    expect(findShown()).toBe(true)
+    const card = findRowFor(archive[1]!)
+    expect(card?.querySelector(':scope > .find-row-body')).not.toBeNull()
     expect(card?.querySelector('.search-jump-highlight')?.textContent?.toLowerCase()).toBe('quokka')
     await pollTick()
-    expect(document.querySelector(`#done [data-card-id="${archive[1]}"]`)).not.toBeNull()
+    expect(findRowFor(archive[1]!)).not.toBeNull()
   })
 
   it('keeps passive polls on the bounded page while every count stays exact', async () => {
@@ -165,7 +168,7 @@ describe('paged closed history (issue #184)', () => {
 
     // Dashboard (the cold-launch view) proves its recent outcomes from the page.
     expect(recentOutcomes()).toEqual(['Alpha closed 59', 'Alpha closed 58', 'Alpha closed 57', 'Alpha closed 56'])
-    expect(tabCount('done')).toBe('64')
+    // (UX pass, slice 4: History's total count went with its page)
     // Projects and agents whose only trace is omitted history keep their controls.
     expect(document.querySelector('#rail button.rail-tab[data-project="archive"]')).not.toBeNull()
     expect([...document.querySelectorAll<HTMLOptionElement>('#agentSelect option')].map((option) => option.value))
@@ -175,10 +178,10 @@ describe('paged closed history (issue #184)', () => {
     await showInbox()
     await pollTick()
     await selectTab('boards')
-    await selectTab('notes')
-    await selectTab('done')
-    expect(historyTitles()).toEqual(['Release announced', 'Alpha closed 59', 'Alpha closed 58', 'Alpha closed 57', 'Alpha closed 56'])
-    expect(buttonLabelled('Show 5 more (59 hidden)')).not.toBeNull()
+    await selectTab('find')
+    expect(historyTitles().slice(0, 5)).toEqual(['Release announced', 'Alpha closed 59', 'Alpha closed 58', 'Alpha closed 57', 'Alpha closed 56'])
+    expect(historyTitles()).toHaveLength(20)
+    expect(buttonLabelled('Show 20 more', findFoot())).not.toBeNull()
     await pollTick()
     expect(historyReads(reads)).toEqual([])
     // Every tick applied: the page alone never reads as a broken connection.
@@ -192,25 +195,33 @@ describe('paged closed history (issue #184)', () => {
     seedHub(db)
     const { reads, interceptFetch } = recorder()
     await bootApp(db, { interceptFetch })
-    await selectTab('done')
+    await selectTab('find')
     expect(historyReads(reads)).toEqual([])
 
+    // UX pass, slice 4: Find shows what the page can place and reads the rest on Show more
     await selectProject('archive')
+    expect(historyReads(reads)).toEqual([])
+    click(buttonLabelled('Show more', findFoot()))
+    await settle()
     expect(historyReads(reads).map((read) => read.status)).toEqual([200])
-    expect(historyTitles()).toEqual(['Archived decision 2', 'Archived decision 1', 'Archived decision 0'])
-    expect(tabCount('done')).toBe('3')
-    expect(document.querySelector('#done .show-more')).toBeNull()
+    // asks closed without a reply are found by a query
+    await findFor('Archived decision')
+    expect([...historyTitles()].sort()).toEqual(['Archived decision 0', 'Archived decision 1', 'Archived decision 2'])
+    expect(buttonLabelled('Show more', findFoot())).toBeNull()
 
     await pollTick()
     expect(historyReads(reads).map((read) => read.status)).toEqual([200, 304])
-    expect(historyTitles()).toEqual(['Archived decision 2', 'Archived decision 1', 'Archived decision 0'])
+    expect([...historyTitles()].sort()).toEqual(['Archived decision 0', 'Archived decision 1', 'Archived decision 2'])
 
+    await findFor('')
     await selectProject('__all__')
     await pollTick()
+    // Find keeps the complete history while the person stays on it after Show more; leaving stops it
     await showInbox()
+    const atLeave = historyReads(reads).length
     await pollTick()
-    expect(historyReads(reads)).toHaveLength(2)
-    expect(tabCount('done')).toBe('63')
+    await pollTick()
+    expect(historyReads(reads)).toHaveLength(atLeave)
   })
 
   it('pages past the recent slice down to the oldest closed item', async () => {
@@ -218,27 +229,23 @@ describe('paged closed history (issue #184)', () => {
     seedHub(db)
     const { reads, interceptFetch } = recorder()
     await bootApp(db, { interceptFetch })
-    await selectTab('done')
-    for (let page = 1; page < 10; page += 1) {
-      click(document.querySelector('#done .show-more'))
-      await settle()
-    }
+    await selectTab('find')
+    click(buttonLabelled('Show 20 more', findFoot()))
+    await settle()
+    click(buttonLabelled('Show 10 more', findFoot()))
+    await settle()
     expect(historyTitles()).toHaveLength(50)
     expect(historyReads(reads)).toEqual([])
-    expect(buttonLabelled('Show 5 more (13 hidden)')).not.toBeNull()
-
-    click(document.querySelector('#done .show-more'))
+    // UX pass, slice 4: below the cut, Show more reads the rest
+    click(buttonLabelled('Show more', findFoot()))
     await settle()
     expect(historyReads(reads)).toHaveLength(1)
-    expect(historyTitles()).toHaveLength(55)
-    expect(historyTitles().at(-1)).toBe('Alpha closed 5')
-    click(document.querySelector('#done .show-more'))
-    await settle()
-    click(document.querySelector('#done .show-more'))
-    await settle()
-    expect(historyTitles().slice(-3)).toEqual(['Archived decision 2', 'Archived decision 1', 'Archived decision 0'])
-    expect(document.querySelector('#done .show-more')).toBeNull()
-    expect(tabCount('done')).toBe('63')
+    expect(historyTitles()).toHaveLength(60)
+    expect(historyTitles().at(-1)).toBe('Alpha closed 0')
+    expect(findFoot().querySelector('button')).toBeNull()
+    // the oldest closed items, asks closed without a reply, are found by a query
+    await findFor('Archived decision')
+    expect([...historyTitles()].sort()).toEqual(['Archived decision 0', 'Archived decision 1', 'Archived decision 2'])
   })
 
   it('keeps Dashboard numbers whole and reads older outcomes only for a lens that needs them', async () => {
@@ -261,15 +268,13 @@ describe('paged closed history (issue #184)', () => {
     const question = insertItem(db, { ...ALPHA, kind: 'question', title: 'Ship the archive export?' })
     const { reads, interceptFetch } = recorder()
     await bootApp(db, { interceptFetch })
-    await selectTab('done')
+    await selectTab('find')
     await selectProject('archive')
+    click(buttonLabelled('Show more', findFoot()))
+    await settle()
     expect(historyReads(reads)).toHaveLength(1)
+    // Find keeps the complete history while the person stays on it after Show more
     await selectProject('__all__')
-    await selectTab('done')
-    for (let page = 1; page <= 10; page += 1) {
-      click(document.querySelector('#done .show-more'))
-      await settle()
-    }
     const before = historyReads(reads).length
 
     advanceClock()
@@ -286,7 +291,6 @@ describe('paged closed history (issue #184)', () => {
     expect(historyReads(reads).at(-1)?.status).toBe(200)
     expect(historyReads(reads).length).toBeGreaterThan(before)
     expect(historyTitles()[0]).toBe('Ship the archive export?')
-    expect(tabCount('done')).toBe('64')
   })
 
   it('counts every outcome in Handoffs at once and lists the omitted ones once read', async () => {
@@ -338,18 +342,19 @@ describe('paged closed history (issue #184)', () => {
     hold = new Promise<void>((resolve) => { release = resolve })
     click(document.querySelector('.dashboard-outcome'))
     await settle()
-    const card = () => document.querySelector<HTMLDetailsElement>(`#done [data-card-id="${early}"]`)
-    expect(document.getElementById('done')?.hidden).toBe(false)
-    expect(card()?.open).toBe(true)
-    expect(document.activeElement).toBe(card()?.querySelector(':scope > summary'))
-    expect(document.querySelector('#done .history-loading')?.textContent).toBe('Loading older history…')
+    const card = () => findRowFor(early)
+    expect(findShown()).toBe(true)
+    expect(card()?.querySelector(':scope > .find-row-body')).not.toBeNull()
+    expect(document.activeElement).toBe(card()?.querySelector(':scope > .find-row-main'))
+    // UX pass, slice 4: Find places a row by its own stamp, so the newest outcome needs no
+    // older history to be placed: it is listed at once, with nothing waiting
+    expect(findFoot().querySelector('.find-loading')).toBeNull()
+    expect(historyTitles()[0]).toBe('Early question, late outcome')
 
     hold = null
     release()
     await settle()
-    expect(document.querySelector('#done .history-loading')).toBeNull()
     expect(card()).not.toBeNull()
-    expect(historyTitles().at(-1)).toBe('Early question, late outcome')
   })
 
   it('stops reading older history once a search is left, and resumes when it is reopened', async () => {
@@ -405,7 +410,6 @@ describe('paged closed history (issue #184)', () => {
     advanceClock()
     resolveItem(db, question, 'Settled.')
     await pollTick()
-    expect(tabCount('done')).toBe('64')
     expect(historyReads(reads)).toHaveLength(1)
 
     // Back in the foreground, the browser focuses the remembered input again.
@@ -450,16 +454,24 @@ describe('paged closed history (issue #184)', () => {
     seedHub(db)
     const { reads, interceptFetch } = recorder()
     await bootApp(db, { interceptFetch })
-    await selectTab('done')
+    await selectTab('find')
     const firstPage = ['Alpha closed 59', 'Alpha closed 58', 'Alpha closed 57', 'Alpha closed 56', 'Alpha closed 55']
-    expect(historyTitles()).toEqual(firstPage)
+    expect(historyTitles().slice(0, 5)).toEqual(firstPage)
     expect(historyReads(reads)).toEqual([])
 
+    // the sweep's closures without an outcome take every recent slot of the page
     sweep(db, backstops)
     await pollTick()
-    expect(historyTitles()).toEqual(firstPage)
-    expect(document.querySelector('#done .history-loading')).toBeNull()
+    // UX pass, slice 4: the omitted sweep's touch is later than every note's own stamp, so
+    // the page can place none of them: Find says so with Show more, and reads on that press
+    expect(historyTitles()).toEqual([])
+    expect(findFoot().querySelector('.find-loading')).toBeNull()
+    expect(buttonLabelled('Show more', findFoot())).not.toBeNull()
+    expect(historyReads(reads)).toEqual([])
+    click(buttonLabelled('Show more', findFoot()))
+    await settle()
     expect(historyReads(reads).map((read) => read.status)).toEqual([200])
+    expect(historyTitles().slice(0, 5)).toEqual(firstPage)
     expect(status()).toBe('')
   })
 
@@ -491,7 +503,7 @@ describe('paged closed history (issue #184)', () => {
     release()
     await settle()
     await pollTick()
-    expect(document.getElementById('done')?.hidden).toBe(true)
+    expect(findShown()).toBe(false)
     expect(document.querySelector('#rail button.rail-tab[data-project="alpha"]')?.getAttribute('aria-selected')).toBe('true')
   })
 
@@ -502,12 +514,12 @@ describe('paged closed history (issue #184)', () => {
     window.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
     navigateToHash(`#item/${archive[0]}`)
     await settle()
-    expect(document.getElementById('done')?.hidden).toBe(true)
+    expect(findShown()).toBe(false)
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
     await pollTick()
     await settle()
-    expect(document.getElementById('done')?.hidden).toBe(false)
-    expect(document.querySelector<HTMLDetailsElement>(`#done [data-card-id="${archive[0]}"]`)?.open).toBe(true)
+    expect(findShown()).toBe(true)
+    expect(findRowFor(archive[0]!)?.querySelector(':scope > .find-row-body')).not.toBeNull()
   })
 
   it('refreshes the search status when unchanged results return after older history was unavailable', async () => {
@@ -547,13 +559,15 @@ describe('paged closed history (issue #184)', () => {
     db = freshDb()
     seedHub(db)
     const draft = await holdDraft(db)
-    await selectTab('done')
-    for (let page = 1; page <= 10; page += 1) {
-      click(document.querySelector('#done .show-more'))
-      await settle()
-    }
-    expect(historyTitles()).toHaveLength(55)
-    expect(document.querySelector('#done .history-loading')).toBeNull()
+    await selectTab('find')
+    click(buttonLabelled('Show 20 more', findFoot()))
+    await settle()
+    click(buttonLabelled('Show 10 more', findFoot()))
+    await settle()
+    click(buttonLabelled('Show more', findFoot()))
+    await settle()
+    expect(historyTitles()).toHaveLength(60)
+    expect(findFoot().querySelector('.find-loading')).toBeNull()
     expect(answerInput(draft)?.value).toBe('Unsent reply.')
   })
 
@@ -561,9 +575,11 @@ describe('paged closed history (issue #184)', () => {
     db = freshDb()
     seedHub(db)
     await holdDraft(db)
-    await selectTab('done')
+    await selectTab('find')
     await selectProject('archive')
-    expect(historyTitles()).toEqual(['Archived decision 2', 'Archived decision 1', 'Archived decision 0'])
+    // asks closed without a reply are found by a query (UX pass, slice 4)
+    await findFor('Archived decision')
+    expect([...historyTitles()].sort()).toEqual(['Archived decision 0', 'Archived decision 1', 'Archived decision 2'])
   })
 
   it('paints every Handoffs outcome while an unrelated draft is open', async () => {

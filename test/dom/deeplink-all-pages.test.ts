@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
-import { archiveBoard, getBoard, insertItem, upsertBoard } from '../../src/store.js'
+import { annotateItem, archiveBoard, getBoard, insertItem, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, bootApp, buttonLabelled, click, freshDb, navigateToHash, pollTick,
   settle, useDomTest,
@@ -176,6 +176,11 @@ describe('deep links across paginated tabs', () => {
     background.focus()
     await changedPollTick(db)
     expect(document.activeElement).toBe(card(noteId)?.querySelector('.card-context > summary'))
+    // an agent annotates the note: the card inside its Find row is rebuilt, and focus is restored
+    annotateItem(db, noteId, 'First thought from an agent.')
+    await pollTick()
+    expect(background.isConnected, 'the card was rebuilt').toBe(false)
+    expect(document.activeElement).toBe(card(noteId)?.querySelector('.card-context > summary'))
 
     const resolve = [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === 'Resolve')!
@@ -185,6 +190,12 @@ describe('deep links across paginated tabs', () => {
       [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
         .find((button) => button.textContent === 'Resolve'),
     )
+    annotateItem(db, noteId, 'Second thought from an agent.')
+    await pollTick()
+    const resolveNow = [...card(noteId)!.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Resolve')
+    expect(resolve.isConnected, 'the old Resolve node was replaced').toBe(false)
+    expect(document.activeElement, 'the new Resolve holds focus').toBe(resolveNow)
 
     // The search box is not rebuilt, and a frame must not pull focus back to the card.
     // On Find that box is Find's own field (UX pass, slice 4).

@@ -261,8 +261,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the action/recovery queue, ambient signals and visible overlays still refresh.
   Boot, library navigation and successful human writes use the existing complete
   forced paint. Keep active-board tracking outside the skipped Plans painter and
-  mark notes read only when Notes is actually visible, not while Settings retains
-  that tab identity. Deep-link and render-time recovery must preserve their
+  mark notes read only when Find's Notes chip with no query is actually visible, not
+  while Settings retains that tab identity. Deep-link and render-time recovery must preserve their
   explicit/deferred repaint ownership rather than recursively entering render.
 - **A viewer restart must not discard unsent responses.** A changed `x-inbox-boot`
   schedules a coherent frontend reload, but `load()` defers it while drafts, recovery

@@ -226,7 +226,7 @@ let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
 let notesSeenIds = new Set()
 try { notesSeenIds = new Set(JSON.parse(localStorage.getItem(NOTES_SEEN_IDS_KEY)) || []) } catch { /* fresh start */ }
 // Read-marking used to stamp `now()` unconditionally on every render while the
-// Notes tab was open — marking read every note behind the "Show N more" pager
+// Notes page was open (now Find's Notes chip) — marking read every note behind the "Show N more" pager
 // and every note the rail filter was hiding, none of which the human ever saw.
 // notes.js's seenWatermark advances at most to a point below everything that
 // stayed hidden, and never backwards.
@@ -812,7 +812,7 @@ async function meshRefresh(name) {
   await reloadAndPaint()
 }
 
-// The agent tab (cards view V5 §3.3): one slot after History, shown only while an agent is
+// The agent tab (cards view V5 §3.3): one slot after Find, shown only while an agent is
 // open, replaced by the next one opened, never counted and never persisted.
 const meshAgentPage = installMeshAgentPage({
   tab: () => document.querySelector('#tabs .tab[data-tab="agent"]'),
@@ -2074,8 +2074,8 @@ function initFocusHash() {
   window.addEventListener('hashchange', applyFocusHash)
 }
 
-// notes age into Done after NOTE_AGE_MS (spec §8) — done at the door so the
-// Notes tab and the Done tab agree
+// notes age into the finished list after NOTE_AGE_MS (spec §8) — done at the door so the
+// notes and the finished things on Find agree
 function ageNotes(g, nowMs) {
   const aged = []
   const notes = g.notes
@@ -7920,7 +7920,7 @@ function renderEmptyState(host, laterCount = 0) {
   head.textContent = laterCount ? `Nothing needs you · ${laterCount} in Later` : 'Nothing needs you'
   panel.appendChild(head)
   // One calm line and nothing else (UX pass, slice 2): the counts it used to carry (plans,
-  // milestones, answers awaiting pickup) are on the page under it or in History.
+  // milestones, answers awaiting pickup) are on the page under it or on Find.
   host.appendChild(panel)
 }
 
@@ -8009,7 +8009,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   revealDraftIds.clear()
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderOrphanedDrafts(host)
-  // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
+  // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Find tab
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))

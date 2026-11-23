@@ -313,7 +313,7 @@ first, with a large field and four chips: All, Answers, Notes and Plans. A row s
 what it is, its title, one small extra (the answer you gave, the start of a note, a
 plan's bar, an outcome), the project and an age. A note or a finished item opens in
 place with its full card; an open ask goes to Home and a plan to Plans. The Find tab
-counts notes you have not seen; they count as seen when shown under the Notes chip.
+counts notes you have not seen; they count as seen when shown under the Notes chip with no query typed.
 
 **Settings → Motion** chooses Full or Calm. Calm turns off looping animation and the
 brief pulse a card gives when its session makes a call. Your system's Reduce motion

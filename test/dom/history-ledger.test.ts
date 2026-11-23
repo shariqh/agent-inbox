@@ -38,6 +38,8 @@ describe('History outcome ledger', () => {
     await settle()
 
     const rows = () => [...document.querySelectorAll<HTMLElement>('#findList > .find-row')]
+    // the milestone alone: the ask closed without a reply is left out of All with no query
+    expect(rows()).toHaveLength(1)
     expect(rows().every((row) => row.querySelector('.find-row-main')?.getAttribute('aria-expanded') === 'false')).toBe(true)
     expect(rows().map((row) => row.querySelector('.find-row-main')?.textContent ?? '').join(' ')).not.toContain('Next step')
     // the ask closed without a reply is found by a query; its outcome shows at rest

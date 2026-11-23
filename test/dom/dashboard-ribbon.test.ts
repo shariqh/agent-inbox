@@ -575,7 +575,7 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
   const surfaces = async () => ({
     title: document.title,
     badge: badgeCount(),
-    // History's count follows the outcome that landed; the attention tabs never move.
+    // Find's count follows the unread notes, not the outcome that landed; the attention tabs never move.
     tabs: ['dashboard', 'find', 'boards'].map(tabCount),
     dock: [await (await fetch('/api/items?scope=attention')).text(), await (await fetch('/api/boards?scope=attention')).text()],
   })

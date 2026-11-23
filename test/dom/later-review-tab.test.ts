@@ -3,7 +3,7 @@
 // tab. A draft on an ask it then defers lives in the Inbox list, so after a
 // successful deferral the Inbox becomes the visible tab, without moving focus.
 // Closing the queue then returns focus to the Inbox's Review queue button,
-// never to the Notes tab that opened it. This is the only boot in its file, so
+// never to the Find tab that opened it. This is the only boot in its file, so
 // its synthetic keydown on document reaches exactly one app instance's listener.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'

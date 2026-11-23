@@ -381,6 +381,11 @@ describe('A6 · paging and the cut', () => {
     await settle()
     expect(findRows()).toHaveLength(25)
     expect(document.activeElement).toBe(findRows()[20]!.querySelector('.find-row-main'))
+    // a chip press (a real one moves focus to the chip) starts the page again at 20 rows
+    chip('notes')!.focus()
+    await pressChip('notes')
+    expect(findRows()).toHaveLength(20)
+    expect(buttonLabelled('Show 5 more', foot())).not.toBeNull()
   })
 
   it('never draws an empty list: closed history the page cannot place is read at once, then paged', async () => {
@@ -524,7 +529,11 @@ describe('A9 · unread notes', () => {
     expect(tabCount('find')).toBe('')
     const mark = findRowEl(`item:${ids.note}`)?.querySelector('.find-new')
     expect(mark?.textContent).toBe('New')
+    // a poll that really changes something: another note arrives, and the frame repaints
+    advanceClock()
+    insertItem(db, { ...LEDGER, kind: 'note', title: 'Another note arrives' })
     await pollTick()
+    expect(findTitles()).toContain('Another note arrives')
     expect(findRowEl(`item:${ids.note}`)?.querySelector('.find-new')?.textContent, 'the mark holds on repaints').toBe('New')
     expect(findRowEl(`item:${ids.oldNote}`)?.querySelector('.find-new')?.textContent, 'the space is kept').toBe('')
     click(document.querySelector('.tab[data-tab="boards"]'))

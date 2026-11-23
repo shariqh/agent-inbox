@@ -10,13 +10,16 @@ export const KEYS = {
 export const KEYBOARD_COMMANDS = [
   { id: 'hints', key: 'f', display: 'F', label: 'Show keys for the controls on screen', group: 'Start here', selector: '#keyboardHints' },
   { id: 'help', key: '?', display: '?', label: 'Open keyboard shortcuts', group: 'Start here', selector: '#keyboardHelp' },
-  { id: 'search', key: 'mod+k', display: 'Mod K', label: 'Search this workspace (or press /)', group: 'Start here', legacy: true },
+  { id: 'search', key: 'mod+k', display: 'Mod K', label: 'Search this workspace, or Find’s field on Find (or press /)', group: 'Start here', legacy: true },
   { id: 'dashboard', key: 'd', prefix: 'g', display: 'G D', label: 'Home', group: 'Go to', selector: '#tabs [data-tab="dashboard"]' },
   // Home's list of asks (no tab of its own): its tile sits on the list's heading
   { id: 'needsYou', key: 'i', prefix: 'g', display: 'G I', label: 'Needs you', group: 'Go to', selector: '#needsYouTitle' },
   { id: 'boards', key: 'p', prefix: 'g', display: 'G P', label: 'Plans', group: 'Go to', selector: '#tabs [data-tab="boards"]' },
-  { id: 'notes', key: 'n', prefix: 'g', display: 'G N', label: 'Notes', group: 'Go to', selector: '#tabs [data-tab="notes"]' },
-  { id: 'done', key: 'h', prefix: 'g', display: 'G H', label: 'History', group: 'Go to', selector: '#tabs [data-tab="done"]' },
+  // UX pass, slice 4: Find in place of Notes and History. Only G F carries the tab's tile;
+  // G N and G H open Find with a chip and focus its list
+  { id: 'find', key: 'f', prefix: 'g', display: 'G F', label: 'Find', group: 'Go to', selector: '#tabs [data-tab="find"]' },
+  { id: 'findNotes', key: 'n', prefix: 'g', display: 'G N', label: 'Find: Notes', group: 'Go to' },
+  { id: 'findAll', key: 'h', prefix: 'g', display: 'G H', label: 'Find: All', group: 'Go to' },
   { id: 'chats', key: 'c', prefix: 'g', display: 'G C', label: 'Chats', group: 'Go to', selector: '#tabs [data-tab="chats"]' },
   { id: 'setup', key: 's', prefix: 'g', display: 'G S', label: 'Settings', group: 'Go to', selector: '#gear' },
   { id: 'agents', key: 'a', prefix: 'g', display: 'G A', label: 'Agent filter', group: 'Go to', selector: '.agent-pick .tab-label' },

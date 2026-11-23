@@ -24,7 +24,8 @@ import {
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
-import { partitionNotes, unreadNoteCount, seenWatermark, markSeenIds } from '/notes.js'
+import { partitionNotes, unreadNoteCount, unreadNotes, seenWatermark, markSeenIds } from '/notes.js'
+import { FIND_CHIPS, FIND_PAGE, buildFindRows, findAge, findRow } from '/find.js'
 import { sessionBuild, sessionsSummary, activityFrameKey } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
@@ -114,7 +115,7 @@ function nativeKeyOwner(event) {
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
 // UX pass, slice 3: Moving pages by 12; `boards` stays the grouped list's page (and its "(continued)" heads)
-const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, moving: 12, archived: 5 }
+const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, moving: 12, archived: 5, find: FIND_PAGE }
 let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
@@ -1374,7 +1375,7 @@ function restoreAskedTimeFocus(id) {
 
 function pagedCardFocusBookmark() {
   const active = activeFocusElement()
-  const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
+  const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id], #find [data-card-id]')
   if (!card) return null
   const rowId = active.closest('[data-row-id]')?.dataset.rowId ?? null
   if (rowId) {
@@ -1427,7 +1428,7 @@ function restorePagedCardFocus(bookmark) {
     ? targets.filter((target) => cardFocusKey(target) === bookmark.key)
     : []
   const exact = matches[bookmark.ordinal] ?? (bookmark.rowId ? targets[0] : null)
-  const fallback = card.querySelector(':scope > summary') ?? card
+  const fallback = card.querySelector(':scope > summary, :scope > .find-row-main') ?? card
   for (const target of [exact, fallback]) {
     if (!target) continue
     // a passive restore never opens a closed plan (that would record the open as
@@ -1448,9 +1449,17 @@ function restorePagedCardFocus(bookmark) {
 // Which tab holds an item — a deep link must land on the right one. An open ask
 // is on Home, in its list of asks.
 function tabForItem(it) {
-  if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
-  if (lastData.g.done.some((x) => x.id === it.id)) return 'done'
+  // UX pass, slice 4: notes and finished things are on Find
+  if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'find'
+  if (lastData.g.done.some((x) => x.id === it.id)) return 'find'
   return 'dashboard'
+}
+
+// A card by its item id, preferring the panel on screen: Find draws items Home and the
+// hidden panes may hold too.
+function cardNodeFor(id) {
+  const selector = `[data-card-id="${CSS.escape(id)}"]`
+  return document.querySelector(`main > .panel:not([hidden]) ${selector}`) ?? document.querySelector(selector)
 }
 
 // Notification click / URL hash entry point (spec §11): select the item's
@@ -1505,15 +1514,21 @@ function focusItem(id, source = null) {
     if (source.rowId) openRowCompares.add(source.rowId)
     else openCompares.add(id)
   }
+  const tab = board ? 'boards' : tabForItem(item)
   // `keepLens` (Home's "Plan" button): the filters, "Updates" and the search box stay as the person left them
-  if (!source?.keepLens) {
+  if (tab === 'find') {
+    // UX pass, slice 4: a landing on Find changes the lens only when the target is outside it
+    resetSearch()
+    if (activeTab !== 'find') selectTab('find', { paint: false })
+    prepareFindLanding(item)
+  } else if (!source?.keepLens) {
     projectFilter = target.project
     agentFilter = null
     actionFilter = 'all'
     changedOnly = false
     resetSearch()
   }
-  selectTab(board ? 'boards' : tabForItem(item), { paint: false }) // the explicit forceRender below paints the target
+  selectTab(tab, { paint: false }) // the explicit forceRender below paints the target
   // A History target the page alone cannot place keeps the complete history
   // loaded while History stays open (#184).
   if (activeTab === 'done') {
@@ -1546,7 +1561,7 @@ function focusItem(id, source = null) {
   if (queueTarget) setOpenRow(id)
   if (queueTarget) forceRender()
   requestAnimationFrame(() => {
-    const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
+    const el = cardNodeFor(id)
     if (!el) return
     pendingFocusId = null
     // Open every ancestor <details> fold on the way up, not just the target —
@@ -1563,7 +1578,8 @@ function focusItem(id, source = null) {
     scrollTarget.scrollIntoView({ behavior: motion.scrollBehavior(), block: 'center' })
     const contextSummary = sourceEl?.closest('.card-context')?.querySelector(':scope > summary')
     const focusTarget = contextSummary
-      ?? (el.matches('details') ? el.querySelector(':scope > summary') : el)
+      ?? (el.matches('details') ? el.querySelector(':scope > summary')
+        : el.matches('.find-row') ? el.querySelector(':scope > .find-row-main') : el)
     if (focusTarget) {
       focusTarget.tabIndex = 0
       focusTarget.focus({ preventScroll: true })
@@ -1737,7 +1753,7 @@ function sameSearchResultOrder(previous, next) {
 }
 
 function searchJumpRoot(source) {
-  const card = document.querySelector(`[data-card-id="${CSS.escape(source.targetId)}"]`)
+  const card = cardNodeFor(source.targetId)
   if (!card) return null
   if (source.rowId) {
     if (source.field === 'label') {
@@ -1907,9 +1923,10 @@ function paletteTargets() {
 const NO_PALETTE_TARGETS = { asks: [], plans: [], sessions: [] }
 const commandShape = (query) => paletteResults(query, NO_PALETTE_TARGETS, fuzzySearch).length
 
-function runPaletteAction(action) {
+// `field`: the field a command fills (Find's own, on Find)
+function runPaletteAction(action, field = null) {
   if (action.type === 'command') {
-    const { input } = searchElements()
+    const input = field ?? searchElements().input
     input.value = action.fill
     input.dispatchEvent(new Event('input', { bubbles: true }))
     input.focus({ preventScroll: true })
@@ -2133,8 +2150,11 @@ function historyWanted(view = lastData) {
   // A deep link may name any omitted item, and search covers all of History.
   if (historyLookup?.view === navigationKey()) return true
   if (searchInUse()) return true
+  // UX pass, slice 4: a query on Find under a chip that lists history
+  if (findInUse() && findNeeds().history) return true
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
+  if (activeTab === 'find' && older.items > 0 && findHistoryPinned) return true
   if (activeTab === 'done' && older.items > 0) {
     return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
   }
@@ -2158,6 +2178,7 @@ function archivedWanted(view = lastData) {
   // A deep link to an archived plan, search, and Plan flow open on one.
   if (archivedLookup?.view === navigationKey()) return true
   if (searchInUse()) return true
+  if (findInUse() && findNeeds().archived) return true
   if (missionBoardId && brief.some((plan) => plan.id === missionBoardId)) return true
   const lens = pageView(view)
   const omitted = omittedOutcomes(lens.archived).outcomes
@@ -3758,6 +3779,7 @@ function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAl
   // Keep the action/recovery queue and overlays current. Only inactive document
   // panes skip ordinary polls; boot and explicit human repaints remain complete.
   const restoreQueueView = renderNeedsYou(g, boards, Date.now())
+  if (paintAllPanes || !document.getElementById('find').hidden) renderFind()
   if (paintAllPanes || !document.getElementById('notes').hidden) renderGroups('notes', g.notes)
   if (paintAllPanes || !document.getElementById('done').hidden) renderDone(g.done)
   if (paintAllPanes || !document.getElementById('chats').hidden) chatsView.paint()
@@ -5990,7 +6012,9 @@ function selectTab(id, { paint = true, open = true } = {}) {
   historyLookup = null
   archivedLookup = null
   if (id !== 'done') historyTabPinned = false
+  if (from === 'find' && id !== 'find') leaveFind()
   activeTab = id
+  if (id === 'find' && from !== 'find') enterFind()
   // the Review queue's hold line is in Home's list header: leaving Home ends it
   if (id !== 'dashboard') triageHeld = false
   // entering Home from another tab brings the first waiting ask forward again
@@ -6016,7 +6040,13 @@ function selectTab(id, { paint = true, open = true } = {}) {
 
 function initTabs() {
   for (const t of document.querySelectorAll('#tabs .tab')) {
-    t.addEventListener('click', () => selectTab(t.dataset.tab))
+    t.addEventListener('click', () => {
+      const touch = findEntryTouch
+      findEntryTouch = false
+      selectTab(t.dataset.tab)
+      // UX pass, slice 4: Find's field takes focus on every entry but one made by touch
+      if (t.dataset.tab === 'find' && !touch) focusFindField()
+    })
   }
   selectTab(activeTab)
   wireTablist(document.getElementById('tabs'), 'vertical')
@@ -6043,6 +6073,8 @@ function filterData({ g, boards, archived }) {
 const PAGE_META = {
   dashboard: { kicker: '', title: 'Home' },
   boards: { kicker: '', title: 'Plans' },
+  // the heading stays for structure and is visually hidden: Find's field is what shows first
+  find: { kicker: '', title: 'Find' },
   notes: { kicker: 'Workspace', title: 'Notes' },
   done: { kicker: 'Workspace', title: 'History' },
   chats: { kicker: 'Workspace', title: 'Chats' },
@@ -6995,6 +7027,10 @@ function showPanel(id) {
   kicker.textContent = page.kicker
   kicker.hidden = !page.kicker
   document.getElementById('pageTitle').textContent = id === 'agent' ? meshAgentPage.current()?.name ?? '' : page.title
+  // UX pass, slice 4: on Find its own field stands in for the top bar's search and its heading
+  document.getElementById('pageTitle').classList.toggle('visually-hidden', id === 'find')
+  const topSearch = document.querySelector('#topbar .floating-search')
+  if (topSearch) topSearch.hidden = id === 'find'
   syncAskFront()
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
@@ -7876,7 +7912,8 @@ function replaceNeedsYouBody(host, header) {
 function renderNeedsYouExtras(host, notes) {
   const n = unreadNoteCount(notes, notesSeenAt, Date.now(), notesSeenIds)
   if (!n) return
-  const chip = btn(`${n} new note${n > 1 ? 's' : ''}`, () => selectTab('notes'))
+  // UX pass, slice 4: Find with Notes selected and the query cleared
+  const chip = btn(`${n} new note${n > 1 ? 's' : ''}`, () => openFind({ chip: 'notes', clearQuery: true }))
   chip.className = 'notes-chip'
   host.appendChild(chip)
 }
@@ -8728,6 +8765,587 @@ function renderDone(items) {
     loading.textContent = olderHistoryWaitText('Loading older history…')
     host.appendChild(loading)
   } else if (total > listed.length) host.appendChild(moreButton('done', total - listed.length))
+}
+
+// ── UX pass, slice 4: Find ─────────────────────────────────────────────────
+// One list in place of Notes and History; public/find.js builds its rows from the
+// data the page already holds. The field and the chips are static markup. Every
+// open, armed and typed state lives here, and the list's rows are reconciled by
+// key on each painted frame, so focus, a selection and an open card keep their
+// nodes. A passive repaint never opens a row and never records a choice.
+let findQuery = ''             // what the field holds
+let findSettled = ''           // the query the list was last built from (after the debounce)
+let findTimer = null
+let findChip = 'all'
+let findActiveKey = null       // the row Enter opens: painted only, kept by key
+const findOpen = new Set()     // rows open in place
+const findKept = new Set()     // rows the person acted on this visit: they stay where they are
+let findLandingKey = null      // the row a way in landed on this visit: it stays listed
+let findPainted = []           // keys in the order last painted on this visit
+let findNewIds = null          // unread notes on entering Find, marked New until the person leaves
+let findHistoryPinned = false  // "Show more" asked for the older history on this visit
+let findWaiting = false        // a query waits on older history or archived plans
+let findRowsByKey = new Map()  // the rows (and command rows) last painted, by key
+const findDomIds = new Map()   // key → the stable id of its main button
+let findEntryTouch = false     // the last press on the tab strip was a touch
+
+const FIND_ICONS = {
+  answer: '<circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.6a2.4 2.4 0 1 1 3.6 2.1c-.8.5-1.2 1-1.2 1.9"></path><path d="M12 17h.01"></path>',
+  note: '<circle cx="12" cy="12" r="9"></circle><path d="M12 11v5.5"></path><path d="M12 7.5h.01"></path>',
+  plan: '<path d="M4 7h7"></path><path d="M14 7h6"></path><path d="M4 12h4"></path><path d="M11 12h9"></path><path d="M4 17h10"></path><path d="M17 17h3"></path>',
+  finished: '<circle cx="12" cy="12" r="9"></circle><path d="M8.5 12.5l2.5 2.5 4.5-5"></path>',
+  ask: '<circle cx="12" cy="12" r="9"></circle><path d="M12 7.5v5.5"></path><path d="M12 16.5h.01"></path>',
+  action: '<path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path>',
+}
+
+const FIND_EMPTY = { all: 'Nothing here yet.', answers: 'No answers yet.', notes: 'No notes.', plans: 'No plans.' }
+
+function windowActive() {
+  return document.visibilityState !== 'hidden' && document.hasFocus()
+}
+
+// Find reads older history and archived plans for a query only while it is the page in
+// use: the active tab, a query typed, and the window active.
+function findInUse() {
+  return activeTab === 'find' && !settingsOpen() && findQuery.trim() !== '' && windowActive()
+}
+
+// Which reads a chip needs: history for All, Answers and Notes; archived plans for All and Plans.
+const findNeeds = (chip = findChip) => ({ history: chip !== 'plans', archived: chip === 'all' || chip === 'plans' })
+
+const findField = () => document.getElementById('findQuery')
+
+function findLensData(query) {
+  // the lens as Notes and History had it; a query under All projects also covers closed projects
+  return query
+    ? filterData({ g: lastData.g, boards: lastData.boards, archived: lastData.archived })
+    : filterData(withoutClosed(lastData))
+}
+
+// What stays listed whatever the chip, the query or the page: rows the person acted on,
+// rows whose Note editor holds text, and the row a way in landed on.
+function findKeepKeys() {
+  const keep = new Set(findKept)
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    if (editor.text.trim()) keep.add(`item:${id}`)
+  }
+  if (findLandingKey) keep.add(findLandingKey)
+  return keep
+}
+
+const findRowHasText = (row) => Boolean(row?.entity && itemNoteEditors[row.id]?.text.trim())
+
+// ⌘K's commands typed in Find's field: their rows lead the list, as in the top bar.
+function findCommandRows(query, rows) {
+  const actions = paletteResults(query, paletteTargets(), fuzzySearch).map((result) => ({
+    key: `action:${result.key}`, id: result.key, type: 'action', label: result.kind, action: 'run', title: result.title,
+    project: '', stamp: null, open: false, entity: null, palette: result.action,
+    extra: result.context ? { kind: 'text', text: result.context, full: result.context } : null,
+  }))
+  const suggests = actions[0]?.palette.type === 'command'
+  const openLeads = rows[0]?.open && (rows[0].type === 'ask' || rows[0].type === 'answer')
+  return suggests && openLeads ? { lead: [], tail: actions } : { lead: actions, tail: [] }
+}
+
+function findModel() {
+  const query = findSettled.trim()
+  const needs = findNeeds()
+  const waiting = Boolean(query) && ((needs.history && omitsHistory()) || (needs.archived && omitsArchived()))
+  const older = query || !needs.history ? 0 : olderHistory(lastData.older, olderLens()).items
+  const data = findLensData(query)
+  const { rows, cut } = buildFindRows(data, {
+    chip: findChip,
+    query,
+    searchFn: fuzzySearch,
+    before: older ? lastData.older?.before ?? null : null,
+    nowMs: Date.now(),
+    archivedWhole: Boolean(lastData.archivedFull),
+    keep: findKeepKeys(),
+    previous: findPainted,
+  })
+  return { query, rows, cut, older, waiting, commands: query ? findCommandRows(query, rows) : { lead: [], tail: [] }, data }
+}
+
+function findWaitText() {
+  const needs = findNeeds()
+  const history = needs.history && omitsHistory()
+  const archived = needs.archived && omitsArchived()
+  const loading = history && archived ? 'Searching older history and archived plans…'
+    : history ? 'Searching older history…' : 'Searching archived plans…'
+  return omittedWaitText(loading, { history, archived })
+}
+
+function setFindStatus(text) {
+  const status = document.getElementById('findStatus')
+  if (!status) return
+  if (status.textContent !== text) status.textContent = text
+  status.hidden = !text
+}
+
+function syncFindControls() {
+  for (const chip of document.querySelectorAll('#find [data-find-chip]')) {
+    chip.setAttribute('aria-pressed', String(chip.dataset.findChip === findChip))
+  }
+  const input = findField()
+  if (input && input.value !== findQuery && document.activeElement !== input) input.value = findQuery
+}
+
+function findDomId(key) {
+  if (!findDomIds.has(key)) findDomIds.set(key, `find-row-${findDomIds.size + 1}`)
+  return findDomIds.get(key)
+}
+
+function findRowEl(key) {
+  const el = document.createElement('div')
+  el.className = 'find-row'
+  el.setAttribute('role', 'listitem')
+  el.dataset.findKey = key
+  const main = document.createElement('button')
+  main.type = 'button'
+  main.className = 'find-row-main'
+  main.id = findDomId(key)
+  main.addEventListener('click', () => pressFindRow(key))
+  el.appendChild(main)
+  return el
+}
+
+function findExtraEl(extra) {
+  const span = document.createElement('span')
+  span.className = 'find-extra'
+  if (!extra) return span
+  span.dataset.extra = extra.kind
+  if (extra.kind === 'bar') {
+    span.innerHTML = planBarHtml(extra, extra.label)
+    return span
+  }
+  span.textContent = extra.text
+  if (extra.full && extra.full !== extra.text) span.title = extra.full
+  return span
+}
+
+// The row at rest: the type's icon, the title, the New mark (notes keep its space), the
+// extra, the project and the age. Spans only, so step B can put one control beside it.
+function fillFindMain(main, row, nowMs) {
+  const icon = document.createElement('span')
+  icon.className = 'find-icon'
+  icon.dataset.type = row.type
+  icon.setAttribute('role', 'img')
+  icon.setAttribute('aria-label', row.label)
+  icon.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${FIND_ICONS[row.type] ?? FIND_ICONS.finished}</svg>`
+  const title = document.createElement('span')
+  title.className = 'find-title'
+  title.textContent = row.title
+  title.title = row.title
+  const parts = [icon, title]
+  if (row.type === 'note') {
+    const mark = document.createElement('span')
+    mark.className = 'find-new'
+    mark.textContent = findNewIds?.has(row.id) ? 'New' : ''
+    parts.push(mark)
+  }
+  parts.push(findExtraEl(row.extra))
+  const project = document.createElement('span')
+  project.className = 'find-project'
+  if (row.project) {
+    project.title = row.project
+    const dot = document.createElement('span')
+    dot.className = 'find-dot'
+    dot.setAttribute('aria-hidden', 'true')
+    dot.style.background = pcolor(row.project).dot
+    const name = document.createElement('span')
+    name.className = 'find-project-name'
+    name.textContent = row.project
+    project.append(dot, name)
+  }
+  const age = document.createElement('span')
+  age.className = 'find-age'
+  if (row.stamp) {
+    const time = document.createElement('time')
+    time.dateTime = new Date(row.stamp).toISOString()
+    time.textContent = findAge(nowMs - row.stamp)
+    age.appendChild(time)
+  }
+  parts.push(project, age)
+  main.replaceChildren(...parts)
+}
+
+function findRowOpen(row) {
+  return row.action === 'expand' && (findOpen.has(row.key) || findRowHasText(row))
+}
+
+function updateFindRow(el, row, nowMs) {
+  const main = el.querySelector(':scope > .find-row-main')
+  const open = findRowOpen(row)
+  const isNew = row.type === 'note' && Boolean(findNewIds?.has(row.id))
+  const signature = JSON.stringify([row.type, row.label, row.title, row.extra, row.project,
+    row.stamp ? findAge(nowMs - row.stamp) : '', isNew, row.project ? pcolor(row.project).dot : ''])
+  if (main.dataset.signature !== signature) {
+    fillFindMain(main, row, nowMs)
+    main.dataset.signature = signature
+  }
+  el.dataset.findType = row.type
+  if (row.entity && row.type !== 'plan') el.dataset.cardId = row.id
+  else delete el.dataset.cardId
+  let body = el.querySelector(':scope > .find-row-body')
+  if (row.action === 'expand') {
+    main.setAttribute('aria-expanded', String(open))
+    main.setAttribute('aria-controls', `${main.id}-body`)
+  } else {
+    main.removeAttribute('aria-expanded')
+    main.removeAttribute('aria-controls')
+  }
+  if (!open) {
+    body?.remove()
+    return
+  }
+  if (!body) {
+    body = document.createElement('div')
+    body.className = 'find-row-body'
+    body.id = `${main.id}-body`
+    el.appendChild(body)
+  }
+  // the card is built only while the row is open, and rebuilt only when what it shows changed
+  const it = row.entity
+  const cardSignature = JSON.stringify([it, Boolean(itemNoteEditors[it.id]), itemNoteDrafts[it.id]?.pending ?? null,
+    itemNoteDrafts[it.id]?.error ?? null, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available()])
+  if (body.dataset.signature !== cardSignature || body.findLinks !== lastData.links || body.findIssues !== lastData.issues) {
+    body.replaceChildren(itemCardEl(it, { done: it.status !== 'open', header: false }))
+    body.dataset.signature = cardSignature
+    body.findLinks = lastData.links
+    body.findIssues = lastData.issues
+  }
+}
+
+function reconcileFindList(list, rows, nowMs) {
+  const existing = new Map()
+  for (const child of [...list.children]) {
+    if (child.dataset.findKey) existing.set(child.dataset.findKey, child)
+    else child.remove()
+  }
+  let previous = null
+  for (const row of rows) {
+    let el = existing.get(row.key)
+    existing.delete(row.key)
+    if (!el) el = findRowEl(row.key)
+    updateFindRow(el, row, nowMs)
+    const expected = previous ? previous.nextElementSibling : list.firstElementChild
+    if (el !== expected) list.insertBefore(el, expected)
+    previous = el
+  }
+  for (const el of existing.values()) el.remove()
+}
+
+// The highlight Enter opens: the first row unless the arrows moved it. Painted only.
+function findActiveRow() {
+  const keys = [...findRowsByKey.keys()]
+  return keys.includes(findActiveKey) ? findActiveKey : keys[0] ?? null
+}
+
+function paintFindActive() {
+  const active = findActiveRow()
+  for (const el of document.querySelectorAll('#findList > .find-row')) {
+    if (el.dataset.findKey === active) el.dataset.active = 'true'
+    else delete el.dataset.active
+  }
+  const input = findField()
+  if (!input) return
+  if (active) input.setAttribute('aria-activedescendant', findDomId(active))
+  else input.removeAttribute('aria-activedescendant')
+}
+
+function moveFindActive(delta) {
+  const keys = [...findRowsByKey.keys()]
+  if (!keys.length) return
+  const at = keys.indexOf(findActiveRow())
+  findActiveKey = keys[(at + delta + keys.length) % keys.length]
+  paintFindActive()
+  document.querySelector(`#findList > [data-find-key="${CSS.escape(findActiveKey)}"]`)?.scrollIntoView?.({ block: 'nearest' })
+}
+
+function renderFind() {
+  const list = document.getElementById('findList')
+  const foot = document.getElementById('findFoot')
+  if (!list || !foot || !lastData) return
+  syncFindControls()
+  const model = findModel()
+  if (model.waiting) {
+    // a query waits for the whole of what it searches: the rows on screen stay, busy
+    findWaiting = true
+    list.setAttribute('aria-busy', 'true')
+    setFindStatus(findWaitText())
+    foot.replaceChildren()
+    return
+  }
+  findWaiting = false
+  list.removeAttribute('aria-busy')
+  const nowMs = Date.now()
+  const { rows } = model
+  const page = rows.slice(0, shown.find)
+  // kept rows, a landing target and a focused row stay in sight after the page
+  const extra = findKeepKeys()
+  const target = pendingFocusId ?? pagedFocusId
+  if (target) extra.add(`item:${target}`)
+  const beyond = rows.slice(shown.find).filter((row) => extra.has(row.key))
+  const listed = [...page, ...beyond]
+  const drawn = [...model.commands.lead, ...listed, ...model.commands.tail]
+  findRowsByKey = new Map(drawn.map((row) => [row.key, row]))
+  reconcileFindList(list, drawn, nowMs)
+  findPainted = listed.map((row) => row.key)
+  paintFindActive()
+
+  const rest = rows.length - listed.length
+  const olderWaits = !model.query && findNeeds().history && (model.cut > 0 || model.older > 0)
+  if (drawn.length) setFindStatus('')
+  else if (model.query) setFindStatus(`Nothing matches "${model.query}".`)
+  else if (olderWaits) setFindStatus('')
+  else {
+    const anything = findChip === 'all' ? 0 : buildFindRows(model.data, { chip: 'all', nowMs }).rows.length
+    setFindStatus(anything ? FIND_EMPTY[findChip] : FIND_EMPTY.all)
+  }
+  foot.replaceChildren()
+  if (rest > 0) {
+    const more = btn(`Show ${Math.min(FIND_PAGE, rest)} more`, () => {
+      const reveal = rows[listed.length]?.key ?? null
+      shown.find += FIND_PAGE
+      forceRender()
+      if (reveal) document.querySelector(`#findList > [data-find-key="${CSS.escape(reveal)}"] > .find-row-main`)?.focus({ preventScroll: true })
+    })
+    more.className = 'show-more find-more'
+    foot.appendChild(more)
+  } else if (olderWaits) {
+    if (findHistoryPinned) {
+      const loading = document.createElement('p')
+      loading.className = 'find-loading'
+      loading.setAttribute('role', 'status')
+      loading.textContent = olderHistoryWaitText('Loading older history…')
+      foot.appendChild(loading)
+    } else {
+      const older = btn('Show more', () => {
+        findHistoryPinned = true
+        forceRender()
+        document.getElementById('findList')?.focus({ preventScroll: true })
+        requestHistoryPaint()
+      })
+      older.className = 'show-more find-older'
+      foot.appendChild(older)
+    }
+  }
+  markFindNotesSeen(listed, model.query)
+}
+
+// A fresh note counts as read when its row is drawn under the Notes chip with no query,
+// in a frame painted while the window is visible and focused. All does not mark notes.
+function markFindNotesSeen(listed, query) {
+  if (findChip !== 'notes' || query || document.getElementById('find').hidden || !windowActive()) return
+  const all = lastData.g.notes.flatMap((gr) => gr.items)
+  const fresh = new Set(all.map((n) => n.id))
+  const viewed = listed.filter((row) => row.type === 'note' && fresh.has(row.id)).map((row) => row.entity)
+  const shownIds = new Set(viewed.map((n) => n.id))
+  markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
+}
+
+function pressFindRow(key, { enter = false } = {}) {
+  const row = findRowsByKey.get(key)
+  if (!row) return
+  findActiveKey = key
+  if (row.action === 'run') {
+    runPaletteAction(row.palette, findField())
+    return
+  }
+  if (row.action === 'home') {
+    focusItem(row.id, row.source ?? null)
+    return
+  }
+  if (row.action === 'plans') {
+    focusItem(row.id, { ...(row.source ?? {}), keepLens: true })
+    return
+  }
+  if (findOpen.has(key) && !enter) {
+    // unsent text in its Note editor keeps a row open: show the person where it is
+    if (findRowHasText(row)) {
+      focusItemNoteEditor(row.id, 'find')
+      return
+    }
+    findOpen.delete(key)
+  } else {
+    findOpen.add(key)
+  }
+  forceRender()
+}
+
+function setFindQueryText(text) {
+  if (findTimer) {
+    clearTimeout(findTimer)
+    findTimer = null
+  }
+  findQuery = text
+  findSettled = text
+  findActiveKey = null
+  shown.find = FIND_PAGE
+  const input = findField()
+  if (input) input.value = text
+}
+
+function setFindChip(chip) {
+  if (!FIND_CHIPS.includes(chip) || chip === findChip) return
+  findChip = chip
+  findActiveKey = null
+  shown.find = FIND_PAGE
+  forceRender()
+  requestHistory()
+}
+
+function focusFindField({ select = false } = {}) {
+  const input = findField()
+  if (!input || input.closest('[hidden]')) return
+  input.focus({ preventScroll: true })
+  if (select) input.select()
+}
+
+// Entering Find: the top bar's text moves into Find's empty field, and the unread notes are
+// snapshotted so their New marks hold until the person leaves.
+function enterFind() {
+  const top = document.getElementById('search')
+  if (top?.value.trim() && !findQuery.trim()) {
+    setFindQueryText(top.value)
+    resetSearch()
+  } else closeSearchResults()
+  findKept.clear()
+  findPainted = []
+  findLandingKey = null
+  findHistoryPinned = false
+  findNewIds = lastData
+    ? new Set(unreadNotes(filterData(withoutClosed(lastData)).g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds)
+      .map((note) => note.id))
+    : new Set()
+}
+
+function leaveFind() {
+  if (findTimer) {
+    clearTimeout(findTimer)
+    findTimer = null
+    findSettled = findQuery
+  }
+  findKept.clear()
+  findPainted = []
+  findLandingKey = null
+  findNewIds = null
+  findHistoryPinned = false
+}
+
+// G F, G N, G H and Home's notes chip. `focus`: the field, the list or nothing.
+function openFind({ chip = null, clearQuery = false, focus = 'field' } = {}) {
+  selectTab('find', { paint: false })
+  if (activeTab !== 'find') return
+  if (clearQuery) setFindQueryText('')
+  if (chip && chip !== findChip) {
+    findChip = chip
+    findActiveKey = null
+    shown.find = FIND_PAGE
+  }
+  forceRender()
+  requestHistoryPaint()
+  if (focus === 'field') focusFindField()
+  else if (focus === 'list') document.getElementById('findList')?.focus({ preventScroll: true })
+}
+
+// A way in that lands on Find (focusItem): the lens changes only when the target is outside
+// it; the query and chip stay when the target is in the list, else the query clears and the
+// narrowest chip that holds it is selected. The row opens.
+function prepareFindLanding(item) {
+  const closed = closedSet()
+  const outside = (projectFilter && item.project !== projectFilter) || (agentFilter && item.agent !== agentFilter)
+    || (!findSettled.trim() && closed.has(item.project) && projectFilter !== item.project)
+  if (outside) {
+    projectFilter = item.project
+    agentFilter = null
+  }
+  const key = `item:${item.id}`
+  const listed = buildFindRows(findLensData(findSettled.trim()), {
+    chip: findChip, query: findSettled.trim(), searchFn: fuzzySearch, nowMs: Date.now(), archivedWhole: Boolean(lastData.archivedFull),
+  }).rows.some((row) => row.key === key)
+  if (!listed) {
+    setFindQueryText('')
+    const type = findRow(item).type
+    findChip = type === 'note' ? 'notes' : type === 'answer' ? 'answers' : 'all'
+  }
+  findLandingKey = key
+  findOpen.add(key)
+}
+
+function initFind() {
+  const input = findField()
+  const list = document.getElementById('findList')
+  if (!input || !list) return
+  for (const chip of document.querySelectorAll('#find [data-find-chip]')) {
+    chip.addEventListener('click', () => setFindChip(chip.dataset.findChip))
+  }
+  input.addEventListener('input', () => {
+    findQuery = input.value
+    if (findTimer) clearTimeout(findTimer)
+    findTimer = setTimeout(() => {
+      findTimer = null
+      findSettled = findQuery
+      findActiveKey = null
+      shown.find = FIND_PAGE
+      forceRender()
+    }, 120)
+    // overlap reading what a query searches with the debounce, as the top bar does
+    requestHistory()
+  })
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) {
+      event.stopPropagation()
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      if (input.value) {
+        setFindQueryText('')
+        forceRender()
+      } else input.blur()
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      event.stopPropagation()
+      moveFindActive(event.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      // never while the query is settling or its results are waiting
+      if (findTimer || findWaiting || findSettled !== findQuery) return
+      const key = findActiveRow()
+      if (key) pressFindRow(key, { enter: true })
+    }
+  })
+  // Escape on a row, or inside an open one, closes it and focuses its main button; it never
+  // exits a project peek or clears a selection elsewhere
+  list.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.isComposing) return
+    const rowEl = event.target instanceof Element ? event.target.closest('.find-row[data-find-key]') : null
+    if (!rowEl) return
+    event.preventDefault()
+    event.stopPropagation()
+    const key = rowEl.dataset.findKey
+    if (findOpen.has(key) && !findRowHasText(findRowsByKey.get(key))) {
+      findOpen.delete(key)
+      forceRender()
+    }
+    document.querySelector(`#findList > [data-find-key="${CSS.escape(key)}"] > .find-row-main`)?.focus({ preventScroll: true })
+  })
+  // a press inside an open row is the person acting on it: it stays where it is until they leave
+  list.addEventListener('click', (event) => {
+    const control = event.target instanceof Element ? event.target.closest('.find-row-body button') : null
+    const key = control?.closest('.find-row[data-find-key]')?.dataset.findKey
+    if (key) findKept.add(key)
+  }, true)
+  document.getElementById('tabs')?.addEventListener('pointerdown', (event) => {
+    findEntryTouch = event.pointerType === 'touch'
+  }, true)
 }
 
 const STATUS_LABEL = {
@@ -11496,6 +12114,11 @@ function runIntent(intent) {
 }
 
 function focusSearch(selectText = false) {
+  // on Find the top bar's search is not drawn: ⌘K and / focus Find's own field
+  if (activeTab === 'find' && !settingsOpen()) {
+    focusFindField({ select: selectText })
+    return
+  }
   const search = document.getElementById('search')
   search.focus()
   if (selectText) search.select()
@@ -11517,7 +12140,7 @@ function keyboardActionScope() {
   const scope = keyboardScope()
   if (scope !== document) return scope
   const focused = document.activeElement?.closest?.(
-    '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item, #dashFocus [data-panel-ask]',
+    '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item, #find .find-row, #dashFocus [data-panel-ask]',
   )
   if (focused && !focused.closest('[hidden]')) return focused
   // in the lanes the scope is the focused panel ask above or nothing: never the list's row
@@ -11553,6 +12176,12 @@ function navigateKeyboard(destination) {
     // G I: the asks on Home, no longer a tab of their own
     selectTab('dashboard')
     if (activeTab === 'dashboard') focusKeyboardPanel('needsYou')
+  } else if (destination === 'find') {
+    openFind({ focus: 'field' })
+  } else if (destination === 'findNotes') {
+    openFind({ chip: 'notes', clearQuery: true, focus: 'list' })
+  } else if (destination === 'findAll') {
+    openFind({ chip: 'all', clearQuery: true, focus: 'list' })
   } else if (TAB_IDS.includes(destination)) {
     selectTab(destination)
     // selectTab refuses an empty agent tab; focus stays where it was
@@ -11646,6 +12275,11 @@ function initKeys() {
     // only Home has rows to move through and an ask to close: elsewhere the arrows scroll the page
     // and Escape is left alone
     if ((intent.type === 'move' || intent.type === 'collapse') && activeTab !== 'dashboard') return
+    // UX pass, slice 4: printable shortcuts that act elsewhere (Home's, the Review queue's) do
+    // nothing on Find, and Escape inside Find leaves the peek and the selection alone
+    if (activeTab === 'find' && !triageDeck && keyboardScope() === document && intent.type !== 'search' && intent.type !== 'blur') {
+      if (!['exitPeek', 'clearSelection'].includes(intent.type) || document.activeElement?.closest?.('#find')) return
+    }
     e.preventDefault()
     runIntent(intent)
   })
@@ -13137,6 +13771,7 @@ initTriage()
 initRelay()
 initMission()
 initSearch()
+initFind()
 initResponsive()
 initSidebarCollapse()
 initPaneResizers()

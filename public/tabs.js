@@ -5,7 +5,7 @@
 // `agent` (cards view V5 §3.3) is shown only while a mesh agent is open, and never counted
 // `chats` (#586) reads its own list when opened and carries no count
 // Home (`dashboard`) holds the asks and the lanes on one page: there is no separate Inbox tab
-export const TAB_IDS = ['dashboard', 'boards', 'notes', 'done', 'chats', 'agent']
+export const TAB_IDS = ['dashboard', 'boards', 'find', 'notes', 'done', 'chats', 'agent']
 
 // the active tab is never persisted — the app always opens at the live desk
 export const DEFAULT_TAB = 'dashboard'
@@ -21,6 +21,8 @@ export function tabCounts({ globalAttention, unreadNotes, scoped, olderDone = 0 
   return {
     dashboard: globalAttention,
     boards: scoped.boards.length,
+    // UX pass, slice 4: Find counts the unread notes
+    find: unreadNotes ?? 0,
     notes: unreadNotes ?? 0,
     done: scoped.done.length + olderDone,
   }

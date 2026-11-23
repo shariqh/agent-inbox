@@ -10,7 +10,7 @@ import {
   closeProject, dismissItem, getItem, insertItem, replyItem, resolveItem, upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, bootApp, buttonLabelled, click, findFor, freshDb, navigateToHash, noteEditor, pollTick, settle,
+  advanceClock, bootApp, buttonLabelled, changedPollTick, click, findFor, freshDb, navigateToHash, noteEditor, pollTick, settle,
   tabCount, type, unreachableReason, useDomTest,
 } from './harness.js'
 import type { BootOptions } from './harness.js'
@@ -941,5 +941,64 @@ describe('A2 · a query waiting on older history', () => {
     expect(findRows().length).toBeGreaterThan(0)
     for (const el of findRows()) expect(el.querySelector(':scope > .find-row-main')?.hasAttribute('aria-disabled')).toBe(false)
     expect(ids.alpha).toBeTruthy()
+  })
+})
+
+describe('A8 · what an open row says first', () => {
+  it('opens with one quiet line naming the agent and stream, above the card, set as text', async () => {
+    db = freshDb()
+    const ids = seed(db)
+    await bootApp(db)
+    await openFindTab()
+    const k = `item:${ids.note}`
+    await pressRow(k)
+    const body = findRowEl(k)!.querySelector('.find-row-body')!
+    expect(body.firstElementChild?.className).toBe('find-row-origin')
+    expect(body.firstElementChild?.textContent).toBe('claude · main')
+    expect(body.firstElementChild?.nextElementSibling?.classList.contains('card')).toBe(true)
+    const ledger = insertItem(db, { ...LEDGER, stream: '<b>hostile</b>', kind: 'note', title: 'A hostile stream' })
+    await pollTick()
+    await pressRow(`item:${ledger}`)
+    const origin = findRowEl(`item:${ledger}`)!.querySelector('.find-row-origin')!
+    expect(origin.textContent).toBe('copilot · <b>hostile</b>')
+    expect(origin.querySelector('b')).toBeNull()
+  })
+})
+
+describe('A7 · a frame that repaints for another reason leaves an open card alone', () => {
+  it('does not rebuild an open card on every frame when the links read fails', async () => {
+    db = freshDb()
+    const ids = seed(db)
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (String(input) === '/api/links') return new Response('nope', { status: 500 })
+        return next()
+      },
+    })
+    await openFindTab()
+    const k = `item:${ids.note}`
+    await pressRow(k)
+    const card = findRowEl(k)!.querySelector('.find-row-body .card')!
+    await changedPollTick(db)
+    await changedPollTick(db)
+    expect(findRowEl(k)!.querySelector('.find-row-body .card'), 'the same card node').toBe(card)
+  })
+
+  it('gives each drawn row its own id, stable while drawn, and a fresh one after the row left the list', async () => {
+    db = freshDb()
+    const ids = seed(db)
+    await bootApp(db)
+    await openFindTab()
+    const k = `item:${ids.note}`
+    const first = mainOf(k)!.id
+    const all = () => findRows().map((el) => el.querySelector(':scope > .find-row-main')!.id)
+    expect(new Set(all()).size).toBe(all().length)
+    await pollTick()
+    expect(mainOf(k)!.id).toBe(first)
+    await findFor('zzzqqq')
+    expect(findKeys()).toEqual([])
+    await findFor('')
+    expect(new Set(all()).size, 'ids stay unique').toBe(all().length)
+    expect(mainOf(k)!.id, 'the id of a key no longer drawn is not kept').not.toBe(first)
   })
 })

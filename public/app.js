@@ -8690,7 +8690,8 @@ let findWaiting = false        // a query waits on older history or archived pla
 let findStale = false          // ...and the rows on screen are the previous list's: they do nothing
 let findRowsByKey = new Map()  // the rows (and command rows) last painted, by key
 let findRevealKey = null       // the first row "Show 20 more" reveals
-const findDomIds = new Map()   // key → the stable id of its main button
+const findDomIds = new Map()   // key → the stable id of its main button, kept only while the key is drawn
+let findDomSeq = 0             // ids are never reused, so pruning the map cannot collide two rows
 let findEntryTouch = false     // the last press on the tab strip was a touch
 
 const FIND_ICONS = {
@@ -8738,6 +8739,14 @@ function findKeepKeys() {
 }
 
 const findRowHasText = (row) => Boolean(row?.entity && itemNoteEditors[row.id]?.text.trim())
+
+// Save or Cancel ends a Note editor: a Find row open only because that editor held text
+// (restored after a reload, or typed on Home) stays open, so the Note button, the saving
+// state and any refusal stay in view.
+function keepFindRowOpen(id) {
+  const key = `item:${id}`
+  if (findRowHasText(findRowsByKey.get(key))) findOpen.add(key)
+}
 
 // A deliberate change of chip or settled query ends the "stays in place" window: rows the
 // person acted on and the row a way in landed on go back to their own place. Only a row
@@ -8824,7 +8833,7 @@ function syncFindControls() {
 }
 
 function findDomId(key) {
-  if (!findDomIds.has(key)) findDomIds.set(key, `find-row-${findDomIds.size + 1}`)
+  if (!findDomIds.has(key)) findDomIds.set(key, `find-row-${++findDomSeq}`)
   return findDomIds.get(key)
 }
 
@@ -8907,6 +8916,9 @@ function findRowOpen(row) {
   return row.action === 'expand' && (findOpen.has(row.key) || findRowHasText(row))
 }
 
+// A read that failed falls back to a NEW empty array each tick: two empty reads are the same read.
+const sameRead = (a, b) => a === b || (Array.isArray(a) && Array.isArray(b) && a.length === 0 && b.length === 0)
+
 function updateFindRow(el, row, nowMs) {
   const main = el.querySelector(':scope > .find-row-main')
   const open = findRowOpen(row)
@@ -8942,8 +8954,12 @@ function updateFindRow(el, row, nowMs) {
   const it = row.entity
   const cardSignature = JSON.stringify([it, Boolean(itemNoteEditors[it.id]), itemNoteDrafts[it.id]?.pending ?? null,
     itemNoteDrafts[it.id]?.error ?? null, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available()])
-  if (body.dataset.signature !== cardSignature || body.findLinks !== lastData.links || body.findIssues !== lastData.issues) {
-    body.replaceChildren(itemCardEl(it, { done: it.status !== 'open', header: false }))
+  if (body.dataset.signature !== cardSignature || !sameRead(body.findLinks, lastData.links) || !sameRead(body.findIssues, lastData.issues)) {
+    // agent and stream are no longer on the row: one quiet line above the card says them (agent text: textContent)
+    const origin = document.createElement('p')
+    origin.className = 'find-row-origin'
+    origin.textContent = [it.agent, it.stream].filter(Boolean).join(' · ')
+    body.replaceChildren(origin, itemCardEl(it, { done: it.status !== 'open', header: false }))
     body.dataset.signature = cardSignature
     body.findLinks = lastData.links
     body.findIssues = lastData.issues
@@ -9037,6 +9053,7 @@ function renderFind() {
   const drawn = [...model.commands.lead, ...listed, ...model.commands.tail]
   findRowsByKey = new Map(drawn.map((row) => [row.key, row]))
   reconcileFindList(list, drawn, nowMs)
+  for (const key of [...findDomIds.keys()]) if (!findRowsByKey.has(key)) findDomIds.delete(key)
   findPainted = listed.map((row) => row.key)
   paintFindActive()
 
@@ -9319,7 +9336,8 @@ function initFind() {
   list.addEventListener('click', (event) => {
     const control = event.target instanceof Element ? event.target.closest('.find-row-body button') : null
     const key = control?.closest('.find-row[data-find-key]')?.dataset.findKey
-    if (key) findKept.add(key)
+    if (!key) return
+    findKept.add(key)
   }, true)
   document.getElementById('tabs')?.addEventListener('pointerdown', (event) => {
     findEntryTouch = event.pointerType === 'touch'
@@ -11725,6 +11743,7 @@ function itemNoteEditorEl(it) {
   actions.appendChild(btn('Cancel', (event) => {
     // the surface the press was made in (Home, Find, the Review queue), found again after the rebuild
     const scopeId = event.currentTarget?.closest?.('[id]')?.id ?? null
+    keepFindRowOpen(it.id)
     delete itemNoteEditors[it.id]
     forceRender()
     const sel = `[data-note-item="${CSS.escape(it.id)}"]`
@@ -11744,6 +11763,7 @@ function saveItemNote(it) {
   if (itemNoteDrafts[it.id]?.pending) return
   const editor = itemNoteEditors[it.id]
   if (!editor) return
+  keepFindRowOpen(it.id)
   delete itemNoteEditors[it.id]
   return withPendingResponse(async () => {
     const prior = itemNoteDrafts[it.id]

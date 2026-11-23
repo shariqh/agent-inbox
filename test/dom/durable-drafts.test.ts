@@ -310,6 +310,36 @@ describe('a draft comes back where it was', () => {
     expect(bridge.posts).toHaveLength(0)
   })
 
+  it('leaves a Find row open with its Note button in view when Cancel or Save ends an editor restored with text', async () => {
+    db = freshDb()
+    const cancelled = insertItem(db, { ...AGENT, kind: 'note', title: 'Cancelled update' })
+    advanceClock()
+    const sent = insertItem(db, { ...AGENT, kind: 'note', title: 'Sent update' })
+    await bootApp(db)
+    for (const [id, text] of [[cancelled, 'Half a note.'], [sent, 'Another half.']] as const) {
+      await openOnFind(id)
+      click(buttonLabelled('Note', findRowFor(id)!))
+      await settle()
+      type(findRowFor(id)!.querySelector<HTMLTextAreaElement>('.note-editor textarea'), text)
+    }
+    await saved()
+    await reopen(db)
+    click(document.querySelector('.tab[data-tab="find"]'))
+    await settle()
+    // both rows are open only because their editor holds text: no choice of the person's opened them
+    expect(findRowFor(cancelled)?.querySelector<HTMLTextAreaElement>('.note-editor textarea')?.value).toBe('Half a note.')
+    click(buttonLabelled('Cancel', findRowFor(cancelled)!.querySelector('.note-editor')!))
+    await settle()
+    expect(findRowFor(cancelled)?.querySelector('.note-editor')).toBeNull()
+    expect(findRowFor(cancelled)?.querySelector(':scope > .find-row-body'), 'the row stays open').not.toBeNull()
+    expect(document.activeElement).toBe(buttonLabelled('Note', findRowFor(cancelled)!))
+
+    click(buttonLabelled('Save', findRowFor(sent)!.querySelector('.note-editor')!))
+    await settle()
+    expect(getItem(db, sent)?.annotation).toBe('Another half.')
+    expect(findRowFor(sent)?.querySelector(':scope > .find-row-body'), 'the row stays open after Save').not.toBeNull()
+  })
+
   it('keeps a Note still saving at unload as unconfirmed, and drops one the server already holds', async () => {
     db = freshDb()
     const held = insertItem(db, { ...AGENT, kind: 'note', title: 'Held update' })

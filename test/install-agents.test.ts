@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -60,6 +61,12 @@ interface Fixture {
   tmp: string
 }
 
+// A CLAUDE_CONFIG_DIR exported by the shell that runs the tests never reaches a fixture (#641).
+function withoutConfigDir(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { CLAUDE_CONFIG_DIR: _ignored, ...rest } = env
+  return rest
+}
+
 function fixture(): Fixture {
   const home = scratchDir('agent-installer-')
   const fakebin = join(home, 'fakebin')
@@ -70,14 +77,50 @@ function fixture(): Fixture {
   mkdirSync(state)
   mkdirSync(tmp)
 
+  // A second Claude Code config folder (#641): with CLAUDE_CONFIG_DIR set, the
+  // fake claude is that folder's CLI. Its state, its FAIL_*/HANG_* knobs and its
+  // log lines use the key claude@cfg (logged as claude@<dir>), its config is
+  // <dir>/.claude.json, merged like the real CLI's, and it creates the folder as
+  // the real CLI does. A folder outside this HOME exits 97 before anything, so
+  // no test can ever reach a real config folder. Unset, nothing changes.
   const cli = `#!/bin/sh
 name="$(basename "$0")"
+key="$name"
+label="$name"
+if [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then
+  case "$CLAUDE_CONFIG_DIR" in
+    "$HOME"/*) ;;
+    *) echo "fake $name: CLAUDE_CONFIG_DIR is outside the test HOME" >&2; exit 97 ;;
+  esac
+fi
 if [ "$name" = claude ]; then config="$CLAUDE_CONFIG"; else config="$COPILOT_CONFIG"; fi
-printf '%s %s\\n' "$name" "$*" >> "$INSTALL_LOG"
+if [ "$name" = claude ] && [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  key="claude@cfg"
+  label="claude@$CLAUDE_CONFIG_DIR"
+  config="$CLAUDE_CONFIG_DIR/.claude.json"
+fi
+# Merges or deletes the agent-inbox entry of the second folder's config; the
+# arguments after -- become its command and args.
+cfg_write() {
+  "${process.execPath}" -e '
+    const fs = require("node:fs")
+    const [file, op, ...rest] = process.argv.slice(1)
+    let parsed = {}
+    try { parsed = JSON.parse(fs.readFileSync(file, "utf8")) } catch {}
+    parsed.mcpServers ??= {}
+    if (op === "add") {
+      const after = rest.slice(rest.indexOf("--") + 1)
+      parsed.mcpServers["agent-inbox"] = { type: "stdio", command: after[0], args: after.slice(1), env: {} }
+    } else delete parsed.mcpServers["agent-inbox"]
+    fs.writeFileSync(file, JSON.stringify(parsed) + "\\n")
+  ' "$config" "$@"
+}
+printf '%s %s\\n' "$label" "$*" >> "$INSTALL_LOG"
 case "$1:$2" in
   mcp:get)
-    test "\${FAIL_GET:-}" != "$name" || exit 9
-    test -f "$INSTALL_STATE/$name" || exit 1
+    test "\${FAIL_GET:-}" != "$key" || exit 9
+    test -f "$INSTALL_STATE/$key" || exit 1
     if [ "$name" = claude ]; then
       echo "  Scope: \${CLAUDE_SCOPE:-User config} (available in all your projects)"
     else
@@ -85,49 +128,53 @@ case "$1:$2" in
     fi
     ;;
   mcp:add)
-    test "\${FAIL_ADD:-}" != "$name" || exit 9
-    if [ "\${CORRUPT_CONFIG_ON_ADD:-}" = "$name" ]; then
-      touch "$INSTALL_STATE/$name"
+    test "\${FAIL_ADD:-}" != "$key" || exit 9
+    if [ "\${CORRUPT_CONFIG_ON_ADD:-}" = "$key" ]; then
+      touch "$INSTALL_STATE/$key"
       printf '{ not json\\n' > "$config"
       exit 0
     fi
-    if [ "\${MUTATE_THEN_HANG_ADD:-}" = "$name" ]; then
-      touch "$INSTALL_STATE/$name"
+    if [ "\${MUTATE_THEN_HANG_ADD:-}" = "$key" ]; then
+      touch "$INSTALL_STATE/$key"
       printf '{"mcpServers":{"agent-inbox":{"command":"partial"}}}\\n' > "$config"
-      touch "$INSTALL_STATE/$name.mutated"
+      touch "$INSTALL_STATE/$key.mutated"
       trap 'exit 143' TERM INT
       while :; do sleep 1; ${boundedWait(1)}; done
     fi
-    if [ "\${HANG_ADD:-}" = "$name" ]; then
-      printf '%s\\n' "$$" > "$INSTALL_STATE/$name.hanging-pid"
-      touch "$INSTALL_STATE/$name.hanging"
+    if [ "\${HANG_ADD:-}" = "$key" ]; then
+      printf '%s\\n' "$$" > "$INSTALL_STATE/$key.hanging-pid"
+      touch "$INSTALL_STATE/$key.hanging"
       trap 'exit 143' TERM INT
       while :; do sleep 1; ${boundedWait(1)}; done
     fi
-    if [ "\${FAIL_ADD_ONCE:-}" = "$name" ] && [ ! -f "$INSTALL_STATE/$name.add-failed" ]; then
-      touch "$INSTALL_STATE/$name.add-failed"
+    if [ "\${FAIL_ADD_ONCE:-}" = "$key" ] && [ ! -f "$INSTALL_STATE/$key.add-failed" ]; then
+      touch "$INSTALL_STATE/$key.add-failed"
       exit 9
     fi
-    touch "$INSTALL_STATE/$name"
-    printf '{"mcpServers":{"agent-inbox":{"command":"%s"}}}\\n' "$*" > "$config"
+    touch "$INSTALL_STATE/$key"
+    if [ "$key" = "claude@cfg" ]; then cfg_write add "$@"
+    else printf '{"mcpServers":{"agent-inbox":{"command":"%s"}}}\\n' "$*" > "$config"
+    fi
     ;;
   mcp:remove)
-    test "\${FAIL_REMOVE:-}" != "$name" || exit 9
-    if [ "\${HANG_REMOVE:-}" = "$name" ]; then
-      printf '%s\\n' "$$" > "$INSTALL_STATE/$name.remove-pid"
+    test "\${FAIL_REMOVE:-}" != "$key" || exit 9
+    if [ "\${HANG_REMOVE:-}" = "$key" ]; then
+      printf '%s\\n' "$$" > "$INSTALL_STATE/$key.remove-pid"
       while :; do sleep 1; ${boundedWait(1)}; done
     fi
     # Like the real hosts, refuse to remove a server that is not registered.
-    if [ ! -f "$INSTALL_STATE/$name" ]; then
+    if [ ! -f "$INSTALL_STATE/$key" ]; then
       echo "No user-scoped MCP server found with name: agent-inbox" >&2
       exit 1
     fi
-    rm -f "$INSTALL_STATE/$name"
-    printf '{"mcpServers":{}}\\n' > "$config"
-    if [ "\${SIGNAL_AFTER_REMOVE:-}" = "$name" ]; then kill -TERM $$; fi
-    if [ "\${PAUSE_AFTER_REMOVE:-}" = "$name" ]; then
-      touch "$INSTALL_STATE/$name.removed"
-      while [ ! -f "$INSTALL_STATE/$name.release" ]; do sleep 0.05; ${boundedWait(20)}; done
+    rm -f "$INSTALL_STATE/$key"
+    if [ "$key" = "claude@cfg" ]; then cfg_write remove
+    else printf '{"mcpServers":{}}\\n' > "$config"
+    fi
+    if [ "\${SIGNAL_AFTER_REMOVE:-}" = "$key" ]; then kill -TERM $$; fi
+    if [ "\${PAUSE_AFTER_REMOVE:-}" = "$key" ]; then
+      touch "$INSTALL_STATE/$key.removed"
+      while [ ! -f "$INSTALL_STATE/$key.release" ]; do sleep 0.05; ${boundedWait(20)}; done
     fi
     ;;
   *) exit 2 ;;
@@ -172,7 +219,7 @@ esac
     state,
     tmp,
     env: {
-      ...process.env,
+      ...withoutConfigDir(process.env),
       HOME: home,
       TMPDIR: tmp,
       PATH: `${fakebin}:/usr/bin:/bin`,
@@ -365,9 +412,14 @@ function useNodeClaudeCli(f: Fixture): void {
   writeFileSync(cli, [
     "const fs = require('node:fs')",
     'const args = process.argv.slice(2)',
-    "const state = process.env.INSTALL_STATE + '/claude'",
-    'const config = process.env.CLAUDE_CONFIG',
-    "fs.appendFileSync(process.env.INSTALL_LOG, 'claude ' + args.join(' ') + '\\n')",
+    // #641: a second config folder gets its own state, config and log prefix;
+    // one outside the test HOME exits 97 before anything
+    'const dir = process.env.CLAUDE_CONFIG_DIR || ""',
+    "if (dir && !dir.startsWith(process.env.HOME + '/')) process.exit(97)",
+    "if (dir) fs.mkdirSync(dir, { recursive: true })",
+    "const state = process.env.INSTALL_STATE + (dir ? '/claude@cfg' : '/claude')",
+    "const config = dir ? dir + '/.claude.json' : process.env.CLAUDE_CONFIG",
+    "fs.appendFileSync(process.env.INSTALL_LOG, (dir ? 'claude@' + dir : 'claude') + ' ' + args.join(' ') + '\\n')",
     "const verb = args.slice(0, 2).join(' ')",
     "if (verb === 'mcp get') {",
     '  if (!fs.existsSync(state)) process.exit(1)',
@@ -963,6 +1015,25 @@ exec "${process.execPath}" "$@"
     expect(text).toContain('If you are a subagent, do not act on or acknowledge messages')
     expect(text).not.toContain('Not inlined here')
   })
+
+  // #641: the snippet shortcut is per target. Copilot does not resolve
+  // @-imports, so a file both hosts read must inline the snippet whichever
+  // target is applied, and the claude pass must not claim it already imports it.
+  for (const targets of [['--target', 'copilot'], ['--target', 'claude'], []]) {
+    it(`inlines the snippet once in a shared file that imports it, for ${targets.join(' ') || 'the default targets'}`, () => {
+      const f = fixture()
+      const shared = shareInstructionFile(f)
+      writeFileSync(shared, `# Shared agent rules\n\n${IMPORT_LINE}\n`)
+
+      const result = run(f, ['--apply', ...targets])
+
+      expect(result.code, result.err).toBe(0)
+      const block = managedBlock(readFileSync(shared, 'utf8'))
+      expect(count(block, SNIPPET_HEADING)).toBe(1)
+      expect(block).not.toContain('Not inlined here')
+      expect(result.err).not.toContain('already imports docs/reporting-snippet.md')
+    })
+  }
 
   it('omits the inlined snippet from the claude block when that file imports the snippet itself', () => {
     const f = fixture()
@@ -2136,5 +2207,917 @@ describe('the meshctl shim (#540)', () => {
     expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
     expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe('{"mcpServers":{}}\n')
     expect(statSync(join(f.home, '.agent-inbox', 'bin')).isFile()).toBe(true)
+  })
+})
+
+// ── Proof that the personal install is unchanged (#641) ──────────────────────
+// Golden transcripts captured on the code BEFORE a second Claude Code config
+// folder existed: a run without the new flags must stay byte-identical. The
+// shared snippet and the host appendices are replaced by placeholders, so an
+// edit to those documents does not touch the goldens; the fixture home, the
+// Node path, backup timestamps and pids are replaced too.
+const GOLDEN_DIR = join(REPO, 'test', 'fixtures', 'install-agents-r2')
+const GOLDEN_STEPS = [
+  ['dry-run', []],
+  ['apply', ['--apply']],
+  ['uninstall', ['--apply', '--uninstall']],
+] as const
+
+function realDir(path: string): string {
+  return spawnSync('/bin/sh', ['-c', 'cd "$1" && pwd -P', 'sh', path], { encoding: 'utf8' }).stdout.trim()
+}
+
+function normalizeTranscript(f: Fixture, text: string): string {
+  const snippet = readFileSync(SNIPPET_PATH, 'utf8').replace(/^# /, '## ')
+  const appendix = (name: string) => readFileSync(join(REPO, 'docs', 'instructions', name), 'utf8')
+  const node = process.execPath
+  const stableNode = join(realDir(dirname(node)), node.slice(node.lastIndexOf('/') + 1))
+  let out = text
+    .split(snippet).join('<SNIPPET>\n')
+    .split(appendix('claude-code.md')).join('<CLAUDE_APPENDIX>\n')
+    .split(appendix('copilot-cli.md')).join('<COPILOT_APPENDIX>\n')
+  for (const [from, to] of [[stableNode, '<NODE>'], [node, '<NODE>'], [realDir(f.home), '<HOME>'], [f.home, '<HOME>'], [REPO, '<REPO>']] as const) {
+    out = out.split(from).join(to)
+  }
+  return out.replace(/\.bak\.\d{14}\.\d+(\.\d+)?/g, '.bak.<TS>.<PID>')
+}
+
+function describeFile(path: string): string {
+  if (!existsSync(path) && !lstatSync(path, { throwIfNoEntry: false })) return '(absent)\n'
+  const link = lstatSync(path).isSymbolicLink() ? `(symlink to ${spawnSync('readlink', [path], { encoding: 'utf8' }).stdout.trim()})\n` : ''
+  return `${link}${readFileSync(path, 'utf8')}`
+}
+
+interface StepResult { code: number | null; out: string; err: string; log: string }
+
+function runStep(f: Fixture, args: readonly string[]): StepResult {
+  if (existsSync(f.log)) writeFileSync(f.log, '')
+  const result = run(f, [...args])
+  return { ...result, log: existsSync(f.log) ? readFileSync(f.log, 'utf8') : '(no host CLI call)\n' }
+}
+
+function transcript(f: Fixture, step: StepResult): string {
+  const files = [
+    ['~/.claude/CLAUDE.md', f.claudeFile],
+    ['~/.copilot/copilot-instructions.md', f.copilotFile],
+    ['~/.claude.json', f.env.CLAUDE_CONFIG!],
+    ['~/.copilot/mcp-config.json', f.env.COPILOT_CONFIG!],
+  ]
+  return normalizeTranscript(f, [
+    `exit: ${step.code}\n`,
+    `=== stdout ===\n${step.out}`,
+    `=== stderr ===\n${step.err}`,
+    `=== host CLI log ===\n${step.log}`,
+    ...files.map(([label, path]) => `=== ${label} ===\n${describeFile(path!)}`),
+  ].join(''))
+}
+
+const GOLDEN_FIXTURES = {
+  separate: (): Fixture => fixture(),
+  shared: (): Fixture => {
+    const f = fixture()
+    shareInstructionFile(f)
+    return f
+  },
+}
+
+describe('the personal install without the new flags (#641)', () => {
+  for (const [name, make] of Object.entries(GOLDEN_FIXTURES)) {
+    it(`matches the golden transcripts for the ${name}-files fixture`, async () => {
+      const f = make()
+      for (const [step, args] of GOLDEN_STEPS) {
+        await expect(transcript(f, runStep(f, args))).toMatchFileSnapshot(join(GOLDEN_DIR, `${name}.${step}.txt`))
+      }
+    })
+  }
+
+  for (const missing of ['copilot', 'claude']) {
+    it(`refuses an apply with exit 1 when the ${missing} CLI is not installed, and writes nothing`, () => {
+      const f = fixture()
+      renameSync(join(f.fakebin, missing), join(f.tmp, `${missing}-away`))
+      const paths = [f.claudeFile, f.copilotFile, f.env.CLAUDE_CONFIG!, f.env.COPILOT_CONFIG!]
+      const before = paths.map((path) => readFileSync(path, 'utf8'))
+
+      const result = run(f, ['--apply'])
+
+      expect(result.code).toBe(1)
+      expect(result.err).toBe(`install-agents: '${missing}' CLI is not installed; choose a different --target\n`)
+      expect(result.out).toBe('')
+      expect(existsSync(f.log)).toBe(false)
+      expect(paths.map((path) => readFileSync(path, 'utf8'))).toEqual(before)
+      for (const dir of [dirname(f.claudeFile), dirname(f.copilotFile), f.home]) {
+        expect(readdirSync(dir).filter((name) => name.includes('.bak.'))).toEqual([])
+      }
+    })
+  }
+
+  // GNU realpath resolves a link whose target is missing while its folder
+  // exists; BSD realpath fails. The refusal must not depend on which one runs.
+  for (const which of ['claude', 'copilot'] as const) {
+    for (const apply of [false, true]) {
+      it(`refuses a dangling personal ${which} instruction link (${apply ? 'apply' : 'dry run'})`, () => {
+        const f = fixture()
+        const file = which === 'claude' ? f.claudeFile : f.copilotFile
+        const other = which === 'claude' ? f.copilotFile : f.claudeFile
+        const target = join(dirname(file), 'moved-away.md')
+        rmSync(file)
+        symlinkSync(target, file)
+        const otherBefore = readFileSync(other, 'utf8')
+
+        const result = run(f, apply ? ['--apply'] : [])
+
+        expect(result.code, result.err).toBe(1)
+        expect(result.err).toMatch(/is a dangling symlink — refusing to replace it/)
+        expect(existsSync(f.log)).toBe(false)
+        expect(lstatSync(file).isSymbolicLink()).toBe(true)
+        expect(existsSync(target)).toBe(false)
+        expect(readFileSync(other, 'utf8')).toBe(otherBefore)
+      })
+    }
+  }
+
+  it('prints the personal Claude command line exactly in the dry run', () => {
+    const f = fixture()
+    const node = process.execPath
+    const stableNode = join(realDir(dirname(node)), node.slice(node.lastIndexOf('/') + 1))
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const result = run(f)
+    expect(result.code, result.err).toBe(0)
+    expect(result.out).toMatch(new RegExp(`^  claude mcp add --scope user agent-inbox -- ${escape(stableNode)} ${escape(f.env.AGENT_INBOX_MCP_ENTRY!)} $`, 'm'))
+  })
+})
+
+describe('the fake host CLIs and a second config folder (#641)', () => {
+  it('refuse a CLAUDE_CONFIG_DIR outside the test HOME before doing anything', () => {
+    const f = fixture()
+    const outside = join(f.tmp, '..', '..', `outside-${process.pid}`)
+    for (const useNode of [false, true]) {
+      if (useNode) useNodeClaudeCli(f)
+      const result = spawnSync(join(f.fakebin, 'claude'), ['mcp', 'get', 'agent-inbox'], {
+        encoding: 'utf8', env: { ...f.env, CLAUDE_CONFIG_DIR: resolve(outside) },
+      })
+      expect(result.status).toBe(97)
+      expect(existsSync(resolve(outside))).toBe(false)
+      expect(existsSync(f.log)).toBe(false)
+    }
+  })
+
+  it('keep the second folder apart: its own key, config, log prefix and arguments', () => {
+    const f = fixture()
+    const dir = join(f.home, '.claude-work')
+    const env = { ...f.env, CLAUDE_CONFIG_DIR: dir }
+    const add = spawnSync(join(f.fakebin, 'claude'), ['mcp', 'add', '--scope', 'user', 'agent-inbox', '--', '/n/node', '/e/mcp-server.js', '--project', 'work'], { encoding: 'utf8', env })
+    expect(add.status).toBe(0)
+    expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'))).toEqual({
+      mcpServers: { 'agent-inbox': { type: 'stdio', command: '/n/node', args: ['/e/mcp-server.js', '--project', 'work'], env: {} } },
+    })
+    expect(existsSync(join(f.state, 'claude@cfg'))).toBe(true)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe('{"mcpServers":{}}\n')
+    expect(readFileSync(f.log, 'utf8')).toBe(`claude@${dir} mcp add --scope user agent-inbox -- /n/node /e/mcp-server.js --project work\n`)
+    const failing = spawnSync(join(f.fakebin, 'claude'), ['mcp', 'remove', '--scope', 'user', 'agent-inbox'], { encoding: 'utf8', env: { ...env, FAIL_REMOVE: 'claude' } })
+    expect(failing.status).toBe(0)
+    expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'))).toEqual({ mcpServers: {} })
+  })
+})
+
+// ── a second Claude Code config folder (#641) ────────────────────────────────
+
+const FIXED_SECTION = '## This config folder reports under one project'
+
+interface SecondFolder {
+  dir: string
+  config: string
+  // the CLAUDE.md path in the folder, and the file it links to
+  file: string
+  target: string
+  args: (...extra: string[]) => string[]
+}
+
+// ~/.claude-work with its own .claude.json and a CLAUDE.md that links into
+// another folder's build output, and an MCP entry that accepts --project.
+function secondFolder(f: Fixture, options: { link?: boolean } = {}): SecondFolder {
+  const dir = join(f.home, '.claude-work')
+  mkdirSync(dir)
+  const config = join(dir, '.claude.json')
+  writeFileSync(config, '{"mcpServers":{"other":{"command":"keep-me"}},"numStartups":3}\n')
+  writeFileSync(join(dir, 'settings.json'), '{"theme":"dark"}\n')
+  const file = join(dir, 'CLAUDE.md')
+  const target = join(f.home, 'build', 'AGENTS.work.md')
+  mkdirSync(dirname(target), { recursive: true })
+  writeFileSync(target, '# Work rules\n\nKeep this work.\n')
+  if (options.link ?? true) symlinkSync(target, file)
+  else writeFileSync(file, '# Work rules\n\nKeep this work.\n')
+  writeFileSync(f.env.AGENT_INBOX_MCP_ENTRY!, '// accepts --project <name>\nprocess.exit(0)\n')
+  return {
+    dir,
+    config,
+    file,
+    target: options.link ?? true ? target : file,
+    args: (...extra) => ['--claude-config-dir', dir, '--project', 'work', ...extra],
+  }
+}
+
+// Every path under a folder with its kind and content, so "nothing was
+// written" covers new files, changed files and links alike.
+function tree(root: string): string[] {
+  const out: string[] = []
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name)
+      const stat = lstatSync(path)
+      if (stat.isSymbolicLink()) out.push(`${path} -> ${spawnSync('readlink', [path], { encoding: 'utf8' }).stdout.trim()}`)
+      else if (stat.isDirectory()) { out.push(`${path}/`); walk(path) }
+      else out.push(`${path} ${stat.mode.toString(8)} ${readFileSync(path, 'utf8')}`)
+    }
+  }
+  walk(root)
+  return out
+}
+
+function secondConfig(second: SecondFolder): { mcpServers: Record<string, { command: string; args?: string[] }> } & Record<string, unknown> {
+  return JSON.parse(readFileSync(second.config, 'utf8'))
+}
+
+function logLines(f: Fixture): string[] {
+  return existsSync(f.log) ? readFileSync(f.log, 'utf8').split('\n').filter(Boolean) : []
+}
+
+describe('a second Claude Code config folder (#641)', () => {
+  it('dry run shows the second folder last, with its env prefix and its block, and touches nothing', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const before = tree(f.home)
+
+    const result = run(f, second.args())
+
+    expect(result.code, result.err).toBe(0)
+    const headers = result.out.split('\n').filter((line) => / MCP command ──$/.test(line))
+    expect(headers).toEqual(['── claude MCP command ──', '── copilot MCP command ──', '── claude-config-dir MCP command ──'])
+    const node = join(realDir(dirname(process.execPath)), process.execPath.slice(process.execPath.lastIndexOf('/') + 1))
+    expect(result.out).toContain(`\n  env CLAUDE_CONFIG_DIR=${second.dir} claude mcp add --scope user agent-inbox -- ${node} ${f.env.AGENT_INBOX_MCP_ENTRY} --project work \n── ${second.file} ──\n# Work rules\n`)
+    const section = result.out.slice(result.out.indexOf('── claude-config-dir MCP command ──'))
+    expect(managedBlock(section)).toContain('Claude Code wake behavior')
+    expect(managedBlock(section)).toContain(FIXED_SECTION)
+    expect(managedBlock(section)).toContain('`work` is the correct Agent Inbox project for every session of this Claude Code config folder')
+    expect(result.out.slice(0, result.out.indexOf('── claude-config-dir MCP command ──'))).not.toContain(FIXED_SECTION)
+    expect(existsSync(f.log)).toBe(false)
+    expect(workDirs(f)).toEqual([])
+    expect(tree(f.home)).toEqual(before)
+  })
+
+  it('--apply registers only agent-inbox in the second folder, fixed to the project, beside the personal install', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const settings = readFileSync(join(second.dir, 'settings.json'), 'utf8')
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code, result.err).toBe(0)
+    const config = secondConfig(second)
+    expect(Object.keys(config.mcpServers).sort()).toEqual(['agent-inbox', 'other'])
+    expect(config.mcpServers.other).toEqual({ command: 'keep-me' })
+    expect(config.numStartups).toBe(3)
+    expect(config.mcpServers['agent-inbox']!.args!.slice(-3)).toEqual([f.env.AGENT_INBOX_MCP_ENTRY, '--project', 'work'])
+    expect(readFileSync(join(second.dir, 'settings.json'), 'utf8')).toBe(settings)
+    expect(readdirSync(second.dir).sort()).toEqual(['.claude.json', 'CLAUDE.md', 'settings.json'])
+    // the personal registration carries no project argument
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).not.toContain('--project')
+    const calls = logLines(f)
+    expect(calls.filter((line) => !line.startsWith('claude@'))).toEqual([
+      'claude mcp get agent-inbox',
+      `claude mcp add --scope user agent-inbox -- ${calls.find((line) => line.startsWith('claude mcp add'))!.split(' -- ')[1]}`,
+      'copilot mcp get agent-inbox --json',
+      expect.stringMatching(/^copilot mcp add agent-inbox -- /),
+    ])
+    expect(calls.filter((line) => line.startsWith('claude@'))).toEqual([
+      `claude@${second.dir} mcp get agent-inbox`,
+      expect.stringMatching(new RegExp(`^claude@${second.dir} mcp add --scope user agent-inbox -- .+ --project work$`)),
+    ])
+    expect(result.err).toContain('claude-config-dir: registered agent-inbox MCP with')
+    expect(workDirs(f)).toEqual([])
+    expect([...stagedLeftovers(f), ...readdirSync(dirname(second.target)).filter((name) => name.startsWith('.agent-inbox'))]).toEqual([])
+  })
+
+  it('writes one block through a symlinked CLAUDE.md, with the fixed-project section only there', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+
+    expect(run(f, ['--apply', ...second.args()]).code).toBe(0)
+    const once = readFileSync(second.target, 'utf8')
+    const again = run(f, ['--apply', ...second.args()])
+
+    expect(again.code, again.err).toBe(0)
+    expect(lstatSync(second.file).isSymbolicLink()).toBe(true)
+    const text = readFileSync(second.target, 'utf8')
+    expect(text).toBe(once)
+    expect(count(text, BEGIN)).toBe(1)
+    expect(text.startsWith('# Work rules\n\nKeep this work.\n')).toBe(true)
+    const block = managedBlock(text)
+    expect(block).toContain(SNIPPET_LINE)
+    expect(block).toContain('Claude Code wake behavior')
+    expect(block).not.toContain('Copilot CLI wake behavior')
+    expect(block).toContain(FIXED_SECTION)
+    expect(block.endsWith(`because it belongs to another session.\n${END}`)).toBe(true)
+    expect(readFileSync(f.claudeFile, 'utf8')).not.toContain(FIXED_SECTION)
+    expect(readFileSync(f.copilotFile, 'utf8')).not.toContain(FIXED_SECTION)
+    expect(backups(second.target)).toHaveLength(1)
+    expect(again.err).toContain('claude-config-dir: agent-inbox MCP is already registered')
+  })
+
+  it('without --project the second block is exactly the personal Claude block', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+
+    const result = run(f, ['--apply', '--claude-config-dir', second.dir])
+
+    expect(result.code, result.err).toBe(0)
+    expect(managedBlock(readFileSync(second.target, 'utf8'))).toBe(managedBlock(readFileSync(f.claudeFile, 'utf8')))
+    expect(readFileSync(second.target, 'utf8')).not.toContain(FIXED_SECTION)
+    expect(secondConfig(second).mcpServers['agent-inbox']!.args).toEqual([f.env.AGENT_INBOX_MCP_ENTRY])
+  })
+
+  it('creates an absent CLAUDE.md in the second folder with just the block', () => {
+    const f = fixture()
+    const second = secondFolder(f, { link: false })
+    rmSync(second.file)
+
+    const result = run(f, ['--apply', '--target', 'claude-config-dir', ...second.args()])
+
+    expect(result.code, result.err).toBe(0)
+    const text = readFileSync(second.file, 'utf8')
+    expect(text.startsWith(`${BEGIN}\n`)).toBe(true)
+    expect(text.endsWith(`${END}\n`)).toBe(true)
+  })
+
+  it('gives the second folder the Claude appendix only when the personal hosts share one real file', () => {
+    const f = fixture()
+    shareInstructionFile(f)
+    const second = secondFolder(f)
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code, result.err).toBe(0)
+    const block = managedBlock(readFileSync(second.target, 'utf8'))
+    expect(block).toContain('Claude Code wake behavior')
+    expect(block).not.toContain('Copilot CLI wake behavior')
+    expect(block).toContain(SNIPPET_LINE)
+  })
+
+  it('cites an import in the second folder file by that file alone, whatever the personal hosts share', () => {
+    const f = fixture()
+    shareInstructionFile(f)
+    const second = secondFolder(f)
+    writeFileSync(second.target, `# Work rules\n\n${IMPORT_LINE}\n`)
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code, result.err).toBe(0)
+    expect(result.err).toContain(`claude-config-dir: ${second.file} already imports docs/reporting-snippet.md`)
+    expect(managedBlock(readFileSync(second.target, 'utf8'))).not.toContain(SNIPPET_LINE)
+  })
+
+  it('--target claude-config-dir touches only the second folder', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const personal = [f.claudeFile, f.copilotFile, f.env.CLAUDE_CONFIG!, f.env.COPILOT_CONFIG!].map((path) => readFileSync(path, 'utf8'))
+
+    const result = run(f, ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', `${second.dir}/`, '--project', 'work'])
+
+    expect(result.code, result.err).toBe(0)
+    expect([f.claudeFile, f.copilotFile, f.env.CLAUDE_CONFIG!, f.env.COPILOT_CONFIG!].map((path) => readFileSync(path, 'utf8'))).toEqual(personal)
+    expect(logLines(f).every((line) => line.startsWith(`claude@${second.dir} `))).toBe(true)
+    expect(logLines(f)).toHaveLength(2)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(existsSync(join(f.state, 'copilot'))).toBe(false)
+    expect(secondConfig(second).mcpServers['agent-inbox']!.args!.slice(-2)).toEqual(['--project', 'work'])
+    expect(count(readFileSync(second.target, 'utf8'), BEGIN)).toBe(1)
+  })
+
+  it('uninstalls the second folder only', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    expect(run(f, ['--apply', ...second.args()]).code).toBe(0)
+    const personal = [f.claudeFile, f.copilotFile, f.env.CLAUDE_CONFIG!, f.env.COPILOT_CONFIG!].map((path) => readFileSync(path, 'utf8'))
+    writeFileSync(f.log, '')
+
+    const result = run(f, ['--apply', '--uninstall', '--target', 'claude-config-dir', ...second.args()])
+
+    expect(result.code, result.err).toBe(0)
+    expect(readFileSync(second.target, 'utf8')).toBe('# Work rules\n\nKeep this work.\n')
+    expect(secondConfig(second).mcpServers).toEqual({ other: { command: 'keep-me' } })
+    expect([f.claudeFile, f.copilotFile, f.env.CLAUDE_CONFIG!, f.env.COPILOT_CONFIG!].map((path) => readFileSync(path, 'utf8'))).toEqual(personal)
+    expect(logLines(f)).toEqual([`claude@${second.dir} mcp get agent-inbox`, `claude@${second.dir} mcp remove --scope user agent-inbox`])
+    expect(existsSync(join(f.state, 'claude'))).toBe(true)
+    expect(existsSync(join(f.state, 'copilot'))).toBe(true)
+  })
+
+  it('rolls the personal targets back when the second folder add fails', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const before = tree(f.home)
+    f.env.FAIL_ADD = 'claude@cfg'
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code).toBe(1)
+    expect(result.err).toContain('could not register the claude-config-dir user-scoped MCP')
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(existsSync(join(f.state, 'copilot'))).toBe(false)
+    expect(logLines(f)).toContain('claude mcp remove --scope user agent-inbox')
+    expect(logLines(f)).toContain('copilot mcp remove agent-inbox')
+    // apart from the lock, the log and the fake CLIs' state, nothing changed
+    const settled = (lines: string[]) => lines.filter((line) => !line.startsWith(`${f.log} `) && !line.startsWith(join(f.state, '/')) &&
+      !line.startsWith(join(f.home, '.agent-inbox')))
+    expect(settled(tree(f.home))).toEqual(settled(before))
+    expect(workDirs(f)).toEqual([])
+  })
+
+  it('rolls the personal targets back when the second folder instruction write fails', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const fakeMv = join(f.fakebin, 'mv')
+    writeFileSync(fakeMv, `#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+if [ "$last" = "$FAIL_MV_TO" ]; then exit 9; fi
+exec /bin/mv "$@"
+`)
+    chmodSync(fakeMv, 0o755)
+    f.env.FAIL_MV_TO = realpathOf(second.target)
+    const personal = [f.claudeFile, f.copilotFile].map((path) => readFileSync(path, 'utf8'))
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code).toBe(1)
+    expect(result.err).toMatch(/could not replace/)
+    expect([f.claudeFile, f.copilotFile].map((path) => readFileSync(path, 'utf8'))).toEqual(personal)
+    expect(readFileSync(second.target, 'utf8')).toBe('# Work rules\n\nKeep this work.\n')
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(existsSync(join(f.state, 'claude@cfg'))).toBe(false)
+    expect(secondConfig(second).mcpServers).toEqual({ other: { command: 'keep-me' } })
+  })
+
+  it('makes no second-folder call when a personal MCP change fails', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    f.env.FAIL_ADD = 'copilot'
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code).toBe(1)
+    expect(logLines(f).some((line) => line.startsWith('claude@'))).toBe(false)
+    expect(readFileSync(second.config, 'utf8')).toBe('{"mcpServers":{"other":{"command":"keep-me"}},"numStartups":3}\n')
+  })
+
+  it('removes the second folder fresh registration when a personal instruction write fails', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const fakeMv = join(f.fakebin, 'mv')
+    writeFileSync(fakeMv, `#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+if [ "$last" = "$FAIL_MV_TO" ]; then exit 9; fi
+exec /bin/mv "$@"
+`)
+    chmodSync(fakeMv, 0o755)
+    f.env.FAIL_MV_TO = f.claudeFile
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code).toBe(1)
+    expect(logLines(f)).toContain(`claude@${second.dir} mcp remove --scope user agent-inbox`)
+    expect(existsSync(join(f.state, 'claude@cfg'))).toBe(false)
+    expect(secondConfig(second).mcpServers).toEqual({ other: { command: 'keep-me' } })
+    expect(readFileSync(second.target, 'utf8')).toBe('# Work rules\n\nKeep this work.\n')
+  })
+
+  it('restores both folders and exits 143 when terminated mid-run', { timeout: SIGNAL_ROLLBACK_TIMEOUT_MS }, async () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const personal = [f.claudeFile, f.copilotFile].map((path) => readFileSync(path, 'utf8'))
+    f.env.HANG_ADD = 'claude@cfg'
+    const installer = startInstaller(f, ['--apply', ...second.args()])
+    try {
+      await waitFor(join(f.state, 'claude@cfg.hanging'))
+      process.kill(-installer.child.pid!, 'SIGTERM')
+      const exit = await installer.exited
+
+      expect(exit.code).toBe(143)
+      expect(installer.stderr()).toMatch(/interrupted by SIGTERM.+restoring/i)
+      expect(existsSync(join(f.state, 'claude'))).toBe(false)
+      expect(existsSync(join(f.state, 'copilot'))).toBe(false)
+      expect([f.claudeFile, f.copilotFile].map((path) => readFileSync(path, 'utf8'))).toEqual(personal)
+      expect(readFileSync(second.target, 'utf8')).toBe('# Work rules\n\nKeep this work.\n')
+      expect(secondConfig(second).mcpServers).toEqual({ other: { command: 'keep-me' } })
+    } finally {
+      stopInstaller(f, installer)
+    }
+  })
+
+  it('ignores an exported CLAUDE_CONFIG_DIR: the personal install stays personal', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    writeFileSync(f.env.AGENT_INBOX_MCP_ENTRY!, 'process.exit(0)\n')
+    const config = readFileSync(second.config, 'utf8')
+    f.env.CLAUDE_CONFIG_DIR = second.dir
+
+    const step = runStep(f, ['--apply'])
+
+    expect(readFileSync(second.config, 'utf8')).toBe(config)
+    expect(readFileSync(second.target, 'utf8')).toBe('# Work rules\n\nKeep this work.\n')
+    expect(transcript(f, step)).toBe(readFileSync(join(GOLDEN_DIR, 'separate.apply.txt'), 'utf8'))
+  })
+
+  it('with the flags, the personal transcripts equal the no-flag goldens once the second folder lines are removed', () => {
+    const f = fixture()
+    shareInstructionFile(f)
+    const second = secondFolder(f)
+    writeFileSync(f.env.AGENT_INBOX_MCP_ENTRY!, 'process.exit(0)\n')
+    const secondWrite = realpathOf(second.target)
+    // each line keeps its own line break, so removing lines keeps the rest exact
+    const lines = (text: string): string[] => text.split(/(?<=\n)/)
+    const withoutSecond = (step: StepResult): StepResult => {
+      const out: string[] = []
+      let skipping = false
+      for (const line of lines(step.out)) {
+        if (line === '── claude-config-dir MCP command ──\n') skipping = true
+        else if (skipping && line.startsWith('── ') && line !== `── ${second.file} ──\n`) skipping = false
+        if (!skipping) out.push(line)
+      }
+      return {
+        code: step.code,
+        out: out.join(''),
+        err: lines(step.err).filter((line) => !line.startsWith('claude-config-dir: ') && !line.startsWith(`backed up → ${secondWrite}.bak.`)).join(''),
+        log: lines(step.log).filter((line) => !line.startsWith('claude@')).join(''),
+      }
+    }
+    for (const [name, args] of GOLDEN_STEPS) {
+      const step = runStep(f, [...args, '--claude-config-dir', second.dir])
+      expect(step.out).toContain(name === 'dry-run' ? '── claude-config-dir MCP command ──' : '')
+      expect(transcript(f, withoutSecond(step)), name).toBe(readFileSync(join(GOLDEN_DIR, `shared.${name}.txt`), 'utf8'))
+    }
+    expect(readFileSync(second.target, 'utf8')).toBe('# Work rules\n\nKeep this work.\n')
+  })
+
+  it('accepts and ignores --project with --uninstall', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', ...second.args()]).code).toBe(0)
+    writeFileSync(f.env.AGENT_INBOX_MCP_ENTRY!, 'process.exit(0)\n')
+
+    const result = run(f, ['--apply', '--uninstall', '--target', 'claude-config-dir', '--claude-config-dir', second.dir, '--project', 'other.name'])
+
+    expect(result.code, result.err).toBe(0)
+    expect(secondConfig(second).mcpServers).toEqual({ other: { command: 'keep-me' } })
+    expect(readFileSync(second.target, 'utf8')).toBe('# Work rules\n\nKeep this work.\n')
+  })
+})
+
+function realpathOf(path: string): string {
+  return join(realDir(dirname(path)), path.slice(path.lastIndexOf('/') + 1))
+}
+
+describe('refusals for a second Claude Code config folder (#641)', () => {
+  const refusals: Array<[string, (f: Fixture, second: SecondFolder) => string[], RegExp]> = [
+    ['--project alone', () => ['--project', 'work'], /--project needs --claude-config-dir/],
+    ['the target value alone', () => ['--target', 'claude-config-dir'], /--target claude-config-dir needs --claude-config-dir/],
+    ['the flag twice', (_f, s) => [...s.args(), '--claude-config-dir', s.dir], /can be given only once/],
+    ['a project name with a space', (_f, s) => ['--claude-config-dir', s.dir, '--project', 'two words'], /--project must be ASCII/],
+    ['a project name with a non-ASCII letter', (_f, s) => ['--claude-config-dir', s.dir, '--project', 'wörk'], /--project must be ASCII/],
+    ['a project name starting with @', (_f, s) => ['--claude-config-dir', s.dir, '--project', '@sessions'], /--project must be ASCII/],
+    ['a relative path', () => ['--claude-config-dir', '.claude-work'], /must be an absolute path/],
+    ['a path with a line break', (f) => ['--claude-config-dir', `${f.home}/x\ny`], /line break or another control character/],
+    ['a missing folder', (f) => ['--claude-config-dir', join(f.home, '.claude-missing')], /is not a folder; it is never created/],
+    ['$HOME', (f) => ['--claude-config-dir', f.home], /is the personal Claude Code folder/],
+    ['$HOME/.claude', (f) => ['--claude-config-dir', join(f.home, '.claude')], /is the personal Claude Code folder/],
+    ['a symlink to $HOME', (f) => {
+      symlinkSync(f.home, join(f.home, 'home-alias'))
+      return ['--claude-config-dir', join(f.home, 'home-alias')]
+    }, /is the personal Claude Code folder/],
+    ['a plain folder without .claude.json', (f) => {
+      mkdirSync(join(f.home, 'Development'))
+      return ['--claude-config-dir', join(f.home, 'Development')]
+    }, /has no \.claude\.json/],
+    ['a .claude.json that is the personal one', (f) => {
+      mkdirSync(join(f.home, 'alias'))
+      symlinkSync(f.env.CLAUDE_CONFIG!, join(f.home, 'alias', '.claude.json'))
+      return ['--claude-config-dir', join(f.home, 'alias')]
+    }, /is the personal ~\/\.claude\.json/],
+    ['runtime mode by flags', (_f, s) => [...s.args(), '--runtime-source', '/nonexistent', '--runtime-digest', `sha256:${'0'.repeat(64)}`], /needs a source checkout/],
+  ]
+  for (const [name, args, message] of refusals) {
+    for (const apply of [false, true]) {
+      it(`refuses ${name} (${apply ? 'apply' : 'dry run'}) with exit 2, no host call and no file written`, () => {
+        const f = fixture()
+        const second = secondFolder(f)
+        const argv = [...(apply ? ['--apply'] : []), ...args(f, second)]
+        const before = tree(f.home)
+
+        const result = run(f, argv)
+
+        expect(result.code, result.err).toBe(2)
+        expect(result.err.trim().split('\n')).toHaveLength(1)
+        expect(result.err).toMatch(/^install-agents: /)
+        expect(result.err).toMatch(message)
+        expect(existsSync(f.log)).toBe(false)
+        expect(tree(f.home)).toEqual(before)
+        expect(existsSync(join(f.home, '.claude-missing'))).toBe(false)
+      })
+    }
+  }
+
+  // On a case-insensitive file system (macOS by default) a differently-cased
+  // spelling is the same folder, and `pwd -P` keeps the case that was typed.
+  // The cases are skipped where the file system tells the two spellings apart.
+  const swapCase = (text: string) => text.replace(/[A-Za-z]/g, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()))
+  for (const apply of [false, true]) {
+    for (const spelling of ['~/.claude', '$HOME'] as const) {
+      it(`refuses a different-case spelling of ${spelling} (${apply ? 'apply' : 'dry run'}) with exit 2 and nothing written`, (context) => {
+        const f = fixture()
+        secondFolder(f) // only for its MCP entry, which accepts --project
+        // no personal CLAUDE.md, so check 9 cannot be what refuses it, and no
+        // personal ~/.claude.json, so the .claude.json check cannot either
+        renameSync(f.claudeFile, join(f.tmp, 'CLAUDE.md.away'))
+        renameSync(f.env.CLAUDE_CONFIG!, join(f.tmp, 'claude.json.away'))
+        // a folder that holds its own .claude.json, as after a first run of Claude Code
+        writeFileSync(join(f.home, '.claude', '.claude.json'), '{"mcpServers":{}}\n')
+        const dir = spelling === '~/.claude' ? join(f.home, '.CLAUDE') : join(dirname(f.home), swapCase(f.home.slice(f.home.lastIndexOf('/') + 1)))
+        if (dir === f.home || !existsSync(spelling === '~/.claude' ? dir : join(dir, '.claude'))) {
+          // a case-sensitive file system: the other spelling is another folder
+          context.skip()
+          return
+        }
+        const before = tree(f.home)
+
+        const result = run(f, [...(apply ? ['--apply'] : []), '--claude-config-dir', dir, '--project', 'work'])
+
+        expect(result.code, result.err).toBe(2)
+        expect(result.err).toMatch(/is the personal Claude Code folder/)
+        expect(existsSync(f.log)).toBe(false)
+        expect(tree(f.home)).toEqual(before)
+      })
+    }
+  }
+
+  it('refuses a self-detected runtime install with exit 2 before anything', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    // a copy of the checkout's script beside a runtime-manifest.json, as an
+    // installed runtime runs it
+    const runtime = join(f.home, 'runtime-copy')
+    mkdirSync(join(runtime, 'scripts'), { recursive: true })
+    for (const name of ['install-agents.sh', 'setup-lock.sh', 'run-isolated.mjs']) {
+      writeFileSync(join(runtime, 'scripts', name), readFileSync(join(REPO, 'scripts', name)))
+    }
+    writeFileSync(join(runtime, 'runtime-manifest.json'), '{}\n')
+    const before = tree(f.home)
+
+    const result = spawnSync('bash', [join(runtime, 'scripts', 'install-agents.sh'), '--apply', ...second.args()], { encoding: 'utf8', env: f.env })
+
+    expect(result.status, result.stderr).toBe(2)
+    expect(result.stderr).toBe('install-agents: a second Claude Code config folder needs a source checkout\n')
+    expect(existsSync(f.log)).toBe(false)
+    expect(tree(f.home)).toEqual(before)
+  })
+})
+
+describe('preflight checks for a second Claude Code config folder (#641)', () => {
+  const checks: Array<[string, (f: Fixture, second: SecondFolder) => void, RegExp]> = [
+    ['a CLAUDE.md that is the personal Claude file', (f, s) => {
+      rmSync(s.file)
+      symlinkSync(f.claudeFile, s.file)
+    }, /is the same file as a personal Claude Code or Copilot instruction file/],
+    ['a CLAUDE.md that is the personal Copilot file', (f, s) => {
+      rmSync(s.file)
+      symlinkSync(f.copilotFile, s.file)
+    }, /is the same file as a personal Claude Code or Copilot instruction file/],
+    ['a dangling CLAUDE.md link', (_f, s) => rmSync(s.target), /is a dangling symlink — refusing to replace it/],
+    ['unmatched markers in the second file', (_f, s) => writeFileSync(s.target, `work\n${BEGIN}\n`), /unmatched managed markers/],
+    ['an entry that does not support --project', (f) => writeFileSync(f.env.AGENT_INBOX_MCP_ENTRY!, 'process.exit(0)\n'), /does not support --project yet; run npm run build first/],
+    ['a registration not fixed to the project', (_f, s) => writeFileSync(s.config, JSON.stringify({ mcpServers: { 'agent-inbox': { command: '/n', args: ['/e'] } } })), /is not fixed to the project work; remove it with `--apply --uninstall --target claude-config-dir --claude-config-dir .+`, then apply again/],
+    ['a registration fixed to another project', (_f, s) => writeFileSync(s.config, JSON.stringify({ mcpServers: { 'agent-inbox': { command: '/n', args: ['/e', '--project', 'other'] } } })), /is not fixed to the project work/],
+    ['an unreadable .claude.json', (_f, s) => writeFileSync(s.config, '{ "token": "sk-should-never-print", broken\n'), /could not read .+\.claude\.json \(it is not valid JSON\)/],
+  ]
+  // The command another repository runs selects only the second folder, and
+  // both personal files still count, selected or not.
+  for (const which of ['claude', 'copilot'] as const) {
+    for (const apply of [false, true]) {
+      it(`refuses a CLAUDE.md that is the personal ${which} file with --target claude-config-dir alone (${apply ? 'apply' : 'dry run'})`, () => {
+        const f = fixture()
+        const second = secondFolder(f)
+        const personal = which === 'claude' ? f.claudeFile : f.copilotFile
+        rmSync(second.file)
+        symlinkSync(personal, second.file)
+        const before = tree(f.home)
+        const personalBefore = readFileSync(personal, 'utf8')
+
+        const result = run(f, [...(apply ? ['--apply'] : []), '--target', 'claude-config-dir', ...second.args()])
+
+        expect(result.code, result.err).toBe(1)
+        expect(result.err).toMatch(/is the same file as a personal Claude Code or Copilot instruction file/)
+        expect(existsSync(f.log)).toBe(false)
+        expect(readFileSync(personal, 'utf8')).toBe(personalBefore)
+        const unlocked = (lines: string[]) => lines.filter((line) => !line.startsWith(join(f.home, '.agent-inbox')) &&
+          !line.startsWith(join(f.state, 'selftest-ran')))
+        expect(unlocked(tree(f.home))).toEqual(unlocked(before))
+      })
+    }
+  }
+
+  for (const [name, setup, message] of checks) {
+    for (const apply of [false, true]) {
+      it(`refuses ${name} (${apply ? 'apply' : 'dry run'}) before any host call`, () => {
+        const f = fixture()
+        const second = secondFolder(f)
+        setup(f, second)
+        const before = tree(f.home)
+
+        const result = run(f, [...(apply ? ['--apply'] : []), ...second.args()])
+
+        expect(result.code, result.err).toBe(1)
+        expect(result.err).toMatch(message)
+        expect(result.err).not.toContain('sk-should-never-print')
+        expect(result.err).not.toMatch(/"command"|\/n\b/)
+        expect(existsSync(f.log)).toBe(false)
+        expect(workDirs(f)).toEqual([])
+        // an apply takes the setup lock and runs the selftest before its
+        // preflight, as it always has
+        const unlocked = (lines: string[]) => lines.filter((line) => !line.startsWith(join(f.home, '.agent-inbox')) &&
+          !line.startsWith(join(f.state, 'selftest-ran')))
+        expect(unlocked(tree(f.home))).toEqual(unlocked(before))
+      })
+    }
+  }
+
+  it('replaces a mismatched registration with --force, and the named remedy works too', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    writeFileSync(second.config, `${JSON.stringify({ mcpServers: { 'agent-inbox': { command: '/n', args: ['/e'] }, other: { command: 'keep-me' } } })}\n`)
+    writeFileSync(join(f.state, 'claude@cfg'), '')
+
+    const forced = run(f, ['--apply', '--force', '--target', 'claude-config-dir', ...second.args()])
+
+    expect(forced.code, forced.err).toBe(0)
+    expect(secondConfig(second).mcpServers['agent-inbox']!.args!.slice(-2)).toEqual(['--project', 'work'])
+    expect(secondConfig(second).mcpServers.other).toEqual({ command: 'keep-me' })
+
+    const f2 = fixture()
+    const second2 = secondFolder(f2)
+    writeFileSync(second2.config, `${JSON.stringify({ mcpServers: { 'agent-inbox': { command: '/n', args: ['/e'] } } })}\n`)
+    writeFileSync(join(f2.state, 'claude@cfg'), '')
+    expect(run(f2, ['--apply', '--uninstall', '--target', 'claude-config-dir', '--claude-config-dir', second2.dir]).code).toBe(0)
+    const again = run(f2, ['--apply', '--target', 'claude-config-dir', ...second2.args()])
+    expect(again.code, again.err).toBe(0)
+    expect(secondConfig(second2).mcpServers['agent-inbox']!.args!.slice(-2)).toEqual(['--project', 'work'])
+  })
+
+  it('fails closed when the host reports a registration the file does not show fixed', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    // the fake CLI says "registered" while .claude.json has no entry
+    writeFileSync(join(f.state, 'claude@cfg'), '')
+    const before = [f.claudeFile, f.copilotFile].map((path) => readFileSync(path, 'utf8'))
+
+    const result = run(f, ['--apply', ...second.args()])
+
+    expect(result.code).toBe(1)
+    expect(result.err).toContain(`could not confirm that the registration in ${second.dir} is fixed to the project work; refusing to keep it`)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect([f.claudeFile, f.copilotFile].map((path) => readFileSync(path, 'utf8'))).toEqual(before)
+  })
+
+  it('keeps a registration already fixed to the project without a second add', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', ...second.args()]).code).toBe(0)
+    writeFileSync(f.log, '')
+
+    const result = run(f, ['--apply', '--target', 'claude-config-dir', ...second.args()])
+
+    expect(result.code, result.err).toBe(0)
+    expect(logLines(f)).toEqual([`claude@${second.dir} mcp get agent-inbox`])
+  })
+
+  // A registration already fixed to a project, and an apply that leaves --project
+  // out: the registration would be kept but the block written without the
+  // fixed-project section, so the two would disagree. It is refused instead, and
+  // the message never carries what the folder's .claude.json holds.
+  const FIXED_REMEDY = (dir: string) => `install-agents: the registration in ${dir} is fixed to a project; pass --project <name> again, or uninstall the second folder first with \`--apply --uninstall --target claude-config-dir --claude-config-dir ${dir}\`\n`
+  const SECRET_PROJECT = 'zebra-proj'
+  const fixedSecond = (f: Fixture): SecondFolder => {
+    const second = secondFolder(f)
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir, '--project', SECRET_PROJECT]).code).toBe(0)
+    writeFileSync(f.log, '')
+    return second
+  }
+
+  for (const apply of [false, true]) {
+    for (const targets of [['--target', 'claude-config-dir'], []]) {
+      it(`refuses ${targets.length ? '--target claude-config-dir' : 'the default targets'} without --project over a fixed registration (${apply ? 'apply' : 'dry run'}), changing nothing`, () => {
+        const f = fixture()
+        const second = fixedSecond(f)
+        const before = tree(f.home)
+
+        const result = run(f, [...(apply ? ['--apply'] : []), ...targets, '--claude-config-dir', second.dir])
+
+        expect(result.code, result.err).toBe(1)
+        expect(result.err).toBe(FIXED_REMEDY(second.dir))
+        expect(result.err).not.toContain(SECRET_PROJECT)
+        expect(result.out).not.toContain(SECRET_PROJECT)
+        expect(logLines(f)).toEqual([])
+        expect(workDirs(f)).toEqual([])
+        const unlocked = (lines: string[]) => lines.filter((line) => !line.startsWith(join(f.home, '.agent-inbox')) &&
+          !line.startsWith(join(f.state, 'selftest-ran')))
+        expect(unlocked(tree(f.home))).toEqual(unlocked(before))
+        expect(readFileSync(second.target, 'utf8')).toContain(FIXED_SECTION)
+      })
+    }
+  }
+
+  it('still allows --force, --uninstall and the named remedy without --project over a fixed registration', () => {
+    const f = fixture()
+    const second = fixedSecond(f)
+    const bare = ['--target', 'claude-config-dir', '--claude-config-dir', second.dir]
+
+    const forced = run(f, ['--apply', '--force', ...bare])
+
+    expect(forced.code, forced.err).toBe(0)
+    expect(secondConfig(second).mcpServers['agent-inbox']!.args!).not.toContain('--project')
+    expect(readFileSync(second.target, 'utf8')).not.toContain(FIXED_SECTION)
+
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir, '--project', SECRET_PROJECT, '--force']).code).toBe(0)
+    expect(run(f, ['--apply', '--uninstall', ...bare]).code).toBe(0)
+    expect(secondConfig(second).mcpServers['agent-inbox']).toBeUndefined()
+    const plain = run(f, ['--apply', ...bare])
+    expect(plain.code, plain.err).toBe(0)
+    expect(secondConfig(second).mcpServers['agent-inbox']!.args!).not.toContain('--project')
+  })
+
+  it('keeps a plain registration without --project, as before', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    const bare = ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir]
+    expect(run(f, bare).code).toBe(0)
+    writeFileSync(f.log, '')
+
+    const result = run(f, bare)
+
+    expect(result.code, result.err).toBe(0)
+    expect(logLines(f)).toEqual([`claude@${second.dir} mcp get agent-inbox`])
+  })
+
+  it('checks again where it keeps the registration, when the file changed after the preflight', () => {
+    const f = fixture()
+    const second = secondFolder(f)
+    // registered without a project, so the preflight passes
+    expect(run(f, ['--apply', '--target', 'claude-config-dir', '--claude-config-dir', second.dir]).code).toBe(0)
+    const original = readFileSync(second.config, 'utf8')
+    // a front-of-PATH claude that, when the personal one is added, fixes the second folder's registration
+    const race = join(f.home, 'race-bin')
+    mkdirSync(race)
+    writeFileSync(join(race, 'claude'), `#!/bin/sh
+if [ -z "\${CLAUDE_CONFIG_DIR:-}" ] && [ "$1:$2" = "mcp:add" ]; then
+  "${process.execPath}" -e 'const fs=require("node:fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));j.mcpServers["agent-inbox"].args.push("--project","${SECRET_PROJECT}");fs.writeFileSync(process.argv[1],JSON.stringify(j))' "${second.config}"
+fi
+exec "${join(f.fakebin, 'claude')}" "$@"
+`)
+    chmodSync(join(race, 'claude'), 0o755)
+    const claudeBefore = readFileSync(f.claudeFile, 'utf8')
+
+    const result = spawnSync('bash', [SCRIPT, '--apply', '--claude-config-dir', second.dir], { encoding: 'utf8', env: { ...f.env, PATH: `${race}:${f.env.PATH}` } })
+
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stderr).toContain(FIXED_REMEDY(second.dir))
+    expect(result.stderr).not.toContain(SECRET_PROJECT)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(readFileSync(f.claudeFile, 'utf8')).toBe(claudeBefore)
+    expect(readFileSync(second.config, 'utf8')).not.toBe(original)
+    expect(readFileSync(second.target, 'utf8')).not.toContain(FIXED_SECTION)
+  })
+
+  it('the source MCP entry names --project in code, which the entry check looks for', () => {
+    const code = readFileSync(join(REPO, 'src', 'mcp-server.ts'), 'utf8').split('\n').filter((line) => !line.trimStart().startsWith('//')).join('\n')
+    expect(code).toContain('--project')
+  })
+})
+
+describe('usage text for a second Claude Code config folder (#641)', () => {
+  it('--help prints the whole usage block, the second folder included', () => {
+    const f = fixture()
+    const result = run(f, ['--help'])
+    expect(result.code).toBe(0)
+    const header = readFileSync(SCRIPT, 'utf8').split('\n')
+    const end = header.findIndex((line) => line === 'set -u')
+    expect(result.out).toBe(`${header.slice(1, end).join('\n')}\n`)
+    expect(result.out).toContain('--target claude-config-dir --claude-config-dir ~/.claude-work --project work')
+    expect(result.out).toContain('install-agents.sh --apply --runtime-source <dir> --runtime-digest sha256:<hex>')
+    expect(existsSync(f.log)).toBe(false)
+  })
+
+  it('names the new target value in both --target errors', () => {
+    const f = fixture()
+    expect(run(f, ['--target', 'work'])).toMatchObject({ code: 2, err: 'install-agents: --target must be all, claude, copilot, or claude-config-dir\n' })
+    expect(run(f, ['--target'])).toMatchObject({ code: 2, err: 'install-agents: --target needs all, claude, copilot, or claude-config-dir\n' })
   })
 })

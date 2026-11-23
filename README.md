@@ -108,6 +108,8 @@ npm run install:agents -- --apply
 The installer supports both hosts by default. Use `--target claude` or
 `--target copilot` to install only one. It verifies the Node 24 runtime, backs up
 instruction files before changing them, and owns only its marked block.
+A second Claude Code account with its own config folder (`CLAUDE_CONFIG_DIR`) is set
+up with `--claude-config-dir`; see [A second Claude Code config folder](docs/INSTALL.md#a-second-claude-code-config-folder).
 
 Start a fresh agent session after installation.
 

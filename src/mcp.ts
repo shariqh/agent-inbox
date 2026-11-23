@@ -58,6 +58,8 @@ function normalizeIssue(value: string, sessionRepo: string | null): IssueLink | 
 export interface McpServerOptions {
   /** Where the session's place is read from (#617); the real tmux and home by default. A test passes readers that touch nothing. */
   place?: PlaceSource
+  /** #641: the project every session of this registration reports under (the server's `--project`). */
+  fixedProject?: string
 }
 
 export function buildMcpServer(db: Database.Database, cwd: string, options: McpServerOptions = {}): McpServer {
@@ -87,7 +89,8 @@ export function buildMcpServer(db: Database.Database, cwd: string, options: McpS
       return { ...rest, capabilities: Object.keys(experimental).length ? { ...others, experimental } : others }
     })
   }
-  const scope = makeScope(cwd)
+  const fixedProject = options.fixedProject
+  const scope = makeScope(cwd, fixedProject === undefined ? {} : { fixedProject })
   // issue #42 — what THIS SERVER PROCESS has already handed over. Per-process,
   // NOT per session or per agent: this server is long-lived and a subagent's
   // calls are served by its parent CLI's process, so a fan-out shares one
@@ -96,6 +99,13 @@ export function buildMcpServer(db: Database.Database, cwd: string, options: McpS
   // decides whether the common case is cheap. See src/shape.ts.
   const ledger = makeContextLedger()
   const clientName = (): string | undefined => server.server.getClientVersion()?.name
+  // #641 — what register and whoami add to the scope when the project is fixed.
+  // Without a fixed project their output is the scope alone, as before.
+  const scopeReport = (): string => JSON.stringify(fixedProject === undefined ? scope.get(clientName()) : {
+    ...scope.get(clientName()),
+    project_fixed: true,
+    note: `This registration fixes the project to ${fixedProject}. It is correct for every session here: do not register, archive, move or recreate anything to change it.`,
+  })
   // one id per SERVER PROCESS, used as the session id for the live-activity view.
   // NOT one per agent session: a subagent's calls are served by its parent CLI's
   // long-lived process (measured — servers observed running 4+ days), so a
@@ -484,6 +494,11 @@ export function buildMcpServer(db: Database.Database, cwd: string, options: McpS
       const s = agentScope()
       const responseProject = project ?? s.project
       refuseReserved(responseProject)
+      // #641 — reading another project would also stamp its answers as
+      // delivered, so a fixed registration refuses it instead of ignoring it
+      if (fixedProject !== undefined && responseProject !== fixedProject) {
+        throw new Error(`this registration's sessions are fixed to ${fixedProject}; pending can read only ${fixedProject}`)
+      }
       const items = listPending(db, responseProject, { includeInformational: true, itemId: item_id })
         .filter((it) => it.kind === 'question'
           ? markReplySeen(db, it.id, it.replied_at, it.response_revision, s.agent)
@@ -628,7 +643,7 @@ export function buildMcpServer(db: Database.Database, cwd: string, options: McpS
       if (project !== undefined) refuseReserved(project)
       scope.override({ project, stream, repo, issue })
       registerPresence()
-      return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
+      return { content: [{ type: 'text', text: scopeReport() }] }
     },
   )
 
@@ -637,7 +652,7 @@ export function buildMcpServer(db: Database.Database, cwd: string, options: McpS
     { description: 'Report this session’s current project/stream/agent scope.', inputSchema: {} },
     async () => {
       heartbeat()
-      return { content: [{ type: 'text', text: JSON.stringify(scope.get(clientName())) }] }
+      return { content: [{ type: 'text', text: scopeReport() }] }
     },
   )
 

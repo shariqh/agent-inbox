@@ -1,0 +1,47 @@
+exit: 0
+=== stdout ===
+── claude MCP command ──
+  claude mcp add --scope user agent-inbox -- <NODE> <HOME>/mcp-server.js 
+── <HOME>/.claude/CLAUDE.md ──
+# Shared agent rules
+
+Keep this shared.
+<!-- agent-inbox:begin -->
+<SNIPPET>
+
+<CLAUDE_APPENDIX>
+
+<COPILOT_APPENDIX>
+<!-- agent-inbox:end -->
+── copilot MCP command ──
+  copilot mcp add agent-inbox -- <NODE> <HOME>/mcp-server.js 
+── <HOME>/.copilot/copilot-instructions.md ──
+# Shared agent rules
+
+Keep this shared.
+<!-- agent-inbox:begin -->
+<SNIPPET>
+
+<CLAUDE_APPENDIX>
+
+<COPILOT_APPENDIX>
+<!-- agent-inbox:end -->
+=== stderr ===
+── dry run: nothing was written or registered. Re-run with --apply. ──
+meshctl: no shim: <HOME>/meshctl.js is missing (run npm run build first)
+=== host CLI log ===
+(no host CLI call)
+=== ~/.claude/CLAUDE.md ===
+(symlink to <HOME>/dotfiles/shared-agent-instructions.md)
+# Shared agent rules
+
+Keep this shared.
+=== ~/.copilot/copilot-instructions.md ===
+(symlink to <HOME>/dotfiles/shared-agent-instructions.md)
+# Shared agent rules
+
+Keep this shared.
+=== ~/.claude.json ===
+{"mcpServers":{}}
+=== ~/.copilot/mcp-config.json ===
+{"mcpServers":{}}

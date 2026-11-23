@@ -574,6 +574,70 @@ after the snippet changes to pick the new text up.
 
 </details>
 
+### A second Claude Code config folder
+
+A second Claude Code account, such as a work login, keeps its settings in its own config
+folder and is started with `CLAUDE_CONFIG_DIR` set to that folder, for example
+`~/.claude-work`. `--claude-config-dir` sets up Agent Inbox there as well: it registers
+the MCP server in that folder's `.claude.json` (user scope) and writes the managed block
+into its `CLAUDE.md`, through a symlink if that file is one. Only Agent Inbox is
+registered there: no other MCP server, no skill and no hook. Copilot is not involved.
+
+```sh
+npm run install:agents -- --claude-config-dir ~/.claude-work --project work            # dry run: both personal hosts and the second folder
+npm run install:agents -- --apply --claude-config-dir ~/.claude-work --project work    # all three in one run
+npm run install:agents -- --apply --target claude-config-dir --claude-config-dir ~/.claude-work --project work   # the second folder only
+npm run install:agents -- --apply --uninstall --target claude-config-dir --claude-config-dir ~/.claude-work      # remove it there
+```
+
+With the default targets the second folder comes last in every step, and the run is one
+transaction: if any step fails or the run is interrupted, every target is put back. With
+`--target claude-config-dir` only that folder is touched (apart from the meshctl shim,
+which every apply writes), and a failure there puts back only that folder; that is the command to run again after something else rewrote its
+`CLAUDE.md` and dropped the block. `--force` and `--uninstall` work there as for the
+personal hosts.
+
+**The fixed project.** With `--project <name>`, the server is registered with
+`--project <name>` in its arguments, so every session of that folder reports under
+`<name>`, in any folder or repository, and cannot leave it; `whoami` shows it with
+`project_fixed: true`. The block in that folder's `CLAUDE.md` then gets one more section
+saying so, and telling the sessions that share the project to prefix their board titles
+and to act only on what they raised themselves. A name is ASCII letters, digits, `.`, `_`
+and `-`, starting with a letter or a digit, at most 64 characters. Without `--project`
+the folder gets exactly the personal Claude Code registration and block, unless its
+registration is already fixed to a project: the installer then refuses, since the block
+would no longer match the registration. Pass `--project <name>` again, or run
+`--apply --uninstall --target claude-config-dir --claude-config-dir <dir>` first (or
+`--apply --force` to replace it with the personal registration). With `--uninstall`,
+`--project` is accepted and ignored.
+
+The installer refuses, and changes nothing:
+
+- `--project` or `--target claude-config-dir` without `--claude-config-dir`, or the
+  folder given twice, or a project name outside the pattern above.
+- A folder that is not an absolute path, does not exist (it is never created), is your
+  home folder or `~/.claude`, or has no `.claude.json` of its own yet (start Claude Code
+  once with `CLAUDE_CONFIG_DIR` set to it first), or whose `.claude.json` is
+  `~/.claude.json`.
+- A packaged runtime: the second folder needs a source checkout.
+- A `CLAUDE.md` there that is the same file as a personal Claude Code or Copilot
+  instruction file, a dangling link, or broken managed markers.
+- A build of the MCP server too old to accept `--project` (run `npm run build`).
+- An existing registration there that is not fixed to that project, unless `--force` is
+  given. The message names the `--uninstall` command that removes it; apply again after.
+
+An exported `CLAUDE_CONFIG_DIR` is ignored: the personal install always uses
+`~/.claude.json` and `~/.claude`, and the second folder is used only when
+`--claude-config-dir` names it.
+
+Not included yet:
+
+- **Hooks.** `install:hooks` writes only `~/.claude/settings.json`, and a hook files its
+  items under the working directory's project, so none are installed for the second
+  folder. Its sessions must call `pending()` between steps.
+- **The app's Setup** neither shows nor manages the second folder.
+- **The Agents view's host list** does not include the second folder.
+
 ### Manual MCP registration
 
 **Claude Code:**

@@ -11,7 +11,7 @@
 // READERS is every reader of those files, run as a human or Setup runs it,
 // over every config in BROKEN, each of which puts a fake token where the
 // parser quotes it. A new reader is one more row.
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -133,6 +133,35 @@ function installAgents(f: Fixture, script: string, args: string[], env: NodeJS.P
   })
 }
 
+// A second Claude Code config folder (#641) whose .claude.json is broken the
+// way this fixture broke ~/.claude.json, and an entry that accepts --project.
+// Its arguments select that folder alone, so only its reader runs.
+function secondFolderArgs(f: Fixture): { args: string[]; env: NodeJS.ProcessEnv } {
+  const dir = join(f.home, '.claude-work')
+  const file = join(dir, '.claude.json')
+  mkdirSync(dir, { recursive: true })
+  let text: string | undefined
+  try {
+    text = readFileSync(f.claude, 'utf8')
+  } catch {
+    // the personal one cannot be read: neither can this one
+  }
+  if (text === undefined) {
+    writeFileSync(file, JSON.stringify({ mcpServers: { other: { command: 'node', env: { API_KEY: SECRET } } } }))
+    chmodSync(file, 0o000)
+  } else writeFileSync(file, text)
+  const entry = join(f.home, 'stub-project-entry.js')
+  writeFileSync(entry, '// accepts --project <name>\nprocess.exit(0)\n')
+  return {
+    args: ['--target', 'claude-config-dir', '--claude-config-dir', dir, '--project', 'work'],
+    env: { AGENT_INBOX_MCP_ENTRY: entry },
+  }
+}
+
+const secondFolderFile = (f: Fixture): string => join(f.home, '.claude-work', '.claude.json')
+const secondFolderSays = (f: Fixture, kind: string): string =>
+  `install-agents: could not read ${secondFolderFile(f)} (${kind === NOT_JSON ? 'it is not valid JSON' : 'the file cannot be read'})`
+
 // A source checkout's install-hooks.sh: jq merges, runtime-config.mjs sorts the entries.
 function checkoutHooks(f: Fixture, args: string[] = []): Output {
   const entry = join(f.home, 'stub-hook-cli.js')
@@ -209,6 +238,52 @@ const READERS: Reader[] = [
     name: 'install-agents.sh --apply --force, over a registration',
     run: (f) => installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), ['--apply', '--force'], { FAKE_REGISTERED: '1' }),
     says: (f) => `install-agents: ${f.claude} does not contain a readable agent-inbox registration`,
+    status: 1,
+  },
+  {
+    name: 'install-agents.sh --claude-config-dir (dry run), the second folder registration check',
+    run: (f) => {
+      const second = secondFolderArgs(f)
+      return installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), second.args, second.env)
+    },
+    says: secondFolderSays,
+    status: 1,
+  },
+  {
+    name: 'install-agents.sh --apply --claude-config-dir, the second folder registration check',
+    run: (f) => {
+      const second = secondFolderArgs(f)
+      return installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), ['--apply', ...second.args], second.env)
+    },
+    says: secondFolderSays,
+    status: 1,
+  },
+  {
+    // without --project the same file is read, for a registration already fixed to a project
+    name: 'install-agents.sh --claude-config-dir without --project (dry run), the fixed registration check',
+    run: (f) => {
+      const second = secondFolderArgs(f)
+      return installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), second.args.slice(0, -2), second.env)
+    },
+    says: secondFolderSays,
+    status: 1,
+  },
+  {
+    name: 'install-agents.sh --apply --claude-config-dir without --project, the fixed registration check',
+    run: (f) => {
+      const second = secondFolderArgs(f)
+      return installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), ['--apply', ...second.args.slice(0, -2)], second.env)
+    },
+    says: secondFolderSays,
+    status: 1,
+  },
+  {
+    name: 'install-agents.sh --apply --force --claude-config-dir, over a registration in the second folder',
+    run: (f) => {
+      const second = secondFolderArgs(f)
+      return installAgents(f, join(REPO, 'scripts', 'install-agents.sh'), ['--apply', '--force', ...second.args], { ...second.env, FAKE_REGISTERED: '1' })
+    },
+    says: (f) => `install-agents: ${secondFolderFile(f)} does not contain a readable agent-inbox registration`,
     status: 1,
   },
   {

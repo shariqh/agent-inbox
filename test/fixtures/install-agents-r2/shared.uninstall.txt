@@ -1,0 +1,27 @@
+exit: 0
+=== stdout ===
+=== stderr ===
+claude: removed existing agent-inbox MCP registration
+copilot: removed existing agent-inbox MCP registration
+backed up → <HOME>/dotfiles/shared-agent-instructions.md.bak.<TS>.<PID>
+backed up → <HOME>/dotfiles/shared-agent-instructions.md.bak.<TS>.<PID>
+Start a fresh agent session to load MCP and instruction changes.
+=== host CLI log ===
+claude mcp get agent-inbox
+claude mcp remove --scope user agent-inbox
+copilot mcp get agent-inbox --json
+copilot mcp remove agent-inbox
+=== ~/.claude/CLAUDE.md ===
+(symlink to <HOME>/dotfiles/shared-agent-instructions.md)
+# Shared agent rules
+
+Keep this shared.
+=== ~/.copilot/copilot-instructions.md ===
+(symlink to <HOME>/dotfiles/shared-agent-instructions.md)
+# Shared agent rules
+
+Keep this shared.
+=== ~/.claude.json ===
+{"mcpServers":{}}
+=== ~/.copilot/mcp-config.json ===
+{"mcpServers":{}}

@@ -191,16 +191,37 @@ function fixture(): Fixture {
   writeFileSync(claudeConfig, '{"mcpServers":{}}\n')
   writeFileSync(copilotConfig, '{"mcpServers":{}}\n')
 
+  // A second Claude Code config folder (#641): with CLAUDE_CONFIG_DIR set, the
+  // fake claude uses <dir>/.claude.json, the knob key claude@cfg, stores every
+  // argument after -- as the entry's command and args, and creates the folder
+  // as the real CLI does. A folder outside this HOME exits 97 before anything.
   const cli = `#!/bin/sh
 name="$(basename "$0")"
+key="$name"
+if [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then
+  case "$CLAUDE_CONFIG_DIR" in
+    "$HOME"/*) ;;
+    *) echo "fake $name: CLAUDE_CONFIG_DIR is outside the test HOME" >&2; exit 97 ;;
+  esac
+fi
 if [ "$name" = claude ]; then config="$CLAUDE_CONFIG"; else config="$COPILOT_CONFIG"; fi
+if [ "$name" = claude ] && [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  key="claude@cfg"
+  config="$CLAUDE_CONFIG_DIR/.claude.json"
+fi
 case "$1:$2" in
   mcp:get)
     "$TEST_NODE" -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.exit(p.mcpServers?.["agent-inbox"]?0:1)' "$config" || exit 1
     if [ "$name" = claude ]; then echo "Scope: User config"; else echo '{"source":"user"}'; fi
     ;;
   mcp:add)
-    test "\${FAIL_ADD:-}" != "$name" || exit 9
+    test "\${FAIL_ADD:-}" != "$key" || exit 9
+    if [ "$key" = "claude@cfg" ]; then
+      shift 6
+      "$TEST_NODE" -e 'const fs=require("fs");const f=process.argv[1];let p={};try{p=JSON.parse(fs.readFileSync(f,"utf8"))}catch{};p.mcpServers??={};p.mcpServers["agent-inbox"]={command:process.argv[2],args:process.argv.slice(3)};fs.writeFileSync(f,JSON.stringify(p)+"\\n")' "$config" "$@"
+      exit
+    fi
     if [ "$name" = claude ]; then node="$7"; entry="$8"; else node="$5"; entry="$6"; fi
     "$TEST_NODE" -e 'const fs=require("fs");const f=process.argv[1];const p=JSON.parse(fs.readFileSync(f,"utf8"));p.mcpServers??={};p.mcpServers["agent-inbox"]={command:process.argv[2],args:[process.argv[3]]};fs.writeFileSync(f,JSON.stringify(p)+"\\n")' "$config" "$node" "$entry"
     ;;
@@ -226,7 +247,8 @@ esac
     copilotConfig,
     tmp,
     env: {
-      ...process.env,
+      // a CLAUDE_CONFIG_DIR exported by the test shell never reaches a fixture (#641)
+      ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'CLAUDE_CONFIG_DIR')),
       HOME: home,
       TMPDIR: tmp,
       PATH: `${fakebin}:/usr/bin:/bin`,

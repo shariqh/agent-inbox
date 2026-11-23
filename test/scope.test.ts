@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { join, basename } from 'node:path'
 import { realpathSync, renameSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { makeScope } from '../src/scope.js'
+import { makeScope, parseServerArgs } from '../src/scope.js'
 import { scratchDir } from './scratch.js'
 
 // Issue #159 counts REAL git spawns: the spy delegates to the genuine
@@ -36,6 +36,33 @@ describe('makeScope', () => {
     expect(s.project).toBe('oris')
     expect(s.stream).toBe('release')
     expect(s.agent).toBe('copilot')
+  })
+})
+
+// ── issue #641: a project fixed by the registration's own arguments ──────────
+
+describe('makeScope with a fixed project (#641)', () => {
+  it('outranks both inference and register({ project }); stream, repo and issue still apply', () => {
+    const dir = scratchDir('fixed-')
+    const scope = makeScope(dir, { fixedProject: 'work' })
+    expect(scope.get('claude-code').project).toBe('work')
+    scope.override({ project: 'elsewhere', stream: 'side', repo: 'owner/name', issue: 9 })
+    expect(scope.get('claude-code')).toMatchObject({ project: 'work', stream: 'side', repo: 'owner/name', issue: 9 })
+  })
+
+  it('parses exactly --project <name> and refuses anything else without quoting the value', () => {
+    expect(parseServerArgs([])).toEqual({})
+    expect(parseServerArgs(['--project', 'work'])).toEqual({ fixedProject: 'work' })
+    expect(parseServerArgs(['--project', 'a'.repeat(64)])).toEqual({ fixedProject: 'a'.repeat(64) })
+    expect(parseServerArgs(['--project', 'w0rk.team_a-1'])).toEqual({ fixedProject: 'w0rk.team_a-1' })
+    for (const bad of [['--project'], ['--project', ''], ['--project', 'a'.repeat(65)], ['--project', '-work'], ['--project', '.work'],
+      ['--project', '@sessions'], ['--project', 'w\u00f6rk'], ['--project', 'two words'], ['--project', 'work', '--project', 'x'], ['--other'], ['work']]) {
+      const parsed = parseServerArgs(bad)
+      expect('error' in parsed, JSON.stringify(bad)).toBe(true)
+      const error = (parsed as { error: string }).error
+      expect(error).toContain('--project')
+      for (const value of bad.slice(1)) if (value && value !== '--project') expect(error).not.toContain(value)
+    }
   })
 })
 

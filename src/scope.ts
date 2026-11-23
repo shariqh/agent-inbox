@@ -11,13 +11,39 @@ export interface Scope {
   issue: number | null
 }
 
-export function makeScope(cwd: string): {
+// #641 — a project name a registration may fix: ASCII only, first a letter or
+// a digit, then letters, digits, `.`, `_` or `-`, at most 64 characters. The
+// installer checks the same pattern. A leading `@` (the reserved projects) can
+// never match.
+const FIXED_PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+/**
+ * The stdio server's own arguments (#641). Exactly `--project <name>` is
+ * accepted, which fixes every session of this registration to that project;
+ * nothing else is. The error never quotes the value, so a mistyped secret
+ * cannot reach a host's log.
+ */
+export function parseServerArgs(argv: readonly string[]): { fixedProject?: string } | { error: string } {
+  if (argv.length === 0) return {}
+  if (argv[0] !== '--project') return { error: 'unknown argument; the only argument accepted is --project <name>' }
+  if (argv.length < 2) return { error: '--project needs a project name' }
+  if (argv.length > 2) return { error: 'unknown argument after --project <name>' }
+  if (!FIXED_PROJECT.test(argv[1]!)) {
+    return { error: '--project must be letters, digits, ".", "_" or "-", start with a letter or a digit, and be at most 64 characters' }
+  }
+  return { fixedProject: argv[1]! }
+}
+
+export function makeScope(cwd: string, options: { fixedProject?: string } = {}): {
   get(clientName: string | undefined): Scope
   issueFor(branch: string): number | null
   headFor(branch: string): string | null
   rootFor(): string | null
   override(patch: { project?: string; stream?: string; repo?: string; issue?: number }): void
 } {
+  // #641 — a project fixed by the registration's own arguments outranks both
+  // register() and inference, for the life of the process.
+  const fixedProject = options.fixedProject
   let projectOverride: string | undefined
   let streamOverride: string | undefined
   let repoOverride: string | undefined
@@ -67,9 +93,10 @@ export function makeScope(cwd: string): {
       const stream = streamOverride ?? inferStream(cwd)
       // at most one origin read per call (a missing one is re-read), and none
       // when both values it feeds are overridden
-      const remote = projectOverride === undefined || repoOverride === undefined ? origin() : null
+      const project = fixedProject ?? projectOverride
+      const remote = project === undefined || repoOverride === undefined ? origin() : null
       return {
-        project: projectOverride ?? inferProject(cwd, remote),
+        project: project ?? inferProject(cwd, remote),
         stream,
         agent: inferAgent(clientName),
         repo: repoOverride ?? inferRepo(cwd, remote),
@@ -80,7 +107,9 @@ export function makeScope(cwd: string): {
     headFor,
     rootFor,
     override(patch) {
-      if (patch.project !== undefined) projectOverride = patch.project
+      // a fixed project leaves register({ project }) without effect; the
+      // stream, repo and issue still apply
+      if (patch.project !== undefined && fixedProject === undefined) projectOverride = patch.project
       if (patch.stream !== undefined) streamOverride = patch.stream
       if (patch.repo !== undefined) repoOverride = patch.repo
       if (patch.issue !== undefined) issueOverride = patch.issue

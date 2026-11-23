@@ -8829,6 +8829,7 @@ function syncPlansVisit() {
   plansPin = { needs: [], moving: [], stalled: [] }
   planHold.clear()
   visitRows.clear()
+  disarmArchive()
   plansNotice = null
   disarmStalled()
 }
@@ -9432,12 +9433,32 @@ function boardEl(b, archived = false, lingering = false, section = null) {
 }
 
 // two-step inline confirm: first click arms ("Really archive?"), second click within
-// 4s archives; it disarms after 4s (and implicitly on re-render — the DOM is rebuilt)
+// 4s archives. The armed state lives in module state (the list is rebuilt on every
+// painted frame, and a rebuilt button is drawn from it): arming and the 4 second
+// disarm rewrite the label in place and never render.
+let archiveArm = null // { id, until, timer } for the one plan whose Archive is armed
+const ARCHIVE_ARM_MS = 4000
+
+function paintArchiveButton(el, armed) {
+  el.classList.toggle('confirm', armed)
+  const text = armed ? 'Really archive?' : 'Archive'
+  if (el.textContent !== text) el.textContent = text
+}
+
+function disarmArchive() {
+  if (!archiveArm) return
+  clearTimeout(archiveArm.timer)
+  const { id } = archiveArm
+  archiveArm = null
+  const el = document.getElementById(`plan-archive-${id}`)
+  if (el) paintArchiveButton(el, false)
+}
+
 function archiveBtn(board) {
-  let timer = null
+  const armed = () => archiveArm?.id === board.id && Date.now() < archiveArm.until
   const el = btn('Archive', async () => {
-    if (el.classList.contains('confirm')) {
-      clearTimeout(timer)
+    if (armed()) {
+      disarmArchive()
       // a board the HUMAN archives by hand must not linger — lingering is only
       // for the agent's own auto-archive at 100% (spec §9)
       sessionActiveBoards.delete(board.id)
@@ -9446,13 +9467,15 @@ function archiveBtn(board) {
       await reloadAndPaint() // #38 — the human's own click gets its frame
       return
     }
-    el.classList.add('confirm')
-    el.textContent = 'Really archive?'
-    timer = setTimeout(() => {
-      el.classList.remove('confirm')
-      el.textContent = 'Archive'
-    }, 4000)
+    disarmArchive()
+    const timer = setTimeout(() => {
+      if (archiveArm?.id === board.id) disarmArchive()
+    }, ARCHIVE_ARM_MS)
+    archiveArm = { id: board.id, until: Date.now() + ARCHIVE_ARM_MS, timer }
+    paintArchiveButton(el, true)
   })
+  el.id = `plan-archive-${board.id}` // the in-place disarm finds the button by it
+  paintArchiveButton(el, armed())
   return el
 }
 

@@ -1374,6 +1374,74 @@ describe('rules the first review found unprotected (RT-4)', () => {
   })
 })
 
+describe('the single plan’s Archive (item 20)', () => {
+  const archiveButton = (id: string) => buttonLabelled('Archive', card(id)!) ?? buttonLabelled('Really archive?', card(id)!)
+  async function armed() {
+    db = freshDb()
+    const b = plan(db, 'Docs', [tracked('One')])
+    plan(db, 'Other', [tracked('Two')])
+    const bridge = await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    click(summary(b.id))
+    await settle()
+    return { b, bridge }
+  }
+
+  it('stays armed when a changed poll rebuilds the list, and the second click archives that plan once', async () => {
+    const { b, bridge } = await armed()
+    const first = archiveButton(b.id)!
+    first.focus()
+    click(first)
+    expect(first.textContent).toBe('Really archive?')
+    expect(first.classList.contains('confirm')).toBe(true)
+    await changedPollTick(db!)
+    const rebuilt = archiveButton(b.id)!
+    expect(rebuilt).not.toBe(first)
+    expect(rebuilt.textContent).toBe('Really archive?')
+    expect(rebuilt.classList.contains('confirm')).toBe(true)
+    expect(document.activeElement).toBe(rebuilt)
+    click(archiveButton(b.id))
+    await settle()
+    expect(archivePosts(bridge).map((p) => p.url)).toEqual([`/api/boards/${b.id}/archive`])
+    expect(getBoardByTitle(db!, 'alpha', 'Docs')!.status).toBe('archived')
+  })
+
+  it('disarms by itself after 4 seconds, in place, and arming only one plan at a time', async () => {
+    const { b } = await armed()
+    const other = getBoard(db!, 'alpha', 'Other')!
+    click(archiveButton(b.id))
+    const button = archiveButton(b.id)!
+    await vi.advanceTimersByTimeAsync(3900)
+    expect(archiveButton(b.id)!.textContent).toBe('Really archive?')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(archiveButton(b.id)!.textContent).toBe('Archive')
+    expect(archiveButton(b.id)!.classList.contains('confirm')).toBe(false)
+    expect(document.contains(button) ? button.textContent : 'Archive').toBe('Archive')
+    // a rebuilt list after that draws it unarmed
+    plan(db!, 'Fresh', [tracked()])
+    await pollTick()
+    expect(archiveButton(b.id)!.textContent).toBe('Archive')
+    // arming another plan's button disarms the first
+    click(summary(other.id))
+    await settle()
+    click(archiveButton(b.id))
+    click(archiveButton(other.id))
+    expect(archiveButton(b.id)!.textContent).toBe('Archive')
+    expect(archiveButton(other.id)!.textContent).toBe('Really archive?')
+  })
+
+  it('a new visit to Plans starts disarmed', async () => {
+    const { b } = await armed()
+    click(archiveButton(b.id))
+    await showInbox()
+    await showPlans()
+    click(summary(b.id))
+    await settle()
+    expect(archiveButton(b.id)!.textContent).toBe('Archive')
+  })
+})
+
 describe('the stylesheet (CSS)', () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public', 'style.css'), 'utf8')
   const slice = css.slice(css.indexOf('/* UX pass, slice 3: Plans as bars.'))

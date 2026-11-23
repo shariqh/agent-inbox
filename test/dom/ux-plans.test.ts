@@ -1491,6 +1491,12 @@ describe('the stylesheet (CSS)', () => {
     expect(slice).toMatch(/#boards \.board-table tr:has\(\.blocked\) \.row-label \{ color: inherit; font-weight: 500; \}/)
     expect(slice).toMatch(/#boards \.board-table tr\.needs-answer \.row-label \{[^}]*font-weight: 650;/)
   })
+  it('lays an option out the same before and after the keyboard numbers it, so a press moves nothing', () => {
+    // the numbered layout (.opt-pill[data-shortcut]) and the resting one must be the same grid
+    expect(css).toMatch(/\.opt-pill\[data-shortcut\] \{ display: grid; grid-template-columns: minmax\(0, 1fr\) auto;/)
+    expect(slice).toMatch(/\.row-panel \.opt-pill \{ display: grid; grid-template-columns: minmax\(0, 1fr\) auto;/)
+    expect(slice).toMatch(/\.row-panel \.opt-pill \.rec-tag \{ grid-column: 1; grid-row: 2; justify-self: start; margin: 0; \}/)
+  })
   it('draws a plan on a card only when it is expanded, and turns the chevron from the form', () => {
     expect(slice).toMatch(/#boards \.board\[data-form="full"\] \{[^}]*background: var\(--app-elevated\);/)
     expect(slice).toMatch(/#boards \.board\[data-form="full"\] > \.plan-line \.plan-chevron \{ transform: rotate\(45deg\); \}/)

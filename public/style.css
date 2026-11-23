@@ -3519,6 +3519,11 @@ body.hub-reconnecting #status { display: none; }
 #boards .board-table tr:has(> .row-glyph.step-done) .row-label { color: var(--app-text-soft); }
 #boards .board-table .row-glyph :is(.step-mark) { font-size: var(--fs-meta); }
 #boards .answer-btn { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+/* An option keeps one layout whether or not the keyboard has numbered it. A press gives the step the
+   keyboard, and the numbering used to move "recommended" to its own line: everything below shifted
+   between the press and its release. */
+.row-panel .opt-pill { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-1) var(--sp-2); align-items: start; }
+.row-panel .opt-pill .rec-tag { grid-column: 1; grid-row: 2; justify-self: start; margin: 0; }
 .stalled-fold { margin-top: var(--sp-5); padding: 0 var(--sp-5); border: 1px solid var(--app-soft); border-radius: 14px; }
 .stalled-fold > summary { display: flex; min-height: 52px; align-items: center; gap: var(--sp-2); cursor: pointer; }
 .stalled-title { margin: 0; color: var(--app-muted); font-size: var(--fs-body); font-weight: 650; }

@@ -34,6 +34,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `flag`, `pending`, `answer`, `resolve` and every `board_*` tool refuse a scope, a
   `project` argument or an item id in one. A session a driver holds a fresh
   `driven:` lease for gets `woken: "pushed"` and no watch contract.
+- A registration can fix its project (#641): `mcp-server.js --project <name>`. Every
+  session it serves then reports under `<name>`, whatever its folder. It keeps one
+  account's sessions in one project; it is not an access boundary. Details below.
 - A Copilot client's `pending()` with no message to hand over, and its
   `status({done:true})`, return `message_watch` (#477) unless one already runs for this
   session; no other host gets it. Details in `hooks-and-watcher.md`.
@@ -61,6 +64,24 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   read snapshot is promoted to the writer — that fails at once with `SQLITE_BUSY` or
   `SQLITE_BUSY_SNAPSHOT` — so any transaction that reads before it may write must be
   `.immediate()` (#154).
+- **A fixed project** (#641, `src/scope.ts` `parseServerArgs`, `src/mcp-server.ts`). The server
+  reads its own argv and accepts exactly `--project <name>`: ASCII, first a letter or a digit, then
+  letters, digits, `.`, `_` or `-`, at most 64 characters, so a reserved `@` project can never be
+  fixed. No environment variable is read: a stdio server inherits its CLI's whole environment, so
+  a variable exported in a shell would also reach unrelated registrations. Any other argument, a
+  missing value or an invalid name prints one line on stderr that names the flag and never the
+  value, and exits 1 before the database opens or the transport connects (fail closed: the host
+  shows the server as failed, and nothing is written under an inferred project). With no
+  arguments the server behaves exactly as before. `makeScope(cwd, { fixedProject })` returns the
+  fixed name ahead of `register` and inference; `register({ project })` then changes nothing,
+  while its `stream`, `repo` and `issue` still apply, and it raises no error. `whoami` and
+  `register` add `project_fixed: true` and a `note` saying the project is correct and must not be
+  changed; without a fixed project their output is the scope alone. `pending({ project })`, the
+  `item_id` form included, is a tool error for any other project, because reading one also stamps
+  its answers as delivered; the same name passes. `answer` and `resolve` by id are unchanged. It
+  keeps a scope clean and is not an access boundary: every session still opens the same database.
+  The installer passes it for a second Claude Code config folder (`setup-and-installers.md`).
+  Hooks, the driver and the chat index still infer from the working directory.
 - **Session scope is Solo-style** (`src/scope.ts`): inferred lazily per call, overridable via
   `register`. The one memo is a FOUND origin remote (#159): once `git remote get-url origin`
   succeeds, the server reuses it for both `project` and `repo` for the process's life (the

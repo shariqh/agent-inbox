@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream'
 import { z } from 'zod'
@@ -2875,4 +2875,99 @@ describe('where a session runs (#617)', () => {
       await claude.close()
     }
   }, 30000)
+})
+
+// #641 — `--project <name>` in the registration's own arguments fixes the
+// project of every session that registration serves.
+describe('a registration with a fixed project (#641)', () => {
+  const text = (res: unknown) => JSON.parse(((res as { content: Array<{ text: string }> }).content)[0]!.text)
+  const connect = async (dbPath: string, args: string[]) => {
+    const transport = new StdioClientTransport({
+      command: 'npx', args: ['tsx', 'src/mcp-server.ts', ...args], env: { ...process.env, AGENT_INBOX_DB: dbPath },
+    })
+    const client = new Client({ name: 'claude-code', version: '1.0.0' })
+    await client.connect(transport)
+    return client
+  }
+  const NOTE = 'This registration fixes the project to work. It is correct for every session here: do not register, archive, move or recreate anything to change it.'
+
+  it('outranks inference and register, and says so in whoami and register', async () => {
+    const dbPath = join(scratchDir('mcp-fixed-'), 'inbox.db')
+    const client = await connect(dbPath, ['--project', 'work'])
+    try {
+      const who = text(await client.callTool({ name: 'whoami', arguments: {} }))
+      expect(who.project).toBe('work')
+      expect(who.project_fixed).toBe(true)
+      expect(who.note).toBe(NOTE)
+
+      const registered = await client.callTool({ name: 'register', arguments: { project: 'elsewhere', stream: 'side', repo: 'owner/name', issue: 7 } })
+      expect(registered.isError).toBeFalsy()
+      const reg = text(registered)
+      expect(reg).toMatchObject({ project: 'work', stream: 'side', repo: 'owner/name', issue: 7, project_fixed: true, note: NOTE })
+      expect(text(await client.callTool({ name: 'whoami', arguments: {} }))).toMatchObject({ project: 'work', stream: 'side', repo: 'owner/name', issue: 7 })
+
+      await client.callTool({ name: 'flag', arguments: { kind: 'note', title: 'fixed note', ...INFO_SHAPE } })
+    } finally {
+      await client.close()
+    }
+    const item = listItems(openDb(dbPath)).find((i) => i.title === 'fixed note')!
+    expect(item.project).toBe('work')
+    expect(item.stream).toBe('side')
+  }, 20000)
+
+  it('refuses pending for another project and stamps nothing there; the same name passes', async () => {
+    const dbPath = join(scratchDir('mcp-fixed-pending-'), 'inbox.db')
+    const db = openDb(dbPath)
+    const other = insertItem(db, { project: 'other', stream: '', agent: 'claude-code', kind: 'question', title: 'other ask', ...QUESTION_SHAPE, action_owner: 'task' })
+    replyItem(db, other, 'an answer for another session')
+    const client = await connect(dbPath, ['--project', 'work'])
+    try {
+      for (const args of [{ project: 'other' }, { project: 'other', item_id: other }]) {
+        const refused = await client.callTool({ name: 'pending', arguments: args })
+        expect(refused.isError).toBe(true)
+        expect((refused.content as Array<{ text: string }>)[0]!.text).toContain("this registration's sessions are fixed to work; pending can read only work")
+      }
+      const same = text(await client.callTool({ name: 'pending', arguments: { project: 'work' } }))
+      expect(same.items).toEqual([])
+      expect(text(await client.callTool({ name: 'pending', arguments: {} })).items).toEqual([])
+    } finally {
+      await client.close()
+    }
+    const after = getItem(openDb(dbPath), other)!
+    expect(after.reply_seen_at).toBeNull()
+  }, 20000)
+
+  it('exits 1 before connecting on an invalid, missing or unknown argument, without echoing the value', () => {
+    const dir = scratchDir('mcp-fixed-args-')
+    const dbPath = join(dir, 'inbox.db')
+    for (const args of [['--project', 'bad value!'], ['--project', 'w\u00f6rk'], ['--project', '@sessions'], ['--project'], ['--verbose'], ['--project', 'work', 'extra']]) {
+      const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/mcp-server.ts', ...args], {
+        encoding: 'utf8', env: { ...process.env, AGENT_INBOX_DB: dbPath }, input: '', timeout: 15000,
+      })
+      expect(result.status, JSON.stringify(args)).toBe(1)
+      const lines = result.stderr.trim().split('\n')
+      expect(lines, JSON.stringify(args)).toHaveLength(1)
+      expect(lines[0]).toMatch(/^agent-inbox: /)
+      expect(lines[0]).toContain('--project')
+      for (const value of args.slice(1)) expect(lines[0]).not.toContain(value)
+      expect(result.stdout).toBe('')
+      expect(existsSync(dbPath)).toBe(false)
+    }
+  }, 60000)
+
+  it('leaves whoami and register output unchanged without arguments', async () => {
+    const dbPath = join(scratchDir('mcp-unfixed-'), 'inbox.db')
+    const client = await connect(dbPath, [])
+    try {
+      const who = text(await client.callTool({ name: 'whoami', arguments: {} }))
+      expect(Object.keys(who).sort()).toEqual(['agent', 'issue', 'project', 'repo', 'stream'])
+      const reg = text(await client.callTool({ name: 'register', arguments: { project: 'elsewhere' } }))
+      expect(Object.keys(reg).sort()).toEqual(['agent', 'issue', 'project', 'repo', 'stream'])
+      expect(reg.project).toBe('elsewhere')
+      const p = await client.callTool({ name: 'pending', arguments: { project: 'other' } })
+      expect(p.isError).toBeFalsy()
+    } finally {
+      await client.close()
+    }
+  }, 20000)
 })

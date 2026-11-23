@@ -8566,6 +8566,9 @@ function rowCardBodyEl(entry, m, nowMs) {
     compose.className = 'nrow-card-compose'
     if (answer) compose.appendChild(answer)
     if (actions) compose.appendChild(actions)
+    // the Note editor opens beside the Note button, in the bar, not out of sight in the body
+    const noteEditorEl = actions ? card.querySelector(':scope > .note-editor') : null
+    if (noteEditorEl) compose.appendChild(noteEditorEl)
     body.appendChild(compose)
   }
   for (const host of body.children) {
@@ -11669,10 +11672,19 @@ function itemNoteEditorEl(it) {
   const save = () => saveItemNote(it)
   bindReplyEditor(input, save)
   actions.appendChild(btn('Save', save))
-  actions.appendChild(btn('Cancel', () => {
+  actions.appendChild(btn('Cancel', (event) => {
+    // the surface the press was made in (Home, Find, the Review queue), found again after the rebuild
+    const scopeId = event.currentTarget?.closest?.('[id]')?.id ?? null
     delete itemNoteEditors[it.id]
     forceRender()
-    document.querySelector(`main > .panel:not([hidden]) [data-note-item="${CSS.escape(it.id)}"]`)?.focus({ preventScroll: true })
+    const sel = `[data-note-item="${CSS.escape(it.id)}"]`
+    const scopes = [scopeId && document.getElementById(scopeId), document.querySelector('main > .panel:not([hidden])')]
+    for (const scope of scopes) {
+      const note = scope?.querySelector?.(sel)
+      if (!note) continue
+      note.focus({ preventScroll: true })
+      if (document.activeElement === note) break
+    }
   }))
   wrap.append(input, actions)
   return wrap

@@ -145,6 +145,48 @@ describe('the Note editor on an item card', () => {
     await writeItemNote(deck, 'from the queue')
     expect(getItem(db, id)?.annotation).toBe('from the queue')
   })
+
+  it('on Home\'s opened ask the editor opens in the bar beside the Note button, not in the scrolling body', async () => {
+    db = freshDb()
+    const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Ship it?', detail: 'x '.repeat(400) })
+    await bootApp(db)
+    click(row(id))
+    await settle()
+    const noteButton = buttonLabelled('Note', row(id)!)!
+    expect(noteButton.closest('.nrow-card-compose')).not.toBeNull()
+    click(noteButton)
+    await settle()
+    const editor = noteEditor(row(id))!
+    expect(document.activeElement).toBe(editor)
+    expect(editor.closest('.nrow-card-scroll'), 'not in the scrolling body').toBeNull()
+    const compose = editor.closest('.nrow-card-compose')!
+    expect(compose, 'in the bar').not.toBeNull()
+    expect(compose.querySelector(':scope > .actions')?.nextElementSibling, 'after the actions').toBe(editor.closest('.note-editor'))
+  })
+
+  it('Cancel puts focus back on the Note button of the surface it was pressed in', async () => {
+    db = freshDb()
+    const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Ship it?' })
+    await bootApp(db)
+    // Home
+    click(row(id))
+    await settle()
+    click(buttonLabelled('Note', row(id)!))
+    await settle()
+    click(buttonLabelled('Cancel', row(id)!.querySelector('.note-editor')!))
+    await settle()
+    expect(document.activeElement).toBe(buttonLabelled('Note', row(id)!))
+    // the Review queue, with Home's copy of the same ask behind it
+    click(document.querySelector('.triage-btn'))
+    await settle()
+    const deck = document.getElementById('lightbox')!
+    click(buttonLabelled('Note', deck))
+    await settle()
+    type(noteEditor(deck), 'never mind')
+    click(buttonLabelled('Cancel', deck.querySelector('.note-editor')!))
+    await settle()
+    expect(document.activeElement, 'focus stays in the queue').toBe(buttonLabelled('Note', deck))
+  })
 })
 
 function advanceAndChange(d: Database.Database) {

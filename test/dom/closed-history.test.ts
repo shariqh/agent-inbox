@@ -198,12 +198,13 @@ describe('paged closed history (issue #184)', () => {
     await selectTab('find')
     expect(historyReads(reads)).toEqual([])
 
-    // UX pass, slice 4: Find shows what the page can place and reads the rest on Show more
+    // UX pass, slice 4: the page can place none of the archive's closed items, so Find would
+    // draw nothing: like History it reads the older history itself
     await selectProject('archive')
-    expect(historyReads(reads)).toEqual([])
-    click(buttonLabelled('Show more', findFoot()))
-    await settle()
     expect(historyReads(reads).map((read) => read.status)).toEqual([200])
+    expect(buttonLabelled('Show more', findFoot())).toBeNull()
+    expect(historyTitles(), 'asks closed without a reply are left out of All with no query').toEqual([])
+    expect(document.getElementById('findStatus')?.textContent).toBe('Nothing here yet.')
     // asks closed without a reply are found by a query
     await findFor('Archived decision')
     expect([...historyTitles()].sort()).toEqual(['Archived decision 0', 'Archived decision 1', 'Archived decision 2'])
@@ -270,11 +271,10 @@ describe('paged closed history (issue #184)', () => {
     await bootApp(db, { interceptFetch })
     await selectTab('find')
     await selectProject('archive')
-    click(buttonLabelled('Show more', findFoot()))
-    await settle()
     expect(historyReads(reads)).toHaveLength(1)
-    // Find keeps the complete history while the person stays on it after Show more
     await selectProject('__all__')
+    // a query keeps the complete history read while the person stays on Find
+    await findFor('archive')
     const before = historyReads(reads).length
 
     advanceClock()
@@ -462,17 +462,33 @@ describe('paged closed history (issue #184)', () => {
     // the sweep's closures without an outcome take every recent slot of the page
     sweep(db, backstops)
     await pollTick()
-    // UX pass, slice 4: the omitted sweep's touch is later than every note's own stamp, so
-    // the page can place none of them: Find says so with Show more, and reads on that press
-    expect(historyTitles()).toEqual([])
-    expect(findFoot().querySelector('.find-loading')).toBeNull()
-    expect(buttonLabelled('Show more', findFoot())).not.toBeNull()
-    expect(historyReads(reads)).toEqual([])
-    click(buttonLabelled('Show more', findFoot()))
-    await settle()
+    // UX pass, slice 4: the page can place no closed note, so Find would draw nothing; like
+    // History it reads the older history within that tick, and is never blank
     expect(historyReads(reads).map((read) => read.status)).toEqual([200])
     expect(historyTitles().slice(0, 5)).toEqual(firstPage)
+    expect(findFoot().querySelector('.find-loading')).toBeNull()
     expect(status()).toBe('')
+  })
+
+  it('never draws an empty list with a lone Show more: a lens whose finished rows are all below the cut reads them', async () => {
+    db = freshDb()
+    // three finished notes of their own project, older than the page's 50 recent closures
+    for (let index = 0; index < 3; index += 1) {
+      advanceClock()
+      const id = insertItem(db, { project: 'oldproj', stream: 'main', agent: 'copilot', kind: 'note', title: `Old project note ${index}` })
+      advanceClock()
+      resolveItem(db, id, `Old outcome ${index}`)
+    }
+    seedHub(db)
+    const { reads, interceptFetch } = recorder()
+    await bootApp(db, { interceptFetch })
+    await selectTab('find')
+    expect(historyReads(reads)).toEqual([])
+    await selectProject('oldproj')
+    await pollTick()
+    expect(historyReads(reads).length).toBeGreaterThan(0)
+    expect(historyTitles().sort()).toEqual(['Old project note 0', 'Old project note 1', 'Old project note 2'])
+    expect(buttonLabelled('Show more', findFoot())).toBeNull()
   })
 
   it('keeps the Dashboard on the page after closures without an outcome take every recent slot', async () => {

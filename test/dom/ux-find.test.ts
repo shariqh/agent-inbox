@@ -383,7 +383,7 @@ describe('A6 · paging and the cut', () => {
     expect(document.activeElement).toBe(findRows()[20]!.querySelector('.find-row-main'))
   })
 
-  it('cuts closed history the page cannot place, and Show more reads it with its loading line', async () => {
+  it('never draws an empty list: closed history the page cannot place is read at once, then paged', async () => {
     db = freshDb()
     const swept: string[] = []
     for (let i = 0; i < 55; i += 1) {
@@ -402,16 +402,13 @@ describe('A6 · paging and the cut', () => {
     }
     await bootApp(db, opts)
     await openFindTab()
-    // every closed note shares the sweep's stamp, which is the omitted history's newest touch: all cut
-    expect(reads.filter((r) => r === '/api/items/history')).toHaveLength(0)
-    const older = buttonLabelled('Show more', foot())
-    expect(older).not.toBeNull()
-    click(older)
-    await settle()
     await pollTick()
+    // every closed note shares the sweep's stamp, which is the omitted history's newest touch: all
+    // are below the cut, so Find reads the history itself rather than draw nothing under "Show more"
     expect(reads.filter((r) => r === '/api/items/history').length).toBeGreaterThan(0)
     expect(findRows().length).toBe(20)
     expect(buttonLabelled('Show 20 more', foot())).not.toBeNull()
+    expect(buttonLabelled('Show more', foot())).toBeNull()
   })
 })
 

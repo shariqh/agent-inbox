@@ -2148,13 +2148,24 @@ function historyWanted(view = lastData) {
   if (findInUse() && findNeeds().history) return true
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
-  if (activeTab === 'find' && older.items > 0 && findHistoryPinned) return true
+  if (activeTab === 'find' && older.items > 0 && (findHistoryPinned || findDrawsNothing(view, summary))) return true
   // Recent outcomes, and the ribbon at a range longer than the default (#392).
   if (activeTab === 'dashboard' && (older.outcomes > 0 || (older.items > 0 && ribbonReadsOlder()))) {
     const model = dashboardModel(pageView(view), summary, lensActivity(view))
     return model.recentOutcomesWait.history || ribbonRangeWait(model).history
   }
   return false
+}
+
+// UX pass, slice 4: Find with no query whose page can place no row of its chip would draw an
+// empty list under a lone "Show more". As History read what its page could not place, Find
+// reads the older history itself then, so the list is never blank. Judged on the PAGE.
+function findDrawsNothing(view, summary) {
+  if (findSettled.trim() || !findNeeds().history) return false
+  const { rows } = buildFindRows(pageView(view), {
+    chip: findChip, before: summary.before ?? null, nowMs: Date.now(), archivedWhole: false,
+  })
+  return rows.length === 0
 }
 
 // Issue #299: which surfaces need the complete archived plans the brief stands
@@ -9042,7 +9053,8 @@ function renderFind() {
   // older, loading), and a changed number is written into the button in place, so a poll never
   // takes focus off it
   findRevealKey = rows.slice(shown.find).find((row) => !extra.has(row.key))?.key ?? null
-  const kind = rest > 0 ? 'more' : olderWaits ? (findHistoryPinned ? 'loading' : 'older') : ''
+  // an empty list reads the history on its own (findDrawsNothing), so it says so, not "Show more"
+  const kind = rest > 0 ? 'more' : olderWaits ? (findHistoryPinned || !listed.length ? 'loading' : 'older') : ''
   const footText = kind === 'more' ? `Show ${Math.min(FIND_PAGE, rest)} more`
     : kind === 'loading' ? olderHistoryWaitText('Loading older history…') : kind === 'older' ? 'Show more' : ''
   if (foot.dataset.says !== kind) {

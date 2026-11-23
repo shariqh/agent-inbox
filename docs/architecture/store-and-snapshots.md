@@ -289,7 +289,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   a range longer than 24 hours that starts before the page's `before`; at 24
   hours the ribbon keeps its cut-off note and reads nothing), or, within the same tick and
   under the same boot-marker and generation rules, when the tick's own new page
-  needs it, so a sweep never paints a blank frame. Decide on a PAGE
+  needs it, so a sweep never paints a blank frame (that includes Find with no query whose
+  page can place no row of its chip: it reads the history itself rather than draw nothing
+  under a lone "Show more"). Decide on a PAGE
   (`lastData.page`, or the tick's new one), never on merged data, or loading
   history would end the need for it. Explicit human entry points (tab select,
   Find's Show more, its query and chips, rail project/agent picks, opening Handoffs, a deep link that

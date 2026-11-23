@@ -592,8 +592,8 @@ npm run install:agents -- --apply --uninstall --target claude-config-dir --claud
 
 With the default targets the second folder comes last in every step, and the run is one
 transaction: if any step fails or the run is interrupted, every target is put back. With
-`--target claude-config-dir` only that folder is touched, and a failure there puts back
-only that folder; that is the command to run again after something else rewrote its
+`--target claude-config-dir` only that folder is touched (apart from the meshctl shim,
+which every apply writes), and a failure there puts back only that folder; that is the command to run again after something else rewrote its
 `CLAUDE.md` and dropped the block. `--force` and `--uninstall` work there as for the
 personal hosts.
 

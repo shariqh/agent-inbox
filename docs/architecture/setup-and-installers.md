@@ -145,6 +145,58 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `test/host-config-secrets.test.ts` runs every reader, the dry-run installers and
   `/api/setup` over configs that put a fake token where the parser quotes it: a new reader
   is one more row there. Unchanged on purpose: what each reader does with such a config.
+- **A second Claude Code config folder is one more target key** *(#641)*.
+  `--claude-config-dir <dir>` appends the key `claude-config-dir` to `TARGETS`, after the
+  personal keys, and `--target claude-config-dir` selects it alone; nothing detects it from
+  the environment or from a folder's existence, and without the flag nothing changes. Every
+  per-target function knows the key (`target_cli` maps it to the `claude` binary;
+  `mcp_commands` prefixes `env CLAUDE_CONFIG_DIR=<dir>`, which execs `claude`, so
+  `run_node_step`, `isolated` and the timeout's process-group kill still reach it;
+  `registration_config_file` is `<dir>/.claude.json`; `instruction_file` is
+  `<dir>/CLAUDE.md`; the appendix and import handling are Claude Code's), and every one of
+  those `case`s refuses an unknown key instead of falling through. `cleanup` covers it.
+  `--project <name>` appends `--project <name>` to its registration's arguments (after
+  `--`, an argument of the server, never an environment variable: a stdio server inherits
+  the CLI's environment, so a variable would reach personal servers too) and adds a
+  fixed-project section to its managed block only. `SHARED_INSTRUCTION_FILE` is decided
+  per target: the personal hosts keep their shared-file block, and the second folder's
+  block is always its own (the Claude appendix, and the import shortcut by its own file).
+  The script also `unset`s an exported `CLAUDE_CONFIG_DIR` right after parsing, so the
+  personal `claude mcp` calls always act on `~/.claude.json`; it does so in its own shell,
+  not with an `env -u` prefix, so the personal command lines stay byte-identical (the
+  goldens in `test/fixtures/install-agents-r2/` hold that).
+  - *Phases.* Targets run phase by phase, the second folder last in each: every MCP
+    change, then every instruction publish, then the shim. A personal failure in the MCP
+    phase makes no second-folder CLI call; a personal failure in the instruction or shim
+    phase comes after the second folder's MCP change and undoes it through `NEWLY_ADDED` /
+    `NEEDS_RESTORE`; a failure in the second folder rolls back the personal targets of the
+    same run; an interrupt restores every target. A run with `--target claude-config-dir`
+    is a transaction over that folder alone.
+  - *Refusals before the lock* (exit 2, one stderr line, nothing written, not even the lock
+    file): `--project` or the target value without the folder, the folder twice, a project
+    name outside `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (spelled out as character lists, since
+    a range matches non-ASCII letters under a UTF-8 locale; the script never sets
+    `LC_ALL`), a path that is relative or holds a control character, a folder that is
+    missing (never created: any `claude` command run against a missing
+    `CLAUDE_CONFIG_DIR` creates it), `$HOME` or `$HOME/.claude` by real path, a folder
+    without its own regular `.claude.json`, one whose `.claude.json` is `~/.claude.json`
+    (`-ef`), and runtime mode by flags or by a self-detected manifest (the prune gate reads
+    only `$HOME` host configs).
+  - *Preflight* (dry run too, before `$WORK` and any CLI call): a `CLAUDE.md` that is the
+    same file as either personal instruction file, selected or not; the usual dangling-link
+    and marker rules; with `--project`, an entry whose text lacks `--project` (a stale
+    `dist/`); and, with `--project` and without `--force` or `--uninstall`, the
+    registration check. One `"$JSON_NODE" -e` step reads `<dir>/.claude.json`, prints
+    nothing and answers by exit code: 0 no entry, 10 `args` ending in exactly
+    `--project <name>`, 11 anything else (refused, naming only the narrow
+    `--apply --uninstall --target claude-config-dir --claude-config-dir <dir>` remedy), 12
+    or 13 unreadable or not JSON (refused, naming the file and that kind only). In the MCP
+    phase a `present` registration is checked once more and anything but 10 fails the run,
+    so a server registered without the project is never kept silently. With `--force` it is
+    replaced.
+  - *Not covered:* hooks (`install-hooks.sh` writes only `~/.claude/settings.json`, and a
+    hook files under its working directory's project), Setup and the Agents view's host
+    list, the runtime prune's view of the second folder.
 - **The meshctl shim: one file, its own kind, never a shell profile** *(#540)*. Every applied
   `install-agents.sh` run (any `--target`) also writes `~/.agent-inbox/bin/meshctl`, so someone
   with only the app can run `meshctl` (decision 2026-11-11: the app puts its bundled meshctl on

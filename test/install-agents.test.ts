@@ -2880,3 +2880,23 @@ describe('preflight checks for a second Claude Code config folder (#641)', () =>
     expect(code).toContain('--project')
   })
 })
+
+describe('usage text for a second Claude Code config folder (#641)', () => {
+  it('--help prints the whole usage block, the second folder included', () => {
+    const f = fixture()
+    const result = run(f, ['--help'])
+    expect(result.code).toBe(0)
+    const header = readFileSync(SCRIPT, 'utf8').split('\n')
+    const end = header.findIndex((line) => line === 'set -u')
+    expect(result.out).toBe(`${header.slice(1, end).join('\n')}\n`)
+    expect(result.out).toContain('--target claude-config-dir --claude-config-dir ~/.claude-work --project work')
+    expect(result.out).toContain('install-agents.sh --apply --runtime-source <dir> --runtime-digest sha256:<hex>')
+    expect(existsSync(f.log)).toBe(false)
+  })
+
+  it('names the new target value in both --target errors', () => {
+    const f = fixture()
+    expect(run(f, ['--target', 'work'])).toMatchObject({ code: 2, err: 'install-agents: --target must be all, claude, copilot, or claude-config-dir\n' })
+    expect(run(f, ['--target'])).toMatchObject({ code: 2, err: 'install-agents: --target needs all, claude, copilot, or claude-config-dir\n' })
+  })
+})

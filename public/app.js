@@ -12465,7 +12465,7 @@ function renderPlanSettings(host) {
   label.textContent = 'Group plans by parent issue'
   const detail = document.createElement('small')
   detail.id = 'group-plans-detail'
-  detail.textContent = 'Gathers the active plans of one project that share a GitHub parent issue under a heading for it. No plan is hidden. Used each time Agent Inbox opens; the switch above Plans changes only the current view.'
+  detail.textContent = 'Gathers the active plans of one project that share a GitHub parent issue under a heading for it. No plan is hidden. Used each time Agent Inbox opens; the switch under View on the Plans page changes only the current view.'
   preferenceCopy.append(label, detail)
   preference.append(input, preferenceCopy)
   section.append(title, preference)

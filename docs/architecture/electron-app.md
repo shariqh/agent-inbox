@@ -66,7 +66,7 @@ Terminal (the default) or iTerm2.
 - **Buttons.** The labels stay the generic words; the `title` and, for iTerm2, the `aria-label`
   name the app ("Open in Terminal (iTerm2)"), because a tooltip alone is not read on keyboard focus.
 
-**Resume a chat in Terminal (#586 PR 3).** The Chats tab's Resume (`electron/chat-resume.cjs`; the
+**Resume a chat in Terminal (#586 PR 3).** The chats' Resume (Find's Chats chip) (`electron/chat-resume.cjs`; the
 page, the refusals and the script are in `chats.md`).
 
 - **Who may call it.** Two channels, `agent-inbox:chat-resume-available` (no argument) and

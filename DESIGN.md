@@ -246,7 +246,7 @@ A chat a session of this app holds (running, parked, or stopped with its session
 Dashboard; Copy resume and Resume are off beside it ("This chat has a session here: use Show
 session, then Take over."). While that session runs, the Live cell reads "Live · here" in the
 agent color. The session panel of a continued chat says "Continued from a Copilot chat
-(1a2b3c4d)", linked to the Chats tab.
+(1a2b3c4d)", linked to Find's Chats chip.
 
 The **Continue in Agent Inbox** dialog is New session's dialog in miniature: the chat's title
 and folder as plain text, the mode (Ask for everything, the default, or Read-only, with New

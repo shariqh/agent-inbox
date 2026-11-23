@@ -320,13 +320,13 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   listed, else clears the query and selects the narrowest chip, changes the lens only when the
   target is outside it, and opens and focuses the row. Printable keys that act on Home or the
   Review queue do nothing on Find.
-- The **Chats tab** (#586) sits after Find: `data-tab="chats"` in `#tabs`, `'chats'` before
-  `'agent'` in `TAB_IDS`, `G C`, panel `#chats`, no count. `#chats` opens it on boot and on
-  `hashchange`. It reads `/api/chats` itself (never from the poll) and paints only its own
-  panel; `chats.md` has the rules.
+- The **chats** (#586) are Find's fifth chip since UX pass slice 4, step B: there is no Chats tab
+  or `#chats` panel. `G C` is "Find: Chats" (the query cleared, the field focused) and `#chats`
+  opens the same. Entering Find reads `/api/chats` under its 60-second rule (never from the
+  poll); `chats.md` has the rules.
 - The **agent tab** (cards view V5c1, design
   `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §3, §4) is one slot after
-  Chats: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
+  Find: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
   `#agentPage`, painted by `public/mesh-agent-page.js` from `paintAmbient()` (so from `load()`
   and `reloadAndPaint()` only). It is `hidden` while no agent is open (`.tab[hidden]` beats
   `.tab`'s `display`), and `wireTablist` skips a hidden tab as it skips one in a closed

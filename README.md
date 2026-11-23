@@ -309,11 +309,19 @@ In search (`Cmd/Ctrl K`), type `answer `, `open plan ` or `jump to session ` to 
 those targets first.
 
 **Find** (`G F`) is one list of your answers, notes, plans and finished work, newest
-first, with a large field and four chips: All, Answers, Notes and Plans. A row shows
+first, with a large field and five chips: All, Answers, Notes, Plans and Chats. A row shows
 what it is, its title, one small extra (the answer you gave, the start of a note, a
 plan's bar, an outcome), the project and an age. A note or a finished item opens in
 place with its full card; an open ask goes to Home and a plan to Plans. The Find tab
 counts notes you have not seen; they count as seen when shown under the Notes chip with no query typed.
+
+The **Chats** chip (`G C`) lists the Claude Code and Copilot CLI chats on this Mac, newest
+first; the field matches their title, project, branch and folder, never what was said in
+them. A chat row has one button beside it: Resume in the desktop app, Copy resume
+elsewhere, or Show session for a chat Agent Inbox drives. Open the row for its branch,
+folder and last activity, and for Copy resume, Jump to session and Continue here…. A
+line under the chips holds the Claude Code / Copilot toggle, Show all and Refresh. With
+a query, All lists matching chats too.
 
 **Settings → Motion** chooses Full or Calm. Calm turns off looping animation and the
 brief pulse a card gives when its session makes a call. Your system's Reduce motion
@@ -498,8 +506,9 @@ Letters do not run shortcuts while you are typing or using a select.
 
 | Keys | Action |
 |---|---|
-| `G D` / `G I` / `G P` / `G F` / `G C` | Home / Needs you (the first request on Home) / Plans / Find / Chats |
+| `G D` / `G I` / `G P` / `G F` | Home / Needs you (the first request on Home) / Plans / Find |
 | `G N` / `G H` | Find with Notes / Find with All, the query cleared and the list focused |
+| `G C` | Find with Chats, the query cleared and the field focused |
 | `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Sessions (the Agents view) |
 | `Cmd/Ctrl K` or `/` | Focus search (on Find, Find’s own field) |
 | `J` / `K`, then `Enter` | Move through the queue and expand an item |

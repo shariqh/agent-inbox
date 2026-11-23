@@ -3497,7 +3497,6 @@ body.hub-reconnecting #status { display: none; }
 #boards .board-meta .board-id { margin: 0; }
 #boards .board-meta .prog-secondary { margin: 0; font-size: inherit; opacity: 1; }
 #boards .board-meta .hidden-hint { margin: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; opacity: 1; }
-.plan-all-steps { display: none; }
 /* a step at rest: its mark, its label and, at the right, Answer or the expander. The note is the first
    line of its panel; the number keeps its cell (so no cell shifts a column) and takes no width. */
 .board-table.matrix .row-note { display: none; }

@@ -42,3 +42,18 @@ export function lingeringBoards<T extends { id: string; progress: ProgressLike }
 export function omittedOutcomes(
   plans: Array<{ omitted?: { outcomes: number; latest: string | null } }> | null | undefined,
 ): { outcomes: number; latest: string | null }
+
+/** UX pass, slice 3: the Plans page's sections and a plan's form. */
+export type PlanSection = 'needs' | 'moving' | 'stalled'
+export const STALL_MS: number
+export function planSections<T extends { id: string; updated_at?: string; session?: string | null; rows?: Array<Record<string, any>> }>(
+  plans: T[],
+  opts: {
+    nowMs: number
+    liveSessions?: Iterable<string>
+    workingPlanIds?: Iterable<string>
+    held?: Map<string, PlanSection>
+  },
+): Record<PlanSection, T[]>
+export type PlanForm = 'closed' | 'brief' | 'full'
+export function planForm(input: { choice?: boolean; section?: PlanSection | null; kept?: boolean }): PlanForm

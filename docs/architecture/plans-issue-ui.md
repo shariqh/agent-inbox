@@ -190,8 +190,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - **Grouping plans by parent issue is opt-in and only reorders (issue #103, slice 2 §7).**
   Off by default. `agent-inbox-group-plans` in localStorage is a saved preference seeded
   on every load, like Default sort order (#221), because it never hides anything; Settings
-  → Plans saves it, and the Plans header's "Group by parent issue" switch (a labelled
-  `role="switch"` checkbox) changes only the current view. Both repaint through
+  → Plans saves it, and the "Group by parent issue" switch under the Plans header's View
+  (a labelled `role="switch"` checkbox; View stays open while grouping is on) changes only
+  the current view. While it is on, the page draws the grouped list in place of its Needs
+  you, Moving and Stalled sections (UX pass, slice 3). Both repaint through
   `forceRender()`; there is no third render entry. `planGroups` (`public/issues.js`, pure)
   reads the frame's `issueView` and `linkIndex`: a group is two or more ACTIVE plans keyed
   by `(project, parent key)`, so projects never merge even in the all-projects view; a

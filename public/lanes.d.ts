@@ -64,6 +64,18 @@ export const TRACE_MINUTES: number
 export function callTrace(row: LaneActivity, nowMs: number): number[]
 export function tracePath(trace: number[]): string
 export function planBar(board: LaneBoard, nowMs: number): PlanBar
+/** UX pass, slice 3: one vocabulary for a step's state (done, in progress, needs you, to do). */
+export type StepState = 'done' | 'progress' | 'needs' | 'todo'
+export interface StepCounts { done: number; progress: number; needs: number; todo: number }
+export function planStepStates(
+  plan: { status?: string; rows?: Array<Record<string, any>> },
+  nowMs: number,
+): { states: StepState[]; counts: StepCounts }
+export function planSegments(
+  states: StepState[],
+  maxPerStep: number,
+): { runs: boolean; segments: Array<{ state: StepState; grow: number }> }
+export function planBarLabel(counts: StepCounts): string
 export function buildLanes(input: {
   activity: LaneActivity[]
   boards: LaneBoard[]

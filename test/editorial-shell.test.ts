@@ -128,7 +128,8 @@ describe('the editorial desk shell', () => {
   it('sizes compact plan columns from a colgroup, never from the first row', () => {
     const compact = css.slice(css.indexOf('@media (max-width: 1279px)'))
     expect(app).toContain('<colgroup><col class="col-num"><col class="col-glyph"><col class="col-label"><col class="col-4"><col class="col-5"></colgroup>')
-    expect(compact).toMatch(/\.board-table\.matrix col\.col-num\s*\{[^}]*width:\s*24px/s)
+    // UX pass, slice 3: the number column takes no width; its cell stays, so no cell shifts a column
+    expect(compact).toMatch(/\.board-table\.matrix col\.col-num\s*\{[^}]*width:\s*0/s)
     expect(compact).toMatch(/\.board-table\.matrix col\.col-glyph\s*\{[^}]*width:\s*30px/s)
     expect(compact).toMatch(/\.board-table\.matrix col\.col-4\s*\{[^}]*width:\s*72px/s)
     expect(compact).toMatch(/\.board-table\.matrix col\.col-5\s*\{[^}]*width:\s*0/s)

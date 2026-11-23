@@ -32,7 +32,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, listBoards, upsertActivity, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick,
-  row, rowTitles, searchFor, sendButton, settle, tabCount, type, useDomTest,
+  row, rowTitles, searchFor, sendButton, settle, tabCount, type, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -286,8 +286,7 @@ describe('#38 · archiving a board takes the board off the screen', () => {
     expect(pauseHint(), 'a draft really is a pause — that part is not the bug').toBe('')
 
     // now archive A: two-click inline confirm, no tick in between
-    const card = boardCard('BOARD A')!
-    click(buttonLabelled('Archive', card))
+    click(await reach(() => buttonLabelled('Archive', boardCard('BOARD A')!)))
     await settle()
     click(buttonLabelled('Really archive?', boardCard('BOARD A')!))
     await settle()
@@ -314,8 +313,7 @@ describe('#38 · archiving a board takes the board off the screen', () => {
     await bootApp(d)
     await showBoards()
 
-    const card = boardCard('BOARD A')!
-    click(buttonLabelled('Archive', card))
+    click(await reach(() => buttonLabelled('Archive', boardCard('BOARD A')!)))
     await settle()
     click(buttonLabelled('Really archive?', boardCard('BOARD A')!))
     await settle()

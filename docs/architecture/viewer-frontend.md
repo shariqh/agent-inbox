@@ -127,6 +127,26 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   outside the compact surface): the answers, Compare options, the editor, then More,
   with a task's "I've done my part" first on its line. Do not reorder it with CSS
   `order`: Tab follows the DOM.
+- A plan on the Plans page is one line (UX pass, slice 3): its `summary` holds only the
+  project dot, the title, the segmented bar (`planStepStates` and `planSegments` in
+  `public/lanes.js`, step order, one segment per step up to 24 and runs past that, its
+  words as the bar's `aria-label`), "3 of 7" and a chevron. The card stays
+  `details.board[data-card-id]` and every step is built in every form. `renderBoards`
+  sorts the lens's active plans with `planSections` (`public/boards.js`): Needs you
+  (a step `isBlockedRowAttention` counts), a `details.stalled-fold` (no change for more
+  than seven days, nothing asking or set aside, nothing an agent has not picked up, no
+  live session and no working card on it) and Moving (the rest, paged by `PAGE.moving`).
+  Headings are sibling `h3.plan-section-head`s, the first one inside the header's line
+  beside View; grouping by parent issue draws today's grouped list instead. `planForm`
+  draws a plan closed, brief (only the steps in hand) or full: a plan has two states
+  for the person, expanded (full) and collapsed (brief when it waits on them or holds a
+  step in hand, else closed), and a summary click flips between them. Only
+  the person's own summary click, and a way in that targets a step, write `planOpen`;
+  the native `toggle` never does, and `revealDetailsAncestors` records an open only for
+  a plan it actually opened. A plan written to from a step's panel keeps its section
+  (`planHold`) and its slot (`plansPin`, `pinOrder`) until the person leaves Plans or the
+  lens changes. Archive all arms and disarms in module state and rewrites its label in
+  place; its confirm takes the list once from `plansDrawn`, the frame clicked.
 
 ## Invariants in detail
 

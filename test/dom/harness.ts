@@ -448,11 +448,84 @@ export function buttonLabelled(label: string, scope: ParentNode = document): HTM
   return [...scope.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === label) ?? null
 }
 
-/** Click a node, refusing one that a re-render has already replaced. */
+/**
+ * Where click() enforces reachability: the Plans page. Pointed at the whole document it also
+ * trips on 190-odd older clicks on Home and Settings (a hidden queue-tools drawer, a closed
+ * disposition menu, a hidden Settings panel) that this slice did not touch; widen it to
+ * '*' once those tests are repaired.
+ */
+const REACHABILITY_SCOPE = '#boards'
+
+/**
+ * What stands between a person and a control: the outermost element that hides it (the
+ * hidden attribute) or the closed <details> around it. A closed <details> shows only its
+ * own first <summary>. Null when the control can be reached.
+ */
+function blockerOf(el: Element): { kind: 'hidden' | 'closed'; node: Element; why: string } | null {
+  let found: { kind: 'hidden' | 'closed'; node: Element; why: string } | null = null
+  let child: Element = el
+  const climb = (node: Element | null) => {
+    for (; node; child = node, node = node.parentElement) {
+      if (child.hasAttribute('hidden')) found = { kind: 'hidden', node: child, why: `it is inside ${describeNode(child)}, which has the hidden attribute` }
+      if (node.tagName === 'DETAILS' && !(node as HTMLDetailsElement).open) {
+        const own = [...node.children].find((c) => c.tagName === 'SUMMARY')
+        if (child !== own) found = { kind: 'closed', node, why: `it is inside the closed ${describeNode(node)}; open it first, as a person would` }
+      }
+    }
+  }
+  climb(el.parentElement)
+  return found
+}
+
+/** Why a person cannot reach a control, or null when they can. The test DOM applies neither the hidden attribute nor a closed <details> to what it clicks. */
+export function unreachableReason(el: Element): string | null {
+  return blockerOf(el)?.why ?? (el.hasAttribute('hidden') ? 'it has the hidden attribute' : null)
+}
+
+function describeNode(el: Element): string {
+  const cls = typeof el.className === 'string' && el.className ? `.${el.className.trim().split(/\s+/).join('.')}` : ''
+  return `<${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${cls}>`
+}
+
+/**
+ * Click a node, refusing one that a re-render has already replaced and one a person
+ * cannot reach: open the plan, the fold or View first, by clicking what a person would
+ * (see reach()).
+ */
 export function click(el: Element | null | undefined): void {
   if (!el) throw new Error('click(): nothing to click — the selector matched nothing')
   if (!document.contains(el)) throw new Error('click(): stale node — re-query after every render/await')
+  const why = el.closest(REACHABILITY_SCOPE) ? unreachableReason(el) : null
+  if (why) throw new Error(`click(): ${describeNode(el)} is not reachable: ${why}`)
   ;(el as HTMLElement).click()
+}
+
+/**
+ * Do first what a person does to reach a control on the Plans page: open the fold, press
+ * the plan's summary (a collapsed plan opens in full), press View. `locate` finds the control
+ * afresh, because every press rebuilds the page; the control found last is returned.
+ * Throws when pressing those would not reach it.
+ */
+export async function reach<T extends Element>(locate: () => T | null | undefined): Promise<T> {
+  for (let step = 0; step < 6; step++) {
+    const el = locate()
+    if (!el) throw new Error('reach(): nothing to reach — the selector matched nothing')
+    if (!el.closest(REACHABILITY_SCOPE)) return el
+    const blocker = blockerOf(el)
+    if (!blocker) return el
+    let press: Element | null = null
+    if (blocker.kind === 'closed') press = [...blocker.node.children].find((c) => c.tagName === 'SUMMARY') ?? null
+    else if (blocker.node.closest('#plansTools')) press = document.getElementById('plans-view-toggle')
+    else {
+      const plan = blocker.node.closest('details.board')
+      // a hidden part of a collapsed plan shows when the person opens it in full
+      if (plan && plan.getAttribute('data-form') !== 'full') press = plan.querySelector(':scope > summary')
+    }
+    if (!press) throw new Error(`reach(): ${describeNode(el)} cannot be reached by opening anything: ${blocker.why}`)
+    click(press)
+    await settle()
+  }
+  throw new Error('reach(): still not reachable after pressing everything a person would')
 }
 
 /** Select Home, where the list of asks lives (the Inbox tab folded into it); the name stays for its callers. */

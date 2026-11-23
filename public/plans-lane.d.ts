@@ -14,6 +14,8 @@ export interface PlanInProgress {
   countable: number
   /** planBar(board).segments.waiting: rows the attention predicate counts */
   waiting: number
+  /** UX pass, slice 3: planStepStates(board).states, the bar's steps in order */
+  states: import('./lanes.js').StepState[]
   /** board.updated_at, or null when it does not parse */
   updatedAt: string | null
   updatedMs: number | null

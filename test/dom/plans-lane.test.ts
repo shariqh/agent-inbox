@@ -95,7 +95,9 @@ describe('a Plans in progress row (§3.5)', () => {
     expect(part(id, '.pl-project-name').textContent).toBe('alpha')
     expect(part(id, '.pl-project').hidden).toBe(false)
     expect(part(id, '.pl-count').textContent).toBe('2/4')
-    expect(part(id, '.pl-bar > i').style.getPropertyValue('--pl-done')).toBe('50%')
+    // UX pass, slice 3: the bar draws the plan's steps in order, as the Plans page does
+    expect([...part(id, '.pl-bar').querySelectorAll<HTMLElement>(':scope > i')].map((seg) => seg.dataset['state']))
+      .toEqual(['done', 'done', 'todo', 'needs'])
     expect(part(id, '.pl-bar').getAttribute('aria-hidden')).toBe('true')
     expect(part(id, '.pl-waiting').textContent).toBe('1 needs you')
     expect(part(id, '.pl-waiting').hidden).toBe(false)

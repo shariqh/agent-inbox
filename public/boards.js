@@ -1,7 +1,8 @@
 // Pure board-matrix helpers (spec §9). No DOM: the Boards tab renders from these.
 // Sibling public modules are imported RELATIVELY so the same file resolves in the
 // browser (/boards.js → /attention.js) and under vitest.
-import { isBlockedRowAttention } from './attention.js'
+import { humanActedOnRow, isBlockedRowAttention } from './attention.js'
+import { rowPickup } from './rowview.js'
 
 // hide-completed hides `done` rows unless this board opted back in; `num` keeps the
 // ORIGINAL 1-based index so "row N" references stay stable when rows are hidden.
@@ -53,4 +54,50 @@ export function omittedOutcomes(plans) {
     if (latest === null || omitted.latest > latest) latest = omitted.latest
   }
   return { outcomes, latest }
+}
+
+// UX pass, slice 3: the Plans page's sections. A plan with a step waiting on
+// the person is in Needs you, always. One the person is writing to stays in
+// the section it held (`held`, plan id -> section) for the visit. A plan is
+// Stalled only when nothing about it is still in motion: no change for a week,
+// no blocked step still asking or set aside, no response an agent has not
+// picked up, no live session that wrote it and no working card showing it.
+// Everything else is Moving. Order within a section is the input's.
+export const STALL_MS = 7 * 24 * 60 * 60 * 1000
+const PLAN_SECTIONS = ['needs', 'moving', 'stalled']
+
+const asSet = (values) => (values instanceof Set ? values : new Set(values ?? []))
+
+function stalled(plan, { nowMs, liveSessions, workingPlanIds }) {
+  const updated = Date.parse(plan.updated_at ?? '')
+  if (!Number.isFinite(updated) || !(nowMs - updated > STALL_MS)) return false
+  for (const row of plan.rows ?? []) {
+    // a blocked step not yet answered still asks, or waits where the person set it aside
+    if (row.status === 'blocked' && !humanActedOnRow(row)) return false
+    // a note, a choice or "I've done my part" an agent has not picked up yet
+    if (humanActedOnRow(row) && !rowPickup(row).pickedUp) return false
+  }
+  if (plan.session && liveSessions.has(plan.session)) return false
+  return !workingPlanIds.has(plan.id)
+}
+
+export function planSections(plans, { nowMs, liveSessions, workingPlanIds, held } = {}) {
+  const opts = { nowMs, liveSessions: asSet(liveSessions), workingPlanIds: asSet(workingPlanIds) }
+  const out = { needs: [], moving: [], stalled: [] }
+  for (const plan of plans ?? []) {
+    const asks = (plan.rows ?? []).some((row) => isBlockedRowAttention(row, nowMs))
+    const hold = held?.get(plan.id)
+    const section = asks ? 'needs' : PLAN_SECTIONS.includes(hold) ? hold : stalled(plan, opts) ? 'stalled' : 'moving'
+    out[section].push(plan)
+  }
+  return out
+}
+
+// Which form a plan is drawn in. A plan has two states for the person: expanded (the
+// person opened it: the full plan) and collapsed (anything else). A collapsed plan is brief
+// when it waits on the person or holds a step they have in hand (only those steps show),
+// otherwise closed (the summary alone). So collapsing never hides an ask.
+export function planForm({ choice, section, kept }) {
+  if (choice === true) return 'full'
+  return section === 'needs' || kept ? 'brief' : 'closed'
 }

@@ -8,7 +8,7 @@ import type Database from 'better-sqlite3'
 import { getBoard, upsertBoard, upsertIssueSnapshot } from '../../src/store.js'
 import type { IssueRelative } from '../../src/store.js'
 import { deps, facts, snapshot } from '../issue-fixtures.js'
-import { advanceClock, bootApp, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
+import { advanceClock, bootApp, click, freshDb, pollTick, settle, type, useDomTest, reach } from './harness.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -100,7 +100,7 @@ describe('dependency chips and blocks in Plans (slice 2 PR D)', () => {
     expect(section.textContent).not.toMatch(/Closed blocker|Circular|blocked/i)
 
     // the row detail lists both kinds, each with its source
-    click(matrixRow(plan.id, id('Ship')))
+    click(await reach(() => matrixRow(plan.id, id('Ship'))))
     await settle()
     const detail = document.querySelector(`.row-panel-row[data-row-id="${id('Ship')}"] .src-waits`)!
     expect([...detail.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
@@ -151,7 +151,7 @@ describe('dependency chips and blocks in Plans (slice 2 PR D)', () => {
     const { plan, id } = seed(db)
     await boot(db)
     await showPlans()
-    click(matrixRow(plan.id, id('Doc')))
+    click(await reach(() => matrixRow(plan.id, id('Doc'))))
     await settle()
     const panel = () => document.querySelector(`.row-panel-row[data-row-id="${id('Doc')}"]`)
     const input = panel()!.querySelector<HTMLTextAreaElement>('textarea')!

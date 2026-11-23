@@ -66,6 +66,10 @@ export function installChatsView({
   // Jump to session: key → that the session was not found, until the row is pressed again or the
   // list is next read for another reason (the read a failed jump asks for keeps it)
   const jumpNotes = new Map()
+  // key → the last chat object, for a chat that left the list in the read its own refused action
+  // asked for (a folder gone, a chat removed): its row, open with the note, stays until the note is
+  // cleared, so the reason is seen. Listed only while a note holds it (departedChats).
+  const departed = new Map()
   let keepJumpNotes = false
   // #586 phase 2: Continue here… and Show session, asked again on every entry into Find like
   // Resume; each chat's link to a launch of this app, from the last frame
@@ -116,7 +120,9 @@ export function installChatsView({
   const canResume = () => resumeAnswer?.available === true
   const terminal = () => (resumeAnswer?.terminal === 'iterm2' ? 'iterm2' : 'terminal')
 
-  async function read({ passive = false, reset = false, quiet = false } = {}) {
+  // `keepNoted`: the read a refused Resume or a failed Jump asks for, which keeps a chat that left
+  // the list for as long as its note is shown; any other read drops them
+  async function read({ passive = false, reset = false, quiet = false, keepNoted = false } = {}) {
     const mine = ++seq
     if (keepJumpNotes) keepJumpNotes = false
     else jumpNotes.clear()
@@ -139,6 +145,14 @@ export function installChatsView({
     if (mine !== seq) return
     loading = false
     if (next) {
+      const there = new Set(next.chats.map((chat) => `${chat.tool}:${chat.id}`))
+      const before = [...(body?.chats ?? []), ...departed.values()]
+      departed.clear()
+      for (const chat of before) {
+        const key = `${chat.tool}:${chat.id}`
+        if (there.has(key)) continue
+        if (keepNoted && (resumeNotes.has(key) || jumpNotes.has(key))) departed.set(key, chat)
+      }
       body = next
       loadedAt = now()
       error = null
@@ -212,7 +226,7 @@ export function installChatsView({
       }, CONFIRM_MS))
     }
     // after live, folder, missing or opened the list is read again, so the row's off state catches up
-    if (outcome.refresh) read()
+    if (outcome.refresh) read({ keepNoted: true })
     else notify()
   }
 
@@ -280,7 +294,7 @@ export function installChatsView({
       jumpNotes.set(key, JUMP_GONE_TEXT)
       keepJumpNotes = true
       reveal(key)
-      read()
+      read({ keepNoted: true })
     }
     Promise.resolve().then(() => jump(view.session)).then((went) => { if (went !== true) gone() }, gone)
   }
@@ -288,8 +302,10 @@ export function installChatsView({
   // ── what a frame draws ───────────────────────────────────────────────────
 
   /** Called once at the start of each Find frame: the chats and their launches, as of now. */
+  const departedChats = () => [...departed].filter(([key]) => resumeNotes.has(key) || jumpNotes.has(key)).map(([, chat]) => chat)
+
   function beginPaint() {
-    const chats = body ? body.chats : []
+    const chats = body ? [...body.chats, ...departedChats()] : []
     home = inferHome(chats)
     chatByKey.clear()
     drivenByKey.clear()
@@ -637,8 +653,8 @@ export function installChatsView({
       askDrive()
       if (shouldFetchOnOpen({ loadedAt, loading, nowMs: now() })) read({ passive: true, quiet: true })
     },
-    /** The list as last read, newest first or not; null before any read. */
-    list: () => (body ? body.chats : null),
+    /** The list as last read, plus a chat that left it while its refusal note shows; null before any read. */
+    list: () => (body ? [...body.chats, ...departedChats()] : null),
     /** The Chats line's tool toggle. */
     tool: () => filter.tool,
     /** Whether the last read failed. */

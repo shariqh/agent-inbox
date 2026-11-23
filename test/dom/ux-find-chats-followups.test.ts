@@ -281,3 +281,49 @@ describe('an open chat row is not paged away by a re-read', () => {
   })
 })
 
+describe('a chat that holds a note stays listed until the note is cleared', () => {
+  for (const [reason, error, after] of [
+    ['folder', 'Its folder no longer exists.', (c: ChatEntry) => [{ ...c, hidden: ['folder-gone'] as ChatEntry['hidden'] }]],
+    ['missing', 'This chat is no longer on this Mac.', () => []],
+  ] as const) {
+    it(`Resume refused for ${reason}: the next read drops the chat, and its open row and note stay`, async () => {
+      let index: { chats: ChatEntry[] } | null = null
+      const bridge = installBridge()
+      bridge.resume.mockImplementation(async () => {
+        // what main found is what the next index read says
+        index!.chats = index!.chats.flatMap((c) => (c.id === uuid(2) ? after(c) : [c]))
+        return { ok: false, reason, error }
+      })
+      index = (await boot({ chats: [entry(1), entry(2), entry(3)] })).index
+      await openFindChats()
+      click(slotOf(2))
+      await settle()
+      await settle()
+      await settle()
+      expect(bridge.resume).toHaveBeenCalledTimes(1)
+      expect(rowKeys()).toEqual([chatKey(1), chatKey(2), chatKey(3)])
+      expect(mainOf(2).getAttribute('aria-expanded')).toBe('true')
+      expect(rowFor(2)!.querySelector('.chats-resume-note')?.textContent).toBe(error)
+    })
+  }
+
+  it('the row leaves once the note is cleared by the next read for another reason', async () => {
+    let index: { chats: ChatEntry[] } | null = null
+    const bridge = installBridge()
+    bridge.resume.mockImplementation(async () => {
+      index!.chats = index!.chats.filter((c) => c.id !== uuid(2))
+      return { ok: false, reason: 'missing', error: 'This chat is no longer on this Mac.' }
+    })
+    index = (await boot({ chats: [entry(1), entry(2), entry(3)] })).index
+    await openFindChats()
+    click(slotOf(2))
+    await settle()
+    await settle()
+    expect(rowKeys()).toContain(chatKey(2))
+    click(line().querySelector('.chats-refresh'))
+    await settle()
+    await settle()
+    expect(rowKeys()).toEqual([chatKey(1), chatKey(3)])
+  })
+})
+

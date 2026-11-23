@@ -3572,6 +3572,8 @@ body.hub-reconnecting #status { display: none; }
 .find-extra[data-extra="bar"] { display: flex; flex: none; width: var(--find-bar); margin-left: auto; }
 .find-extra .plan-bar { flex: 1 1 auto; width: var(--find-bar); }
 .find-project { display: flex; flex: none; align-items: center; gap: 7px; width: var(--find-project); margin-left: auto; min-width: 0; color: var(--app-muted); font-size: var(--fs-body); }
+/* a chip or a bar already takes the free space on its left: the project then sits right beside it */
+.find-extra:not(:empty) + .find-project { margin-left: 0; }
 .find-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
 .find-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .find-age { flex: none; width: var(--find-age); color: var(--app-text-soft); font-size: var(--fs-meta); text-align: right; }

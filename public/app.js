@@ -2164,7 +2164,7 @@ function archivedWanted(view = lastData) {
   // focus follows. A plan lingering after its agent archived it (§9) is read
   // whole on its own (#373, lingeringUrl), unless too many linger for that.
   if (activeTab === 'boards') {
-    const lingering = lingeringBoards(sessionActiveBoards, lens.boards, lens.archived)
+    const lingering = lingeringPlans(lens.boards, lens.archived)
     const ownRead = lingeringIds(view).length <= LINGERING_READ_LIMIT
     const lingers = new Set(ownRead ? lingering.map((plan) => plan.id) : [])
     const focused = activeFocusElement()?.closest?.('#boards [data-card-id]')?.dataset.cardId
@@ -2178,6 +2178,12 @@ function archivedWanted(view = lastData) {
   return false
 }
 
+// Plans that linger as "completed — archived" (§9): never one the person archived with
+// Archive all, which lists with the archived plans like any other.
+function lingeringPlans(boards, archived) {
+  return lingeringBoards(sessionActiveBoards, boards, archived).filter((b) => !handArchived.has(b.id))
+}
+
 // Issue #373: a plan lingering in Plans (§9) is drawn whole from its own read
 // while the complete list is not wanted; at most this many plans are read that
 // way (the route's own limit), and more read the complete list.
@@ -2187,7 +2193,7 @@ const LINGERING_READ_LIMIT = 50
 // change asks for no new read. Judged on the brief, as archivedWanted is.
 function lingeringIds(view = lastData) {
   if (!view?.archivedBrief?.length) return []
-  return lingeringBoards(sessionActiveBoards, view.boards, view.archivedBrief).map((plan) => plan.id).sort()
+  return lingeringPlans(view.boards, view.archivedBrief).map((plan) => plan.id).sort()
 }
 
 // The read that draws them, one representation per set of plans, while Plans
@@ -8803,6 +8809,7 @@ let plansViewOpen = false // the header's View: Group by parent issue and Hide c
 // Archive all reads the frame the person clicked.
 let plansDrawn = new Map()
 let stalledArm = null // { ids, lens, timer } while "Really archive N plans?" waits for its confirm
+const ARM_CONFIRM_GAP_MS = 400 // a confirm sooner than this after arming is the same gesture
 let stalledArchiving = null // { n } while Archive all runs
 const handArchived = new Set() // plans Archive all archived: they never linger as "completed — archived"
 let plansNotice = null // { text, lens }: Archive all's report
@@ -8854,6 +8861,13 @@ function pinnedSection(name, plans) {
   plansPin[name] = pinOrder(plansPin[name], plans.map((b) => b.id))
   const byId = new Map(plans.map((b) => [b.id, b]))
   return plansPin[name].map((id) => byId.get(id))
+}
+
+// Whether a plan is Stalled on its own, as the sections would say with no hold applied: a
+// hold may keep a plan drawn in the fold, but Archive all archives only plans that qualify.
+function meetsStalledRule(board) {
+  const nowMs = Date.now()
+  return planSections([board], { nowMs, liveSessions: liveSessionIds(), workingPlanIds: workingPlanIds(nowMs) }).stalled.length === 1
 }
 
 const plansWord = (n) => (n === 1 ? '1 plan' : `${n} plans`)
@@ -8953,7 +8967,7 @@ function renderBoards(boards, archived) {
   // a board that reaches 100% is archived by its agent seconds later; it lingers
   // here as a "completed — archived" card so finished work never blinks out (§9).
   // A plan the person archived with Archive all never does.
-  const lingering = lingeringBoards(sessionActiveBoards, boards, archived).filter((b) => !handArchived.has(b.id))
+  const lingering = lingeringPlans(boards, archived)
   const lingerIds = new Set(lingering.map((b) => b.id))
   const rest = archived.filter((b) => !lingerIds.has(b.id))
   // Issue #299: archived plans are drawn whole only from the complete list, or
@@ -9079,10 +9093,13 @@ function stalledFoldEl(plans, planEl) {
   archive.type = 'button'
   archive.id = 'plans-archive-stalled'
   archive.className = 'archive-stalled'
-  labelArchiveStalled(archive, plans.length)
-  archive.addEventListener('click', () => archiveStalled(archive))
+  const qualifying = plans.filter(meetsStalledRule).length
+  labelArchiveStalled(archive, qualifying)
+  archive.addEventListener('click', (event) => archiveStalled(archive, event))
   actions.appendChild(archive)
-  fold.append(summary, actions)
+  // plans only a hold keeps here are Stalled no longer: with none left, there is nothing to archive
+  fold.append(summary)
+  if (qualifying) fold.append(actions)
   for (const b of plans) fold.appendChild(planEl(b))
   return fold
 }
@@ -9102,7 +9119,7 @@ function labelArchiveStalled(button, drawnCount) {
 function relabelArchiveStalled() {
   const button = document.getElementById('plans-archive-stalled')
   if (!button) return
-  labelArchiveStalled(button, [...plansDrawn.values()].filter((d) => d.section === 'stalled').length)
+  labelArchiveStalled(button, [...plansDrawn.values()].filter((d) => d.section === 'stalled' && meetsStalledRule(d.board)).length)
 }
 
 function disarmStalled() {
@@ -9114,26 +9131,32 @@ function disarmStalled() {
 
 // Arming and disarming change module state and the label in place, never the
 // node, so the confirm click lands on the button the first click armed.
-async function archiveStalled(button) {
+async function archiveStalled(button, event) {
   if (stalledArchiving) return
+  // one gesture never arms and confirms: a double click, or a press right after arming, does nothing
+  if (event?.detail > 1) return
   const lens = navigationKey()
   if (!stalledArm || stalledArm.lens !== lens) {
     disarmStalled()
-    const ids = [...plansDrawn].filter(([, d]) => d.section === 'stalled').map(([id]) => id)
+    // only plans that are Stalled on their own: a hold may keep another drawn in the fold
+    const ids = [...plansDrawn].filter(([, d]) => d.section === 'stalled' && meetsStalledRule(d.board)).map(([id]) => id)
     if (!ids.length) return
     const timer = setTimeout(() => {
       stalledArm = null
       relabelArchiveStalled()
     }, 4000)
-    stalledArm = { ids, lens, timer }
-    plansNotice = null
-    document.querySelector('#boards .plans-notice')?.remove()
+    // the notice stays: taking it away would move the armed button up under the pointer
+    stalledArm = { ids, lens, timer, at: Date.now() }
     labelArchiveStalled(button, ids.length)
     return
   }
+  if (Date.now() - stalledArm.at < ARM_CONFIRM_GAP_MS) return
   clearTimeout(stalledArm.timer)
   const armed = stalledArm.ids
   stalledArm = null
+  // the confirm press starts: the new report replaces the old notice
+  plansNotice = null
+  document.querySelector('#boards .plans-notice')?.remove()
   // the list is taken ONCE, from the frame the person clicked: the plans it still
   // drew as stalled, at the revisions it drew, minus any holding unsent text
   const frame = plansDrawn
@@ -9142,8 +9165,9 @@ async function archiveStalled(button) {
   let kept = 0
   for (const id of armed) {
     const drawn = frame.get(id)
-    if (drawn?.section !== 'stalled') changed += 1
-    else if ((drawn.board.rows ?? []).some((r) => String(rowDrafts[r.id] ?? '').trim())) kept += 1
+    if (drawn?.section !== 'stalled' || !meetsStalledRule(drawn.board)) changed += 1
+    else if ((drawn.board.rows ?? []).some((r) => String(rowDrafts[r.id] ?? '').trim()
+      || Object.values(staleRowDrafts).some((draft) => draft?.rowId === r.id))) kept += 1
     else list.push({ id, revision: drawn.board.revision })
   }
   const hadFocus = document.activeElement === button
@@ -9158,6 +9182,8 @@ async function archiveStalled(button) {
       else if (res.ok) {
         done += 1
         handArchived.add(id)
+        sessionActiveBoards.delete(id) // after the request, never before: it must not linger as "completed — archived"
+
       } else changed += 1
     }
     plansNotice = { lens, text: archiveReport(armed.length, done, changed, kept, failed) }
@@ -9165,7 +9191,9 @@ async function archiveStalled(button) {
   } finally {
     stalledArchiving = null
     relabelArchiveStalled()
-    if (hadFocus && !document.getElementById('plans-archive-stalled')) {
+    // only when focus was lost with the button: the person may have moved it meanwhile
+    if (hadFocus && !document.getElementById('plans-archive-stalled')
+      && (!document.activeElement || document.activeElement === document.body)) {
       ;(document.getElementById('plans-archived-summary') ?? document.getElementById('plans-view-toggle'))?.focus({ preventScroll: true })
     }
   }

@@ -71,6 +71,12 @@ const archiveAll = () => document.getElementById('plans-archive-stalled') as HTM
 const notice = () => document.querySelector<HTMLElement>('#boards .plans-notice')
 const archivePosts = (bridge: { posts: Array<{ url: string; init: RequestInit | undefined }> }) =>
   bridge.posts.filter((p) => /\/api\/boards\/[^/]+\/archive$/.test(p.url))
+/** The two presses of Archive all: arm, wait out the double-click guard, confirm. */
+async function armAndConfirm(): Promise<void> {
+  click(archiveAll())
+  await vi.advanceTimersByTimeAsync(500)
+  click(archiveAll())
+}
 /** What a browser does for Enter or Space on a focused summary: the key, then a click unless the key was taken. */
 function pressOn(el: HTMLElement, key: 'Enter' | ' '): void {
   el.focus()
@@ -464,8 +470,7 @@ describe('Archive all (D6)', () => {
     })
     await showPlans()
     await openFold()
-    click(archiveAll())
-    click(archiveAll())
+    await armAndConfirm()
     await vi.advanceTimersByTimeAsync(0)
     expect(archiveAll()!.textContent).toBe('Archiving 2 plans…')
     expect(archiveAll()!.getAttribute('aria-disabled')).toBe('true')
@@ -509,8 +514,7 @@ describe('Archive all (D6)', () => {
     click(stepRow(stepId)!.querySelector('.row-expand'))
     await settle()
     type(panelRow(stepId)!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Not yet sent')
-    click(archiveAll())
-    click(archiveAll())
+    await armAndConfirm()
     await settle()
     // newest first, as the fold drew them; Quiet A holds unsent text and is not posted
     expect(archivePosts(bridge).map((p) => p.url)).toEqual([`/api/boards/${complete.id}/archive`, `/api/boards/${b.id}/archive`])
@@ -537,8 +541,7 @@ describe('Archive all (D6)', () => {
     await showPlans()
     await openFold()
     archiveAll()!.focus()
-    click(archiveAll())
-    click(archiveAll())
+    await armAndConfirm()
     await settle()
     expect(stalledFold()).toBeNull()
     expect(notice()?.textContent).toBe('Archived 2 plans. Dismiss')
@@ -804,9 +807,7 @@ describe('review fixes: focus and ways in', () => {
     click(stepRow(a.rows[0]!.id)!.querySelector('.row-expand'))
     await settle()
     type(panelRow(a.rows[0]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Not yet sent')
-    click(archiveAll())
-    await vi.advanceTimersByTimeAsync(500)
-    click(archiveAll())
+    await armAndConfirm()
     await settle()
     type(panelRow(a.rows[0]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), '')
     await vi.advanceTimersByTimeAsync(30_000)
@@ -934,6 +935,224 @@ describe('review fixes: focus and ways in', () => {
     await changedPollTick(db)
     expect(shown(panelRow(step.id)?.querySelector('.reply-input'))).toBe(true)
   })
+})
+
+describe('review fixes: Archive all', () => {
+  const quietUp = async (d: Database.Database) => {
+    const { a, b } = twoQuietPlans(d)
+    const bridge = await bootApp(d)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    return { a, b, bridge }
+  }
+  /** Open a plan's only step and send a note from its panel, as the person does. */
+  async function sendNote(d: Database.Database, planId: string, stepId: string, text: string): Promise<void> {
+    click(summary(planId))
+    await settle()
+    click(stepRow(stepId)!.querySelector('.row-expand'))
+    await settle()
+    type(panelRow(stepId)!.querySelector<HTMLTextAreaElement>('.reply-input'), text)
+    click(buttonLabelled('Send', panelRow(stepId)!))
+    await settle()
+    expect(getBoard(d, 'alpha', planId === '' ? '' : getBoardTitle(d, planId))!.rows[0]!.annotation).toBe(text)
+  }
+  const getBoardTitle = (d: Database.Database, id: string) => (d.prepare('SELECT title FROM boards WHERE id = ?').get(id) as { title: string }).title
+
+  it('never archives a plan with a note no agent has picked up, though the hold keeps it drawn in the fold (CFK-2, SDA-1)', async () => {
+    db = freshDb()
+    const { a, b, bridge } = await quietUp(db)
+    await sendNote(db, a.id, a.rows[0]!.id, 'Please also cover Windows.')
+    // drawn where it was; the fold's own line still counts what is drawn
+    expect(card(a.id)!.dataset['section']).toBe('stalled')
+    expect(stalledFold()!.querySelector('.stalled-count')?.textContent).toBe('2 plans, a week without a step')
+    // the button counts only plans that are stalled on their own
+    expect(archiveAll()!.textContent).toBe('Archive all 1 plan')
+    click(archiveAll())
+    expect(archiveAll()!.textContent).toBe('Really archive 1 plan?')
+    await vi.advanceTimersByTimeAsync(500)
+    click(archiveAll())
+    await settle()
+    expect(archivePosts(bridge).map((p) => p.url)).toEqual([`/api/boards/${b.id}/archive`])
+    expect(getBoard(db, 'alpha', 'Quiet A')!.status).toBe('active')
+    expect(notice()?.textContent).toBe('Archived 1 plan. Dismiss')
+  })
+
+  it('draws no Archive all when only a hold keeps plans in the fold (CFK-2)', async () => {
+    db = freshDb()
+    const a = oldPlan(db, 'Quiet A', [tracked('A step')])
+    advanceClock(8 * DAY)
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    expect(archiveAll()!.textContent).toBe('Archive all 1 plan')
+    await sendNote(db, a.id, a.rows[0]!.id, 'Remember the docs.')
+    expect(card(a.id)!.dataset['section']).toBe('stalled')
+    expect(archiveAll()).toBeNull()
+  })
+
+  it('checks each armed plan again at the confirm and counts one that has stopped qualifying as changed (CFK-2)', async () => {
+    db = freshDb()
+    const { a, b, bridge } = await quietUp(db)
+    click(archiveAll())
+    expect(archiveAll()!.textContent).toBe('Really archive 2 plans?')
+    // inside the 4 seconds, the person sends a note on Quiet A: held in the fold, no longer stalled
+    click(summary(a.id))
+    await settle()
+    click(stepRow(a.rows[0]!.id)!.querySelector('.row-expand'))
+    await settle()
+    type(panelRow(a.rows[0]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Remember the docs.')
+    click(buttonLabelled('Send', panelRow(a.rows[0]!.id)!))
+    await settle()
+    expect(card(a.id)!.dataset['section']).toBe('stalled')
+    expect(archiveAll()!.textContent).toBe('Really archive 2 plans?')
+    await vi.advanceTimersByTimeAsync(500)
+    click(archiveAll())
+    await settle()
+    expect(archivePosts(bridge).map((p) => p.url)).toEqual([`/api/boards/${b.id}/archive`])
+    expect(notice()?.textContent).toContain('Archived 1 of 2 plans. 1 had changed since you looked and was left as it is.')
+  })
+
+  it('keeps a plan whose step holds a kept recovery line, and says so with the unsent ones (SDA-4)', async () => {
+    db = freshDb()
+    const kept = oldPlan(db, 'Quiet kept', [tracked('Write it up')])
+    const other = oldPlan(db, 'Quiet other', [tracked('Other step')])
+    advanceClock(8 * DAY)
+    const step = kept.rows[0]!
+    localStorage.setItem('agent-inbox-drafts-v1', JSON.stringify({ v: 1, entries: {
+      [`row-recovery:${step.id}:${step.revision}`]: { savedAt: Date.now(), draft: {
+        type: 'row-recovery', rowId: step.id, revision: step.revision, actionVersion: 0,
+        text: 'Kept words', kind: 'answer', boardTitle: kept.title, label: step.label, context: '',
+        setAside: false, choice: false, reason: '',
+      } },
+    } }))
+    const bridge = await bootApp(db)
+    await showPlans()
+    expect(stalledFold()!.open).toBe(true)
+    await armAndConfirm()
+    await settle()
+    expect(archivePosts(bridge).map((p) => p.url)).toEqual([`/api/boards/${other.id}/archive`])
+    expect(notice()?.textContent).toContain('Archived 1 of 2 plans. 1 has text you have not sent and was kept.')
+  })
+
+  it('one gesture never arms and confirms: a second click within 400 ms, or with a click count above 1, is ignored (SDA-3)', async () => {
+    db = freshDb()
+    const { bridge } = await quietUp(db)
+    click(archiveAll())
+    click(archiveAll())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(archiveAll()!.textContent).toBe('Really archive 2 plans?')
+    expect(archivePosts(bridge)).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(500)
+    archiveAll()!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 2 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(archiveAll()!.textContent).toBe('Really archive 2 plans?')
+    expect(archivePosts(bridge)).toHaveLength(0)
+    archiveAll()!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }))
+    await settle()
+    expect(archivePosts(bridge)).toHaveLength(2)
+  })
+
+  it('keeps the notice while Archive all is armed and replaces it when the confirm press starts (CFK-3)', async () => {
+    db = freshDb()
+    const c = oldPlan(db, 'Quiet C', [tracked('C step')])
+    const { a } = twoQuietPlans(db)
+    void c
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    click(summary(a.id))
+    await settle()
+    click(stepRow(a.rows[0]!.id)!.querySelector('.row-expand'))
+    await settle()
+    type(panelRow(a.rows[0]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Not yet sent')
+    await armAndConfirm()
+    await settle()
+    expect(notice()?.textContent).toContain('1 has text you have not sent and was kept.')
+    type(panelRow(a.rows[0]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), '')
+    const before = notice()
+    click(archiveAll())
+    expect(archiveAll()!.textContent).toBe('Really archive 1 plan?')
+    expect(notice()).toBe(before)
+    await vi.advanceTimersByTimeAsync(500)
+    click(archiveAll())
+    expect(notice()).toBeNull()
+    await settle()
+    expect(notice()?.textContent).toBe('Archived 1 plan. Dismiss')
+  })
+
+  it('leaves focus where the person put it while the plans are archived (CFK-6)', async () => {
+    db = freshDb()
+    twoQuietPlans(db)
+    let release: () => void = () => {}
+    const parked = new Promise<void>((resolve) => { release = resolve })
+    let first = true
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (init?.method === 'POST' && /\/archive$/.test(String(input)) && first) {
+          first = false
+          await parked
+        }
+        return next()
+      },
+    })
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    archiveAll()!.focus()
+    await armAndConfirm()
+    await vi.advanceTimersByTimeAsync(0)
+    // the person goes to the search box while the plans are being archived
+    const search = document.getElementById('search') as HTMLInputElement
+    search.focus()
+    release()
+    await settle()
+    expect(stalledFold()).toBeNull()
+    expect(document.activeElement).toBe(search)
+  })
+
+  for (const complete of [false, true]) {
+    it(`a plan it archived can be opened under Archived plans and un-archived${complete ? ' (a complete plan the person had un-archived)' : ''} (RT-2)`, async () => {
+      db = freshDb()
+      const ids: string[] = []
+      if (complete) {
+        advanceClock()
+        upsertBoard(db, { ...AGENT, title: 'Complete', rows: [{ label: 'All done', status: 'done' }] })
+        const done = getBoardByTitle(db, 'alpha', 'Complete')!
+        expect(unarchiveBoard(db, done.id, done.revision)).toBe(true)
+        ids.push(done.id)
+        advanceClock(8 * DAY)
+      } else {
+        const { a, b } = twoQuietPlans(db)
+        ids.push(a.id, b.id)
+      }
+      await bootApp(db)
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      await showPlans()
+      click(stalledFold()!.querySelector('summary'))
+      await settle()
+      await armAndConfirm()
+      await settle()
+      const fold = () => document.querySelector<HTMLDetailsElement>('#boards .archived-fold')!
+      click(fold().querySelector('summary'))
+      await settle()
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(3000)
+        await settle()
+      }
+      expect(fold().open).toBe(true)
+      expect([...fold().querySelectorAll<HTMLElement>('[data-card-id]')].map((el) => el.dataset['cardId']).sort(), fold().textContent ?? '').toEqual([...ids].sort())
+      click(summary(ids[0]!))
+      await settle()
+      expect(buttonLabelled('Un-archive', card(ids[0]!)!)).not.toBeNull()
+    })
+  }
 })
 
 describe('the stylesheet (CSS)', () => {

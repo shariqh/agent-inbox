@@ -39,10 +39,14 @@ describe('A11 · keys', () => {
     click(main)
     await settle()
     const resolve = buttonLabelled('Resolve', row().querySelector('.find-row-body')!)!
+    const order = () => [...document.querySelectorAll<HTMLElement>('#findList > .find-row')].map((el) => el.dataset['findKey'])
+    const before = order()
     resolve.focus()
     key(resolve, 'e')
     await settle()
     expect(getItem(db, note)?.status).toBe('resolved')
+    // resolved by the key, the row keeps its place, as it does for a press
+    expect(order()).toEqual(before)
   })
 })
 

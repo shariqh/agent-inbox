@@ -3582,6 +3582,9 @@ body.hub-reconnecting #status { display: none; }
 .find-row-origin { margin: 0 0 var(--sp-2); color: var(--app-text-soft); font-size: var(--fs-meta); }
 /* while a query waits on older history, the previous list stays in place, dimmed and inert */
 .find-list[data-updating="true"] .find-row-main[aria-disabled="true"] { opacity: .55; cursor: default; }
+.find-list[data-updating="true"] .find-row-body { opacity: .55; }
+/* a Note that was not saved says so in the row it was written in */
+.find-row-problem { margin: var(--sp-2) 0 0; color: var(--app-warning); font-size: var(--fs-meta); }
 .find-row:has(> .find-row-body) { background: var(--app-surface); }
 .find-foot { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); padding: 0 var(--sp-4); }
 .find-foot:empty { display: none; }

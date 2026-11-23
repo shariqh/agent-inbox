@@ -8693,6 +8693,7 @@ let findRevealKey = null       // the first row "Show 20 more" reveals
 const findDomIds = new Map()   // key → the stable id of its main button, kept only while the key is drawn
 let findDomSeq = 0             // ids are never reused, so pruning the map cannot collide two rows
 let findEntryTouch = false     // the last press on the tab strip was a touch
+let findPointerIn = false      // the pointer rests on the list: a poll then keeps the painted order
 
 const FIND_ICONS = {
   answer: '<circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.6a2.4 2.4 0 1 1 3.6 2.1c-.8.5-1.2 1-1.2 1.9"></path><path d="M12 17h.01"></path>',
@@ -8703,16 +8704,18 @@ const FIND_ICONS = {
   action: '<path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path>',
 }
 
-const FIND_EMPTY = { all: 'Nothing here yet.', answers: 'No answers yet.', notes: 'No notes.', plans: 'No plans.' }
+const FIND_EMPTY = { none: 'Nothing here yet.', all: 'No answers, notes or finished work yet.', answers: 'No answers yet.', notes: 'No notes.', plans: 'No plans.' }
 
 function windowActive() {
   return document.visibilityState !== 'hidden' && document.hasFocus()
 }
 
 // Find reads older history and archived plans for a query only while it is the page in
-// use: the active tab, a query typed, and the window active.
+// use: the active tab, a query typed, and the window on screen. Unlike the top bar's dropdown,
+// Find's results stay on screen when the person looks at another app, so focus is not asked
+// for: letting the history go then would make the rows on screen stale.
 function findInUse() {
-  return activeTab === 'find' && !settingsOpen() && findQuery.trim() !== '' && windowActive()
+  return activeTab === 'find' && !settingsOpen() && findQuery.trim() !== '' && document.visibilityState !== 'hidden'
 }
 
 // Which reads a chip needs: history for All, Answers and Notes; archived plans for All and Plans.
@@ -8745,7 +8748,10 @@ const findRowHasText = (row) => Boolean(row?.entity && itemNoteEditors[row.id]?.
 // state and any refusal stay in view.
 function keepFindRowOpen(id) {
   const key = `item:${id}`
-  if (findRowHasText(findRowsByKey.get(key))) findOpen.add(key)
+  if (!findRowHasText(findRowsByKey.get(key))) return
+  findOpen.add(key)
+  // the click on Save already says so; Cmd or Ctrl+Enter makes no click
+  findKept.add(key)
 }
 
 // A deliberate change of chip or settled query ends the "stays in place" window: rows the
@@ -8775,6 +8781,10 @@ function findModel() {
   const waiting = Boolean(query) && ((needs.history && omitsHistory()) || (needs.archived && omitsArchived()))
   const older = query || !needs.history ? 0 : olderHistory(lastData.older, olderLens()).items
   const data = findLensData(query)
+  // while the pointer rests on the list, a poll keeps the painted order: a re-sort (plans move on
+  // every write) must not put another row under the press. The order catches up when it leaves.
+  const keep = findKeepKeys()
+  if (pollPaint && findPointerIn) for (const key of findPainted) keep.add(key)
   const { rows, cut } = buildFindRows(data, {
     chip: findChip,
     query,
@@ -8782,9 +8792,17 @@ function findModel() {
     before: older ? lastData.older?.before ?? null : null,
     nowMs: Date.now(),
     archivedWhole: Boolean(lastData.archivedFull),
-    keep: findKeepKeys(),
+    keep,
     previous: findPainted,
   })
+  // a row whose Note editor holds text is never hidden by the lens (a closed project, another
+  // project on the rail): the typed text stays in sight, first in the list
+  const listedKeys = new Set(rows.map((row) => row.key))
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    if (!editor.text.trim() || listedKeys.has(`item:${id}`)) continue
+    const entity = [...(lastData.g.needsYou ?? []).flatMap((group) => group.items ?? []), ...(lastData.g.notes ?? []).flatMap((group) => group.items ?? []), ...(lastData.g.done ?? [])].find((item) => item.id === id)
+    if (entity) rows.unshift(findRow(entity, { nowMs: Date.now() }))
+  }
   return { query, rows, cut, older, waiting, commands: query ? findCommandRows(query, rows) : { lead: [], tail: [] }, data }
 }
 
@@ -8813,6 +8831,8 @@ function markFindStale(list, stale) {
     if (stale) main.setAttribute('aria-disabled', 'true')
     else main.removeAttribute('aria-disabled')
   }
+  // an open row's card too: a press there would be remembered and applied when the results land
+  for (const body of list.querySelectorAll(':scope > .find-row > .find-row-body')) body.inert = stale
   if (stale) findField()?.removeAttribute('aria-activedescendant')
   else paintFindActive()
 }
@@ -8956,10 +8976,22 @@ function updateFindRow(el, row, nowMs) {
     itemNoteDrafts[it.id]?.error ?? null, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available()])
   if (body.dataset.signature !== cardSignature || !sameRead(body.findLinks, lastData.links) || !sameRead(body.findIssues, lastData.issues)) {
     // agent and stream are no longer on the row: one quiet line above the card says them (agent text: textContent)
+    const from = [it.agent, it.stream].filter(Boolean).join(' · ')
     const origin = document.createElement('p')
     origin.className = 'find-row-origin'
-    origin.textContent = [it.agent, it.stream].filter(Boolean).join(' · ')
-    body.replaceChildren(origin, itemCardEl(it, { done: it.status !== 'open', header: false }))
+    origin.textContent = from
+    origin.hidden = !from
+    const parts = [origin, itemCardEl(it, { done: it.status !== 'open', header: false })]
+    const problem = itemNoteDrafts[it.id]?.error
+    if (problem) {
+      // the text itself is kept on Home, under the unsent responses; here the row says what happened
+      const line = document.createElement('p')
+      line.className = 'find-row-problem'
+      line.setAttribute('role', 'status')
+      line.textContent = `${problem} Your text is kept on Home, under unsent responses.`
+      parts.push(line)
+    }
+    body.replaceChildren(...parts)
     body.dataset.signature = cardSignature
     body.findLinks = lastData.links
     body.findIssues = lastData.issues
@@ -9026,10 +9058,11 @@ function renderFind() {
   if (!list || !foot || !lastData) return
   syncFindControls()
   const model = findModel()
-  if (model.waiting) {
-    // a query waits for the whole of what it searches: the rows on screen stay, busy
+  const waitFailed = model.waiting && findWaitFailed()
+  if (model.waiting && !waitFailed) {
+    // a query waits for the whole of what it searches: the rows on screen stay, busy and inert
     findWaiting = true
-    findStale = !findWaitFailed()
+    findStale = true
     list.setAttribute('aria-busy', 'true')
     markFindStale(list, findStale)
     setFindStatus(findWaitText())
@@ -9037,6 +9070,7 @@ function renderFind() {
     foot.dataset.says = ''
     return
   }
+  // when the read failed, the query is drawn over what is loaded, under the failure line
   findWaiting = false
   findStale = false
   list.removeAttribute('aria-busy')
@@ -9059,12 +9093,15 @@ function renderFind() {
 
   const rest = rows.length - listed.length
   const olderWaits = !model.query && findNeeds().history && (model.cut > 0 || model.older > 0)
-  if (drawn.length) setFindStatus('')
+  if (waitFailed) setFindStatus(findWaitText())
+  else if (drawn.length) setFindStatus('')
   else if (model.query) setFindStatus(`Nothing matches "${model.query}".`)
   else if (olderWaits) setFindStatus('')
   else {
-    const anything = findChip === 'all' ? 0 : buildFindRows(model.data, { chip: 'all', nowMs }).rows.length
-    setFindStatus(anything ? FIND_EMPTY[findChip] : FIND_EMPTY.all)
+    // "Nothing here yet." only when the lens holds nothing at all, plans included
+    const feed = buildFindRows(model.data, { chip: 'all', nowMs }).rows.length
+    const plans = buildFindRows(model.data, { chip: 'plans', nowMs }).rows.length
+    setFindStatus(feed + plans === 0 ? FIND_EMPTY.none : FIND_EMPTY[findChip])
   }
   // the first row "Show 20 more" reveals; the foot is rebuilt only when its KIND changes (more,
   // older, loading), and a changed number is written into the button in place, so a poll never
@@ -9211,6 +9248,7 @@ function leaveFind() {
   endFindStay()
   findNewIds = null
   findHistoryPinned = false
+  findPointerIn = false
 }
 
 // G F, G N, G H and Home's notes chip. `focus`: the field, the list or nothing.
@@ -9275,10 +9313,14 @@ function initFind() {
     if (findTimer) clearTimeout(findTimer)
     findTimer = setTimeout(() => {
       findTimer = null
+      // a stray key undone within the debounce settles on the same query: nothing moves
+      const changed = findQuery.trim() !== findSettled.trim()
       findSettled = findQuery
-      findActiveKey = null
-      shown.find = FIND_PAGE
-      endFindStay()
+      if (changed) {
+        findActiveKey = null
+        shown.find = FIND_PAGE
+        endFindStay()
+      }
       forceRender()
       // the person's own query asked for this frame: what it searches is read and painted
       // outside the poll's gate, as an unrelated draft must not hide it (#38)
@@ -9325,6 +9367,9 @@ function initFind() {
     event.preventDefault()
     event.stopPropagation()
     const key = rowEl.dataset.findKey
+    const itemId = key.startsWith('item:') ? key.slice(5) : null
+    // an editor left empty goes with the row: it must not reappear wherever the item is drawn next
+    if (itemId && itemNoteEditors[itemId] && !itemNoteEditors[itemId].text.trim()) delete itemNoteEditors[itemId]
     if (findOpen.has(key) && !findRowHasText(findRowsByKey.get(key))) {
       findOpen.delete(key)
       forceRender()
@@ -9333,11 +9378,24 @@ function initFind() {
   })
   // a press inside an open row is the person acting on it: it stays where it is until they leave
   list.addEventListener('click', (event) => {
+    const inBody = event.target instanceof Element ? event.target.closest('.find-row-body') : null
+    if (findStale && inBody) {
+      // the card belongs to the previous list: a press here must not be remembered for later
+      event.stopPropagation()
+      event.preventDefault()
+      return
+    }
     const control = event.target instanceof Element ? event.target.closest('.find-row-body button') : null
     const key = control?.closest('.find-row[data-find-key]')?.dataset.findKey
     if (!key) return
     findKept.add(key)
   }, true)
+  // back on screen with a query: read what it searches at once, not on the next tick
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden' && activeTab === 'find' && findQuery.trim()) requestHistoryPaint()
+  })
+  list.addEventListener('pointerenter', () => { findPointerIn = true })
+  list.addEventListener('pointerleave', () => { findPointerIn = false })
   document.getElementById('tabs')?.addEventListener('pointerdown', (event) => {
     findEntryTouch = event.pointerType === 'touch'
   }, true)

@@ -850,9 +850,12 @@ const chatsView = installChatsView({
   rowEl: (key) => document.querySelector(`#findList > [data-find-key="${CSS.escape(`chat:${key}`)}"]`),
   changed: (change) => chatsChanged(change),
   // a note for an action pressed on a collapsed row opens it, after the person's own press
+  // The row is open the next time it is listed; it is kept in place only when it is drawn now, so
+  // an answer that lands after the person moved to another chip or filter never brings it in.
   reveal: (key) => {
-    findOpen.add(`chat:${key}`)
-    findKept.add(`chat:${key}`)
+    const rowKey = `chat:${key}`
+    findOpen.add(rowKey)
+    if (findRowsByKey.has(rowKey)) findKept.add(rowKey)
   },
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the

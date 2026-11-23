@@ -187,3 +187,57 @@ describe('a chat row that a poll moves keeps the focus inside it', () => {
   })
 })
 
+describe('a late answer opens its chat row only where the row is drawn', () => {
+  it('a refusal that lands after the person moved to Notes does not bring the chat row into Notes', async () => {
+    let finish: (value: unknown) => void = () => {}
+    const bridge = installBridge()
+    bridge.resume.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    await boot({ seed: (d) => { insertItem(d, { ...ATLAS, kind: 'note', title: 'An atlas note' }) } })
+    await openFindChats()
+    click(slotOf(3))
+    await settle()
+    click(chip('notes'))
+    await settle()
+    const before = rowKeys()
+    expect(before.some((k) => k?.startsWith('chat:'))).toBe(false)
+    finish({ ok: false, reason: 'folder', error: 'Its folder no longer exists.' })
+    await settle()
+    await settle()
+    expect(rowKeys()).toEqual(before)
+    // back on the Chats chip the row is open and shows the note
+    click(chip('chats'))
+    await settle()
+    expect(mainOf(3).getAttribute('aria-expanded')).toBe('true')
+    expect(rowFor(3)!.querySelector('.chats-resume-note')?.textContent).toBe('Its folder no longer exists.')
+  })
+
+  it('a refusal that lands after the tool toggle hid the chat does not bring it back at the top', async () => {
+    let finish: (value: unknown) => void = () => {}
+    const bridge = installBridge()
+    bridge.resume.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    await boot()
+    await openFindChats()
+    click(slotOf(3))
+    await settle()
+    click(line().querySelector('[data-chats-tool="copilot"]'))
+    await settle()
+    const before = rowKeys()
+    expect(before).toEqual([chatKey(2, 'copilot')])
+    finish({ ok: false, reason: 'folder', error: 'Its folder no longer exists.' })
+    await settle()
+    await settle()
+    expect(rowKeys()).toEqual(before)
+  })
+
+  it('a refusal for a row that is drawn still opens it', async () => {
+    const bridge = installBridge()
+    bridge.resume.mockResolvedValue({ ok: false, reason: 'live', error: 'This chat is live in another process.' })
+    await boot()
+    await openFindChats()
+    click(slotOf(3))
+    await settle()
+    await settle()
+    expect(mainOf(3).getAttribute('aria-expanded')).toBe('true')
+  })
+})
+

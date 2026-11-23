@@ -131,6 +131,53 @@ export function planBar(board, nowMs) {
   }
 }
 
+// UX pass, slice 3: a plan's steps in their own order, as the segmented bar
+// draws them. One vocabulary everywhere: done, in progress, needs you, to do.
+// `na` steps do not count; a blocked step needs you only while the attention
+// predicate says so and the plan is not archived (an answered, snoozed or
+// pinned step, and any blocked step of an archived plan, is to do).
+export function planStepStates(plan, nowMs) {
+  const archived = plan?.status === 'archived'
+  const states = []
+  const counts = { done: 0, progress: 0, needs: 0, todo: 0 }
+  for (const row of plan?.rows ?? []) {
+    if (row.status === 'na') continue
+    const state = row.status === 'done' ? 'done'
+      : row.status === 'partial' ? 'progress'
+        : !archived && isBlockedRowAttention(row, nowMs) ? 'needs'
+          : 'todo'
+    states.push(state)
+    counts[state] += 1
+  }
+  return { states, counts }
+}
+
+// The bar's segments for one place, always in step order: one per step while
+// the plan has at most `maxPerStep` counted steps, else one gapless run per
+// stretch of equal states, each growing by its length.
+export function planSegments(states, maxPerStep) {
+  if (states.length <= maxPerStep) return { runs: false, segments: states.map((state) => ({ state, grow: 1 })) }
+  const segments = []
+  for (const state of states) {
+    const last = segments[segments.length - 1]
+    if (last?.state === state) last.grow += 1
+    else segments.push({ state, grow: 1 })
+  }
+  return { runs: true, segments }
+}
+
+// What the bar says in words: "3 of 7 steps done, 1 needs you, 1 in progress",
+// leaving out a part that is zero.
+export function planBarLabel(counts) {
+  const total = counts.done + counts.progress + counts.needs + counts.todo
+  if (!total) return 'No steps to count'
+  return [
+    `${counts.done} of ${total} steps done`,
+    counts.needs ? `${counts.needs} ${counts.needs === 1 ? 'needs' : 'need'} you` : '',
+    counts.progress ? `${counts.progress} in progress` : '',
+  ].filter(Boolean).join(', ')
+}
+
 const askMs = (entry) => {
   const at = Date.parse(currentAskAt(entry) ?? '')
   return Number.isFinite(at) ? at : Infinity

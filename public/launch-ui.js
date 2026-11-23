@@ -536,7 +536,7 @@ export function createLaunchUi(deps) {
   }
 
   // ── Continue here… (#586 phase 2, design §3.5) ───────────────────────────
-  // A Copilot CLI chat from the Chats tab, carried on as a session this app drives. The dialog
+  // A Copilot CLI chat from Find's Chats chip, carried on as a session this app drives. The dialog
   // shows the chat's title and folder as text, a mode (Ask for everything or Read-only) and the
   // required first message; main reads everything else itself, refuses or confirms natively, and
   // runs it in the chat's own folder. The page sends exactly { tool, id, mode, prompt, startId }.
@@ -703,7 +703,7 @@ export function createLaunchUi(deps) {
     const launch = id && on() ? (deps.launches() ?? []).find((l) => l.id === id) ?? null : null
     const parts = ['.sp-actions', '.sp-note', '.sp-worktree', '.sp-transcript', '.sp-resume'].map((sel) => aside.querySelector(sel))
     const [actionsEl, noteEl, worktreeEl, transcriptEl, resumeEl] = parts
-    // #586 phase 2 (design §3.5): a launch that continues a Copilot chat says so, linked to the Chats tab
+    // #586 phase 2 (design §3.5): a launch that continues a Copilot chat says so, linked to Find's Chats chip
     const chatEl = aside.querySelector('.sp-chat')
     const chatId = typeof launch?.chat_id === 'string' && CHAT_ID.test(launch.chat_id) ? launch.chat_id : null
     let link = chatEl?.querySelector('.sp-chat-link') ?? null
@@ -717,7 +717,7 @@ export function createLaunchUi(deps) {
         link = make('a', 'sp-chat-link')
         link.setAttribute('href', '#chats')
         chatEl.append(link)
-        // the hash may already be #chats, which would fire no hashchange: the app opens the tab itself
+        // the hash may already be #chats, which would fire no hashchange: the app opens Find's Chats chip itself
         link.addEventListener('click', (event) => {
           if (typeof deps.openChats !== 'function') return
           event.preventDefault()

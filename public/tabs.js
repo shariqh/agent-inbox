@@ -3,10 +3,9 @@
 // rule is stated here instead of hiding inside a call site.
 
 // `agent` (cards view V5 §3.3) is shown only while a mesh agent is open, and never counted
-// `chats` (#586) reads its own list when opened and carries no count
 // Home (`dashboard`) holds the asks and the lanes on one page: there is no separate Inbox tab
-// `find` (UX pass, slice 4) replaces Notes and History
-export const TAB_IDS = ['dashboard', 'boards', 'find', 'chats', 'agent']
+// `find` (UX pass, slice 4) replaces Notes and History, and (step B) Chats: its Chats chip
+export const TAB_IDS = ['dashboard', 'boards', 'find', 'agent']
 
 // the active tab is never persisted — the app always opens at the live desk
 export const DEFAULT_TAB = 'dashboard'

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// #chats opens the Chats tab (#586 PR 2), on boot and on hashchange, without
-// taking over #item/<id>. Its own file: hashchange listeners pile up across boots.
+// #chats opens Find with the Chats chip (#586 PR 2; UX pass, slice 4, step B), on boot and on
+// hashchange, without taking over #item/<id>. Its own file: hashchange listeners pile up across boots.
 import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem } from '../../src/store.js'
@@ -38,17 +38,20 @@ async function boot(seed: (d: Database.Database) => void = () => {}) {
   return reads
 }
 
-const shown = () => !document.getElementById('chats')!.hidden
+// the chats show: Find, with its Chats chip selected
+const chatsChip = () => document.querySelector('#find [data-find-chip="chats"]')!.getAttribute('aria-pressed') === 'true'
+const shown = () => !document.getElementById('find')!.hidden && chatsChip()
 
 describe('#chats deep link (#586 PR 2)', () => {
   // One app per hash test: an earlier boot's hashchange listener would show the panel first.
-  it('opens Chats on boot with one read, and again on hashchange', async () => {
+  it('opens Find’s Chats chip on boot with one read, and again on hashchange', async () => {
     location.hash = '#chats'
     const reads = await boot()
     expect(shown()).toBe(true)
-    expect(document.getElementById('pageTitle')?.textContent).toBe('Chats')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Find')
     expect(reads).toEqual(['/api/chats'])
-    expect(document.querySelectorAll('#chats tbody tr')).toHaveLength(1)
+    expect(document.querySelectorAll('#findList > .find-row[data-find-type="chat"]')).toHaveLength(1)
+    expect(document.activeElement).toBe(document.getElementById('findQuery'))
 
     document.querySelector<HTMLElement>('.tab[data-tab="dashboard"]')!.click()
     await settle()
@@ -69,6 +72,9 @@ describe('#chats deep link (#586 PR 2)', () => {
     await settle()
     expect(shown()).toBe(false)
     expect(document.getElementById('find')!.hidden).toBe(false)
-    expect(reads).toEqual([])
+    // the note's row, under the chip that holds it (All, here), not Chats
+    expect(document.querySelector(`#findList > [data-find-key="item:${id}"]`)).not.toBeNull()
+    // step B: entering Find reads the chat list under its 60-second rule, whatever the chip
+    expect(reads).toEqual(['/api/chats'])
   })
 })

@@ -36,11 +36,11 @@ describe('keyboard-first workspace', () => {
 
     expect(document.getElementById('keyboardHelp')?.getAttribute('data-shortcut')).toBe('?')
     expect(document.getElementById('keyboardHints')?.getAttribute('data-shortcut')).toBe('F')
-    // UX pass, slice 4: G F goes to Find and carries its tab's tile; G N and G H open Find
-    // with a chip (Find: Notes, Find: All) and carry no tile of their own
+    // UX pass, slice 4: G F goes to Find and carries its tab's tile; G N, G H and (step B) G C open
+    // Find with a chip (Find: Notes, Find: All, Find: Chats) and carry no tile of their own
     const destinations = [
       ['i', 'needsYou', 'G I'], ['p', 'boards', 'G P'], ['f', 'find', 'G F'], ['n', 'find', null],
-      ['h', 'find', null], ['c', 'chats', 'G C'], ['d', 'dashboard', 'G D'],
+      ['h', 'find', null], ['c', 'find', null], ['d', 'dashboard', 'G D'],
     ] as const
     for (const [key, id, label] of destinations) {
       // G I has no tab: Home's list of asks carries its tile on the list's heading
@@ -52,7 +52,7 @@ describe('keyboard-first workspace', () => {
       press(key)
       expect(document.getElementById(id)?.hidden).toBe(false)
     }
-    expect(document.querySelector('[data-shortcut="G N"], [data-shortcut="G H"]')).toBeNull()
+    expect(document.querySelector('[data-shortcut="G N"], [data-shortcut="G H"], [data-shortcut="G C"]')).toBeNull()
     press('g')
     press('s')
     expect(document.getElementById('setup')?.hidden).toBe(false)

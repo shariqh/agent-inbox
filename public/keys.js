@@ -20,7 +20,8 @@ export const KEYBOARD_COMMANDS = [
   { id: 'find', key: 'f', prefix: 'g', display: 'G F', label: 'Find', group: 'Go to', selector: '#tabs [data-tab="find"]' },
   { id: 'findNotes', key: 'n', prefix: 'g', display: 'G N', label: 'Find: Notes', group: 'Go to' },
   { id: 'findAll', key: 'h', prefix: 'g', display: 'G H', label: 'Find: All', group: 'Go to' },
-  { id: 'chats', key: 'c', prefix: 'g', display: 'G C', label: 'Chats', group: 'Go to', selector: '#tabs [data-tab="chats"]' },
+  // step B: the Chats page folded into Find; G C opens Find with the Chats chip and focuses the field
+  { id: 'findChats', key: 'c', prefix: 'g', display: 'G C', label: 'Find: Chats', group: 'Go to' },
   { id: 'setup', key: 's', prefix: 'g', display: 'G S', label: 'Settings', group: 'Go to', selector: '#gear' },
   { id: 'agents', key: 'a', prefix: 'g', display: 'G A', label: 'Agent filter', group: 'Go to', selector: '.agent-pick .tab-label' },
   { id: 'projects', key: 'o', prefix: 'g', display: 'G O', label: 'Project picker', group: 'Go to', selector: '#projectDisclosureToggle, .sidebar-section-label' },

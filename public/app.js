@@ -12,7 +12,7 @@ import {
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
 import {
-  SCROLL_IDLE_MS, pressHeld, scrollActive, shouldDeferRender,
+  PRESS_GRACE_MS, SCROLL_IDLE_MS, pressHeld, scrollActive, shouldDeferRender,
   suspendHint, pinOrder, reconcileOpenRow, pollMaySkipPaint, draftInUse, recentInput,
 } from '/poll.js'
 import { createStagedSend } from '/star.js'
@@ -822,10 +822,10 @@ const meshAgentPage = installMeshAgentPage({
   onClose: closeMeshAgent,
 })
 
-// The Chats tab (#586): its own read on open, Refresh and Show all, never the poll's
+// The chats (#586), Find's Chats chip since UX pass, slice 4, step B: their own read on entering
+// Find, Refresh and Show all, never the poll's. Find's frame draws them (renderFind).
 const chatsView = installChatsView({
   doc: document,
-  host: () => document.querySelector('#chats .chats'),
   fetch: (url) => fetch(url),
   now: () => Date.now(),
   // #586 PR 3: Resume in Terminal, only where the desktop app's preload exposes it
@@ -846,6 +846,13 @@ const chatsView = installChatsView({
   // Jump to session (#586): a live chat's own session card, in any window. A session that started
   // since the last poll is read once before the answer is no.
   jump: async (session) => jumpToSession(session) || (await reloadAndPaint(), jumpToSession(session)),
+  rowEl: (key) => document.querySelector(`#findList > [data-find-key="${CSS.escape(`chat:${key}`)}"]`),
+  changed: (change) => chatsChanged(change),
+  // a note for an action pressed on a collapsed row opens it, after the person's own press
+  reveal: (key) => {
+    findOpen.add(`chat:${key}`)
+    findKept.add(`chat:${key}`)
+  },
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
@@ -875,7 +882,7 @@ function launchesOn() {
   return launchUi?.on() === true
 }
 
-// #586 phase 2: a failed launches read is a frame input, so the Chats tab can say it could not
+// #586 phase 2: a failed launches read is a frame input, so the Chats line can say it could not
 // read them; a tick that read none (the switch off) is never one, so an idle tick stays idle
 function launchesReadFailed(read, launches) {
   return read && !Array.isArray(launches)
@@ -2061,9 +2068,9 @@ function applyFocusHash() {
   keptLensHash = null
   // UX pass, slice 3: the landing already happened, with the lens left alone
   if (kept !== null && location.hash === kept) return
-  // #586: #chats opens the Chats tab; the viewer never writes it
+  // #586: #chats opens Find with the Chats chip (UX pass, slice 4, step B); the viewer never writes it
   if (isChatsHash(location.hash)) {
-    selectTab('chats')
+    openChatsInFind()
     return
   }
   const f = parseFocusHash(location.hash)
@@ -3777,7 +3784,6 @@ function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAl
   // panes skip ordinary polls; boot and explicit human repaints remain complete.
   const restoreQueueView = renderNeedsYou(g, boards, Date.now())
   if (paintAllPanes || !document.getElementById('find').hidden) renderFind()
-  if (paintAllPanes || !document.getElementById('chats').hidden) chatsView.paint()
   for (const board of boards) sessionActiveBoards.add(board.id)
   if (paintAllPanes || !document.getElementById('boards').hidden) renderBoards(boards, archived)
   // renderFind may have marked visible notes read. Recount only on a full
@@ -6016,10 +6022,11 @@ function selectTab(id, { paint = true, open = true } = {}) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
-  // Settings covers the active tab without changing it, so "entered" is the panel showing (#586)
-  const chatsWasHidden = document.getElementById('chats').hidden
+  // Settings covers the active tab without changing it, so "entered" is the panel showing (#586):
+  // entering Find reads the chats under their 60-second rule (step B)
+  const findWasHidden = document.getElementById('find').hidden
   showPanel(id)
-  if (id === 'chats' && chatsWasHidden) chatsView.opened()
+  if (id === 'find' && findWasHidden) chatsView.opened()
   if (paint) {
     forceRender()
     requestHistoryPaint()
@@ -6068,7 +6075,6 @@ const PAGE_META = {
   boards: { kicker: '', title: 'Plans' },
   // the heading stays for structure and is visually hidden: Find's field is what shows first
   find: { kicker: '', title: 'Find' },
-  chats: { kicker: 'Workspace', title: 'Chats' },
   // the title is the open agent's name
   agent: { kicker: 'Mesh agent', title: '' },
   setup: { kicker: 'Agent Inbox', title: 'Settings' },
@@ -7338,8 +7344,8 @@ function initLaunches() {
     started: (id) => { if (scopeToLaunch(id)) forceRender() },
     // #586 phase 2: a continued chat's session, once started, opens as Show session opens it
     showLaunch: (id) => openSessionFocus(`launch:${id}`),
-    // the session panel's "Continued from a Copilot chat" line
-    openChats: () => selectTab('chats'),
+    // the session panel's "Continued from a Copilot chat" line: Find with the Chats chip
+    openChats: () => openChatsInFind(),
     pending: (action) => withPendingResponse(action),
   })
   // a changed answer is drawn by the next tick, which reads the launches once on
@@ -8702,9 +8708,13 @@ const FIND_ICONS = {
   finished: '<circle cx="12" cy="12" r="9"></circle><path d="M8.5 12.5l2.5 2.5 4.5-5"></path>',
   ask: '<circle cx="12" cy="12" r="9"></circle><path d="M12 7.5v5.5"></path><path d="M12 16.5h.01"></path>',
   action: '<path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path>',
+  // step B: the picture's chat bubble, with a prompt for Claude Code and two eyes for Copilot
+  'chat-claude': '<path d="M5 5.5h14v10.5h-8l-4 3.2V16H5z"></path><path d="M9 9.2l2 1.6-2 1.6"></path><path d="M12.6 12.4h2.6"></path>',
+  'chat-copilot': '<path d="M5 5.5h14v10.5h-8l-4 3.2V16H5z"></path><path d="M9.6 10.8h.01"></path><path d="M14.4 10.8h.01"></path>',
 }
 
-const FIND_EMPTY = { none: 'Nothing here yet.', all: 'No answers, notes or finished work yet.', answers: 'No answers yet.', notes: 'No notes.', plans: 'No plans.' }
+// the Chats chip's empty texts are the Chats line's own (chats-view.js)
+const FIND_EMPTY = { none: 'Nothing here yet.', all: 'No answers, notes or finished work yet.', answers: 'No answers yet.', notes: 'No notes.', plans: 'No plans.', chats: '' }
 
 function windowActive() {
   return document.visibilityState !== 'hidden' && document.hasFocus()
@@ -8719,7 +8729,8 @@ function findInUse() {
 }
 
 // Which reads a chip needs: history for All, Answers and Notes; archived plans for All and Plans.
-const findNeeds = (chip = findChip) => ({ history: chip !== 'plans', archived: chip === 'all' || chip === 'plans' })
+// Chats need neither: they are read on their own (chats-view.js).
+const findNeeds = (chip = findChip) => ({ history: chip !== 'plans' && chip !== 'chats', archived: chip === 'all' || chip === 'plans' })
 
 const findField = () => document.getElementById('findQuery')
 
@@ -8794,6 +8805,9 @@ function findModel() {
     archivedWhole: Boolean(lastData.archivedFull),
     keep,
     previous: findPainted,
+    // step B: the chats as last read; the Chats line's tool toggle applies under the Chats chip only
+    chats: chatsView.list(),
+    chatTool: chatsView.tool(),
   })
   // a row whose Note editor holds text is never hidden by the lens (a closed project, another
   // project on the rail): the typed text stays in sight, first in the list
@@ -8831,8 +8845,9 @@ function markFindStale(list, stale) {
     if (stale) main.setAttribute('aria-disabled', 'true')
     else main.removeAttribute('aria-disabled')
   }
-  // an open row's card too: a press there would be remembered and applied when the results land
-  for (const body of list.querySelectorAll(':scope > .find-row > .find-row-body')) body.inert = stale
+  // an open row's card too: a press there would be remembered and applied when the results land;
+  // and a chat row's slot
+  for (const body of list.querySelectorAll(':scope > .find-row > .find-row-body, :scope > .find-row > .find-slot')) body.inert = stale
   if (stale) findField()?.removeAttribute('aria-activedescendant')
   else paintFindActive()
 }
@@ -8889,16 +8904,21 @@ function findExtraEl(extra) {
 // The row at rest: the type's icon, the title, the New mark (notes keep its space), the
 // extra, the project and the age. Spans only, so step B can put one control beside it.
 function fillFindMain(main, row, nowMs) {
+  const chat = row.type === 'chat'
   const icon = document.createElement('span')
   icon.className = 'find-icon'
   icon.dataset.type = row.type
   icon.setAttribute('role', 'img')
-  icon.setAttribute('aria-label', row.label)
-  icon.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${FIND_ICONS[row.type] ?? FIND_ICONS.finished}</svg>`
+  // a chat's icon tells Claude Code from Copilot, and says so
+  icon.setAttribute('aria-label', chat ? `${row.label} chat` : row.label)
+  const glyph = chat ? FIND_ICONS[row.tool === 'copilot' ? 'chat-copilot' : 'chat-claude'] : FIND_ICONS[row.type]
+  icon.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${glyph ?? FIND_ICONS.finished}</svg>`
   const title = document.createElement('span')
   title.className = 'find-title'
   title.textContent = row.title
-  title.title = row.title
+  // chat text is untrusted: textContent and attributes only. An automatic or missing title is quiet.
+  title.title = row.titleNote ? `${row.title}\n${row.titleNote}` : row.title
+  if (row.titleQuiet) title.classList.add('chats-quiet')
   const parts = [icon, title]
   if (row.type === 'note') {
     const mark = document.createElement('span')
@@ -8906,7 +8926,21 @@ function fillFindMain(main, row, nowMs) {
     mark.textContent = findNewIds?.has(row.id) ? 'New' : ''
     parts.push(mark)
   }
+  if (chat && chatsView.live(row.id)) {
+    const live = document.createElement('span')
+    live.className = 'find-live'
+    live.textContent = 'Live'
+    parts.push(live)
+  }
   parts.push(findExtraEl(row.extra))
+  // a chat row's slot sits over this space, beside the main button: its width is reserved here,
+  // so nothing moves when the slot's label changes
+  if (chat) {
+    const space = document.createElement('span')
+    space.className = 'find-slot-space'
+    space.setAttribute('aria-hidden', 'true')
+    parts.push(space)
+  }
   const project = document.createElement('span')
   project.className = 'find-project'
   if (row.project) {
@@ -8944,7 +8978,8 @@ function updateFindRow(el, row, nowMs) {
   const open = findRowOpen(row)
   const isNew = row.type === 'note' && Boolean(findNewIds?.has(row.id))
   const signature = JSON.stringify([row.type, row.label, row.title, row.extra, row.project,
-    row.stamp ? findAge(nowMs - row.stamp) : '', isNew, row.project ? pcolor(row.project).dot : ''])
+    row.stamp ? findAge(nowMs - row.stamp) : '', isNew, row.project ? pcolor(row.project).dot : '',
+    row.type === 'chat' ? [row.tool, row.titleQuiet, row.titleNote, chatsView.live(row.id)] : null])
   if (main.dataset.signature !== signature) {
     fillFindMain(main, row, nowMs)
     main.dataset.signature = signature
@@ -8952,6 +8987,16 @@ function updateFindRow(el, row, nowMs) {
   el.dataset.findType = row.type
   if (row.entity && row.type !== 'plan') el.dataset.cardId = row.id
   else delete el.dataset.cardId
+  // step B: a chat row's one action slot, its own tab stop right after the main button
+  let slot = el.querySelector(':scope > .find-slot')
+  if (row.type === 'chat') {
+    if (!slot) {
+      slot = document.createElement('div')
+      slot.className = 'find-slot'
+      main.after(slot)
+    }
+    chatsView.paintSlot(slot, row.id)
+  } else slot?.remove()
   let body = el.querySelector(':scope > .find-row-body')
   if (row.action === 'expand') {
     main.setAttribute('aria-expanded', String(open))
@@ -8969,6 +9014,11 @@ function updateFindRow(el, row, nowMs) {
     body.className = 'find-row-body'
     body.id = `${main.id}-body`
     el.appendChild(body)
+  }
+  if (row.type === 'chat') {
+    // the Chats page's facts and controls, painted in place by the chats view
+    chatsView.paintBody(body, row.id, nowMs)
+    return
   }
   // the card is built only while the row is open, and rebuilt only when what it shows changed
   const it = row.entity
@@ -9057,6 +9107,7 @@ function renderFind() {
   const foot = document.getElementById('findFoot')
   if (!list || !foot || !lastData) return
   syncFindControls()
+  chatsView.beginPaint()
   const model = findModel()
   const waitFailed = model.waiting && findWaitFailed()
   if (model.waiting && !waitFailed) {
@@ -9068,6 +9119,7 @@ function renderFind() {
     setFindStatus(findWaitText())
     foot.replaceChildren()
     foot.dataset.says = ''
+    paintFindChatsLines(model)
     return
   }
   // when the read failed, the query is drawn over what is loaded, under the failure line
@@ -9093,8 +9145,10 @@ function renderFind() {
 
   const rest = rows.length - listed.length
   const olderWaits = !model.query && findNeeds().history && (model.cut > 0 || model.older > 0)
+  paintFindChatsLines(model)
   if (waitFailed) setFindStatus(findWaitText())
-  else if (drawn.length) setFindStatus('')
+  // under the Chats chip the Chats line says what a short or empty list means
+  else if (drawn.length || findChip === 'chats') setFindStatus('')
   else if (model.query) setFindStatus(`Nothing matches "${model.query}".`)
   else if (olderWaits) setFindStatus('')
   else {
@@ -9133,6 +9187,57 @@ function renderFind() {
     foot.firstElementChild.textContent = footText
   }
   markFindNotesSeen(listed, model.query)
+}
+
+// Step B: the line under the chips while Chats is selected (the tool toggles, Show all, Refresh,
+// the notes and the empty texts), and the one line at the list's foot when the chats could not be
+// read for a query under All.
+function paintFindChatsLines(model) {
+  const line = document.getElementById('findChats')
+  if (line) {
+    const onChats = findChip === 'chats'
+    line.hidden = !onChats
+    if (onChats) chatsView.paintBar(line, { shown: model.rows.filter((row) => row.type === 'chat').length })
+  }
+  const fail = document.getElementById('findChatsFoot')
+  if (fail) chatsView.paintFoot(fail, findChip === 'all' && Boolean(model.query))
+}
+
+// A chats change to draw. Every Find repaint goes through the page's render: one nobody pressed
+// for (a read on entering Find, main's answer, a timer) through the poll's gate; the answer to the
+// person's own press as their press's frame. Either waits for a press that is down to end, so a
+// re-read never moves or removes the row under it (#38).
+let chatsHeld = null   // the change a press holds: whether it was passive
+let chatsHeldTimer = null
+function chatsChanged({ passive = false, reset = false } = {}) {
+  if (reset) {
+    // a deliberate change of what the Chats chip lists, as a chip press is
+    endFindStay()
+    findActiveKey = null
+    shown.find = FIND_PAGE
+  }
+  if (!lastData || document.getElementById('find').hidden) return
+  if (pressHeld(pressedAt, Date.now())) {
+    chatsHeld = chatsHeld === null ? passive : chatsHeld && passive
+    if (chatsHeldTimer === null) chatsHeldTimer = setTimeout(flushChatsHeld, PRESS_GRACE_MS)
+    return
+  }
+  if (passive) renderIfIdle()
+  else forceRender()
+}
+
+function flushChatsHeld() {
+  if (chatsHeldTimer !== null) clearTimeout(chatsHeldTimer)
+  chatsHeldTimer = null
+  if (chatsHeld === null) return
+  const passive = chatsHeld
+  chatsHeld = null
+  chatsChanged({ passive })
+}
+
+// #chats, the session panel's "Continued from a Copilot chat" line: Find with the Chats chip
+function openChatsInFind() {
+  openFind({ chip: 'chats', clearQuery: true, focus: 'field' })
 }
 
 // "Show 20 more": the first row it reveals takes focus.
@@ -9378,14 +9483,15 @@ function initFind() {
   })
   // a press inside an open row is the person acting on it: it stays where it is until they leave
   list.addEventListener('click', (event) => {
-    const inBody = event.target instanceof Element ? event.target.closest('.find-row-body') : null
+    const inBody = event.target instanceof Element ? event.target.closest('.find-row-body, .find-slot') : null
     if (findStale && inBody) {
       // the card belongs to the previous list: a press here must not be remembered for later
       event.stopPropagation()
       event.preventDefault()
       return
     }
-    const control = event.target instanceof Element ? event.target.closest('.find-row-body button') : null
+    // a chat row's slot is the person acting on it too
+    const control = event.target instanceof Element ? event.target.closest('.find-row-body button, .find-slot button') : null
     const key = control?.closest('.find-row[data-find-key]')?.dataset.findKey
     if (!key) return
     findKept.add(key)
@@ -9394,6 +9500,10 @@ function initFind() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'hidden' && activeTab === 'find' && findQuery.trim()) requestHistoryPaint()
   })
+  // a chats change held by a press is drawn once the press ends, after its click has landed
+  const releaseChats = () => { if (chatsHeld !== null) setTimeout(flushChatsHeld, 0) }
+  window.addEventListener('pointerup', releaseChats, true)
+  window.addEventListener('pointercancel', releaseChats, true)
   list.addEventListener('pointerenter', () => { findPointerIn = true })
   list.addEventListener('pointerleave', () => { findPointerIn = false })
   document.getElementById('tabs')?.addEventListener('pointerdown', (event) => {
@@ -12203,6 +12313,9 @@ function navigateKeyboard(destination) {
     openFind({ chip: 'notes', clearQuery: true, focus: 'list' })
   } else if (destination === 'findAll') {
     openFind({ chip: 'all', clearQuery: true, focus: 'list' })
+  } else if (destination === 'findChats') {
+    // G C (step B): Find: Chats, the field focused as Find's own way in does
+    openFind({ chip: 'chats', clearQuery: true, focus: 'field' })
   } else if (TAB_IDS.includes(destination)) {
     selectTab(destination)
     // selectTab refuses an empty agent tab; focus stays where it was

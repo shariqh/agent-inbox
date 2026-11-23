@@ -634,6 +634,43 @@ export async function findFor(query: string): Promise<void> {
   await vi.advanceTimersByTimeAsync(200)
 }
 
+/**
+ * Reach the chats the way a person does (UX pass, slice 4, step B): open the Find tab and press
+ * its Chats chip. Settles twice, so a read the entry started has landed.
+ */
+export async function openFindChats(): Promise<void> {
+  const tab = document.querySelector('.tab[data-tab="find"]')
+  if (tab?.getAttribute('aria-selected') !== 'true') {
+    click(tab)
+    await settle()
+  }
+  const chip = document.querySelector('#find [data-find-chip="chats"]')
+  if (chip?.getAttribute('aria-pressed') !== 'true') {
+    click(chip)
+    await settle()
+  }
+  await settle()
+}
+
+/** A chat's row on Find by `<tool>:<id>`, or null when the list does not hold it. */
+export function chatRowFor(key: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`#findList > .find-row[data-find-key="${cssEscape(`chat:${key}`)}"]`)
+}
+
+/** Open a chat's row in place by pressing its main button, as a person does; returns the open row. */
+export async function openChatRow(key: string): Promise<HTMLElement> {
+  const row = chatRowFor(key)
+  if (!row) throw new Error(`openChatRow(): Find lists no chat ${key}`)
+  const main = row.querySelector(':scope > .find-row-main')
+  if (main?.getAttribute('aria-expanded') === 'false') {
+    click(main)
+    await settle()
+  }
+  const open = chatRowFor(key)
+  if (!open?.querySelector(':scope > .find-row-body')) throw new Error(`openChatRow(): the row for ${key} does not open in place`)
+  return open
+}
+
 /** Force the editable frame to reconcile without coupling a test to search behavior. */
 export async function repaint(): Promise<void> {
   const width = window.innerWidth

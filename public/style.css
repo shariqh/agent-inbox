@@ -2267,47 +2267,41 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .mar-copy { margin-top: 0; }
 .mar-foot { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--app-border); }
 .mar-command { padding: 1px 5px; border-radius: 5px; background: var(--app-soft); font-size: 11.5px; overflow-wrap: anywhere; user-select: text; }
-/* The Chats tab (#586 PR 2): Run history's table, the queue's header controls, and tokens for
-   every size and gap; chat text wraps anywhere so a long folder never scrolls the page sideways */
-#chats .chats { container: chats-list / inline-size; }
-.tab-header.chats-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
-.chats-search { flex: 1 1 200px; min-width: 0; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-body); }
-.chats-note, .chats-count { margin: var(--sp-2) 0 0; color: var(--app-muted); font-size: var(--fs-meta); }
-.chats-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-2) 0 0; color: var(--app-warning); font-size: var(--fs-meta); }
-.chats-state { margin: var(--sp-3) 0 0; }
+/* The chats (#586), Find's Chats chip since UX pass, slice 4, step B: the queue's header controls on
+   the line under the chips, an open row's facts and controls, and tokens for every size and gap;
+   chat text wraps anywhere so a long folder never scrolls the page sideways */
+.chats-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.chats-note { margin: 0; color: var(--app-muted); font-size: var(--fs-meta); }
+.chats-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 0; color: var(--app-warning); font-size: var(--fs-meta); }
+.chats-state { margin: 0; }
 /* each of these sets a display, which would otherwise beat the UA's [hidden] rule */
-.chats-note[hidden], .chats-error[hidden], .chats-count[hidden], .chats-state[hidden], .chats-table[hidden] { display: none; }
-.chats-table { width: 100%; margin-top: var(--sp-2); border-collapse: collapse; font-size: var(--fs-body); }
-.chats-table th { padding: var(--sp-1) var(--sp-3) var(--sp-1) 0; border-bottom: 1px solid var(--app-border); color: var(--app-text-soft); font-size: var(--fs-meta); font-weight: 600; text-align: left; }
-.chats-table td { padding: var(--sp-2) var(--sp-3) var(--sp-2) 0; border-bottom: 1px solid var(--app-border); vertical-align: top; }
-.chats-tool { white-space: nowrap; }
-.chats-title, .chats-project, .chats-branch, .chats-folder { overflow-wrap: anywhere; }
-.chats-folder { color: var(--app-muted); }
-.chats-active { color: var(--app-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chats-note[hidden], .chats-error[hidden], .chats-state[hidden], .chats-actions[hidden], .chats-facts [hidden] { display: none; }
 .chats-quiet { color: var(--app-muted); }
 .chats-reasons, .chats-pr { margin-left: var(--sp-1); }
 .chats-reasons:empty, .chats-pr:empty { display: none; }
 .chats-reasons { display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); vertical-align: middle; }
+.chats-facts .chats-reasons { margin-left: 0; }
 .chip.chats-live { background: color-mix(in srgb, var(--app-agent) 10%, transparent); color: var(--app-agent); }
+/* an open chat row: tool, branch and PR, folder, the exact time, Live and Show all's reasons as a
+   two-column list, then Copy resume, Jump to session or Continue here…, then the row's note */
+.chats-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--sp-1) var(--sp-3); margin: 0 0 var(--sp-3); font-size: var(--fs-body); }
+.chats-facts dt { color: var(--app-muted); font-weight: 600; }
+.chats-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.chats-folder { color: var(--app-muted); }
+.chats-active { font-variant-numeric: tabular-nums; }
 .chats-copy, .chats-resume, .chats-continue, .chats-show, .chats-jump { padding: var(--sp-1) var(--sp-2); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; white-space: nowrap; cursor: pointer; }
 .chats-copy[aria-disabled="true"], .chats-resume[aria-disabled="true"], .chats-continue[aria-disabled="true"], .chats-refresh[aria-disabled="true"] { opacity: .45; cursor: default; }
-/* PR 3: Resume sits before Copy resume; its note (the fallback notice or main's reason) goes under both */
-.chats-resume { margin-right: var(--sp-1); }
-/* the two controls stay on one line, so a row is one line tall; the note wraps to the cell and never widens the column */
-.chats-actions { white-space: nowrap; }
-.chats-resume-note { display: block; width: 0; min-width: 100%; max-width: 24em; margin-top: var(--sp-1); color: var(--app-muted); font-size: var(--fs-meta); white-space: normal; }
+.chats-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); }
+/* the note (the fallback notice, main's reason, a jump that found no session) takes its own line under the controls */
+.chats-resume-note { flex: 1 1 100%; max-width: 24em; color: var(--app-muted); font-size: var(--fs-meta); white-space: normal; }
 .chats-resume-note:empty { display: none; }
-/* #586 phase 2: Continue here… (or Show session, for a chat driven here) after Copy resume, on the same
-   line; "· here" after Live while a session this app drives runs the chat. Jump to session, for a chat
-   live in a terminal, takes the same place */
-.chats-continue, .chats-show, .chats-jump { margin-left: var(--sp-1); }
-.chats-continue:focus-visible, .chats-show:focus-visible, .chats-jump:focus-visible, .sp-chat-link:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
+.chats-copy:focus-visible, .chats-resume:focus-visible, .chats-continue:focus-visible, .chats-show:focus-visible, .chats-jump:focus-visible, .sp-chat-link:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
 .chats-here { margin-left: var(--sp-1); color: var(--app-agent); font-size: var(--fs-meta); white-space: nowrap; }
 /* the Continue in Agent Inbox dialog's chat: its title and folder, as text */
 .launch-chat-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--sp-1) var(--sp-3); margin: 0; }
 .launch-chat-facts dt { color: var(--app-muted); font-weight: 600; }
 .launch-chat-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-/* the session panel's "Continued from a Copilot chat (…)" line, linked to the Chats tab */
+/* the session panel's "Continued from a Copilot chat (…)" line, linked to Find's Chats chip */
 .sp-chat { margin: 0; font-size: var(--fs-meta); }
 .sp-chat-link { color: var(--app-accent); }
 /* the session card */
@@ -2469,31 +2463,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   }
   .queue-sort select { width: 100%; min-width: 0; }
   .relay-btn, .triage-btn { white-space: nowrap; }
-}
-
-/* #586: below 620px a chat is two lines, tool, title and Live over project, branch, folder,
-   last active and Copy, like the queue's rows. A wrapping flex row, not a grid: at phone width
-   five content-sized grid tracks left the folder 0px wide, so here the folder takes the slack
-   and drops to a line of its own when less than 12em is left. */
-@container chats-list (max-width: 620px) {
-  .chats-search { flex-basis: 100%; }
-  .chats-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .chats-table, .chats-table tbody { display: block; }
-  .chats-table tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--app-border); }
-  .chats-table td { display: block; flex: 0 1 auto; order: 2; min-width: 0; padding: 0; border-bottom: 0; overflow-wrap: anywhere; }
-  /* the line break: a full-width item between the two lines, its extra row gap taken back */
-  .chats-table tr::after { content: ""; flex: 0 0 100%; order: 1; margin-top: calc(-1 * var(--sp-1)); }
-  .chats-table .chats-tool, .chats-table .chats-title, .chats-table .chats-live { order: 0; }
-  .chats-table .chats-title { flex: 1 1 0; }
-  .chats-table .chats-folder { flex: 1 1 12em; }
-  /* the project filter takes a line of its own and its select shrinks with it: a long project
-     name would otherwise make the label wider than the panel and clip its own text */
-  label.chats-project { flex: 1 1 100%; min-width: 0; }
-  label.chats-project select { flex: 1 1 auto; min-width: 0; }
-  /* #586 phase 2: with Continue here… or Show session a row has three controls, which wrap on the
-     row's second line, spaced with the gap; a row without either keeps phase 1's layout */
-  .chats-table .chats-actions:has(.chats-continue, .chats-show, .chats-jump) { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); white-space: normal; }
-  .chats-actions:has(.chats-continue, .chats-show, .chats-jump) .chats-resume, .chats-actions .chats-continue, .chats-actions .chats-show, .chats-actions .chats-jump { margin: 0; }
 }
 
 @container needs-queue (max-width: 620px) {
@@ -3527,6 +3496,8 @@ body.hub-reconnecting #status { display: none; }
 #topbar .floating-search[hidden] { display: none; }
 #topbar .floating-search[hidden] + .keyboard-tools { grid-column: 3; justify-self: end; margin-left: auto; }
 .find {
+  --find-slot: 152px;
+  --find-slot-h: 32px;
   --find-column: 780px;
   --find-field: 64px;
   --find-chip: 34px;
@@ -3555,7 +3526,7 @@ body.hub-reconnecting #status { display: none; }
 .find-status { margin: 0; padding: 0 var(--sp-4); color: var(--app-muted); font-size: var(--fs-body); }
 .find-status[hidden] { display: none; }
 .find-list { display: flex; flex-direction: column; outline: 0; }
-.find-row { border-radius: 12px; }
+.find-row { position: relative; border-radius: 12px; }
 .find-row[data-active="true"] { background: var(--app-soft); }
 .find-row-main { display: flex; align-items: center; gap: 14px; width: 100%; min-height: var(--find-row); padding: 0 18px; border: 0; border-radius: 12px; background: none; color: var(--app-text); font: inherit; text-align: left; cursor: pointer; }
 .find-row-main:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
@@ -3588,6 +3559,17 @@ body.hub-reconnecting #status { display: none; }
 .find-row:has(> .find-row-body) { background: var(--app-surface); }
 .find-foot { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); padding: 0 var(--sp-4); }
 .find-foot:empty { display: none; }
+/* Step B: chats. The Chats line under the chips while that chip is selected: the tool toggles, Show
+   all and Refresh, then the notes that explain a short or failed list. A chat row holds one action
+   slot beside its main button: a sibling of the button, laid over a space of the slot's own fixed
+   width that the button reserves, so the slot never shifts the row when its label changes. */
+.find-chats { display: flex; flex-direction: column; gap: var(--sp-2); padding: 0 var(--sp-1); }
+.find-chats[hidden], .find-chats-foot[hidden] { display: none; }
+.find-live { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--app-agent) 12%, transparent); color: var(--app-agent); font-size: var(--fs-meta); font-weight: 600; }
+.find-slot-space { flex: none; width: var(--find-slot); height: var(--find-slot-h); margin-left: auto; }
+.find-slot-space + .find-project { margin-left: 0; }
+.find-slot { position: absolute; top: calc((var(--find-row) - var(--find-slot-h)) / 2); right: calc(18px + var(--find-age) + 14px + var(--find-project) + 14px); display: flex; width: var(--find-slot); height: var(--find-slot-h); }
+.find-slot > button { flex: 1 1 auto; min-width: 0; height: 100%; margin: 0; padding: 0 12px; overflow: hidden; border: 1px solid var(--app-border); border-radius: 8px; background: none; color: var(--app-text); font-size: 13px; text-overflow: ellipsis; }
 .find-loading { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
 @container find (max-width: 620px) {
   /* the row stacks: the icon and the title over the extra, the project and the age */
@@ -3599,4 +3581,8 @@ body.hub-reconnecting #status { display: none; }
   .find-project { grid-area: project; width: auto; max-width: var(--find-project); margin-left: 0; }
   .find-age { grid-area: age; }
   .find-row-body { padding-left: 18px; }
+  /* a chat row: its slot at the first line's end, its Live mark first on the second */
+  .find-live { grid-area: extra; justify-self: start; }
+  .find-slot-space { grid-area: new; margin-left: 0; }
+  .find-slot { top: var(--sp-2); right: 18px; }
 }

@@ -144,11 +144,13 @@ describe('A1 · one tab, find', () => {
     expect(document.querySelector('.tab[data-tab="find"]')?.getAttribute('data-shortcut')).toBe('G F')
     expect(document.querySelector('[data-shortcut="G N"]')).toBeNull()
     expect(document.querySelector('[data-shortcut="G H"]')).toBeNull()
+    // step B: G C is Find: Chats, with no tile of its own either
+    expect(document.querySelector('[data-shortcut="G C"]')).toBeNull()
     click(document.getElementById('keyboardHints'))
     await settle()
     key(document.body, 'g')
     const spoken = [...document.querySelectorAll('[aria-live]')].map((el) => el.textContent).join(' ')
-    expect(spoken).toContain('F Find, N Find: Notes, H Find: All, C Chats')
+    expect(spoken).toContain('F Find, N Find: Notes, H Find: All, C Find: Chats')
     key(document.body, 'Escape')
   })
 })
@@ -264,7 +266,8 @@ describe('A3, A4 · the chips and what the list holds', () => {
     await openFindTab()
     const group = document.querySelector('#find [role="group"]')!
     expect(group.getAttribute('aria-label')).toBe('Show')
-    expect([...group.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['All', 'Answers', 'Notes', 'Plans'])
+    // step B: Chats, the fifth chip
+    expect([...group.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['All', 'Answers', 'Notes', 'Plans', 'Chats'])
     expect(chip('all')?.getAttribute('aria-pressed')).toBe('true')
     // no open unanswered ask, no ask closed without a reply and no plan under All with no query
     expect(findKeys()).toEqual([

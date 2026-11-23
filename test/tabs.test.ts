@@ -20,8 +20,8 @@ describe('tab model', () => {
     expect(DEFAULT_TAB).toBe('dashboard')
     // Home (`dashboard`) holds the asks: there is no separate Inbox tab.
     // `agent` (cards view V5 §3.3): the mesh agent tab, last, shown only while an agent is open
-    // UX pass, slice 4: Find in place of Notes and History, after Plans
-    expect(TAB_IDS).toEqual(['dashboard', 'boards', 'find', 'chats', 'agent'])
+    // UX pass, slice 4: Find in place of Notes and History, after Plans, and (step B) of Chats
+    expect(TAB_IDS).toEqual(['dashboard', 'boards', 'find', 'agent'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 

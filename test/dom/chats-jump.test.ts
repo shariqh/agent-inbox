@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-// Jump to session in the Chats tab (#586): a chat live in a terminal goes to its own session card.
+// Jump to session (#586), in an open chat row on Find's Chats chip since UX pass, slice 4, step B:
+// a chat live in a terminal goes to its own session card.
 // The real /api/chats route joins the fake index's live processes to presence rows in a real hub,
 // and the real page opens the Dashboard's session panel. Every fixture is synthetic.
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +8,7 @@ import type Database from 'better-sqlite3'
 import { createLaunch, endActivity, upsertActivity } from '../../src/store.js'
 import type { ChatEntry, ChatIndex } from '../../src/chat-index.js'
 import { JUMP_GONE_TEXT } from '../../public/chats.js'
-import { bootApp, click, freshDb, pollTick, settle, T0, useDomTest } from './harness.js'
+import { bootApp, chatRowFor, click, freshDb, openChatRow, openFindChats, pollTick, settle, T0, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -88,18 +89,25 @@ function launchBridge() {
   } })
 }
 
-const panel = () => document.getElementById('chats') as HTMLElement
-const rowFor = (n: number, tool = 'claude') => panel().querySelector<HTMLElement>(`tr[data-chat-key="${tool}:${uuid(n)}"]`)
+const panel = () => document.getElementById('find') as HTMLElement
+const rowFor = (n: number, tool = 'claude') => chatRowFor(`${tool}:${uuid(n)}`)
 const jumpFor = (n: number, tool = 'claude') => rowFor(n, tool)?.querySelector<HTMLButtonElement>('.chats-jump') ?? null
 const noteFor = (n: number, tool = 'claude') => rowFor(n, tool)?.querySelector<HTMLElement>('.chats-resume-note') ?? null
-const actionsOf = (n: number, tool = 'claude') => [...rowFor(n, tool)!.querySelector('.chats-actions')!.children].map((el) => el.className)
+// the row's controls in order: its one slot beside the main button, then the open body's
+const actionsOf = (n: number, tool = 'claude') => [
+  ...rowFor(n, tool)!.querySelector(':scope > .find-slot')!.children,
+  ...(rowFor(n, tool)!.querySelector('.find-row-body .chats-actions')?.children ?? []),
+].map((el) => el.className)
 const tabSelected = (id: string) => document.querySelector(`.tab[data-tab="${id}"]`)!.getAttribute('aria-selected')
 const focusPanel = () => document.getElementById('dashFocus') as HTMLElement
 const chatReads = (reads: string[]) => reads.filter((url) => url.startsWith('/api/chats')).length
 
+// Find with the Chats chip, every chat row open (Jump to session lives in the open row)
 async function openChats() {
-  click(document.querySelector('.tab[data-tab="chats"]'))
-  await settle()
+  await openFindChats()
+  for (const row of [...document.querySelectorAll<HTMLElement>('#findList > .find-row[data-find-type="chat"]')]) {
+    await openChatRow(row.dataset.findKey!.slice(5))
+  }
 }
 
 describe('Chats tab: Jump to session (#586)', () => {
@@ -118,7 +126,7 @@ describe('Chats tab: Jump to session (#586)', () => {
     expect(actionsOf(3)).toEqual(['chats-copy'])
     expect(actionsOf(4)).toEqual(['chats-copy'])
     expect(actionsOf(5, 'copilot')).toEqual(['chats-copy'])
-    // the session id is a lookup key only: it is nowhere in the tab
+    // the session id is a lookup key only: it is nowhere on Find
     expect(panel().innerHTML).not.toContain(CLAUDE_SESSION)
     expect(panel().innerHTML).not.toContain(COPILOT_SESSION)
   })
@@ -157,7 +165,7 @@ describe('Chats tab: Jump to session (#586)', () => {
     expect(focusPanel().hidden).toBe(false)
   })
 
-  it('says the session is no longer listed, stays on Chats and reads the list again when it has gone', async () => {
+  it('says the session is no longer listed, stays on Find and reads the list again when it has gone', async () => {
     const { reads, db: d } = await boot()
     await openChats()
     expect(jumpFor(1)).not.toBeNull()
@@ -168,7 +176,8 @@ describe('Chats tab: Jump to session (#586)', () => {
     jumpFor(1)!.focus()
     click(jumpFor(1))
     await settle()
-    expect(tabSelected('chats')).toBe('true')
+    expect(tabSelected('find')).toBe('true')
+    expect(document.querySelector('#find [data-find-chip="chats"]')!.getAttribute('aria-pressed')).toBe('true')
     expect(focusPanel().hidden).toBe(true)
     expect(chatReads(reads)).toBe(before + 1)
     // the list read again names no session for it, so the control is gone and the note says why
@@ -192,7 +201,7 @@ describe('Chats tab: Jump to session (#586)', () => {
     expect(noteFor(1)?.textContent).toBe(JUMP_GONE_TEXT)
     // the tool restarts: a new presence row for the same process
     presence(d, 'cccccccc-3333-4333-8333-333333333333', 4001)
-    click(panel().querySelector('.chats-refresh'))
+    click(document.querySelector('#findChats .chats-refresh'))
     await settle()
     expect(jumpFor(1)).not.toBeNull()
     expect(noteFor(1)?.textContent).toBe('')

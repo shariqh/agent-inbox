@@ -184,7 +184,7 @@ describe('B · the Chats chip', () => {
     release!()
     await settle()
     expect(rowKeys()).toHaveLength(3)
-    expect(line().querySelector('.chats-state')?.hidden).toBe(true)
+    expect(line().querySelector<HTMLElement>('.chats-state')?.hidden).toBe(true)
     fail = true
     click(line().querySelector('.chats-refresh'))
     await settle()
@@ -244,7 +244,7 @@ describe('B · chats under All', () => {
     click(line().querySelector('.chats-refresh'))
     await settle()
     expect(foot.hidden).toBe(true)
-    expect(line().querySelector('.chats-error')?.hidden).toBe(false)
+    expect(line().querySelector<HTMLElement>('.chats-error')?.hidden).toBe(false)
   })
 })
 

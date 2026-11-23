@@ -148,7 +148,7 @@ read or edit a matching file. Read it yourself before changing these areas:
 | update manifests, keys, download, install | `updates.md` |
 | packaging, runtime staging, pruning, locales, MSI, workflows | `packaging-and-release.md` |
 | mesh | `mesh.md` |
-| chat index, `/api/chats`, the chats in Find | `chats.md` |
+| chat index, `/api/chats`, Find chats | `chats.md` |
 | `agent-inbox-driver`, ACP | `driven-sessions.md` |
 | requests, the `request` tool | `requests.md` |
 | tests and the DOM harness | `testing.md` |

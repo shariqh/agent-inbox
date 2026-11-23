@@ -437,7 +437,8 @@ function showPauseHint() {
   el.hidden = !hint
 }
 
-// the poll's ONLY entry into render()
+// the poll's ONLY entry into render(); also taken by a change nobody pressed for that lands
+// outside the poll (a chats read on entering Find, UX pass slice 4 step B), so the same gate holds it
 function renderIfIdle() {
   // #563: what this paints is the poll's (reconcileDraftOwners)
   pollPaint = true

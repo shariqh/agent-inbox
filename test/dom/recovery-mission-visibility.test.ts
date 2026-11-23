@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { advanceBoardRow, getBoard, upsertBoard } from '../../src/store.js'
 import {
-  bootApp, buttonLabelled, click, freshDb, settle, type, useDomTest,
+  bootApp, buttonLabelled, click, freshDb, settle, type, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -33,7 +33,7 @@ describe('draft recovery visibility from Plan flow', () => {
     await bootApp(db)
 
     click(document.querySelector('.tab[data-tab="boards"]'))
-    click(buttonLabelled('Plan flow', document.querySelector('#boards .board')!))
+    click(await reach(() => buttonLabelled('Plan flow', document.querySelector('#boards .board')!)))
     await settle()
     click(document.querySelector('.mission-node'))
     await settle()

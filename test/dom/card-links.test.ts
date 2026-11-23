@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, resolveItem, upsertBoard, upsertSourceLink } from '../../src/store.js'
 import {
-  advanceClock, badgeCount, bootApp, click, freshDb, pollTick, row, settle, showInbox, tabCount, useDomTest,
+  advanceClock, badgeCount, bootApp, click, freshDb, pollTick, row, settle, showInbox, tabCount, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -170,7 +170,7 @@ describe('the Links strip (issue #300)', () => {
 
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .board-row'))
+    click(await reach(() => document.querySelector('#boards .board-row')))
     await settle()
     expect(chips(document.querySelector('#boards .row-panel'))).toEqual(['File draft.md'])
   })
@@ -581,7 +581,7 @@ describe('repo-relative paths (issue #324)', () => {
     await bootApp(db)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .board-row'))
+    click(await reach(() => document.querySelector('#boards .board-row')))
     await settle()
     const panel = document.querySelector<HTMLElement>('#boards .row-panel')!
     expect(chips(panel)).toEqual(['File spec.md'])
@@ -620,7 +620,7 @@ describe('a plan row linked to another repository (issue #588)', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .board-row'))
+    click(await reach(() => document.querySelector('#boards .board-row')))
     await settle()
     return document.querySelector<HTMLElement>('#boards .row-panel')!
   }
@@ -757,7 +757,7 @@ describe('a card’s files in another Mac’s Inbox (issue #634)', () => {
     await pollTick()
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .board-row'))
+    click(await reach(() => document.querySelector('#boards .board-row')))
     await settle()
     const open = document.querySelector<HTMLButtonElement>('#boards .row-panel button[data-hub-file-kind]')!
     expect(open.dataset.hubFileKind).toBe('row')

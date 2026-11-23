@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { getBoard, upsertBoard } from '../../src/store.js'
-import { advanceClock, bootApp, buttonLabelled, click, freshDb, pollTick, settle, useDomTest } from './harness.js'
+import { advanceClock, bootApp, buttonLabelled, click, freshDb, pollTick, settle, useDomTest, reach } from './harness.js'
 import { flowPath, openFlow, seedFlow, stepButton } from './plan-flow-fixtures.js'
 
 useDomTest()
@@ -85,6 +85,7 @@ describe('Plan Flow focus ownership', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
+    await reach(() => buttonLabelled('Plan flow', boardCard()))
     const opener = buttonLabelled('Plan flow', boardCard())!
     opener.focus()
     click(opener)
@@ -118,6 +119,7 @@ describe('Plan Flow focus ownership', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
+    await reach(() => buttonLabelled('Plan flow', boardCard()))
     const opener = buttonLabelled('Plan flow', boardCard())!
     opener.focus()
     click(opener)
@@ -167,6 +169,7 @@ describe('Plan Flow focus ownership', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
+    await reach(() => buttonLabelled('Plan flow', boardCard()))
     const opener = buttonLabelled('Plan flow', boardCard())!
     opener.focus()
     click(opener)

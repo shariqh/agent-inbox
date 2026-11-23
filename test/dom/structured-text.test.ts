@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, replyItem, resolveItem, upsertBoard } from '../../src/store.js'
 import {
-  bootApp, buttonLabelled, click, freshDb, row, setSystemDark, settle, useDomTest,
+  bootApp, buttonLabelled, click, freshDb, row, setSystemDark, settle, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -135,7 +135,7 @@ describe('structured agent text on cards and plans', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .board-row'))
+    click(await reach(() => document.querySelector('#boards .board-row')))
     await settle()
 
     const panel = document.querySelector('#boards .row-panel')
@@ -286,7 +286,7 @@ describe('structured agent text on cards and plans', () => {
 
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .board-row'))
+    click(await reach(() => document.querySelector('#boards .board-row')))
     await settle()
     const panel = document.querySelector('#boards .row-panel')
     expect(panel?.querySelector('.card-context .structured-code code')?.textContent).toBe('echo board-context')
@@ -343,7 +343,7 @@ describe('structured agent text on outcome, relay, and mission projections', () 
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(buttonLabelled('Plan flow', document.querySelector(`[data-card-id="${board.id}"]`)!))
+    click(await reach(() => buttonLabelled('Plan flow', document.querySelector(`[data-card-id="${board.id}"]`)!)))
     await settle()
 
     const mission = document.getElementById('missionbox')

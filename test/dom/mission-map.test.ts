@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { upsertBoard } from '../../src/store.js'
-import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, useDomTest } from './harness.js'
+import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, useDomTest, reach } from './harness.js'
 import { flowPath, openFlow, seedFlow, stepButton } from './plan-flow-fixtures.js'
 
 useDomTest()
@@ -45,8 +45,8 @@ describe('Plan flow milestone', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    const board = document.querySelector('#boards .board')!
-    click(buttonLabelled('Plan flow', board))
+    const board = () => document.querySelector('#boards .board')!
+    click(await reach(() => buttonLabelled('Plan flow', board())))
     await settle()
 
     const mission = document.getElementById('missionbox')!
@@ -78,7 +78,7 @@ describe('Plan flow milestone', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(buttonLabelled('Plan flow', document.querySelector('#boards .board')!))
+    click(await reach(() => buttonLabelled('Plan flow', document.querySelector('#boards .board')!)))
     await settle()
     click(document.querySelector('.mission-node'))
     await settle()

@@ -8,7 +8,7 @@ import { getBoard, insertItem, upsertBoard, upsertIssueSnapshot } from '../../sr
 import { facts, snapshot } from '../issue-fixtures.js'
 import type { SnapshotOpts } from '../issue-fixtures.js'
 import {
-  advanceClock, answerInput, bootApp, click, freshDb, pollTick, row, settle, showInbox, type, useDomTest,
+  advanceClock, answerInput, bootApp, click, freshDb, pollTick, reach, row, settle, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -90,7 +90,8 @@ const settingsBox = (): HTMLInputElement => {
   return input
 }
 async function toggle(input: HTMLInputElement): Promise<void> {
-  click(input)
+  // the switch sits under View: press View first, as a person would, unless grouping already shows it
+  click(input.closest('#boards') ? await reach(() => document.getElementById(input.id)) : input)
   await settle()
 }
 

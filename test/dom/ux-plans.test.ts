@@ -17,7 +17,7 @@ import {
   upsertBoard,
 } from '../../src/store.js'
 import {
-  advanceClock, bootApp, buttonLabelled, changedPollTick, click, freshDb, navigateToHash, pollTick, repaint, row,
+  advanceClock, bootApp, buttonLabelled, changedPollTick, click, freshDb, navigateToHash, pollTick, reach, repaint, row,
   searchFor, settle, showInbox, type, useDomTest,
 } from './harness.js'
 
@@ -1439,6 +1439,30 @@ describe('the single plan’s Archive (item 20)', () => {
     click(summary(b.id))
     await settle()
     expect(archiveButton(b.id)!.textContent).toBe('Archive')
+  })
+})
+
+describe('the harness enforces reachability on Plans (RT-3)', () => {
+  it('click() refuses a control behind the hidden attribute or a closed plan, allows a closed plan’s own summary, and reach() opens what a person would', async () => {
+    db = freshDb()
+    const brief = plan(db, 'Waiting', [tracked('One'), asks('Choose')])
+    const closed = plan(db, 'Moving', [tracked()])
+    await bootApp(db)
+    await showPlans()
+    expect(card(brief.id)!.dataset['form']).toBe('brief')
+    // the brief plan's actions are hidden, the closed plan's whole body is behind its closed <details>
+    expect(() => click(buttonLabelled('Plan flow', card(brief.id)!))).toThrow(/not reachable.*hidden attribute/)
+    expect(() => click(stepRow(closed.rows[0]!.id)!.querySelector('.row-expand'))).toThrow(/not reachable.*closed/)
+    expect(() => click(document.getElementById('group-plans-switch'))).toThrow(/not reachable.*plansTools/)
+    expect(() => click(summary(closed.id))).not.toThrow()
+    await settle()
+    // reach() presses what a person would: the plan's summary, then View
+    click(await reach(() => buttonLabelled('Plan flow', card(brief.id)!)))
+    expect(card(brief.id)!.dataset['form']).toBe('full')
+    click(await reach(() => document.getElementById('group-plans-switch')))
+    expect(document.getElementById('plansTools')!.hidden).toBe(false)
+    // a control outside Plans is not policed
+    expect(() => click(document.querySelector('.tab[data-tab="dashboard"]'))).not.toThrow()
   })
 })
 

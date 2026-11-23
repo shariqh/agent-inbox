@@ -16,7 +16,7 @@ import {
 } from '../../src/store.js'
 import {
   advanceClock, answerInput, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, repaint, row,
-  sendButton, settle, showInbox, type, useDomTest,
+  sendButton, settle, showInbox, type, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -122,7 +122,7 @@ const notesRow = (d: Database.Database) => getBoard(d, 'alpha', TITLE)!.rows.fin
 async function noteOn(id: string, text = 'A note on this step'): Promise<void> {
   click(document.querySelector('.tab[data-tab="boards"]'))
   await settle()
-  click(document.querySelector(`#boards tr.board-row[data-row-id="${id}"] .row-expand`))
+  click(await reach(() => document.querySelector(`#boards tr.board-row[data-row-id="${id}"] .row-expand`)))
   await settle()
   type(panelInput(id), text)
 }
@@ -692,7 +692,7 @@ describe('what a Send or a click says and leaves', () => {
     await repaint()
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector(`#boards tr.board-row[data-row-id="${rowId}"] .row-expand`))
+    click(await reach(() => document.querySelector(`#boards tr.board-row[data-row-id="${rowId}"] .row-expand`)))
     await settle()
     expect(panel(rowId)).not.toBeNull()
     expect(noticeIn(panel(rowId))).toBeNull()

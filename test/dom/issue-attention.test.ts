@@ -12,7 +12,7 @@ import { insertItem, upsertBoard, upsertIssueSnapshot } from '../../src/store.js
 import type { IssueFacts } from '../../src/store.js'
 import { facts, snapshot } from '../issue-fixtures.js'
 import type { SnapshotOpts } from '../issue-fixtures.js'
-import { advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
+import { advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest, reach } from './harness.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -104,7 +104,7 @@ describe('attention with and without relationship data (#103 PR3)', () => {
 
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .tab-header input[role="switch"]'))
+    click(await reach(() => document.querySelector('#boards .tab-header input[role="switch"]')))
     await settle()
     expect(document.querySelectorAll('#boards .plan-group-head')).toHaveLength(1)
     await pollTick()
@@ -179,7 +179,7 @@ describe('attention with and without relationship data (#103 PR3)', () => {
       if (grouping) {
         click(document.querySelector('.tab[data-tab="boards"]'))
         await settle()
-        click(document.querySelector('#boards .tab-header input[role="switch"]'))
+        click(await reach(() => document.querySelector('#boards .tab-header input[role="switch"]')))
         await settle()
         expect(document.querySelectorAll('#boards .plan-group-head')).toHaveLength(1)
       }
@@ -203,8 +203,8 @@ describe('attention with and without relationship data (#103 PR3)', () => {
       // labels add nothing the badge, title, tabs or dock could count
       click(document.querySelector('.tab[data-tab="boards"]'))
       await settle()
-      const adapter = [...document.querySelectorAll<HTMLElement>('#boards .board')].find((card) => card.textContent?.includes('Adapter work'))!
-      click([...adapter.querySelectorAll('button')].find((b) => b.textContent === 'Plan flow'))
+      const adapter = () => [...document.querySelectorAll<HTMLElement>('#boards .board')].find((card) => card.textContent?.includes('Adapter work'))!
+      click(await reach(() => [...adapter().querySelectorAll('button')].find((b) => b.textContent === 'Plan flow')))
       await settle()
       const flow = document.getElementById('missionbox')!
       expect(flow.querySelectorAll('.mission-step-link').length).toBeGreaterThan(0)

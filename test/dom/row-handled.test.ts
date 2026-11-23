@@ -22,7 +22,7 @@ import type Database from 'better-sqlite3'
 import { listBoards, markHandledDelivered, markRowHandled, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, badgeCount, bootApp, buttonLabelled, click, collapseRow, freshDb, pollTick,
-  row, rowTitles, settle, tabCount, useDomTest,
+  row, rowTitles, settle, tabCount, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -216,7 +216,7 @@ describe('#36 · where the control lives', () => {
     await bootApp(d)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .board-row .row-expand'))
+    click(await reach(() => document.querySelector('#boards .board-row .row-expand')))
     await settle()
     const panel = document.querySelector('#boards .row-panel')!
     expect(panel.querySelector('.reply-input'), 'the note box is still there').not.toBeNull()

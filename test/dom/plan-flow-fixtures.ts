@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import { getBoard, upsertBoard, upsertIssueSnapshot } from '../../src/store.js'
 import { deps, facts, snapshot } from '../issue-fixtures.js'
 import type { DepsOpts, SnapshotOpts } from '../issue-fixtures.js'
-import { buttonLabelled, click, settle } from './harness.js'
+import { buttonLabelled, click, reach, settle } from './harness.js'
 
 // Seeded through store.ts exactly as the poller and an agent's board_upsert write them.
 const REPO = 'shariqh/agent-inbox'
@@ -52,7 +52,7 @@ export function seedFlow(d: Database.Database) {
 export async function openFlow(planId: string): Promise<HTMLElement> {
   click(document.querySelector('.tab[data-tab="boards"]'))
   await settle()
-  click(buttonLabelled('Plan flow', document.querySelector(`#boards [data-card-id="${planId}"]`)!))
+  click(await reach(() => buttonLabelled('Plan flow', document.querySelector(`#boards [data-card-id="${planId}"]`)!)))
   await settle()
   return document.getElementById('missionbox')!
 }

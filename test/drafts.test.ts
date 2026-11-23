@@ -31,6 +31,13 @@ describe('draftEntry', () => {
     expect(draftEntry({
       type: 'note', itemId: 'n1', title: 'Update', text: '', error: 'Note save was not confirmed.', pending: false,
     })).toMatchObject({ type: 'note', text: '' })
+    // the text an open Note editor holds (UX pass, slice 4, step 0), under its own key
+    const edit = draftEntry({ type: 'note-edit', itemId: 'n1', title: 'Update', text: 'Keep it.', extra: 1 })
+    expect(edit).toEqual({ type: 'note-edit', itemId: 'n1', title: 'Update', text: 'Keep it.' })
+    expect(draftKey(edit!)).toBe('note-edit:n1')
+    // an editor holding nothing is not a draft
+    expect(draftEntry({ type: 'note-edit', itemId: 'n1', title: 'Update', text: '  ' })).toBeNull()
+    expect(draftEntry({ type: 'note-edit', itemId: '', title: 'Update', text: 'x' })).toBeNull()
   })
 
   it('refuses anything it cannot vouch for, never throwing', () => {

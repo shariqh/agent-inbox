@@ -3546,3 +3546,8 @@ body.hub-reconnecting #status { display: none; }
   .stalled-fold { padding-inline: var(--sp-3); }
   .archive-stalled { min-width: 0; }
 }
+/* UX pass, slice 4: Find. Step 0, the Note editor: Note opens a text box with Save and Cancel in place,
+   under the card's buttons, on the press only (never on hover or focus). */
+.note-editor { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
+.note-editor .note-editor-input { width: 100%; min-height: 64px; }
+.note-editor-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }

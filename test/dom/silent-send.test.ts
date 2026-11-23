@@ -32,7 +32,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, listBoards, upsertActivity, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, freshDb, pollTick,
-  row, rowTitles, searchFor, sendButton, settle, tabCount, type, useDomTest, reach,
+  row, rowTitles, searchFor, sendButton, settle, tabCount, type, useDomTest, reach, writeItemNote,
 } from './harness.js'
 
 useDomTest()
@@ -255,14 +255,9 @@ describe('#38 · the card actions repaint the card they live in', () => {
     const d = open()
     const id = insertItem(d, { ...AGENT, kind: 'question', title: 'ship it?' })
     await bootApp(d)
-    // jsdom's window.prompt throws "Not implemented", which the harness's
-    // console.error contract would (correctly) fail the test on.
-    vi.spyOn(window, 'prompt').mockReturnValue('deploy after the freeze')
-
     click(row(id))
     await settle()
-    click(buttonLabelled('Note', row(id)!))
-    await settle()
+    await writeItemNote(() => row(id), 'deploy after the freeze')
 
     expect(row(id)?.querySelector('.nrow-card .annotation')?.textContent).toContain('deploy after the freeze')
   })

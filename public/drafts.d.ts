@@ -80,6 +80,13 @@ export type Draft =
       pending: boolean
     }
   | {
+      /** the text in an item's open Note editor, not yet saved (UX pass, slice 4, step 0) */
+      type: 'note-edit'
+      itemId: string
+      title: string
+      text: string
+    }
+  | {
       /** #411: the human's unsent message to one MCP session */
       type: 'message'
       session: string

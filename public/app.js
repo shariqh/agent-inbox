@@ -334,6 +334,7 @@ function typedDrafts() {
   for (const [id, value] of Object.entries(draftReplies)) drafts[`reply:${id}`] = value
   for (const [id, value] of Object.entries(draftReplyContexts)) drafts[`context:${id}`] = value
   for (const [id, value] of Object.entries(rowDrafts)) drafts[`row:${id}`] = value
+  for (const [id, editor] of Object.entries(itemNoteEditors)) drafts[`note:${id}`] = editor.text
   // #412 step 3: a New session task while its dialog is open
   for (const [key, value] of launchUi?.drafts() ?? []) drafts[`launch:${key}`] = value
   return drafts
@@ -8097,7 +8098,7 @@ function renderOrphanedDrafts(host) {
       .map(([id, draft]) => ({
         id: `note:${id}`,
         draft,
-        retry: freshItem(id)?.status === 'open' ? () => editItemNote({ id, title: draft.title }) : null,
+        retry: freshItem(id)?.status === 'open' ? () => reviewItemNoteRecovery(id, draft.title) : null,
         clear: () => {
           if (itemNoteDrafts[id] !== draft || draft.pending) return false
           delete itemNoteDrafts[id]
@@ -9518,7 +9519,10 @@ const itemLatestIntents = {}     // item id → latest non-cancelled human inten
 const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its draft generation is unchanged
 const itemDraftSubmissions = {}  // item id → in-flight free-text intents keyed by draft generation
 const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
-const itemNoteDrafts = {}        // item id → pending or unconfirmed native Note attempt
+const itemNoteDrafts = {}        // item id → pending or unconfirmed Note save
+// UX pass, slice 4, step 0: item id → { title, text } of its open Note editor. A typed
+// draft like an answer's: it holds the poll's rebuild while in use and survives a reload.
+const itemNoteEditors = {}
 const NOTE_REFUSED = 'Note was not saved — this item is closed or no longer available.'
 const NOTE_UNCONFIRMED = 'Note save was not confirmed — review the stored note before retrying.'
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
@@ -9908,6 +9912,15 @@ function reconcileDraftOwners() {
     delete rowDraftMeta[id]
     recovered = true
   }
+  // UX pass, slice 4, step 0: an open Note editor whose item closed or left keeps its text
+  // in the unsent responses, as a refused save would
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    if (freshItem(id)?.status === 'open') continue
+    delete itemNoteEditors[id]
+    if (!editor.text.trim() || itemNoteDrafts[id]?.pending) continue
+    itemNoteDrafts[id] = { title: editor.title, text: editor.text, pending: false, error: NOTE_REFUSED }
+    recovered = true
+  }
   if (recovered && pollPaint) {
     recoveryNavPending = true
     scheduleDraftSave()
@@ -10079,6 +10092,9 @@ function collectDrafts() {
   }
   for (const [id, draft] of Object.entries(itemNoteDrafts)) {
     add({ type: 'note', itemId: id, title: draft.title, text: draft.text, error: draft.error ?? '', pending: Boolean(draft.pending) })
+  }
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    add({ type: 'note-edit', itemId: id, title: editor.title ?? '', text: editor.text })
   }
   // #411: one per session, in its composer or in the unsent responses
   for (const [session, draft] of [...messageRecoveries, ...messageDrafts]) {
@@ -10462,6 +10478,14 @@ function placeRestoredDraft(key, draft) {
         // a save still in flight when the page went away was never confirmed
         error: draft.pending || !draft.error ? NOTE_UNCONFIRMED : draft.error,
       }
+      return null
+    }
+    case 'note-edit': {
+      // back in its editor; one the server already holds is done (reconcileDraftOwners
+      // moves one whose item closed to the unsent responses)
+      const item = freshItem(draft.itemId)
+      if (item && (item.annotation ?? '') === draft.text) return null
+      itemNoteEditors[draft.itemId] = { title: draft.title, text: draft.text }
       return null
     }
     default:
@@ -11060,29 +11084,96 @@ function answerEl(it, { surface = null } = {}) {
   return wrap
 }
 
+// UX pass, slice 4, step 0: Note opens an editor in place, on the press only. The
+// native prompt() it used throws in the desktop app's own window, and dialogs are off
+// in another Mac's Inbox, so it never worked there.
 function itemNoteAction(it) {
   const pending = Boolean(itemNoteDrafts[it.id]?.pending)
-  const action = btn(pending ? 'Saving note…' : 'Note', () => editItemNote(it))
+  const action = btn(pending ? 'Saving note…' : 'Note', (event) => openItemNoteEditor(it, event.currentTarget))
   action.dataset.noteItem = it.id
   action.disabled = pending
   action.title = 'Add or edit feedback for agents; leave it blank to clear.'
+  action.setAttribute('aria-expanded', String(Boolean(itemNoteEditors[it.id])))
   return action
 }
 
-function editItemNote(it) {
+// `from`: the control pressed, whose container is where the rebuilt editor takes focus.
+function openItemNoteEditor(it, from = null) {
   if (itemNoteDrafts[it.id]?.pending) return
+  if (!itemNoteEditors[it.id]) {
+    const current = freshItem(it.id) ?? it
+    // a kept, unsent attempt comes back for review before anything is sent again
+    itemNoteEditors[it.id] = { title: current.title, text: itemNoteDrafts[it.id]?.text ?? current.annotation ?? '' }
+  }
+  const scopeId = from?.closest?.('[id]')?.id ?? null
+  forceRender()
+  focusItemNoteEditor(it.id, scopeId)
+}
+
+function focusItemNoteEditor(id, scopeId = null) {
+  const key = CSS.escape(`note:${id}`)
+  const scopes = [scopeId && document.getElementById(scopeId), document.querySelector('main > .panel:not([hidden])'), document]
+  for (const scope of scopes) {
+    const input = scope?.querySelector?.(`[data-draft-focus-key="${key}"]`)
+    if (!input) continue
+    input.focus({ preventScroll: true })
+    input.setSelectionRange(input.value.length, input.value.length)
+    if (document.activeElement === input) return true
+  }
+  return false
+}
+
+// Retry on a kept Note attempt: the item's own editor holds the text for review, and
+// nothing is sent until Save.
+function reviewItemNoteRecovery(id, title) {
+  openItemNoteEditor({ id, title })
+  focusItem(id)
+  requestAnimationFrame(() => focusItemNoteEditor(id))
+}
+
+function itemNoteEditorEl(it) {
+  const editor = itemNoteEditors[it.id]
+  const wrap = document.createElement('div')
+  wrap.className = 'note-editor'
+  const input = document.createElement('textarea')
+  input.className = 'reply-input note-editor-input'
+  input.rows = 2
+  input.value = editor.text
+  input.dataset.draftFocusKey = `note:${it.id}`
+  input.setAttribute('aria-label', 'Your note for agents; leave it blank to clear')
+  input.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
+  input.placeholder = 'your note for agents…'
+  input.addEventListener('input', () => {
+    if (itemNoteEditors[it.id]) itemNoteEditors[it.id].text = input.value
+    resizeReplyEditor(input)
+    resumeRender()
+  })
+  const actions = document.createElement('div')
+  actions.className = 'note-editor-actions'
+  const save = () => saveItemNote(it)
+  bindReplyEditor(input, save)
+  actions.appendChild(btn('Save', save))
+  actions.appendChild(btn('Cancel', () => {
+    delete itemNoteEditors[it.id]
+    forceRender()
+    document.querySelector(`main > .panel:not([hidden]) [data-note-item="${CSS.escape(it.id)}"]`)?.focus({ preventScroll: true })
+  }))
+  wrap.append(input, actions)
+  return wrap
+}
+
+function saveItemNote(it) {
+  if (itemNoteDrafts[it.id]?.pending) return
+  const editor = itemNoteEditors[it.id]
+  if (!editor) return
+  delete itemNoteEditors[it.id]
   return withPendingResponse(async () => {
     const prior = itemNoteDrafts[it.id]
     const current = freshItem(it.id) ?? it
-    const text = prompt('Your note (leave blank to clear):', prior?.text ?? current.annotation ?? '')
-    if (text == null) return
-    const draft = { title: current.title, text, pending: true, error: prior?.error ?? '' }
+    const text = editor.text
+    const draft = { title: current.title ?? editor.title, text, pending: true, error: prior?.error ?? '' }
     itemNoteDrafts[it.id] = draft
-    for (const button of document.querySelectorAll(`[data-note-item="${CSS.escape(it.id)}"]`)) {
-      button.disabled = true
-      button.textContent = 'Saving note…'
-    }
-    if (draft.error) forceRender()
+    forceRender()
     const result = await postJSON(`/api/items/${it.id}/annotate`, { text })
     if (itemNoteDrafts[it.id] !== draft) return
     if (result?.ok === true) {
@@ -11161,6 +11252,7 @@ function itemCardEl(it, {
     }
     actions.appendChild(itemNoteAction(it))
     el.appendChild(actions)
+    if (itemNoteEditors[it.id]) el.appendChild(itemNoteEditorEl(it))
   }
   return el
 }

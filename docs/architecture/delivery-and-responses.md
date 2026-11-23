@@ -236,11 +236,18 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   nor the reader's client label proves that the intended session acted; no new
   informational host-wake guarantee or human-attention entry is implied.
   Item reply and annotation timelines are independent: neither may borrow the
-  other's timestamps to claim pickup. The Note prompt retires an attempt only on
+  other's timestamps to claim pickup. The Note control is an editor in place on the
+  item card (UX pass, slice 4, step 0: a `textarea` with Save and Cancel, prefilled with
+  the stored note; never the native `prompt()`, which throws in the desktop app's own
+  window and is disabled in another Mac's Inbox). Its unsaved text is a typed draft
+  (`itemNoteEditors`, focus key `note:<id>`, stored as a `note-edit` entry so it comes
+  back in its editor after a reload; moved to the recovery surface when its item
+  closes). A save retires an attempt only on
   JSON `ok:true`; refused or transport-unconfirmed text, including a clear intent,
   stays in the existing recovery surface (kept in this profile's storage since #279
   and restored as unconfirmed, never resent) and protects automatic
-  restart. Retry requires explicit review, closed targets cannot retry, and local
+  restart. Retry requires explicit review: it opens the item's editor holding the kept
+  text, and nothing is sent until Save. Closed targets cannot retry, and local
   recovery Clear never changes the stored annotation. Do not claim crash-durable
   persistence or that a transport error proves the write never committed.
 - **Two answer channels, ONE precedence rule: the inbox always wins.** A question can be

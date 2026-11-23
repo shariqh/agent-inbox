@@ -7,7 +7,7 @@ import {
 } from '../../src/store.js'
 import {
   advanceClock, badgeCount, bootApp, buttonLabelled, click, expectConsoleError,
-  freshDb, pollTick, settle, useDomTest,
+  freshDb, noteEditor, pollTick, settle, type, useDomTest, writeItemNote,
 } from './harness.js'
 
 useDomTest()
@@ -46,9 +46,7 @@ describe('informational item feedback', () => {
     const id = insertItem(db, { ...AGENT, kind, title: 'Agent update' })
     const bridge = await bootApp(db)
     await showItem(id, kind === 'note' ? 'notes' : 'done')
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(HUMAN_TEXT)
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
+    await writeItemNote(() => scope(id), HUMAN_TEXT)
 
     let saved = getItem(db, id)!
     expect(saved.annotation).toBe(HUMAN_TEXT)
@@ -70,18 +68,14 @@ describe('informational item feedback', () => {
     expect(getItem(db, id)?.status).toBe('open')
     expect(badgeCount()).toBe(0)
 
-    prompt.mockReturnValue('Corrected rollout conditions.')
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
+    await writeItemNote(() => scope(id), 'Corrected rollout conditions.')
     saved = getItem(db, id)!
     expect(saved.annotation_seen_at).toBeNull()
     expect(receipt(id)?.dataset.noteState).toBe('waiting')
     expect(receipt(id)?.textContent).toContain('Corrected rollout conditions.')
     expect(receipt(id)?.textContent).not.toContain('Delivered')
 
-    prompt.mockReturnValue('')
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
+    await writeItemNote(() => scope(id), '')
     const cleared = getItem(db, id)!
     expect(cleared.annotation).toBe('')
     expect(cleared.annotated_at).not.toBeNull()
@@ -106,9 +100,7 @@ describe('informational item feedback', () => {
     advanceClock(60_000)
     await bootApp(db)
     await showItem(id, 'dashboard')
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Keep the rollback.')
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
+    await writeItemNote(() => scope(id), 'Keep the rollback.')
     expect(scope(id).querySelector('.reply-block .pickup.picked')).not.toBeNull()
     expect(receipt(id)?.querySelector('.pickup.awaiting')).not.toBeNull()
     expect(receipt(id)?.querySelector('.pickup.picked')).toBeNull()
@@ -118,9 +110,7 @@ describe('informational item feedback', () => {
     markItemAnnotationDelivered(db, id, saved.response_revision, 'note-reader')
     await pollTick()
     expect(receipt(id)?.querySelector('.pickup.picked')).not.toBeNull()
-    prompt.mockReturnValue('')
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
+    await writeItemNote(() => scope(id), '')
     expect(scope(id).querySelector('.reply-block .pickup.picked')).not.toBeNull()
     expect(receipt(id)?.dataset.noteState).toBe('waiting')
     expect(receipt(id)?.textContent).toContain('Note cleared')
@@ -169,13 +159,11 @@ describe('informational item feedback', () => {
     markItemAnnotationDelivered(db, id, saved.response_revision, 'reader')
     const bridge = await bootApp(db)
     await showItem(id, 'notes')
-    const staleButton = buttonLabelled('Note', scope(id))!
+    // the page still shows the item open: no poll has run since another actor closed it
     if (closed === 'resolved') resolveItem(db, id, 'Closed by another actor.')
     else dismissItem(db, id)
     const historical = getItem(db, id)!
-    vi.spyOn(window, 'prompt').mockReturnValue(HUMAN_TEXT)
-    click(staleButton)
-    await settle()
+    await writeItemNote(() => scope(id), HUMAN_TEXT)
 
     expect(bridge.posts).toHaveLength(1)
     expect(getItem(db, id)).toEqual(historical)
@@ -210,10 +198,8 @@ describe('informational item feedback', () => {
       },
     })
     await showItem(id, 'notes')
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('')
     expectConsoleError(/lost annotation response/)
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
+    await writeItemNote(() => scope(id), '')
     expect(getItem(db, id)?.annotation).toBe('')
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Note save was not confirmed')
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Clear note')
@@ -222,19 +208,24 @@ describe('informational item feedback', () => {
     await pollTick()
     expect(reload).not.toHaveBeenCalled()
     expect(bridge.posts).toHaveLength(1)
-    prompt.mockReturnValue(null)
+    // Retry opens the Note editor on the item, holding the recovered text for review
     click(buttonLabelled('Retry', document.querySelector('.stale-drafts-fold')!))
     await settle()
-    expect(prompt).toHaveBeenLastCalledWith(expect.any(String), '')
+    expect(noteEditor(scope(id))?.value).toBe('')
+    expect(document.activeElement).toBe(noteEditor(scope(id)))
+    click(buttonLabelled('Cancel', scope(id).querySelector('.note-editor')!))
+    await settle()
     expect(bridge.posts).toHaveLength(1)
     expect(document.querySelector('.stale-drafts-fold')).not.toBeNull()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
     click(buttonLabelled('Discard', document.querySelector('.stale-drafts-fold')!))
     await settle()
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
   })
 
-  it('reviews recovered text through the same Note prompt before an explicit retry', async () => {
+  it('reviews recovered text in the same Note editor before an explicit retry', async () => {
     db = freshDb()
     const id = insertItem(db, { ...AGENT, kind: 'done', title: 'Retry milestone correction' })
     let loseReply = true
@@ -249,15 +240,16 @@ describe('informational item feedback', () => {
       },
     })
     await showItem(id, 'done')
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Unconfirmed correction.')
     expectConsoleError(/lost annotation response/)
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
+    await writeItemNote(() => scope(id), 'Unconfirmed correction.')
     expect(document.querySelector('.stale-drafts-fold')?.textContent).toContain('Unconfirmed correction.')
-    prompt.mockReturnValue('Reviewed correction.')
     click(buttonLabelled('Retry', document.querySelector('.stale-drafts-fold')!))
     await settle()
-    expect(prompt).toHaveBeenLastCalledWith(expect.any(String), 'Unconfirmed correction.')
+    expect(noteEditor(scope(id))?.value).toBe('Unconfirmed correction.')
+    expect(bridge.posts, 'Retry sends nothing until the reviewed text is saved').toHaveLength(1)
+    type(noteEditor(scope(id)), 'Reviewed correction.')
+    click(buttonLabelled('Save', scope(id).querySelector('.note-editor')!))
+    await settle()
     expect(bridge.posts).toHaveLength(2)
     expect(getItem(db, id)?.annotation).toBe('Reviewed correction.')
     expect(document.querySelector('.stale-drafts-fold')).toBeNull()
@@ -285,12 +277,13 @@ describe('informational item feedback', () => {
       },
     })
     await showItem(id, 'notes')
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('First attempted correction.')
     expectConsoleError(/lost annotation response/)
-    click(buttonLabelled('Note', scope(id)))
-    await settle()
-    prompt.mockReturnValue('Reviewed correction while retrying.')
+    await writeItemNote(() => scope(id), 'First attempted correction.')
     click(buttonLabelled('Retry', document.querySelector('.stale-drafts-fold')!))
+    await settle()
+    expect(noteEditor(scope(id))?.value).toBe('First attempted correction.')
+    type(noteEditor(scope(id)), 'Reviewed correction while retrying.')
+    click(buttonLabelled('Save', scope(id).querySelector('.note-editor')!))
     try {
       await pollTick()
       const pending = document.querySelector('.stale-drafts-fold')!

@@ -14,7 +14,7 @@ import {
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
-  repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest, reach,
+  repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest, reach, writeItemNote,
 } from './harness.js'
 
 useDomTest()
@@ -272,11 +272,9 @@ describe('a draft comes back where it was', () => {
     await settle()
     click(document.querySelector(`#notes [data-card-id="${id}"] > summary`))
     await settle()
-    vi.spyOn(window, 'prompt').mockReturnValue('Keep the rollback.')
     first.failPostsWith(500)
     expectConsoleError(/annotate failed: HTTP 500/)
-    click(buttonLabelled('Note', document.querySelector(`#notes [data-card-id="${id}"]`)!))
-    await settle()
+    await writeItemNote(() => document.querySelector(`#notes [data-card-id="${id}"]`), 'Keep the rollback.')
     expect(recovery()?.textContent).toContain(UNCONFIRMED)
 
     const bridge = await reopen(db)
@@ -286,6 +284,33 @@ describe('a draft comes back where it was', () => {
     expect(recovery()?.textContent).toContain('Keep the rollback.')
     expect(buttonLabelled('Retry', recovery()!)?.disabled).toBe(false)
     expect(getItem(db, id)?.annotation).toBeNull()
+  })
+
+  it('brings back the text of an open Note editor in its editor, and drops one the server already holds', async () => {
+    db = freshDb()
+    const kept = insertItem(db, { ...AGENT, kind: 'note', title: 'Kept update' })
+    advanceClock()
+    const same = insertItem(db, { ...AGENT, kind: 'note', title: 'Same update' })
+    await bootApp(db)
+    click(document.querySelector('.tab[data-tab="notes"]'))
+    await settle()
+    for (const [id, text] of [[kept, 'Half a note.'], [same, 'Already said.']] as const) {
+      click(buttonLabelled('Note', document.querySelector(`#notes [data-card-id="${id}"]`)!))
+      await settle()
+      type(document.querySelector<HTMLTextAreaElement>(`#notes [data-card-id="${id}"] .note-editor textarea`), text)
+    }
+    await saved()
+    expect(storedTexts().sort()).toEqual(['Already said.', 'Half a note.'])
+    annotateItem(db, same, 'Already said.')
+
+    const bridge = await reopen(db)
+    click(document.querySelector('.tab[data-tab="notes"]'))
+    await settle()
+    expect(document.querySelector<HTMLTextAreaElement>(`#notes [data-card-id="${kept}"] .note-editor textarea`)?.value)
+      .toBe('Half a note.')
+    expect(document.querySelector(`#notes [data-card-id="${same}"] .note-editor`)).toBeNull()
+    expect(recovery()).toBeNull()
+    expect(bridge.posts).toHaveLength(0)
   })
 
   it('keeps a Note still saving at unload as unconfirmed, and drops one the server already holds', async () => {
@@ -305,13 +330,10 @@ describe('a draft comes back where it was', () => {
     })
     click(document.querySelector('.tab[data-tab="notes"]'))
     await settle()
-    const prompt = vi.spyOn(window, 'prompt')
     for (const [id, text] of [[held, 'Held feedback.'], [landed, 'Landed feedback.']] as const) {
       click(document.querySelector(`#notes [data-card-id="${id}"] > summary`))
       await settle()
-      prompt.mockReturnValue(text)
-      click(buttonLabelled('Note', document.querySelector(`#notes [data-card-id="${id}"]`)!))
-      await settle()
+      await writeItemNote(() => document.querySelector(`#notes [data-card-id="${id}"]`), text)
     }
     expect(getItem(db, landed)?.annotation).toBe('Landed feedback.')
 

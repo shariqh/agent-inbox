@@ -554,6 +554,23 @@ export function type(el: HTMLInputElement | HTMLTextAreaElement | null | undefin
   el.dispatchEvent(new window.Event('input', { bubbles: true }))
 }
 
+/** The open inline Note editor's text box inside a card (UX pass, slice 4, step 0). */
+export function noteEditor(scope: ParentNode | null | undefined): HTMLTextAreaElement | null {
+  return scope?.querySelector<HTMLTextAreaElement>('.note-editor textarea') ?? null
+}
+
+/**
+ * Write a Note the way a person does: press Note on the card, type into the editor that
+ * opens in place, press Save. `locate` finds the card afresh after every press.
+ */
+export async function writeItemNote(locate: () => ParentNode | null | undefined, text: string): Promise<void> {
+  click(buttonLabelled('Note', locate() ?? document.createElement('div')))
+  await settle()
+  type(noteEditor(locate()), text)
+  click(buttonLabelled('Save', locate()?.querySelector('.note-editor') ?? document.createElement('div')))
+  await settle()
+}
+
 /** Type into #search and advance past initSearch()'s 120ms debounce. */
 export async function searchFor(query: string): Promise<void> {
   const input = document.getElementById('search') as HTMLInputElement | null

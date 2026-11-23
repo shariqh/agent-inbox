@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -1014,6 +1015,25 @@ exec "${process.execPath}" "$@"
     expect(text).toContain('If you are a subagent, do not act on or acknowledge messages')
     expect(text).not.toContain('Not inlined here')
   })
+
+  // #641: the snippet shortcut is per target. Copilot does not resolve
+  // @-imports, so a file both hosts read must inline the snippet whichever
+  // target is applied, and the claude pass must not claim it already imports it.
+  for (const targets of [['--target', 'copilot'], ['--target', 'claude'], []]) {
+    it(`inlines the snippet once in a shared file that imports it, for ${targets.join(' ') || 'the default targets'}`, () => {
+      const f = fixture()
+      const shared = shareInstructionFile(f)
+      writeFileSync(shared, `# Shared agent rules\n\n${IMPORT_LINE}\n`)
+
+      const result = run(f, ['--apply', ...targets])
+
+      expect(result.code, result.err).toBe(0)
+      const block = managedBlock(readFileSync(shared, 'utf8'))
+      expect(count(block, SNIPPET_HEADING)).toBe(1)
+      expect(block).not.toContain('Not inlined here')
+      expect(result.err).not.toContain('already imports docs/reporting-snippet.md')
+    })
+  }
 
   it('omits the inlined snippet from the claude block when that file imports the snippet itself', () => {
     const f = fixture()
@@ -2271,6 +2291,26 @@ describe('the personal install without the new flags (#641)', () => {
     })
   }
 
+  for (const missing of ['copilot', 'claude']) {
+    it(`refuses an apply with exit 1 when the ${missing} CLI is not installed, and writes nothing`, () => {
+      const f = fixture()
+      renameSync(join(f.fakebin, missing), join(f.tmp, `${missing}-away`))
+      const paths = [f.claudeFile, f.copilotFile, f.env.CLAUDE_CONFIG!, f.env.COPILOT_CONFIG!]
+      const before = paths.map((path) => readFileSync(path, 'utf8'))
+
+      const result = run(f, ['--apply'])
+
+      expect(result.code).toBe(1)
+      expect(result.err).toBe(`install-agents: '${missing}' CLI is not installed; choose a different --target\n`)
+      expect(result.out).toBe('')
+      expect(existsSync(f.log)).toBe(false)
+      expect(paths.map((path) => readFileSync(path, 'utf8'))).toEqual(before)
+      for (const dir of [dirname(f.claudeFile), dirname(f.copilotFile), f.home]) {
+        expect(readdirSync(dir).filter((name) => name.includes('.bak.'))).toEqual([])
+      }
+    })
+  }
+
   it('prints the personal Claude command line exactly in the dry run', () => {
     const f = fixture()
     const node = process.execPath
@@ -2801,6 +2841,32 @@ describe('preflight checks for a second Claude Code config folder (#641)', () =>
     ['a registration fixed to another project', (_f, s) => writeFileSync(s.config, JSON.stringify({ mcpServers: { 'agent-inbox': { command: '/n', args: ['/e', '--project', 'other'] } } })), /is not fixed to the project work/],
     ['an unreadable .claude.json', (_f, s) => writeFileSync(s.config, '{ "token": "sk-should-never-print", broken\n'), /could not read .+\.claude\.json \(it is not valid JSON\)/],
   ]
+  // The command another repository runs selects only the second folder, and
+  // both personal files still count, selected or not.
+  for (const which of ['claude', 'copilot'] as const) {
+    for (const apply of [false, true]) {
+      it(`refuses a CLAUDE.md that is the personal ${which} file with --target claude-config-dir alone (${apply ? 'apply' : 'dry run'})`, () => {
+        const f = fixture()
+        const second = secondFolder(f)
+        const personal = which === 'claude' ? f.claudeFile : f.copilotFile
+        rmSync(second.file)
+        symlinkSync(personal, second.file)
+        const before = tree(f.home)
+        const personalBefore = readFileSync(personal, 'utf8')
+
+        const result = run(f, [...(apply ? ['--apply'] : []), '--target', 'claude-config-dir', ...second.args()])
+
+        expect(result.code, result.err).toBe(1)
+        expect(result.err).toMatch(/is the same file as a personal Claude Code or Copilot instruction file/)
+        expect(existsSync(f.log)).toBe(false)
+        expect(readFileSync(personal, 'utf8')).toBe(personalBefore)
+        const unlocked = (lines: string[]) => lines.filter((line) => !line.startsWith(join(f.home, '.agent-inbox')) &&
+          !line.startsWith(join(f.state, 'selftest-ran')))
+        expect(unlocked(tree(f.home))).toEqual(unlocked(before))
+      })
+    }
+  }
+
   for (const [name, setup, message] of checks) {
     for (const apply of [false, true]) {
       it(`refuses ${name} (${apply ? 'apply' : 'dry run'}) before any host call`, () => {

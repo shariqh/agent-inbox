@@ -149,7 +149,9 @@ describe('Resume in Terminal (#586 PR 3)', () => {
     await leaveAndReturn()
     // step B: drawn off with main's reason, in the same slot
     expect([resumeFor(1)!.getAttribute('aria-disabled'), resumeFor(1)!.title]).toEqual(['true', RESUME_UNAVAILABLE])
-    expect(bridge.resumeAvailable).toHaveBeenCalledTimes(3)
+    // asked on entering Find and again when the Chats chip is pressed there (the first visit), then
+    // once on each return (the chip stays selected)
+    expect(bridge.resumeAvailable).toHaveBeenCalledTimes(4)
   })
 
   it('is off, with the reason as its title, for a live chat or a folder that is gone or missing', async () => {

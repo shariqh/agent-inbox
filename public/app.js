@@ -9143,6 +9143,8 @@ function renderFind() {
   const extra = findKeepKeys()
   const target = pendingFocusId ?? pagedFocusId
   if (target) extra.add(`item:${target}`)
+  // an open row stays in sight when a re-read or a poll moves it past the page
+  for (const row of rows.slice(shown.find)) if (findOpen.has(row.key)) extra.add(row.key)
   const beyond = rows.slice(shown.find).filter((row) => extra.has(row.key))
   const listed = [...page, ...beyond]
   const drawn = [...model.commands.lead, ...listed, ...model.commands.tail]

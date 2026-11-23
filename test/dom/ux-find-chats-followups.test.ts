@@ -241,3 +241,43 @@ describe('a late answer opens its chat row only where the row is drawn', () => {
   })
 })
 
+describe('an open chat row is not paged away by a re-read', () => {
+  it('Refresh with two newer chats keeps the open 20th row drawn, after the page', async () => {
+    const many = Array.from({ length: 22 }, (_, i) => entry(i + 10))
+    const { index } = await boot({ chats: many })
+    await openFindChats()
+    const open = `claude:${uuid(29)}`
+    await openChatRow(open)
+    expect(rowKeys().indexOf(`chat:${open}`)).toBe(19)
+    index.chats = [...many, entry(1, { title: 'New A', lastActiveAt: ago(1) }), entry(2, { title: 'New B', lastActiveAt: ago(2) })]
+    click(line().querySelector('.chats-refresh'))
+    await settle()
+    await settle()
+    expect(chatRowFor(open)).not.toBeNull()
+    expect(chatRowFor(open)!.querySelector(':scope > .find-row-body')).not.toBeNull()
+  })
+
+  it('an open note past the page stays drawn when a poll adds a note above it', async () => {
+    await boot({
+      chats: [],
+      seed: (d) => {
+        for (let i = 0; i < 22; i += 1) { advanceClock(); insertItem(d, { ...ATLAS, kind: 'note', title: `Note ${i}` }) }
+      },
+    })
+    await openFindTab()
+    click(chip('notes'))
+    await settle()
+    const keys = rowKeys()
+    expect(keys).toHaveLength(20)
+    const last = document.querySelector<HTMLElement>(`#findList > [data-find-key="${keys[19]}"] > .find-row-main`)!
+    click(last)
+    await settle()
+    expect(last.getAttribute('aria-expanded')).toBe('true')
+    advanceClock()
+    insertItem(db!, { ...ATLAS, kind: 'note', title: 'Newest note' })
+    await pollTick()
+    await settle()
+    expect(document.querySelector(`#findList > [data-find-key="${keys[19]}"]`)).not.toBeNull()
+  })
+})
+

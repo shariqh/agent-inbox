@@ -8807,7 +8807,8 @@ function findExtraEl(extra) {
     return span
   }
   span.textContent = extra.text
-  if (extra.full && extra.full !== extra.text) span.title = extra.full
+  // the full text, for an extra cut short here or by the narrow row's ellipsis
+  if (extra.full || extra.text) span.title = extra.full || extra.text
   return span
 }
 

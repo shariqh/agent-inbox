@@ -3517,3 +3517,71 @@ body.hub-reconnecting #status { display: none; }
 .note-editor { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
 .note-editor .note-editor-input { width: 100%; min-height: 64px; }
 .note-editor-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+/* Step A: Find in place of Notes and History. One column of at most 780px: the field, the chips and
+   the list. A row is one button: the type's icon, the title, the extra, the project and the age, at the
+   picture's sizes. Rows that open show the card under the button. Nothing enters or leaves the layout
+   on hover or focus; the narrow row follows the column's own width (a container query, never a second width query). */
+#topbar .floating-search[hidden] { display: none; }
+.find {
+  --find-column: 780px;
+  --find-field: 64px;
+  --find-chip: 34px;
+  --find-row: 58px;
+  --find-bar: 96px;
+  --find-project: 92px;
+  --find-age: 32px;
+  --find-icon: 18px;
+  container: find / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: var(--find-column);
+  margin: 0 auto;
+  padding-top: var(--sp-6);
+}
+.find-field { display: flex; align-items: center; gap: var(--sp-3); height: var(--find-field); padding: 0 var(--sp-5); border: 1px solid var(--app-border); border-radius: 16px; background: var(--app-surface); }
+.find-field:focus-within { border-color: var(--app-focus); }
+.find-field-icon { flex: none; width: 20px; height: 20px; fill: none; stroke: var(--app-muted); stroke-width: 2; stroke-linecap: round; }
+.find-query { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--app-text); font: inherit; font-size: 20px; }
+.find-query::placeholder { color: var(--app-text-soft); }
+.find-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--sp-1); }
+.find-chip { height: var(--find-chip); padding: 0 14px; border: 0; border-radius: 999px; background: var(--app-soft); color: var(--app-muted); font: inherit; font-size: var(--fs-body); cursor: pointer; }
+.find-chip[aria-pressed="true"] { background: var(--app-text); color: var(--app-bg); font-weight: 600; }
+.find-chip:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
+.find-status { margin: 0; padding: 0 var(--sp-4); color: var(--app-muted); font-size: var(--fs-body); }
+.find-status[hidden] { display: none; }
+.find-list { display: flex; flex-direction: column; outline: 0; }
+.find-row { border-radius: 12px; }
+.find-row[data-active="true"] { background: var(--app-soft); }
+.find-row-main { display: flex; align-items: center; gap: 14px; width: 100%; min-height: var(--find-row); padding: 0 18px; border: 0; border-radius: 12px; background: none; color: var(--app-text); font: inherit; text-align: left; cursor: pointer; }
+.find-row-main:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
+.find-icon { display: inline-flex; flex: none; width: var(--find-icon); height: var(--find-icon); color: var(--app-muted); }
+.find-icon svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.find-title { flex: 1; min-width: 0; overflow: hidden; font-size: var(--fs-lead); text-overflow: ellipsis; white-space: nowrap; }
+/* the New mark keeps its space on every note row, shown or not, so a mark never moves a row */
+.find-new { flex: none; width: 3em; color: var(--app-accent); font-size: var(--fs-meta); font-weight: 650; }
+.find-extra { flex: none; min-width: 0; max-width: 40%; overflow: hidden; color: var(--app-muted); font-size: var(--fs-body); text-overflow: ellipsis; white-space: nowrap; }
+.find-extra:empty { display: none; }
+.find-extra[data-extra="chip"] { max-width: 14em; padding: 3px 10px; border-radius: 999px; background: var(--app-border); color: var(--app-text); font-size: var(--fs-meta); font-weight: 600; }
+.find-extra[data-extra="bar"] { display: flex; width: var(--find-bar); max-width: none; }
+.find-extra .plan-bar { flex: 1 1 auto; width: var(--find-bar); }
+.find-project { display: flex; flex: none; align-items: center; gap: 7px; width: var(--find-project); min-width: 0; color: var(--app-muted); font-size: var(--fs-body); }
+.find-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.find-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-age { flex: none; width: var(--find-age); color: var(--app-text-soft); font-size: var(--fs-meta); text-align: right; }
+.find-row-body { padding: 0 18px var(--sp-4) calc(18px + var(--find-icon) + 14px); }
+.find-row:has(> .find-row-body) { background: var(--app-surface); }
+.find-foot { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); padding: 0 var(--sp-4); }
+.find-foot:empty { display: none; }
+.find-loading { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
+@container find (max-width: 620px) {
+  /* the row stacks: the icon and the title over the extra, the project and the age */
+  .find-row-main { display: grid; grid-template-columns: var(--find-icon) minmax(0, 1fr) auto auto; grid-template-areas: "icon title title new" ". extra project age"; column-gap: var(--sp-3); row-gap: var(--sp-1); padding-block: var(--sp-2); }
+  .find-icon { grid-area: icon; }
+  .find-title { grid-area: title; }
+  .find-new { grid-area: new; }
+  .find-extra { grid-area: extra; justify-self: start; max-width: 100%; }
+  .find-project { grid-area: project; width: auto; max-width: var(--find-project); }
+  .find-age { grid-area: age; }
+  .find-row-body { padding-left: 18px; }
+}

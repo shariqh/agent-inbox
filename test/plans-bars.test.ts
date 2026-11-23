@@ -157,12 +157,14 @@ describe('planSections', () => {
 })
 
 describe('planForm', () => {
-  it('the person’s choice wins; with none, Needs you or a kept step is brief and the rest closed', () => {
+  it('an opened plan is full; any other plan is brief when it waits on the person or has a kept step, else closed', () => {
     for (const section of ['needs', 'moving', 'stalled', null] as const) {
       for (const kept of [true, false]) {
         expect(planForm({ choice: true, section, kept })).toBe('full')
-        expect(planForm({ choice: false, section, kept })).toBe('closed')
-        expect(planForm({ choice: undefined, section, kept })).toBe(section === 'needs' || kept ? 'brief' : 'closed')
+        // collapsed by the person, or no choice at all: the same form
+        const collapsed = section === 'needs' || kept ? 'brief' : 'closed'
+        expect(planForm({ choice: false, section, kept })).toBe(collapsed)
+        expect(planForm({ choice: undefined, section, kept })).toBe(collapsed)
       }
     }
   })

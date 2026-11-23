@@ -50,7 +50,7 @@ describe('Plan Flow focus ownership', () => {
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     // UX pass, slice 3: a plan waiting on the person opens brief; Plan flow is in the full plan
-    click(boardCard().querySelector('.plan-all-steps'))
+    click(boardCard().querySelector(':scope > summary'))
     await settle()
 
     const opener = buttonLabelled('Plan flow', boardCard())!

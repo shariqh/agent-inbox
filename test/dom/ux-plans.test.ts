@@ -125,7 +125,7 @@ describe('a plan is one line (D1, D2)', () => {
     const meta = card(b.id)!.querySelector<HTMLElement>(':scope > .board-meta')!
     expect(card(b.id)!.dataset['form']).toBe('brief')
     expect(shown(meta)).toBe(false)
-    click(card(b.id)!.querySelector('.plan-all-steps'))
+    click(summary(b.id))
     await settle()
     const full = card(b.id)!.querySelector<HTMLElement>(':scope > .board-meta')!
     expect(card(b.id)!.dataset['form']).toBe('full')
@@ -190,7 +190,7 @@ describe('sections (D3)', () => {
 })
 
 describe('forms (D5)', () => {
-  it('draws a Needs-you plan nobody touched brief: its waiting step, "All N steps", no chips or actions', async () => {
+  it('draws a Needs-you plan nobody touched brief: its waiting step, no chips or actions, and no "All N steps" button', async () => {
     db = freshDb()
     const b = plan(db, 'Release', [{ label: 'Tag', status: 'done' }, asks('Approve'), tracked('Publish'), { label: 'Notes', status: 'partial' }])
     const [, ask, publish, notes] = b.rows
@@ -203,20 +203,20 @@ describe('forms (D5)', () => {
     expect(shown(stepRow(ask!.id))).toBe(true)
     expect(shown(stepRow(publish!.id))).toBe(false)
     expect(shown(stepRow(notes!.id))).toBe(false)
-    const all = el.querySelector<HTMLButtonElement>('.plan-all-steps')!
-    expect(all.textContent).toBe('All 4 steps')
-    expect(shown(all)).toBe(true)
+    expect(el.querySelector('.plan-all-steps')).toBeNull()
+    expect(el.querySelector('[id^="plan-all-"]')).toBeNull()
+    expect(el.textContent).not.toMatch(/All \d+ steps/)
     for (const part of el.querySelectorAll('.board-meta, .board-source, .board-issues, .actions')) expect(shown(part)).toBe(false)
-    click(all)
+    summary(b.id).focus()
+    click(summary(b.id))
     await settle()
     expect(card(b.id)!.dataset['form']).toBe('full')
     expect(document.activeElement).toBe(summary(b.id))
     expect(shown(stepRow(publish!.id))).toBe(true)
     expect(shown(buttonLabelled('Plan flow', card(b.id)!))).toBe(true)
-    expect(card(b.id)!.querySelector('.plan-all-steps')).toBeNull()
   })
 
-  it('a summary click opens a closed plan in full and closes an open one, by mouse, Enter and Space', async () => {
+  it('a summary click opens a collapsed plan in full and collapses a full one, by mouse, Enter and Space', async () => {
     db = freshDb()
     const moving = plan(db, 'Moving', [tracked()])
     const waiting = plan(db, 'Waiting', [asks()])
@@ -237,12 +237,52 @@ describe('forms (D5)', () => {
     pressOn(summary(moving.id), ' ')
     await settle()
     expect(card(moving.id)!.dataset['form']).toBe('closed')
-    // brief → click → closed
+    // a plan waiting on the person: brief → click → full → click → brief again, never closed
     expect(card(waiting.id)!.dataset['form']).toBe('brief')
     pressOn(summary(waiting.id), ' ')
     await settle()
-    expect(card(waiting.id)!.dataset['form']).toBe('closed')
-    expect(card(waiting.id)!.open).toBe(false)
+    expect(card(waiting.id)!.dataset['form']).toBe('full')
+    pressOn(summary(waiting.id), 'Enter')
+    await settle()
+    expect(card(waiting.id)!.dataset['form']).toBe('brief')
+    expect(card(waiting.id)!.open).toBe(true)
+    expect(shown(stepRow(waiting.rows[0]!.id))).toBe(true)
+    click(summary(waiting.id))
+    await settle()
+    click(summary(waiting.id))
+    await settle()
+    expect(card(waiting.id)!.dataset['form']).toBe('brief')
+    expect(shown(stepRow(waiting.rows[0]!.id))).toBe(true)
+  })
+
+  it('a plan with a step in hand collapses to brief, not closed; once the step is let go it collapses to closed', async () => {
+    db = freshDb()
+    const b = plan(db, 'Docs', [tracked('One'), tracked('Two')])
+    await bootApp(db)
+    await showPlans()
+    click(summary(b.id))
+    await settle()
+    click(stepRow(b.rows[0]!.id)!.querySelector('.row-expand'))
+    await settle()
+    // collapsing closes the open step and lets it go: nothing is in hand, so the plan closes
+    click(summary(b.id))
+    await settle()
+    expect(card(b.id)!.dataset['form']).toBe('closed')
+    // a typed, unsent answer is in hand: collapsing leaves the plan brief with that step shown
+    click(summary(b.id))
+    await settle()
+    click(stepRow(b.rows[1]!.id)!.querySelector('.row-expand'))
+    await settle()
+    type(panelRow(b.rows[1]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Half an answer')
+    click(summary(b.id))
+    await settle()
+    expect(card(b.id)!.dataset['form']).toBe('brief')
+    expect(card(b.id)!.open).toBe(true)
+    expect(shown(stepRow(b.rows[1]!.id))).toBe(true)
+    expect(shown(stepRow(b.rows[0]!.id))).toBe(false)
+    expect(panelRow(b.rows[1]!.id)).toBeNull()
+    // typed text counts as kept (RT-4)
+    expect(card(b.id)!.querySelector('.plan-all-steps')).toBeNull()
   })
 
   it('never saves a default open: a brief plan whose ask resolves elsewhere is closed, in Moving', async () => {
@@ -276,7 +316,8 @@ describe('forms (D5)', () => {
     await settle()
     await changedPollTick(db)
     expect(card(b.id)!.dataset['section']).toBe('needs')
-    expect(card(b.id)!.dataset['form']).toBe('closed')
+    // collapsed, and a plan in Needs you never collapses past brief
+    expect(card(b.id)!.dataset['form']).toBe('brief')
   })
 
   it('six Needs-you plans of 11 steps show no meta line, chips, relations or actions at rest', async () => {
@@ -734,7 +775,7 @@ describe('ways in land on a visible step (D5, D9)', () => {
     expect(card(b.id)!.dataset['form']).toBe('full')
   })
 
-  it('"Use this text" on a step whose plan the person closed opens the plan and the step', async () => {
+  it('"Use this text" on a step whose plan the person collapsed opens the plan and the step', async () => {
     db = freshDb()
     const b = plan(db, 'Release', [{ label: 'Install test', status: 'blocked', note: 'Ready.', next_step: 'Do the install test.', action_owner: 'task' }, tracked()])
     const rowId = b.rows[0]!.id
@@ -742,7 +783,9 @@ describe('ways in land on a visible step (D5, D9)', () => {
     await showPlans()
     click(summary(b.id))
     await settle()
-    expect(card(b.id)!.open).toBe(false)
+    click(summary(b.id))
+    await settle()
+    expect(card(b.id)!.dataset['form']).toBe('brief')
     await showInbox()
     click(row(rowId))
     await settle()

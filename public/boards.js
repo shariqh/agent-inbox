@@ -93,11 +93,11 @@ export function planSections(plans, { nowMs, liveSessions, workingPlanIds, held 
   return out
 }
 
-// Which form a plan is drawn in: the person's own choice wins (open is the
-// full plan, closed the summary alone); with no choice, a plan in Needs you or
-// one holding a step the person has in hand is brief, everything else closed.
+// Which form a plan is drawn in. A plan has two states for the person: expanded (the
+// person opened it: the full plan) and collapsed (anything else). A collapsed plan is brief
+// when it waits on the person or holds a step they have in hand (only those steps show),
+// otherwise closed (the summary alone). So collapsing never hides an ask.
 export function planForm({ choice, section, kept }) {
   if (choice === true) return 'full'
-  if (choice === false) return 'closed'
   return section === 'needs' || kept ? 'brief' : 'closed'
 }

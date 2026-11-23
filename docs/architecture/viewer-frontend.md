@@ -138,7 +138,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   live session and no working card on it) and Moving (the rest, paged by `PAGE.moving`).
   Headings are sibling `h3.plan-section-head`s, the first one inside the header's line
   beside View; grouping by parent issue draws today's grouped list instead. `planForm`
-  draws a plan closed, brief (only the steps in hand, then "All N steps") or full. Only
+  draws a plan closed, brief (only the steps in hand) or full: a plan has two states
+  for the person, expanded (full) and collapsed (brief when it waits on them or holds a
+  step in hand, else closed), and a summary click flips between them. Only
   the person's own summary click, and a way in that targets a step, write `planOpen`;
   the native `toggle` never does, and `revealDetailsAncestors` records an open only for
   a plan it actually opened. A plan written to from a step's panel keeps its section

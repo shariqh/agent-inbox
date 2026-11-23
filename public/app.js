@@ -9273,8 +9273,8 @@ function planBarHtml({ runs, segments }, label) {
 }
 
 // A plan is one line (its summary) and, below it, one of three forms (planForm):
-// closed, brief (only the steps in hand, then "All N steps") or full (the meta
-// line, chips, every step and the actions). Its steps are built in every form.
+// closed, brief (only the steps in hand) or full (the meta line, chips, every
+// step and the actions). Its steps are built in every form.
 function boardEl(b, archived = false, lingering = false, section = null) {
   const el = document.createElement('details')
   const p = progressLabel(b.progress)
@@ -9292,13 +9292,16 @@ function boardEl(b, archived = false, lingering = false, section = null) {
   const { states, counts } = planStepStates(b, Date.now())
   el.innerHTML = `<summary class="card-summary plan-line"><span class="proj-dot" style="background:${c.dot}" aria-hidden="true"></span><span class="board-title" title="${esc(b.title)}">${esc(b.title)}</span>${planBarHtml(planSegments(states, PLAN_BAR_STEPS), planBarLabel(counts))}<span class="plan-count" aria-hidden="true">${b.progress.done} of ${b.progress.countable}</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}<span class="plan-chevron" aria-hidden="true"></span></summary>`
   // The person's own click is the only writer of a plan's choice; the native
-  // toggle never is (every programmatic open fires it). During the click `open`
-  // still holds the old value. The page redraws the plan in its new form.
+  // toggle never is (every programmatic open fires it). A full plan collapses (to
+  // brief or closed, by the rule in planForm) and closes its open steps; any other
+  // plan expands. The page redraws the plan in its new form.
   el.querySelector(':scope > summary').addEventListener('click', (e) => {
     if (e.defaultPrevented) return
     e.preventDefault()
-    planOpen.set(b.id, !el.open)
-    if (el.open) closePlanSteps([b])
+    if (form === 'full') {
+      planOpen.set(b.id, false)
+      closePlanSteps([b])
+    } else planOpen.set(b.id, true)
     forceRender()
   })
   // What the summary carried before: one quiet line at the top of the full plan
@@ -9411,18 +9414,6 @@ function boardEl(b, archived = false, lingering = false, section = null) {
     }
   }
   el.appendChild(table)
-  if (brief) {
-    // the rest of the plan is one press away; the choice it records is the person's
-    const all = btn(`All ${b.rows.length} steps`, () => {
-      planOpen.set(b.id, true)
-      forceRender()
-      document.querySelector(`#boards [data-card-id="${CSS.escape(b.id)}"] > summary`)?.focus({ preventScroll: true })
-    })
-    all.type = 'button'
-    all.className = 'plan-all-steps'
-    all.id = `plan-all-${b.id}`
-    el.appendChild(all)
-  }
   const actions = document.createElement('div')
   actions.className = 'actions'
   actions.hidden = brief

@@ -1,0 +1,42 @@
+exit: 0
+=== stdout ===
+=== stderr ===
+claude: registered agent-inbox MCP with <NODE>
+copilot: registered agent-inbox MCP with <NODE>
+backed up → <HOME>/dotfiles/shared-agent-instructions.md.bak.<TS>.<PID>
+backed up → <HOME>/dotfiles/shared-agent-instructions.md.bak.<TS>.<PID>
+meshctl: no shim: <HOME>/meshctl.js is missing (run npm run build first)
+Start a fresh agent session to load MCP and instruction changes.
+=== host CLI log ===
+claude mcp get agent-inbox
+claude mcp add --scope user agent-inbox -- <NODE> <HOME>/mcp-server.js
+copilot mcp get agent-inbox --json
+copilot mcp add agent-inbox -- <NODE> <HOME>/mcp-server.js
+=== ~/.claude/CLAUDE.md ===
+(symlink to <HOME>/dotfiles/shared-agent-instructions.md)
+# Shared agent rules
+
+Keep this shared.
+<!-- agent-inbox:begin -->
+<SNIPPET>
+
+<CLAUDE_APPENDIX>
+
+<COPILOT_APPENDIX>
+<!-- agent-inbox:end -->
+=== ~/.copilot/copilot-instructions.md ===
+(symlink to <HOME>/dotfiles/shared-agent-instructions.md)
+# Shared agent rules
+
+Keep this shared.
+<!-- agent-inbox:begin -->
+<SNIPPET>
+
+<CLAUDE_APPENDIX>
+
+<COPILOT_APPENDIX>
+<!-- agent-inbox:end -->
+=== ~/.claude.json ===
+{"mcpServers":{"agent-inbox":{"command":"mcp add --scope user agent-inbox -- <NODE> <HOME>/mcp-server.js"}}}
+=== ~/.copilot/mcp-config.json ===
+{"mcpServers":{"agent-inbox":{"command":"mcp add agent-inbox -- <NODE> <HOME>/mcp-server.js"}}}

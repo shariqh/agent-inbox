@@ -1,0 +1,41 @@
+exit: 0
+=== stdout ===
+── claude MCP command ──
+  claude mcp add --scope user agent-inbox -- <NODE> <HOME>/mcp-server.js 
+── <HOME>/.claude/CLAUDE.md ──
+# Claude personal rules
+
+Keep this.
+<!-- agent-inbox:begin -->
+<SNIPPET>
+
+<CLAUDE_APPENDIX>
+<!-- agent-inbox:end -->
+── copilot MCP command ──
+  copilot mcp add agent-inbox -- <NODE> <HOME>/mcp-server.js 
+── <HOME>/.copilot/copilot-instructions.md ──
+# Copilot personal rules
+
+Keep this too.
+<!-- agent-inbox:begin -->
+<SNIPPET>
+
+<COPILOT_APPENDIX>
+<!-- agent-inbox:end -->
+=== stderr ===
+── dry run: nothing was written or registered. Re-run with --apply. ──
+meshctl: no shim: <HOME>/meshctl.js is missing (run npm run build first)
+=== host CLI log ===
+(no host CLI call)
+=== ~/.claude/CLAUDE.md ===
+# Claude personal rules
+
+Keep this.
+=== ~/.copilot/copilot-instructions.md ===
+# Copilot personal rules
+
+Keep this too.
+=== ~/.claude.json ===
+{"mcpServers":{}}
+=== ~/.copilot/mcp-config.json ===
+{"mcpServers":{}}

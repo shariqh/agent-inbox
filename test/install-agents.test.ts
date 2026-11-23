@@ -2138,3 +2138,95 @@ describe('the meshctl shim (#540)', () => {
     expect(statSync(join(f.home, '.agent-inbox', 'bin')).isFile()).toBe(true)
   })
 })
+
+// ── Proof that the personal install is unchanged (#641) ──────────────────────
+// Golden transcripts captured on the code BEFORE a second Claude Code config
+// folder existed: a run without the new flags must stay byte-identical. The
+// shared snippet and the host appendices are replaced by placeholders, so an
+// edit to those documents does not touch the goldens; the fixture home, the
+// Node path, backup timestamps and pids are replaced too.
+const GOLDEN_DIR = join(REPO, 'test', 'fixtures', 'install-agents-r2')
+const GOLDEN_STEPS = [
+  ['dry-run', []],
+  ['apply', ['--apply']],
+  ['uninstall', ['--apply', '--uninstall']],
+] as const
+
+function realDir(path: string): string {
+  return spawnSync('/bin/sh', ['-c', 'cd "$1" && pwd -P', 'sh', path], { encoding: 'utf8' }).stdout.trim()
+}
+
+function normalizeTranscript(f: Fixture, text: string): string {
+  const snippet = readFileSync(SNIPPET_PATH, 'utf8').replace(/^# /, '## ')
+  const appendix = (name: string) => readFileSync(join(REPO, 'docs', 'instructions', name), 'utf8')
+  const node = process.execPath
+  const stableNode = join(realDir(dirname(node)), node.slice(node.lastIndexOf('/') + 1))
+  let out = text
+    .split(snippet).join('<SNIPPET>\n')
+    .split(appendix('claude-code.md')).join('<CLAUDE_APPENDIX>\n')
+    .split(appendix('copilot-cli.md')).join('<COPILOT_APPENDIX>\n')
+  for (const [from, to] of [[stableNode, '<NODE>'], [node, '<NODE>'], [realDir(f.home), '<HOME>'], [f.home, '<HOME>'], [REPO, '<REPO>']] as const) {
+    out = out.split(from).join(to)
+  }
+  return out.replace(/\.bak\.\d{14}\.\d+(\.\d+)?/g, '.bak.<TS>.<PID>')
+}
+
+function describeFile(path: string): string {
+  if (!existsSync(path) && !lstatSync(path, { throwIfNoEntry: false })) return '(absent)\n'
+  const link = lstatSync(path).isSymbolicLink() ? `(symlink to ${spawnSync('readlink', [path], { encoding: 'utf8' }).stdout.trim()})\n` : ''
+  return `${link}${readFileSync(path, 'utf8')}`
+}
+
+interface StepResult { code: number | null; out: string; err: string; log: string }
+
+function runStep(f: Fixture, args: readonly string[]): StepResult {
+  if (existsSync(f.log)) writeFileSync(f.log, '')
+  const result = run(f, [...args])
+  return { ...result, log: existsSync(f.log) ? readFileSync(f.log, 'utf8') : '(no host CLI call)\n' }
+}
+
+function transcript(f: Fixture, step: StepResult): string {
+  const files = [
+    ['~/.claude/CLAUDE.md', f.claudeFile],
+    ['~/.copilot/copilot-instructions.md', f.copilotFile],
+    ['~/.claude.json', f.env.CLAUDE_CONFIG!],
+    ['~/.copilot/mcp-config.json', f.env.COPILOT_CONFIG!],
+  ]
+  return normalizeTranscript(f, [
+    `exit: ${step.code}\n`,
+    `=== stdout ===\n${step.out}`,
+    `=== stderr ===\n${step.err}`,
+    `=== host CLI log ===\n${step.log}`,
+    ...files.map(([label, path]) => `=== ${label} ===\n${describeFile(path!)}`),
+  ].join(''))
+}
+
+const GOLDEN_FIXTURES = {
+  separate: (): Fixture => fixture(),
+  shared: (): Fixture => {
+    const f = fixture()
+    shareInstructionFile(f)
+    return f
+  },
+}
+
+describe('the personal install without the new flags (#641)', () => {
+  for (const [name, make] of Object.entries(GOLDEN_FIXTURES)) {
+    it(`matches the golden transcripts for the ${name}-files fixture`, async () => {
+      const f = make()
+      for (const [step, args] of GOLDEN_STEPS) {
+        await expect(transcript(f, runStep(f, args))).toMatchFileSnapshot(join(GOLDEN_DIR, `${name}.${step}.txt`))
+      }
+    })
+  }
+
+  it('prints the personal Claude command line exactly in the dry run', () => {
+    const f = fixture()
+    const node = process.execPath
+    const stableNode = join(realDir(dirname(node)), node.slice(node.lastIndexOf('/') + 1))
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const result = run(f)
+    expect(result.code, result.err).toBe(0)
+    expect(result.out).toMatch(new RegExp(`^  claude mcp add --scope user agent-inbox -- ${escape(stableNode)} ${escape(f.env.AGENT_INBOX_MCP_ENTRY!)} $`, 'm'))
+  })
+})

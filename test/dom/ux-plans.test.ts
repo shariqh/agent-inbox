@@ -1248,6 +1248,89 @@ describe('review fixes: held steps, paging, View, keys, count', () => {
   })
 })
 
+describe('rules the first review found unprotected (RT-4)', () => {
+  it('closing a plan by its summary closes its open steps (D5)', async () => {
+    db = freshDb()
+    const b = plan(db, 'Docs', [tracked('One'), tracked('Two')])
+    const step = b.rows[0]!.id
+    await bootApp(db)
+    await showPlans()
+    click(summary(b.id))
+    await settle()
+    click(stepRow(step)!.querySelector('.row-expand'))
+    await settle()
+    expect(panelRow(step)).not.toBeNull()
+    click(summary(b.id))
+    await settle()
+    expect(card(b.id)!.open).toBe(false)
+    click(summary(b.id))
+    await settle()
+    expect(card(b.id)!.dataset['form']).toBe('full')
+    expect(panelRow(step)).toBeNull()
+    expect(stepRow(step)!.querySelector('.row-expand')?.textContent).toBe('▸')
+  })
+
+  it('closing the Stalled fold by hand closes its open steps (D6)', async () => {
+    db = freshDb()
+    const { a } = twoQuietPlans(db)
+    const step = a.rows[0]!.id
+    await bootApp(db)
+    await showPlans()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    click(summary(a.id))
+    await settle()
+    click(stepRow(step)!.querySelector('.row-expand'))
+    await settle()
+    expect(panelRow(step)).not.toBeNull()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    expect(stalledFold()!.open).toBe(false)
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    expect(stalledFold()!.open).toBe(true)
+    expect(panelRow(step)).toBeNull()
+  })
+
+  it('Moving’s first page always holds a plan with a step in hand, past the 12 (D8)', async () => {
+    db = freshDb()
+    const kept = plan(db, 'Oldest docs', [{ label: 'Write notes', status: 'partial', note: 'Drafting.' }, tracked()])
+    const step = kept.rows[0]!
+    for (let i = 0; i < 13; i++) plan(db, `Moving ${i}`, [tracked()])
+    localStorage.setItem('agent-inbox-drafts-v1', JSON.stringify({ v: 1, entries: {
+      [`row:${step.id}`]: { savedAt: Date.now(), draft: {
+        type: 'row', rowId: step.id, boardId: kept.id, boardRevision: kept.revision, revision: step.revision,
+        text: 'Mention the migration.', kind: 'answer', boardTitle: kept.title, label: step.label, context: '', blocked: false,
+      } },
+    } }))
+    await bootApp(db)
+    await showPlans()
+    expect(activePlanIds()).toHaveLength(13)
+    expect(activePlanIds()).toContain(kept.id)
+    expect(shown(panelRow(step.id)?.querySelector('.reply-input'))).toBe(true)
+    expect(document.getElementById('plans-moving-more')?.textContent).toBe('Show 1 more (1 hidden)')
+  })
+
+  it('an armed Archive all disarms when the lens changes (D6)', async () => {
+    db = freshDb()
+    twoQuietPlans(db)
+    upsertBoard(db, { project: 'beta', stream: 'main', agent: 'copilot', title: 'Beta quiet', rows: [tracked()] })
+    // the beta plan is as old as the others
+    db.prepare("UPDATE boards SET updated_at = (SELECT updated_at FROM boards WHERE title = 'Quiet A') WHERE title = 'Beta quiet'").run()
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    expect(archiveAll()!.textContent).toBe('Archive all 3 plans')
+    click(archiveAll())
+    expect(archiveAll()!.textContent).toBe('Really archive 3 plans?')
+    click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
+    await settle()
+    expect(archiveAll()!.textContent).toBe('Archive all 2 plans')
+  })
+})
+
 describe('the stylesheet (CSS)', () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public', 'style.css'), 'utf8')
   const slice = css.slice(css.indexOf('/* UX pass, slice 3: Plans as bars.'))

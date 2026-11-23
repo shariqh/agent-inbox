@@ -417,9 +417,15 @@ export function rowTitles(): string[] {
   return rows().map((el) => el.querySelector('.nrow-title')?.textContent ?? '')
 }
 
-/** The visible number beside a tab label ('' when the count badge is hidden). */
+/**
+ * The visible number beside a tab label ('' when the count badge is hidden). Throws for a
+ * tab the page does not have, so a test that pins a removed tab fails loudly instead of
+ * passing on an empty string.
+ */
 export function tabCount(tab: string): string {
-  const el = document.querySelector<HTMLElement>(`.tab[data-tab="${tab}"] .tab-count`)
+  const button = document.querySelector<HTMLElement>(`.tab[data-tab="${cssEscape(tab)}"]`)
+  if (!button) throw new Error(`tabCount(): the page has no "${tab}" tab`)
+  const el = button.querySelector<HTMLElement>('.tab-count')
   if (!el || el.hidden) return ''
   return el.textContent ?? ''
 }
@@ -449,12 +455,13 @@ export function buttonLabelled(label: string, scope: ParentNode = document): HTM
 }
 
 /**
- * Where click() enforces reachability: the Plans page. Pointed at the whole document it also
- * trips on 190-odd older clicks on Home and Settings (a hidden queue-tools drawer, a closed
- * disposition menu, a hidden Settings panel) that this slice did not touch; widen it to
- * '*' once those tests are repaired.
+ * Where click() and type() enforce reachability: the Plans page and Find (UX pass, slice 4),
+ * plus the two search fields. Pointed at the whole document it also trips on 190-odd older
+ * clicks on Home and Settings (a hidden queue-tools drawer, a closed disposition menu, a
+ * hidden Settings panel) that this slice did not touch; widen it to '*' once those tests are
+ * repaired.
  */
-const REACHABILITY_SCOPE = '#boards'
+const REACHABILITY_SCOPE = '#boards, #find, #search, #findQuery'
 
 /**
  * What stands between a person and a control: the outermost element that hides it (the
@@ -550,6 +557,8 @@ export async function collapseRow(id: string): Promise<void> {
 export function type(el: HTMLInputElement | HTMLTextAreaElement | null | undefined, value: string): void {
   if (!el) throw new Error('type(): nothing to type into — the selector matched nothing')
   if (!document.contains(el)) throw new Error('type(): stale node — re-query after every render/await')
+  const why = el.closest(REACHABILITY_SCOPE) ? unreachableReason(el) : null
+  if (why) throw new Error(`type(): ${describeNode(el)} is not reachable: ${why}`)
   el.value = value
   el.dispatchEvent(new window.Event('input', { bubbles: true }))
 }
@@ -571,9 +580,25 @@ export async function writeItemNote(locate: () => ParentNode | null | undefined,
   await settle()
 }
 
-/** Type into #search and advance past initSearch()'s 120ms debounce. */
+/**
+ * Type into the top bar's #search and advance past initSearch()'s 120ms debounce. Refuses
+ * while the top-bar search is not drawn (on Find, whose own field takes its place): use
+ * findFor() there.
+ */
 export async function searchFor(query: string): Promise<void> {
   const input = document.getElementById('search') as HTMLInputElement | null
+  const why = input ? unreachableReason(input) : null
+  if (why) throw new Error(`searchFor(): the top-bar search is not drawn here (${why}); on Find, use findFor()`)
+  type(input, query)
+  await vi.advanceTimersByTimeAsync(200)
+}
+
+/** Type into Find's own field and advance past its debounce. Refuses while Find is not showing. */
+export async function findFor(query: string): Promise<void> {
+  const input = document.getElementById('findQuery') as HTMLInputElement | null
+  if (!input) throw new Error('findFor(): the page has no Find field (#findQuery)')
+  const why = unreachableReason(input)
+  if (why) throw new Error(`findFor(): Find is not showing (${why}); open it first, as a person would`)
   type(input, query)
   await vi.advanceTimersByTimeAsync(200)
 }

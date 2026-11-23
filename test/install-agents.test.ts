@@ -60,6 +60,12 @@ interface Fixture {
   tmp: string
 }
 
+// A CLAUDE_CONFIG_DIR exported by the shell that runs the tests never reaches a fixture (#641).
+function withoutConfigDir(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { CLAUDE_CONFIG_DIR: _ignored, ...rest } = env
+  return rest
+}
+
 function fixture(): Fixture {
   const home = scratchDir('agent-installer-')
   const fakebin = join(home, 'fakebin')
@@ -70,14 +76,50 @@ function fixture(): Fixture {
   mkdirSync(state)
   mkdirSync(tmp)
 
+  // A second Claude Code config folder (#641): with CLAUDE_CONFIG_DIR set, the
+  // fake claude is that folder's CLI. Its state, its FAIL_*/HANG_* knobs and its
+  // log lines use the key claude@cfg (logged as claude@<dir>), its config is
+  // <dir>/.claude.json, merged like the real CLI's, and it creates the folder as
+  // the real CLI does. A folder outside this HOME exits 97 before anything, so
+  // no test can ever reach a real config folder. Unset, nothing changes.
   const cli = `#!/bin/sh
 name="$(basename "$0")"
+key="$name"
+label="$name"
+if [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then
+  case "$CLAUDE_CONFIG_DIR" in
+    "$HOME"/*) ;;
+    *) echo "fake $name: CLAUDE_CONFIG_DIR is outside the test HOME" >&2; exit 97 ;;
+  esac
+fi
 if [ "$name" = claude ]; then config="$CLAUDE_CONFIG"; else config="$COPILOT_CONFIG"; fi
-printf '%s %s\\n' "$name" "$*" >> "$INSTALL_LOG"
+if [ "$name" = claude ] && [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  key="claude@cfg"
+  label="claude@$CLAUDE_CONFIG_DIR"
+  config="$CLAUDE_CONFIG_DIR/.claude.json"
+fi
+# Merges or deletes the agent-inbox entry of the second folder's config; the
+# arguments after -- become its command and args.
+cfg_write() {
+  "${process.execPath}" -e '
+    const fs = require("node:fs")
+    const [file, op, ...rest] = process.argv.slice(1)
+    let parsed = {}
+    try { parsed = JSON.parse(fs.readFileSync(file, "utf8")) } catch {}
+    parsed.mcpServers ??= {}
+    if (op === "add") {
+      const after = rest.slice(rest.indexOf("--") + 1)
+      parsed.mcpServers["agent-inbox"] = { type: "stdio", command: after[0], args: after.slice(1), env: {} }
+    } else delete parsed.mcpServers["agent-inbox"]
+    fs.writeFileSync(file, JSON.stringify(parsed) + "\\n")
+  ' "$config" "$@"
+}
+printf '%s %s\\n' "$label" "$*" >> "$INSTALL_LOG"
 case "$1:$2" in
   mcp:get)
-    test "\${FAIL_GET:-}" != "$name" || exit 9
-    test -f "$INSTALL_STATE/$name" || exit 1
+    test "\${FAIL_GET:-}" != "$key" || exit 9
+    test -f "$INSTALL_STATE/$key" || exit 1
     if [ "$name" = claude ]; then
       echo "  Scope: \${CLAUDE_SCOPE:-User config} (available in all your projects)"
     else
@@ -85,49 +127,53 @@ case "$1:$2" in
     fi
     ;;
   mcp:add)
-    test "\${FAIL_ADD:-}" != "$name" || exit 9
-    if [ "\${CORRUPT_CONFIG_ON_ADD:-}" = "$name" ]; then
-      touch "$INSTALL_STATE/$name"
+    test "\${FAIL_ADD:-}" != "$key" || exit 9
+    if [ "\${CORRUPT_CONFIG_ON_ADD:-}" = "$key" ]; then
+      touch "$INSTALL_STATE/$key"
       printf '{ not json\\n' > "$config"
       exit 0
     fi
-    if [ "\${MUTATE_THEN_HANG_ADD:-}" = "$name" ]; then
-      touch "$INSTALL_STATE/$name"
+    if [ "\${MUTATE_THEN_HANG_ADD:-}" = "$key" ]; then
+      touch "$INSTALL_STATE/$key"
       printf '{"mcpServers":{"agent-inbox":{"command":"partial"}}}\\n' > "$config"
-      touch "$INSTALL_STATE/$name.mutated"
+      touch "$INSTALL_STATE/$key.mutated"
       trap 'exit 143' TERM INT
       while :; do sleep 1; ${boundedWait(1)}; done
     fi
-    if [ "\${HANG_ADD:-}" = "$name" ]; then
-      printf '%s\\n' "$$" > "$INSTALL_STATE/$name.hanging-pid"
-      touch "$INSTALL_STATE/$name.hanging"
+    if [ "\${HANG_ADD:-}" = "$key" ]; then
+      printf '%s\\n' "$$" > "$INSTALL_STATE/$key.hanging-pid"
+      touch "$INSTALL_STATE/$key.hanging"
       trap 'exit 143' TERM INT
       while :; do sleep 1; ${boundedWait(1)}; done
     fi
-    if [ "\${FAIL_ADD_ONCE:-}" = "$name" ] && [ ! -f "$INSTALL_STATE/$name.add-failed" ]; then
-      touch "$INSTALL_STATE/$name.add-failed"
+    if [ "\${FAIL_ADD_ONCE:-}" = "$key" ] && [ ! -f "$INSTALL_STATE/$key.add-failed" ]; then
+      touch "$INSTALL_STATE/$key.add-failed"
       exit 9
     fi
-    touch "$INSTALL_STATE/$name"
-    printf '{"mcpServers":{"agent-inbox":{"command":"%s"}}}\\n' "$*" > "$config"
+    touch "$INSTALL_STATE/$key"
+    if [ "$key" = "claude@cfg" ]; then cfg_write add "$@"
+    else printf '{"mcpServers":{"agent-inbox":{"command":"%s"}}}\\n' "$*" > "$config"
+    fi
     ;;
   mcp:remove)
-    test "\${FAIL_REMOVE:-}" != "$name" || exit 9
-    if [ "\${HANG_REMOVE:-}" = "$name" ]; then
-      printf '%s\\n' "$$" > "$INSTALL_STATE/$name.remove-pid"
+    test "\${FAIL_REMOVE:-}" != "$key" || exit 9
+    if [ "\${HANG_REMOVE:-}" = "$key" ]; then
+      printf '%s\\n' "$$" > "$INSTALL_STATE/$key.remove-pid"
       while :; do sleep 1; ${boundedWait(1)}; done
     fi
     # Like the real hosts, refuse to remove a server that is not registered.
-    if [ ! -f "$INSTALL_STATE/$name" ]; then
+    if [ ! -f "$INSTALL_STATE/$key" ]; then
       echo "No user-scoped MCP server found with name: agent-inbox" >&2
       exit 1
     fi
-    rm -f "$INSTALL_STATE/$name"
-    printf '{"mcpServers":{}}\\n' > "$config"
-    if [ "\${SIGNAL_AFTER_REMOVE:-}" = "$name" ]; then kill -TERM $$; fi
-    if [ "\${PAUSE_AFTER_REMOVE:-}" = "$name" ]; then
-      touch "$INSTALL_STATE/$name.removed"
-      while [ ! -f "$INSTALL_STATE/$name.release" ]; do sleep 0.05; ${boundedWait(20)}; done
+    rm -f "$INSTALL_STATE/$key"
+    if [ "$key" = "claude@cfg" ]; then cfg_write remove
+    else printf '{"mcpServers":{}}\\n' > "$config"
+    fi
+    if [ "\${SIGNAL_AFTER_REMOVE:-}" = "$key" ]; then kill -TERM $$; fi
+    if [ "\${PAUSE_AFTER_REMOVE:-}" = "$key" ]; then
+      touch "$INSTALL_STATE/$key.removed"
+      while [ ! -f "$INSTALL_STATE/$key.release" ]; do sleep 0.05; ${boundedWait(20)}; done
     fi
     ;;
   *) exit 2 ;;
@@ -172,7 +218,7 @@ esac
     state,
     tmp,
     env: {
-      ...process.env,
+      ...withoutConfigDir(process.env),
       HOME: home,
       TMPDIR: tmp,
       PATH: `${fakebin}:/usr/bin:/bin`,
@@ -365,9 +411,14 @@ function useNodeClaudeCli(f: Fixture): void {
   writeFileSync(cli, [
     "const fs = require('node:fs')",
     'const args = process.argv.slice(2)',
-    "const state = process.env.INSTALL_STATE + '/claude'",
-    'const config = process.env.CLAUDE_CONFIG',
-    "fs.appendFileSync(process.env.INSTALL_LOG, 'claude ' + args.join(' ') + '\\n')",
+    // #641: a second config folder gets its own state, config and log prefix;
+    // one outside the test HOME exits 97 before anything
+    'const dir = process.env.CLAUDE_CONFIG_DIR || ""',
+    "if (dir && !dir.startsWith(process.env.HOME + '/')) process.exit(97)",
+    "if (dir) fs.mkdirSync(dir, { recursive: true })",
+    "const state = process.env.INSTALL_STATE + (dir ? '/claude@cfg' : '/claude')",
+    "const config = dir ? dir + '/.claude.json' : process.env.CLAUDE_CONFIG",
+    "fs.appendFileSync(process.env.INSTALL_LOG, (dir ? 'claude@' + dir : 'claude') + ' ' + args.join(' ') + '\\n')",
     "const verb = args.slice(0, 2).join(' ')",
     "if (verb === 'mcp get') {",
     '  if (!fs.existsSync(state)) process.exit(1)',
@@ -2228,5 +2279,39 @@ describe('the personal install without the new flags (#641)', () => {
     const result = run(f)
     expect(result.code, result.err).toBe(0)
     expect(result.out).toMatch(new RegExp(`^  claude mcp add --scope user agent-inbox -- ${escape(stableNode)} ${escape(f.env.AGENT_INBOX_MCP_ENTRY!)} $`, 'm'))
+  })
+})
+
+describe('the fake host CLIs and a second config folder (#641)', () => {
+  it('refuse a CLAUDE_CONFIG_DIR outside the test HOME before doing anything', () => {
+    const f = fixture()
+    const outside = join(f.tmp, '..', '..', `outside-${process.pid}`)
+    for (const useNode of [false, true]) {
+      if (useNode) useNodeClaudeCli(f)
+      const result = spawnSync(join(f.fakebin, 'claude'), ['mcp', 'get', 'agent-inbox'], {
+        encoding: 'utf8', env: { ...f.env, CLAUDE_CONFIG_DIR: resolve(outside) },
+      })
+      expect(result.status).toBe(97)
+      expect(existsSync(resolve(outside))).toBe(false)
+      expect(existsSync(f.log)).toBe(false)
+    }
+  })
+
+  it('keep the second folder apart: its own key, config, log prefix and arguments', () => {
+    const f = fixture()
+    const dir = join(f.home, '.claude-work')
+    const env = { ...f.env, CLAUDE_CONFIG_DIR: dir }
+    const add = spawnSync(join(f.fakebin, 'claude'), ['mcp', 'add', '--scope', 'user', 'agent-inbox', '--', '/n/node', '/e/mcp-server.js', '--project', 'work'], { encoding: 'utf8', env })
+    expect(add.status).toBe(0)
+    expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'))).toEqual({
+      mcpServers: { 'agent-inbox': { type: 'stdio', command: '/n/node', args: ['/e/mcp-server.js', '--project', 'work'], env: {} } },
+    })
+    expect(existsSync(join(f.state, 'claude@cfg'))).toBe(true)
+    expect(existsSync(join(f.state, 'claude'))).toBe(false)
+    expect(readFileSync(f.env.CLAUDE_CONFIG!, 'utf8')).toBe('{"mcpServers":{}}\n')
+    expect(readFileSync(f.log, 'utf8')).toBe(`claude@${dir} mcp add --scope user agent-inbox -- /n/node /e/mcp-server.js --project work\n`)
+    const failing = spawnSync(join(f.fakebin, 'claude'), ['mcp', 'remove', '--scope', 'user', 'agent-inbox'], { encoding: 'utf8', env: { ...env, FAIL_REMOVE: 'claude' } })
+    expect(failing.status).toBe(0)
+    expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'))).toEqual({ mcpServers: {} })
   })
 })

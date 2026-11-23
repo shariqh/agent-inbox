@@ -107,7 +107,7 @@ describe('Chats tab: Jump to session (#586)', () => {
     await boot()
     await openChats()
     expect(jumpFor(1)?.textContent).toBe('Jump to session')
-    expect(jumpFor(1)?.title).toBe('Open this chat’s session on the Dashboard')
+    expect(jumpFor(1)?.title).toBe('Open this chat’s session on Home')
     expect(jumpFor(1)?.type).toBe('button')
     expect(jumpFor(2, 'copilot')?.textContent).toBe('Jump to session')
     // the row's note is there, empty, before any jump, so a screen reader hears it when it is filled

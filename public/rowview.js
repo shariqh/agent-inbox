@@ -376,7 +376,5 @@ export function repliedEntries(items, nowMs, liveSessionIds) {
 }
 // (There used to be a strict "still awaiting pickup" subset of the above here.
 // Nothing called it once repliedEntries became what the list renders — issue
-// #31.4. The one ambient reading of "answered · awaiting agent" is notes.js's
-// inline count inside ambientChips, which needs a NUMBER, not entries with a
-// computed liveness, and has no liveSessionIds to pass. test/dead-exports.test.ts
-// is what now notices a helper like that going quiet.)
+// #31.4. test/dead-exports.test.ts is what now notices a helper like that going
+// quiet.)

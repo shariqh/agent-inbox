@@ -250,7 +250,7 @@ describe('navigation from Agent Inbox activity (#103 PR3, criterion 7)', () => {
     await showTab('boards')
     click(activityFor(120))
     await settle()
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(row(question)?.getAttribute('aria-expanded')).toBe('true')
   })
 })

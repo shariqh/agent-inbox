@@ -62,11 +62,13 @@ async function backToDashboard(): Promise<void> {
 }
 
 describe('the Plans in progress lane’s place on the page (§3.5)', () => {
-  it('sits after Quiet; the page reads Needs you, Working, Quiet, Plans in progress, Just landed, Today', async () => {
+  it('sits after Quiet; Home reads the list of asks, then Working, Quiet, Plans in progress, Just landed, Today', async () => {
     db = freshDb()
     plan(db, 'Plan A', ['missing'])
     await bootApp(db)
-    const regions = ['needs-you-lane', 'working-lane', 'quiet-lane', 'plans-lane', 'dashboard-outcomes', 'dashboard-activity']
+    // the list of asks comes first in the DOM, before the Dashboard part of Home
+    expect(document.getElementById('needsYou')!.compareDocumentPosition(document.getElementById('dashboard')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const regions = ['working-lane', 'quiet-lane', 'plans-lane', 'dashboard-outcomes', 'dashboard-activity']
     const found = [...document.querySelectorAll<HTMLElement>(regions.map((cls) => `#dashboard .${cls}`).join(', '))]
     expect(found.map((el) => regions.find((cls) => el.classList.contains(cls)))).toEqual(regions)
     // the ribbon is the page's last lane, Just landed right before it

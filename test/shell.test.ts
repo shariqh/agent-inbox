@@ -44,10 +44,10 @@ describe('shell markup', () => {
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
-  it('has a project rail and the six content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
+  it('has a project rail and the five content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
-    expect(tabs).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'chats', 'agent'])
+    expect(tabs).toEqual(['dashboard', 'boards', 'notes', 'done', 'chats', 'agent'])
     expect(html).not.toContain('data-tab="live"')
     // cards view V5 §3.3: hidden until an agent is open, with no count, and CSS that lets it hide
     const agent = /<button class="tab"[^>]*data-tab="agent"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? ''
@@ -58,7 +58,7 @@ describe('shell markup', () => {
   })
 
   it('gives every counted tab a count slot', () => {
-    for (const t of ['needsYou', 'boards', 'notes', 'done']) {
+    for (const t of ['dashboard', 'boards', 'notes', 'done']) {
       expect(html, t).toMatch(new RegExp(`data-tab="${t}"[\\s\\S]*?<span class="tab-name">[^<]+</span><span class="tab-count"`))
     }
   })
@@ -407,7 +407,7 @@ describe('closed projects (issue #32)', () => {
     expect(body).toContain('closed-banner')
     expect(body).toMatch(/textContent/)
     expect(body, 'a project name must never reach innerHTML').not.toMatch(/innerHTML/)
-    expect(body).toMatch(/Inbox count or Review queue/)
+    expect(body).toMatch(/Needs you count or Review queue/)
     expect(body).toMatch(/reopenProjectAction\(/)
     // rendered in the editable frame above the panel host, so EVERY tab explains itself
     expect(fn('function paintEditableSurfaces(', '\nfunction render(')).toContain('renderClosedBanner()')
@@ -490,7 +490,9 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
 
   it('refreshes ambient signals before the draft gate, but defers everything during a held press (#39)', () => {
     const body = sourceFn('function renderIfIdle()', '\n// called whenever a draft may have cleared')
-    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*dashboardInteractionActive\(\)[\s\S]*shouldDeferRender\(/)
+    expect(body).toMatch(/if \(pressHeld\([^)]*\)\)[\s\S]*const frame = paintAmbient\(\)[\s\S]*shouldDeferRender\(/)
+    // focus resting in Home's lanes holds nothing: the list of asks shares the page (UX pass, slice 2)
+    expect(body).not.toContain('dashboardInteractionActive')
 
     const ambient = sourceFn('function paintAmbient()', '\nfunction paintEditableSurfaces(')
     // #411, #454: the Dashboard (its session panel holds the composer) is ambient

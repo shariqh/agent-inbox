@@ -500,7 +500,9 @@ describe('workspace search index', () => {
       cancelable: true,
     }))
     click(staleOption)
-    expect(row(stale)?.dataset['open']).not.toBe('1')
+    // a result opens its ask through focusItem, which writes the hash; on a wide window the ask
+    // may already be in front by itself (UX slice 2), so the hash is what says nothing navigated
+    expect(location.hash, 'an inert result navigates nowhere').toBe('')
 
     await vi.advanceTimersByTimeAsync(200)
     expect(results()).toBe(listbox)
@@ -852,7 +854,7 @@ describe('workspace search index', () => {
     expect(escape.defaultPrevented).toBe(false)
     expect(input().value).toBe('launch')
     expect(results().hidden).toBe(false)
-    expect(row(target)?.dataset['open']).not.toBe('1')
+    expect(location.hash, 'composition keys navigate nowhere').toBe('')
   })
 
   it('keeps rapid queries, newer data and Escape authoritative with multiword plan search', async () => {

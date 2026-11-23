@@ -28,7 +28,7 @@ describe('Needs-you row accessibility', () => {
     })
 
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
 
     expect(document.getElementById('needsYouList')?.getAttribute('role')).toBe('list')

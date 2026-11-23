@@ -54,7 +54,7 @@ const CONTINUE_REFRESH = new Set(['live', 'driven', 'folder', 'missing'])
 
 // Jump to session (#586): a live chat's own session card on the Dashboard, the palette's "Jump to session…"
 export const JUMP_LABEL = 'Jump to session'
-const JUMP_TITLE = 'Open this chat’s session on the Dashboard'
+const JUMP_TITLE = 'Open this chat’s session on Home'
 export const JUMP_GONE_TEXT = 'This chat’s session is no longer listed.'
 
 /** Whether a location hash is the Chats tab's deep link. */

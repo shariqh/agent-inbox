@@ -19,7 +19,7 @@ applyTo: "public/dashboard.js,public/ribbon.js,public/lanes.js,public/plans-lane
 
 # Viewer dashboard, Agents home and shell
 
-The Dashboard 2.0 surfaces (#302–#307), the Agents home (#454, since the dashboard lanes PR 4 the Working and Quiet lanes), the editorial desk shell, layout and search, and the attention-first cold launch.
+Home (UX pass, slice 2: the Inbox page folded into the Dashboard), the Dashboard 2.0 surfaces (#302–#307), the Agents home (#454, since the dashboard lanes PR 4 the Working and Quiet lanes), the editorial desk shell, layout and search, and the attention-first cold launch.
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
@@ -29,20 +29,109 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `DESIGN.md` Typography); new CSS takes a token, not a literal size. The Dashboard's region
   headers (`.dashboard-card h2`) are `--fs-lane` at weight 650 and the grid's regions are
   `--lane-gap` apart; the `operations-desk` container under 900px sets `--fs-lane: 24px` and
-  `--lane-gap: 40px` on `.dashboard-grid` and, since it sits above the grid, on
-  `.needs-you-lane`. Pinned in `test/dashboard-tokens.test.ts`.
-- The Dashboard's page head and Needs you lane (dashboard lanes PR 3, design
-  `docs/superpowers/specs/2026-11-13-dashboard-lanes-design.md` §3.1–3.2) come first:
-  `public/dash-head.js` draws one row of lane chips (Needs you, Working, Quiet) with New
-  session… at its right end, and `public/needs-you-lane.js` draws one card per attention
-  entry, above the grid. The chips replaced the Now strip, so each lane is counted once, on
-  its chip: Working and Quiet are `laneCounts` over the same `splitLanes` the lanes draw, so a
-  chip always equals its lane. A chip scrolls to its own lane and focuses its first card or row
-  (`agentsHome.focusFirst`), never filters, and says "…" before the first `/api/activity` read. The lane is `buildDashboard().needsYou`
-  (`waitingEntries` in `sortRail` order): with All projects it equals the badge, each entry
-  once. A card never answers: a click or Enter opens the ask in the Inbox's detail panel
-  (`jumpToAsk` → `openAskInInbox`), and Esc or the card's close comes back (`dashReturn`).
-  Its header holds "Later N ›" (above 0 only) and Review queue, which left the old Agents header.
+  `--lane-gap: 40px` on `.dashboard-grid`. Pinned in `test/dashboard-tokens.test.ts`.
+- **Home** (UX pass, slice 2) is one page: the tab `dashboard`, named Home with a house
+  icon and the filter-blind attention count the Inbox tab carried (`tabCounts().dashboard`).
+  There is no Inbox tab: `TAB_IDS` has no `needsYou`. Home shows two `main > .panel`
+  sections together, `#needsYou` (the list of asks, `role="region"` labelled by
+  `#needsYouTitle`) and then `#dashboard` (the lanes); DOM order is reading and Tab order,
+  the asks first. `showPanel('dashboard')` shows both; every other tab and Settings hide
+  both. The list stays outside `#dashboard`: the fixed card must stay out of the
+  `operations-desk` size container, and the lanes' own focus bookkeeping
+  (`dashboardFocusBookmark`) never sees a row. The internal names stay (`dashboard`, `needsYou`,
+  `needsYouList`, `g.needsYou`). `PAGE_META.dashboard` is `{ kicker: '', title: 'Home' }`
+  (an empty kicker is hidden) and is the fallback for an unknown id. Every way into the old
+  Inbox tab lands on Home: `tabForItem`'s default, `openAskInInbox`, `holdTriage`,
+  `requestDraftRecovery`, `keepDraftInView` (from a Review queue opened on another tab),
+  `jumpToCard('dashboard', …)` for a relay row, and so a deep link, a notification, a search
+  result, a relay link and a plan link to an open ask. `G D` reads Home; `G I` (command id
+  `needsYou`, label Needs you, its tile on `#needsYouTitle`) selects Home, scrolls to the top
+  and focuses the first operable row. The Needs you lane, its lane chips and the way back
+  from an ask to the Dashboard (`jumpToAsk`, `dashReturn`) are gone: a session card's "Asking
+  you · N" chip and ⌘K's "answer …" open the ask in front through `openAskInInbox`. New
+  session… sits at the right end of the Working lane's head, its note (`p.ah-note`) right
+  after that head; `.dash-since` is the first child of `.dashboard`.
+- **The list's header is quiet** (slice 2). Its first line is `h2#needsYouTitle` "Needs you",
+  `b.queue-count` (the asks in the list that still wait on the person under the lens and the
+  filters, not the answered foot and not the folds; painted from `paintAmbient`, so it stays
+  current while a frame is held; hidden at zero) and `button.queue-tools-toggle` "Filter"
+  (`aria-expanded`, `aria-controls="queueTools"`). The filters, Sort, Handoffs and Review
+  queue sit in one `div#queueTools.queue-tools` (`display: contents` while shown), hidden at
+  rest: the toggle flips `queueToolsOpen` (in memory, false at start), and they show whatever
+  the toggle says while `actionFilter !== 'all'`, `changedOnly` or `askSort !==
+  savedAskSort()`. Using a filter or the Sort menu sets `queueToolsOpen`, so the tools never
+  leave under the hand that used them. `.triage-hold` stays outside the wrapper. A hidden
+  control is never a focus target: every path that focuses `.triage-btn`
+  (`restoreTriageReturnFocus`, the hold line's fallbacks, a discarded recovery line) goes
+  through `focusQueueControl`, and `holdTriage` and `keepDraftInView` call
+  `showQueueTools()`. The calm line reads "Nothing needs you" (or "Nothing needs you · N in
+  Later") and is one line on the page: it carries no count chips (`ambientChips` is gone; the
+  plans, milestones and answered asks it counted are on the page under it or in History).
+- **Home's sections look alike** (slice 2). Needs you, Working, Quiet, Plans in progress,
+  Just landed and Today share one quiet heading (`--fs-body`, soft text) and sit on the page
+  itself, edge to edge with the list: `.dashboard .dashboard-card` has no border, padding or
+  background, and `#dashboard` has no side padding. A project's sessions keep one small label
+  line (`.ah-group-head`), and the projects sit side by side where there is room: `.ah-groups`
+  is a wrapping flex row, each `.ah-group` takes an equal share of at least 340px, and its
+  cards fill that share at every width (`.ah-cards` auto-fill, restated after the narrow
+  block's two fixed columns). A wide overview shows three projects across, one busy project
+  still spreads over the row, and the column beside an ask shows one. The gap between
+  sections is `--lane-gap` set to `--sp-6` on `.dashboard-grid`, so the narrow window's
+  session panel, which is placed against that variable, follows. The new-notes chip is as wide as its words.
+- **The ask in front** (slice 2, wide windows only). `body.ask-front` is set exactly while
+  `layout === 'wide'`, Home is showing (not under Settings) and a row is open and drawn in the
+  list outside a closed fold; `syncAskFront()` keeps it, called from `setOpenRow` (the single
+  writer of `openRowId`), `showPanel`, the layout change and the end of `render()`. Only with
+  it do `#needsYouList` and `#dashboard` keep clear of the fixed card (`padding-right:
+  calc(var(--inspector-width) + 28px)`) and does `#inspectorResize` show; without it the
+  list and the lanes use the full width. Every lane stays drawn in the column beside the
+  ask: the lanes' own container queries (`operations-desk`, `dash-lanes`) give them their
+  narrow layouts there. The card's default width is 640px (`PANE_DEFAULTS.inspector`). One thing in
+  front: opening a session panel (`openSessionFocus`, `jumpToSession`) closes the open row
+  (`closeFrontAsk`), and opening a row by any path closes the session panel
+  (`closeSessionPanelQuietly`, moving no focus); under 1280px both stay inline. Inside
+  `render()`, after the list is painted and `reconcileOpenRow` has run, `bringAskToFront()`
+  opens the first row drawn outside a closed fold whose ask is in `attentionEntries`, when
+  the window is wide, Home is showing, no row and no session panel is open, no modal is (the
+  Review queue, Handoffs, the plan flow and its step dialog, Settings, any visible
+  `aria-modal` dialog) and the person has not closed the front: `selectedId` becomes that
+  ask, `setOpenRow(id, { resume: false })`, and its card is mounted in the same frame from the
+  model its row was drawn from (`rowBuilds`). It moves no focus (except that a keyboard user
+  already in the list or the card lands on that row), scrolls nothing and writes nothing; it
+  never runs while a frame is held, and never from the ambient painter. While the page is in
+  use it waits (`lanesInUse`: focus rests inside `#dashboard`, or, on a poll's frame after the
+  first, the pointer is over `#needsYou` or `#dashboard`), because an ask coming forward
+  narrows the list and the lanes under whatever the person is using there:
+  `frontWaitsOnLanes` joins `frameInputs()`, so the tick after they stop being in use paints
+  and brings the ask forward even when it reads nothing new. Two exceptions: closing the
+  session panel (`closeSessionFocus`), where the first waiting ask returns to the front at
+  once with focus back on that session's card; and `steady`, where an ask was in front when
+  the frame began and left the list, so the next one takes its place and nothing beside it
+  moves. An open
+  native `<dialog>` (New session…) counts as a modal here, although it carries no
+  `aria-modal`. `frontClosed` turns
+  true when the person closes the card on a wide window (its ✕ or Esc, `collapseRow(id, {
+  explicit: true })`) and false when a row opens by any path (`setOpenRow` with an id), when
+  Home is entered from another tab, and whenever a paint finds that nothing waits anywhere
+  (the unlensed attention set is empty), so the next ask to arrive comes to the front. A lens
+  or a filter that merely shows no waiting ask does not reset it: the ask the person closed
+  does not come back on the way out of that lens.
+- **Keys stay on their side of Home** (slice 2). The list and the lanes share the page, so
+  while focus is inside `#dashboard` (a lane, a heading, the session panel) no key reaches
+  the list's selected ask: `keyTargetItem()` answers nothing there, `keyboardActionScope()`
+  is the focused `[data-panel-ask]` or nothing, and `runIntent`'s `move` and `expand` do
+  nothing, and Esc does not count the ask in front as open (`expanded` is false there), so it
+  neither closes it nor pulls focus and the page up to the list. So 1–4, E, X, J, K, Enter
+  and Esc in the session panel act on the panel's own ask or on nothing, as they did when the
+  list was on another page. A poll's frame also never moves
+  focus out of the lanes (the draft and recovery focus restores are skipped there).
+  `test/dom/ux-home-panel-keys.test.ts` pins this. When the ask in front leaves the list (resolved, dismissed,
+  snoozed, pinned), the same `render()` brings the next one forward, so 1–4, R, E and X act on
+  it; an answered ask keeps its row and its open card. The first click or Enter on an ask that
+  came to the front by itself (`frontAutoId`) moves focus into its card, as opening any row
+  does. When the window turns narrow, such an ask closes if the person has not touched it
+  (no focus in its row, no unsent answer), so nobody gets an inline card or a phone sheet
+  they did not open. `test/dom/ux-home.test.ts` and `test/dom/ux-home-keys.test.ts` pin Home.
 - The Plans in progress lane (dashboard lanes PR 6, §3.5; `public/plans-lane.js`) follows Working
   and Quiet in the grid, then Just landed and the Today ribbon, each a full-width lane
   (`grid-column: 1 / -1` in one rule), the ribbon last. DOM order is page order, so Tab follows
@@ -71,7 +160,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - The session panel's Asking you section (#454 A.2) is the Dashboard's one answer surface;
   #454's PR 6 retired the Needs you rail (#303) that was before it, and the Working and
   Quiet lanes span the grid. A session card holds at most one copy of each ask (`sessions.js`)
-  and only counts it ("Asking you · N"); the asks themselves are in the Needs you lane.
+  and only counts it ("Asking you · N"); the asks themselves are in Home's list.
   The panel lists the card's asks and mounts `answerEl`/`rowAnswerEl` (`surface: 'compact'`) and the shared
   `snoozeAsk`/`pinAsk`, so drafts join `suspendState()`, recovery, durable drafts and
   the restart hold, and `expect_answer` is unchanged. It paints in the ambient painter:
@@ -83,8 +172,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   session is working when its claim is not idle and its `last_call_at ?? started_at` is
   within 30 minutes (`isWorking`; `updated_at` is never read). #454 retired the lanes it
   once drew (and the Live footer strip and drawer), and the lanes PR 3 the Now strip it fed:
-  sessions are the Working and Quiet lanes' cards and rows, counted by the page head's Working
-  and Quiet chips (`laneCounts` in `sessions.js`). Activity motion is one-shot per real event, a pulse when
+  sessions are the Working and Quiet lanes' cards and rows (the lane chips that counted them
+  went with slice 2 of the UX pass). Activity motion is one-shot per real event, a pulse when
   `last_call_at` moves forward on a poll, never on first paint, an unchanged poll or a
   forced repaint, and only when `motion.activityMotion()` allows it (Full, no OS reduced
   motion, page visible); nothing infinite (a loop measured +5.6 pp renderer, +34 pp GPU
@@ -93,7 +182,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - The Agents home (#454, design `docs/superpowers/specs/2026-11-04-agents-home-design.md`),
   since the dashboard lanes PR 4 (§3.3, §3.4) the **Working and Quiet lanes**, is the
   Dashboard's one home for sessions: `public/agents-home.js` paints both lanes into one
-  `.agents-home` wrapper mounted once in the grid (`agentsHome.element()`), after Needs you
+  `.agents-home` wrapper mounted once in the grid (`agentsHome.element()`), first in it
   and before Plans in progress, Just landed and the ribbon; the session panel sits after the
   wrapper, both inside `.dash-split` (dashboard lanes design §3.6).
   `laneOf`/`splitLanes` (`sessions.js`) put every main card in exactly one lane: Working when
@@ -126,7 +215,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   working card `linkedPlan`'s project + branch + agent join links, else to the newest idle
   or dormant card the same join matches; anything left is on no card) never change its
   state or place (lanes design §3.3): the card or row carries an "Asking you · N" chip
-  (`.sc-asking`) that focuses its first ask in Needs you. There are no ask-only cards. States: Didn't start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle or Quiet, Parked
+  (`.sc-asking`) that opens its first waiting ask in front on Home. There are no ask-only cards. States: Didn't start / Not responding, Starting… / Stopping…, Working (`isWorking`), Idle or Quiet, Parked
   (parked, or stopped with its session kept, labelled Stopped, #478; both are Quiet rows), In Terminal, Ended, Dormant (`isDormant`).
   Quiet (#466) is the idle state's label when nothing can tell: a terminal session reports
   only through Agent Inbox calls, so one busy with `gh`, a shell or another server reads
@@ -197,7 +286,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   tab (below). Card text reaches the DOM only through
   `textContent` and the `aria-label` attribute's value: no `img`, no `href`, no request to a card's URL. `app.js` reads
   `GET /api/mesh/agents` (a conditional snapshot) only while the last `/api/version` carried
-  `mesh`, the Dashboard or an open agent tab is the tab and the document is visible; a skipped read keeps the last
+  `mesh`, Home or an open agent tab is the tab and the document is visible; a skipped read keeps the last
   body, a failed read keeps it marked stale (never a failed tick), and an `on: false` body hides
   the section and stops the read until `/api/version` carries `mesh` again. The open trigger
   (`meshOpen()`) fires only on boot on the Dashboard once the boot's `/api/version` carries
@@ -225,7 +314,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   tabs posts nothing. `PAGE_META.agent` gives the kicker "Mesh agent"; the title is the agent's
   name. The page header holds the state dot, name, state word, "checked …", **Refresh**
   (`{trigger:'refresh', name}` then `reloadAndPaint()`) and **Close**, which hides the tab,
-  selects the Dashboard (an open for every agent) and, if focus was in the page in a focused
+  selects Home (an open for every agent) and, if focus was in the page in a focused
   window, focuses the agent's card, else the Agents heading. Esc does not close it. Its inner
   tablist (`wireTablist(…, 'horizontal')`) holds **Run history** (V5d, `public/mesh-runs-tab.js`),
   the default on every open (a re-open of the same agent included; the chosen inner tab is kept
@@ -255,8 +344,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M
   connected", "N on an older build"; with none working, "M connected" over "all quiet",
-  never "no task reported", #466). It and G L open the Dashboard with the Working lane's
-  heading focused, and each re-reads `/api/version`.
+  never "no task reported", #466). It and G L open Home with the Working lane's
+  heading focused (its label ends "Show the sessions on Home"), and each re-reads `/api/version`.
   Under 1280px the compact masthead keeps the tabs alone on its first row (scrolling in
   their own cell when they do not fit) and puts the line on the selectors' row as a chip
   ("● 2 working", its G L tile kept) beside Settings, with a CSS-only shade at the tab
@@ -289,7 +378,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   from `claudeSessionUrl`, and "Copy attach command", which copies `tmux attach -t '=<desk>'` through
   `writeClipboard`. Each control exists only for a value that passes its pattern again on the page; a
   row an older server wrote has none of the fields and draws exactly what it drew before.
-- Command-center polish (#307) adds no read and no answer surface. The keyboard help's "Dashboard" group is
+- Command-center polish (#307) adds no read and no answer surface. The keyboard help's "Home" group is
   help-only (`legacy`) entries in `public/keys.js`; keep them legacy. The session
   panel (`.dash-focus`, from a card or ⌘K; since #454 mounted in the Dashboard grid
   itself, never inside a card or fold that can be hidden; since the lanes PR 5 in
@@ -301,7 +390,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   Resume and send (launch-ui.js's `paintPanel`, §9: none off), an app session's
   approval answered in place with its own options through `sendReply`'s signed path
   (#454 Q3), every other ask of the card answered in place in
-  Asking you (#454 A.2, the Inbox's own `answerEl`/`rowAnswerEl`), the session's
+  Asking you (#454 A.2, the list's own `answerEl`/`rowAnswerEl`), the session's
   message composer (#411, `viewer-frontend.md`), its plan and
   outcomes open through `focusItem`, its PR/CI chips are ambient `sourceChipsHtml`
   and its links are #300's `cardLinks`/`linkStripHtml`. Parts are rewritten only when
@@ -311,60 +400,32 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`public/palette.js`): only the full names "answer ", "open plan ", "jump to
   session " (with the space) are commands and list targets first; a prefix of a
   name or hint only suggests the command and never
-  outranks the top Open-item match. Answer opens the ask's Inbox card (`jumpToAsk`), as a
-  Needs you card does.
+  outranks the top Open-item match. Answer opens the ask in front on Home (`openAskInInbox`).
 
 ## Invariants in detail
 
-- **Dashboard focus must not freeze monitoring detail.** Mount the structural frame
-  and native range selector once, then refresh the lane chips, the Needs you lane, session
-  cards, recent outcomes and history through the ambient painter. Preserve the
+- **Dashboard focus must not freeze monitoring detail, or the list of asks.** Mount the
+  structural frame and native range selector once, then refresh session cards, recent
+  outcomes, history and the list's count through the ambient painter. Focus resting inside
+  `#dashboard` (a lane control, the range, the session panel) holds no frame: the list of
+  asks shares the page and keeps repainting under the ordinary rules (a held press, an
+  unsent answer, a scroll in progress). Only bringing an ask to the front waits for that
+  focus to leave. Preserve the
   range control's identity, value and focus across polls and history error/recovery.
   Reuse a focused outcome button while its result remains present; move focus to an
   adjacent control only when that result actually leaves and the viewer owns focus.
   This must not bypass the global held-pointer guard, create a third render entry,
   or pull keyboard ownership back from a background viewer.
-- **Every ask shows once, in the Needs you lane; a card opens it in the Inbox and never
-  answers (dashboard lanes design §3.2, §6; it replaced #454 amendment A.1's ask-only
-  cards).** `buildDashboard().needsYou` is `waitingEntries` (`attentionEntries` under the
-  Dashboard's project and agent lens) in `sortRail` order, so with All projects the lane's
-  count, its chip, is the badge, and snoozed, pinned, stale and closed asks stay out because
-  `attentionEntries` leaves them out. `test/dom/needs-you-lane.test.ts` pins the parity over
-  the fixtures `test/sessions.test.ts` holds for the cards (live, ended and no session;
-  stamped, joined and unstamped plans; an `@sessions` approval with the switch off).
-  `installNeedsYouLane` (`public/needs-you-lane.js`) keeps one card per ask keyed by its id,
-  writes only changed text (so a selection survives a poll), and holds the order while the
-  pointer is in the lane or focus is in it (`pinLaneOrder`: known cards keep their place, new
-  ones append); the next paint after both leave takes `sortRail`'s order. A card leads with
-  the Inbox row's headline, `actionPresentation(entity).headline` (`public/card.js`), at
-  `--fs-title`, with the label or title as its tooltip; under it the presentation's `detail`
-  clamped to two lines (or the `next_step` when the headline is not the step); a blocked
-  row's "Plan · <plan> · <label>" on one line; and a meta line of project dot and name,
-  agent kind, branch, age and a "Draft" tag. The tag reads `deps.hasDraft(id)`, which is
-  app.js's `holdsDraft`, the same reply, context and row drafts `suspendState()` counts, so
-  it adds no read and no render entry. The card holds no control, so no action card is
-  mounted on the Dashboard. Its meta line says "session ended" or "no session" only when no session card
-  holds the ask (`agentsHome.askKey`) and the session it names is listed nowhere in the
-  unlensed activity or launches (`laneSessionTag`), so a lens never makes a live session
-  look ended. A click (never one that ends a text selection) or Enter calls `jumpToAsk`,
-  which opens the ask through `openAskInInbox`, as a click on its Inbox row does (a row is
-  made `selectedId` first, so the Inbox's first page always holds it); from the Dashboard it
-  keeps `dashReturn` (the lens and `window.scrollY`) once the row is open. Esc on the row,
-  the `collapse` intent and the card's close pass `collapseRow(id, { back: true })`; it
-  returns (`returnToDashboard`: the lens back, a round-trip `selectTab('dashboard', { open:
-  false })`, `forceRender()`, the scroll, focus on the lane card) only when `dashReturn.id`
-  is that row, the Inbox is still showing and the ask is still in `attentionEntries`, so
-  answering, snoozing or pinning it stays in the Inbox. `selectTab` to any other tab and
-  `setOpenRow` for another row clear it; the narrow layout's row toggle does not return.
-  Keys: J/K and the arrows move one roving tab stop between lane cards, Enter opens, and the
-  event stops there; G I still opens the Inbox. If a focused lane card leaves, focus goes to
-  `#needsYouLaneTitle`, only in a focused window. A session card's "Asking you · N" chip
-  (a click on `.sc-asking`, checked before the card's actions, so a launch card never runs a
-  launch action for it) focuses that session's first ask in the lane (`focusAsk`). The
+- **Every ask shows once, in Home's list; the session panel answers in place (slice 2 of
+  the UX pass retired the dashboard lanes design's Needs you lane, §3.2, which had replaced
+  #454 amendment A.1's ask-only cards).** A session card's "Asking you · N" chip (a click on
+  `.sc-asking`, checked before the card's actions, so a launch card never runs a launch
+  action for it) opens that session's first waiting ask in front through
+  `openAskInInbox`. The
   session panel's Asking you section is unchanged: `paintPanelAsks` mounts, per ask of the
-  card, the Inbox's own `answerEl`/`rowAnswerEl` with `surface: 'compact'` (★, More…
+  card, the list's own `answerEl`/`rowAnswerEl` with `surface: 'compact'` (★, More…
   with Clarify, Decline and "I'll take a while", disclosure keys of its own, and Compare
-  closed by default: it stacks each option over its tradeoff, `compactCompares`) plus Snooze 4h, Pin and Open in Inbox (`snoozeAsk`, `pinAsk`,
+  closed by default: it stacks each option over its tradeoff, `compactCompares`) plus Snooze 4h, Pin and Open ask (`snoozeAsk`, `pinAsk`,
   `openAskInInbox`), the "the agent is waiting" meta, and this session's answers not yet
   picked up (`agentEntries`), dimmed and never counted; an `@sessions` approval keeps the
   Approval block (#459). Three draft rules hold for the section: a poll leaves
@@ -380,15 +441,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   plan's row on every call); a forced paint rebuilds it; it
   restores focus (`captureCardFocus`, and `restoreDraftFocus` scoped to `#dashFocus`) only
   with the document's. Closing the panel drops its editors and keeps the drafts in
-  `draftReplies`/`rowDrafts`. A notification still lands on the Inbox card. Keys
+  `draftReplies`/`rowDrafts`. A notification still lands on the ask's card on Home. Keys
   (help-only `legacy` entries in `public/keys.js`): on a session card itself, J/K and the
   arrows move between cards (one tabbable, `roving`) and Enter opens its panel;
   on an ask's block in the panel, 1–4 and R are the global keys scoped to the block
   (`keyboardActionScope`), S snoozes and P pins (`onPanelAskKey`); Esc closes the panel.
-  The Inbox names each ask's session ("live · branch" while its session is listed,
+  The list names each ask's session ("live · branch" while its session is listed,
   "session ended" when it names one that is not; `askSessionToken`) and its open card
-  offers **Show on Agents ›** (`openAskInSession`: the panel at the ask, widening the lens
-  where its session lives) only where a session card holds the ask or its session is live.
+  offers **Show on Agents ›** (titled "Open this ask in its session's panel";
+  `openAskInSession`: the panel at the ask, widening the lens where its session lives, which
+  closes the ask in front on a wide window) only where a session card holds the ask or its
+  session is live.
   Cards (A.3, V1–V5): one quiet meta line (state
   word, agent kind as text, an outlined "A" for started here, branch, time), what the
   session is doing leading, a secondary line (worktree, a working session's plan bar, or
@@ -405,16 +468,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   always goes home (#463 review). Every such move goes through `moveKeepingFocus`
   (`agents-home.js`), which gives back the focus and a text control's selection the panel
   held, in a focused window only, and agents-home sends focus to its heading only when it
-  was really lost. `test/dom/agents-asks.test.ts` and `test/dom/needs-you-lane.test.ts` pin the DOM half.
+  was really lost. `test/dom/agents-asks.test.ts` and `test/dom/ux-home.test.ts` pin the DOM half.
 - **`sortRail` only reorders, and the Dashboard reads only the one predicate (#303, D2,
   D3, D8; the rail it fed retired by #454's PR 6).** `buildDashboard`'s `waitingEntries`
-  IS `attentionEntries` under the Dashboard's lens (`relay.human`), so the Needs you lane,
-  the badge, the tabs and the dock cannot disagree, and `later` counts `laterEntries` for
-  the lane header's "Later N ›". `sortRail` (`public/attention.js`) orders the lane and a card's asks: an
+  IS `attentionEntries` under the Dashboard's lens (`relay.human`), so the session cards,
+  the badge, the tabs and the dock cannot disagree (the model's `needsYou` and `later` are
+  read by nothing since the lane went). `sortRail` (`public/attention.js`) orders a card's
+  asks and ⌘K's answer targets: an
   item whose session is live (`classifyLiveness` → `waiting`) comes first, the rest keep
-  `sortNeedsYou` order; never filter or add an entry there. A deferral from the Dashboard
-  of an ask holding a draft switches to the Inbox (`keepDraftInView`), since nothing on the
-  Dashboard shows a deferred ask. Never put `data-dashboard-focus-key` on an ask's block, or
+  `sortNeedsYou` order; never filter or add an entry there. A deferral of an ask
+  holding a draft gives it the open card on Home (`keepDraftInView`; from a Review queue
+  opened on another tab it selects Home first), since no lane shows a deferred ask. Never put `data-dashboard-focus-key` on an ask's block, or
   `restoreDashboardFocus` would move focus off its control onto it.
 - **The session cards and their chips read one model, updated in place (#304, Dashboard
   2.0 phase 2, decisions D2, D4; the lanes it drew retired by #454, the Now strip by the
@@ -425,11 +489,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the clock because a snapshot ages); `updated_at` is never read there, so a session that
   only heartbeats is idle. A plan is drawn as done / in progress / waiting on you / to do
   over the Plans tab's own `countable`, where "waiting on you" is only rows
-  `isBlockedRowAttention` counts. The page head's chips count the lanes from the same
-  frame (Needs you the lane's cards; Working the main-list cards whose base state is
-  working, a running host turn included; Quiet the other main-list cards), each what its lane
-  shows; no lane heading carries a number. A Working or Quiet chip focuses and reveals its
-  own lane's first card or row. The lanes keep cards and rows keyed by id and write only changed text and
+  `isBlockedRowAttention` counts. Working holds the main-list cards whose base state is
+  working, a running host turn included, and Quiet the other main-list cards; no lane
+  heading carries a number. The lanes keep cards and rows keyed by id and write only changed text and
   attributes, so an unchanged card keeps its nodes and selection; a rail draft never stops
   it, and a held pointer stops it with the rest of `paintAmbient`. A focused card control
   that leaves hands focus to its lane's heading only when the document had focus before the
@@ -493,10 +555,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `dashboardMotion()` allows it (Full, no OS reduced motion, visible page, Dashboard on
   screen); the first paint, a poll, a tab switch and older history arriving start nothing,
   and an outcome that arrives while motion is off is marked seen. "Since you last looked"
-  (`sinceLastLooked`, §14) is one line under the page head for the time between
+  (`sinceLastLooked`, §14) is one line at the top of the Dashboard part of Home for the time between
   `lastVisitAt` (the previous page load) and this page load (`visitAt`), shown only after
   a 30-minute gap, until the human has looked: their first pointerdown or keydown anywhere
-  in the window while it shows on the Dashboard dismisses it for the page's life. Reading
+  in the window while it shows on Home dismisses it for the page's life (a click on an ask included). Reading
   it does not (`sinceKeepsOn`): a press on the line, a ⌘/Ctrl shortcut (⌘C, ⌘-Tab) or any
   key while the selection is in it. Only trusted input counts (`trustedInput`); jsdom can
   dispatch only untrusted events, so `test/dom/dashboard-ribbon.test.ts` mocks that one
@@ -511,10 +573,10 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   worst case: 30 days of 40 projects with 14 session cards and a full rail is ~730 Dashboard
   elements against the 1,500 budget).
 - **Command-center polish reads nothing new (#307, Dashboard 2.0 phase 5, D2).** Three parts (#307's lane quick filters retired with the lanes, #454). (2) **Keyboard help** lists the
-  Dashboard's keys as help-only (`legacy`) commands in `public/keys.js`, group "Dashboard":
-  J/K and Enter on a Needs you or session card or a plan row (`onKey` in `needs-you-lane.js`,
-  `agents-home.js` and `plans-lane.js`, only on a card or row), the panel's 1–4, S, P and R, and Esc for the panel
-  or an ask opened from the Dashboard. Never make them non-legacy: the global handler would then take
+  lanes' keys as help-only (`legacy`) commands in `public/keys.js`, group "Home":
+  J/K and Enter on a session card or a plan row (`onKey` in `agents-home.js` and
+  `plans-lane.js`, only on a card or row), the panel's 1–4, S, P and R, and Esc for the
+  panel. Never make them non-legacy: the global handler would then take
   S and P everywhere. (3) **The session focus panel** (`.dash-focus`, mounted once in the
   Dashboard grid (#454), inside `.dash-split` with the lanes (dashboard lanes design §3.6):
   at 1280px and wider beside the lanes in `.dash-split.open` (`syncSplit`), sticky under the
@@ -527,7 +589,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`public/lanes.js`, pure) picks the plan, the session's newest item (the source of its
   PR/CI chips when it has no plan) and its last three outcomes from `outcomeEntries`. PR and
   CI chips are `sourceChipsHtml`'s, ambient: nothing there reaches attention
-  (`test/dom/dashboard-focus.test.ts` compares badge, title, tabs, rail, the Needs you chip and both
+  (`test/dom/dashboard-focus.test.ts` compares badge, title, tabs, rail, the list's count and both
   dock projections with and without `/api/links`). Links are #300's `cardLinks` of the asks
   and the plan, drawn by `linkStripHtml`, so `link-open.js` and main's checks own every
   click. The ambient painter updates it in place: each part is rewritten only when its
@@ -557,9 +619,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   hint ("plan", "session") only suggests the command (it fills the box), placed after the results when the first is an
   Open item, so the strongest Open-item match keeps first place. Among trim-equivalent
   edits only the one that turns a name into its command re-runs search (`commandShape`).
-  Answer opens the ask's Inbox card (`jumpToAsk`, from any tab; from the Dashboard Esc
-  comes back); open plan is
-  `focusItem`; jump to session is the Dashboard, scoped to the session's project as a deep
+  Answer opens the ask in front on Home (`openAskInInbox`, from any tab); open plan is
+  `focusItem`; jump to session is Home, scoped to the session's project as a deep
   link scopes to its item's, with that panel open. No action opens a new editor.
 - **Motion is CSS-only, compositor-only and always switchable off (#302, Dashboard 2.0
   phase 0).** Design: [`2026-10-22-dashboard-2-proposal.md`](../../docs/superpowers/specs/2026-10-22-dashboard-2-proposal.md)
@@ -592,14 +653,15 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.
 
-- **Editorial desk shell** — user-facing navigation is Inbox / Plans / Notes / History (and Chats, #586), while
+- **Editorial desk shell** — user-facing navigation is Home / Plans / Notes / History (and Chats, #586;
+  Home since slice 2 of the UX pass folded the Inbox page into the Dashboard), while
   stored ids and API vocabulary remain `needsYou` / `boards` / `done` / `blocked`. The app is
   light-first with a warm canvas, white surfaces, deep rose accent, Segoe UI/Aptos typography,
   restrained borders and no gradients or glow. At 1280px+ `.nrow-card` is CSS-positioned as a
   fixed inspector but MUST remain a descendant of its `.nrow`; moving it into a portal breaks
   row-scoped writes, draft persistence, focus, deep links and the poll gate. `public/panes.js` is
   the pure source of truth for adjustable widths: library 220px default / 180–320px, inspector
-  520px default / 360–720px, with at least 400px left for the queue. Preferences persist under
+  (the ask in front) 640px default / 360–720px, with at least 400px left for the queue. Preferences persist under
   `agent-inbox-sidebar-width` and `agent-inbox-inspector-width`; mouse drag, separator keyboard
   controls, viewport reclamping and double-click reset must update CSS and ARIA together. Inside
   the single EOF width block, `@media (max-width: 1279px)`, the splitters hide, the item card returns
@@ -614,7 +676,7 @@ These landed after v1 and still hold invariants; the release history itself is i
   the sticky topbar. While its results are open, raise that parent stacking context above
   the desktop inspector and resize handles, but below phone action cards and modal
   owners; raising only the child dropdown cannot escape a lower parent context. Closing
-  results restores the normal header layer. It is a combobox index over Inbox, Notes, History,
+  results restores the normal header layer. It is a combobox index over the open asks, Notes, History,
   and active/archived Plans; it never filters the queue, project rail, tab badges, or the
   Sessions line. Results use one visible lifecycle hierarchy — Open items, Active plans, Notes,
   History, Archived plans — with relevant matches ranked inside each section, so past work never
@@ -651,8 +713,9 @@ These landed after v1 and still hold invariants; the release history itself is i
   `test/dom/search-index.test.ts`, `test/dom/boot.test.ts`, and
   `test/dom/project-disclosure.test.ts` pin the contract; jsdom still
   cannot validate the responsive media layer or CSS vars.
-- **Attention-first cold launch** — every fresh viewer opens the Dashboard with All projects,
-  all agents and All action types, and no expanded card. Project/agent filters are
+- **Attention-first cold launch** — every fresh viewer opens Home with All projects,
+  all agents and All action types; on a wide window the first waiting ask is in front from
+  the first paint with data (slice 2), and nothing else is expanded. Project/agent filters are
   window-local; the boot path removes the two legacy localStorage keys so an older build
   cannot strand a new build behind a stale lens. Explicit notification/hash deep links are
   the exception: they scope to and open their target. A draft restored at boot (#279) is

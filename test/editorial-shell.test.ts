@@ -23,9 +23,10 @@ describe('the editorial desk shell', () => {
   it('moves navigation into a real sidebar and gives the work area an editorial heading', () => {
     expect(html).toContain('class="sidebar-shell"')
     expect(html).toContain('id="pageTitle"')
-    expect(html).toContain('Live Operations Desk')
-    expect(html).toContain('class="tab-name">Dashboard</span>')
-    expect(html).toContain('class="tab-name">Inbox</span><span class="tab-count"')
+    expect(html).toContain('<h1 id="pageTitle">Home</h1>')
+    // Home carries the count the Inbox tab carried; there is no Inbox tab
+    expect(html).toContain('class="tab-name">Home</span><span class="tab-count"')
+    expect(html).not.toContain('class="tab-name">Inbox</span>')
     expect(html).toContain('class="tab-name">Plans</span><span class="tab-count"')
     expect(html).toContain('class="tab-name">History</span><span class="tab-count"')
   })
@@ -59,9 +60,11 @@ describe('the editorial desk shell', () => {
 
   it('presents an expanded queue card as the desktop inspector without moving its DOM', () => {
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*position:\s*fixed\s*;/s)
-    expect(css).toContain('--inspector-width: 520px')
+    expect(css).toContain('--inspector-width: 640px')
     expect(css).toMatch(/\.nrow-card\s*\{[^}]*width:\s*var\(--inspector-width\)\s*;/s)
-    expect(css).toMatch(/#needsYouList\s*\{[^}]*padding-right:\s*calc\(var\(--inspector-width\)/s)
+    // UX pass, slice 2: the list and the lanes keep clear of the card only while an ask is in front
+    expect(css).toMatch(/body\.ask-front #needsYouList,\s*body\.ask-front #dashboard\s*\{\s*padding-right:\s*calc\(var\(--inspector-width\) \+ 28px\);\s*\}/)
+    expect(css).not.toMatch(/\n#needsYouList\s*\{[^}]*padding-right/)
     expect(css).toMatch(/\.nrow-card-compose\s*\{[^}]*max-height:\s*min\(50%,\s*360px\)[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s)
   })
 
@@ -440,44 +443,9 @@ describe('the Plans in progress lane and the full-width tail (dashboard lanes PR
 
 // Dashboard lanes design §3.1, §3.2, §4: the page head's chips and the Needs
 // you lane take the type and spacing tokens, never a literal size or gap.
-describe('the Needs you lane and the lane chips (dashboard lanes PR 3)', () => {
-  // every top-level rule whose selector names one of the new parts
-  const OURS = /(^|[\s,>])\.(dash-head|dash-chip[\w-]*|dash-chips|dash-head-actions|needs-you-lane|ny-[\w-]+|sc-asking)(?![\w-])/
-  const rules = [...css.matchAll(/(?:^|\n)([^{}@\n][^{}\n]*)\{([^{}]*)\}/g)]
-    .map((m) => ({ selector: m[1]!.trim(), body: m[2]! }))
-    .filter((r) => OURS.test(r.selector))
-  const body = (selector: string) => rules.find((r) => r.selector === selector)?.body ?? ''
-
-  it('take the tokens for every font size, gap, margin and padding', () => {
-    expect(rules.length).toBeGreaterThan(10)
-    for (const { selector, body: decls } of rules) {
-      for (const [, prop, value] of decls.matchAll(/(?<![\w-])(font-size|gap|row-gap|column-gap|margin[\w-]*|padding[\w-]*):\s*([^;]+);/g)) {
-        for (const part of value!.trim().split(/\s+/)) {
-          expect(part, `${selector} ${prop}`).toMatch(/^(0|auto|var\(--(fs-[\w-]+|sp-\d|lane-gap)\))$/)
-        }
-      }
-    }
-    expect(body('.ny-title')).toMatch(/font-size: var\(--fs-title\);/)
-    expect(body('.needs-you-lane')).toMatch(/margin-top: var\(--lane-gap\);/)
-    expect(body('.ny-cards')).toMatch(/gap: var\(--sp-3\);/)
-    expect(body('.ny-card')).toMatch(/padding: var\(--sp-3\) var\(--sp-4\);/)
-  })
-
-  it('keep a Needs you card\'s branch readable: the session note takes its own line', () => {
-    // held on the meta line, "session ended" squeezed a short branch down to an ellipsis
-    expect(body('.ny-meta')).toMatch(/flex-wrap: wrap;/)
-    const note = body('.ny-session')
-    for (const rule of [/order: 2;/, /flex: 0 0 100%;/]) expect(note).toMatch(rule)
-    expect(body('.ny-meta > .ny-session::before')).toMatch(/content: none;/)
-    // a zero basis keeps a long branch, and the age after it, on the first line
-    const branch = body('.ny-branch')
-    for (const rule of [/flex: 1 1 0;/, /max-width: max-content;/, /min-width: 0;/, /text-overflow: ellipsis;/]) expect(branch).toMatch(rule)
-    expect(body('.ny-draft')).toMatch(/order: 1;/)
-  })
-
-  it('wrap Later and Review queue under the lane title below 620px, and leave no Now strip', () => {
-    const narrow = css.slice(css.indexOf('@container operations-desk (max-width: 620px) {'))
-    expect(narrow.slice(0, narrow.indexOf('\n}'))).toMatch(/\.ny-head > h2 \{ flex-basis: 100%; \}/)
+describe('no Needs you lane and no lane chips (UX pass, slice 2: one Home)', () => {
+  it('leaves no rule for the lane, its cards or the chips, and no Now strip', () => {
+    expect(css).not.toMatch(/\.(needs-you-lane|ny-[\w-]+|dash-chips?|dash-chip-[\w-]+|dash-head|dash-head-actions)(?![\w-])/)
     expect(css).not.toMatch(/\.dash-now|\.dashboard-value|\.sc-ask\b|\.sc-ask-|sc-ask-only|tone-ask|\.ah-later|\.ah-review/)
   })
 })

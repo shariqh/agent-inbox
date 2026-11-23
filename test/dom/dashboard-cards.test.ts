@@ -35,9 +35,12 @@ const cardIds = (): string[] =>
   [...document.querySelectorAll<HTMLElement>('#dashboard .working-lane .ah-groups [data-session-card]')].map((el) => el.dataset.sessionCard!.replace(/^session:/, ''))
 const doing = (session: string): string => card(session)?.querySelector('.sc-doing')?.textContent ?? ''
 // the page head's lane chips (dashboard lanes design §3.1)
-const chip = (key: 'needs' | 'working' | 'quiet'): string =>
-  document.querySelector(`#dashboard [data-dash-chip="${key}"] .dash-chip-count`)?.textContent ?? ''
-const laneIds = (): string[] => [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].map((el) => el.dataset.nyAsk!)
+// The lane chips are gone (UX slice 2): a lane's size is its cards, and Needs you
+// is the asks in Home's list that still wait on the person.
+const chip = (key: 'needs' | 'working' | 'quiet'): string => String(key === 'needs'
+  ? Number(document.querySelector('#needsYouList .queue-count')?.textContent || 0)
+  : document.querySelectorAll(key === 'working' ? '#dashboard .working-lane .ah-cards [data-session-card]' : '#dashboard .quiet-lane .qt-rows [data-session-card]').length)
+const laneIds = (): string[] => [...document.querySelectorAll<HTMLElement>('#needsYouList > .nrow:not(.answered)')].map((el) => el.dataset.cardId!)
 
 // A real MCP call stamps last_call_at, then status() claims the work.
 function work(d: Database.Database, session: string, what: string, extra: Record<string, unknown> = {}): void {
@@ -302,7 +305,7 @@ describe('one-shot activity motion (#304: no infinite animation)', () => {
     work(d, 'a', 'Working')
     const started = shots()
     await bootApp(d)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     advanceClock()
     recordActivityCall(d, 'a')
@@ -422,7 +425,7 @@ describe('attention parity with the cards present (#304, #454)', () => {
     return {
       title: document.title,
       badge: badgeCount(),
-      tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount),
+      tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount),
       waiting: chip('needs'),
       lane: laneIds(),
       dock: [await dock.text(), await plans.text()],

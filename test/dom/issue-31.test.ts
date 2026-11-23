@@ -237,7 +237,7 @@ describe('31.2 · the Notes count must come down once you have looked', () => {
     // the same tick marks it seen — the count would honestly stay at 1 and this
     // test would prove nothing about a new note counting. (That is exactly what
     // the first version asserted: `< 6`, which also passes at 0.)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
 
     advanceClock()

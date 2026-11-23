@@ -101,7 +101,7 @@ describe('Needs-you roving tab stop', () => {
     expect(document.getElementById('needsYou')?.hidden).toBe(true)
     expect(tabbableQueueRows()).toHaveLength(0)
 
-    const inbox = document.querySelector<HTMLElement>('#tabs [data-tab="needsYou"]')!
+    const inbox = document.querySelector<HTMLElement>('#tabs [data-tab="dashboard"]')!
     inbox.focus()
     click(inbox)
 

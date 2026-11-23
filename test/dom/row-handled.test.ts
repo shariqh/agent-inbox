@@ -78,7 +78,7 @@ describe('#36 · marking a blocked row done clears the badge with no agent round
 
     await bootApp(d)
     expect(badgeCount(), 'a blocked row starts in the attention set').toBe(1)
-    expect(tabCount('needsYou')).toBe('1')
+    expect(tabCount('dashboard')).toBe('1')
     expect(chipText(rowId)).toBe('Needs input')
 
     await openCard(rowId)
@@ -87,7 +87,7 @@ describe('#36 · marking a blocked row done clears the badge with no agent round
 
     // NO agent has run, and no poll tick was needed.
     expect(badgeCount(), 'the human’s own lever must move the badge').toBe(0)
-    expect(tabCount('needsYou')).toBe('')
+    expect(tabCount('dashboard')).toBe('')
     // …and the row must NOT vanish: a mark nobody collected is still a fact the
     // human needs to see, just no longer as their own to-do.
     expect(rowTitles()).toContain('Paddle account')

@@ -59,7 +59,7 @@ describe('#36 · the human can clear a blocked row without any agent round-trip'
 
     await bootApp(d)
     expect(badgeCount(), 'a blocked row starts in the attention set').toBe(1)
-    expect(tabCount('needsYou')).toBe('1')
+    expect(tabCount('dashboard')).toBe('1')
     expect(chipText(rowId)).toBe('Needs input')
 
     // the human answers it, through the real UI: expand the row, type, Send
@@ -78,7 +78,7 @@ describe('#36 · the human can clear a blocked row without any agent round-trip'
 
     // NO agent has run. The badge must still come down.
     expect(badgeCount(), 'the only lever the viewer offers must move the badge').toBe(0)
-    expect(tabCount('needsYou')).toBe('')
+    expect(tabCount('dashboard')).toBe('')
     // …and the row must NOT vanish: an answer nobody collected is still a fact
     // the human needs to see, just no longer as their own to-do.
     expect(rowTitles()).toContain('Merge')

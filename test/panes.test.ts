@@ -10,8 +10,9 @@ describe('resizable pane layout', () => {
   it('opens the item pane substantially wider while preserving a useful queue', () => {
     const layout = resolvePaneLayout(1400, {})
 
-    expect(PANE_DEFAULTS.inspector).toBe(520)
-    expect(layout.inspector.value).toBe(520)
+    // UX pass, slice 2: the ask in front opens wider (520 before)
+    expect(PANE_DEFAULTS.inspector).toBe(640)
+    expect(layout.inspector.value).toBe(640)
     expect(layout.center).toBeGreaterThanOrEqual(400)
   })
 

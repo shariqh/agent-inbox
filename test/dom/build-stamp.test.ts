@@ -157,7 +157,7 @@ describe('a stale build is NOT attention', () => {
   const SIGNAL = { badge: 2, title: '(2) Agent Inbox', needsYou: '2', boards: '1', rows: ['step', 'blocked on you'] }
   const signal = () => ({
     badge: badgeCount(), title: document.title,
-    needsYou: tabCount('needsYou'), boards: tabCount('boards'), rows: rowTitles(),
+    needsYou: tabCount('dashboard'), boards: tabCount('boards'), rows: rowTitles(),
   })
 
   it('with a CURRENT build, the fixture asks for the human twice', async () => {

@@ -55,8 +55,8 @@ const editor = (id: string) => block(id)?.querySelector<HTMLTextAreaElement>('.r
 const askAction = (id: string, name: string) => block(id)?.querySelector<HTMLButtonElement>(`[data-ask-action="${name}"]`) ?? null
 const card = (key: string) => [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === key) ?? null
 // the page head's Needs you chip, which counts the lane (dashboard lanes design §3.1)
-const needsYou = () => Number(document.querySelector('#dashboard [data-dash-chip="needs"] .dash-chip-count')?.textContent)
-const laneCard = (id: string) => [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.dataset.nyAsk === id) ?? null
+// the asks in Home's list that still wait on the person (not the answered foot, not the folds): the list's count
+const needsYou = () => Number(document.querySelector('#needsYouList .queue-count')?.textContent || 0)
 const body = (bridge: ViewerBridge, match: string): Record<string, unknown> =>
   JSON.parse(String(bridge.posts.find((post) => post.url.includes(match))?.init?.body ?? '{}'))
 // the card's click opens its session panel, whose Asking you section holds the card's asks
@@ -65,7 +65,7 @@ async function answerOn(key: string): Promise<void> {
   await settle()
 }
 
-describe('every ask in the Needs you lane (#454 A.1, lanes design §3.2)', () => {
+describe('every ask in Home’s list (#454 A.1; the Needs you lane before UX slice 2)', () => {
   it('counts the attention set under Needs you in each lens, the badge with All projects, ended and session-less asks included', async () => {
     db = freshDb()
     live(db, 'here')
@@ -88,9 +88,8 @@ describe('every ask in the Needs you lane (#454 A.1, lanes design §3.2)', () =>
 
     expect(badgeCount()).toBe(4)
     expect(needsYou()).toBe(4)
-    const ended = [...document.querySelectorAll<HTMLElement>('#dashboard .ny-card')].find((el) => el.querySelector('.ny-title')?.textContent === 'From an ended session')!
-    expect([ended.querySelector('.ny-session')?.textContent, ended.querySelector('.ny-agent')?.textContent])
-      .toEqual(['session ended', 'Claude Code'])
+    const ended = [...document.querySelectorAll<HTMLElement>('#needsYouList .nrow')].find((el) => el.querySelector('.nrow-title')?.textContent === 'From an ended session')!
+    expect(ended.querySelector('.nrow-session')?.textContent).toBe('session ended')
 
     click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
     await settle()
@@ -107,18 +106,17 @@ describe('every ask in the Needs you lane (#454 A.1, lanes design §3.2)', () =>
     expect(needsYou()).toBe(2)
   })
 
-  it('shows an ended session’s ask in the lane with the switch off, reads nothing new, draws no card for it, and opens its Inbox card', async () => {
+  it('shows an ended session’s ask in the list with the switch off, reads nothing new, draws no card for it, and opens its card', async () => {
     db = freshDb()
     const id = question(db, 'Keep the Sessions line?', { session: 'gone', agent: 'claude-code' })
     const reads: string[] = []
     await bootApp(db, { interceptFetch: async (input, _init, next) => { reads.push(String(input)); return next() } })
     expect(reads.some((url) => url.includes('/api/launch'))).toBe(false)
     expect(document.querySelector('#dashboard [data-session-card]')).toBeNull()
-    expect(laneCard(id)?.querySelector('.ny-session')?.textContent).toBe('session ended')
-    click(laneCard(id))
+    expect(row(id)?.querySelector('.nrow-session')?.textContent).toBe('session ended')
+    click(row(id))
     await settle()
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
-    expect(location.hash).toBe(`#item/${id}`)
     expect(row(id)?.dataset.open).toBe('1')
   })
 })
@@ -282,8 +280,9 @@ describe('the panel’s draft rules (#454 A.2)', () => {
     endActivity(db, 'here')
     await pollTick()
     expect(card('session:here')).toBeNull()
-    // the ask is in the lane, "session ended"; the panel holds the editor and says its session left
-    expect(laneCard(id)?.querySelector('.ny-session')?.textContent).toBe('session ended')
+    // the ask is still in the list (held with the rest of Home's editable frame while the panel's
+    // editor has focus); the panel holds the editor and says its session left
+    expect(row(id)).not.toBeNull()
     expect(editor(id)).toBe(input)
     expect(document.activeElement).toBe(input)
     expect(panel().querySelector<HTMLElement>('.dash-focus-gone')?.hidden).toBe(false)
@@ -458,7 +457,7 @@ const key = (target: Element, name: string) =>
 const cardEls = () => [...document.querySelectorAll<HTMLElement>('#dashboard .working-lane .ah-groups [data-session-card]')]
 
 describe('the Dashboard without the rail (#454 PR 6)', () => {
-  it('has no rail: the Working and Quiet lanes span the grid, and the Needs you lane’s header holds Later and Review queue', async () => {
+  it('has no rail; Home’s list holds the Later section and Review queue', async () => {
     db = freshDb()
     question(db, 'Asked here')
     const later = question(db, 'Pinned for later')
@@ -472,16 +471,10 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     expect(document.querySelector('#dashRail, .dash-rail, [data-rail-card]')).toBeNull()
-    const laterButton = document.querySelector<HTMLButtonElement>('#dashboard .needs-you-lane .ny-later')!
-    expect([laterButton.hidden, laterButton.textContent]).toEqual([false, 'Later 1 ›'])
-    click(laterButton)
-    await settle()
     expect(document.getElementById('needsYou')?.hidden).toBe(false)
-    expect(document.querySelector<HTMLDetailsElement>('[data-deferred-fold="later"]')?.open).toBe(true)
+    expect(document.querySelector('#needsYouList [data-deferred-fold="later"] .later-title')?.textContent).toBe('Later · 1')
 
-    click(document.querySelector('.tab[data-tab="dashboard"]'))
-    await settle()
-    click(document.querySelector('#dashboard .needs-you-lane .ny-review'))
+    click(document.querySelector('#needsYouList .triage-btn'))
     await settle()
     expect(document.querySelector<HTMLElement>('#lightbox')?.hidden).toBe(false)
   })
@@ -770,7 +763,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     await pollTick()
     await settle()
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(document.getElementById('needsYou')?.hidden).toBe(true)
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.activeElement).toBe(before)
   })
 
@@ -783,7 +776,7 @@ describe('the Dashboard without the rail (#454 PR 6)', () => {
     await answerOn('session:here')
     expect(askAction(id, 'pin')).not.toBeNull()
     type(editor(id), 'foo')
-    click(document.querySelector('#dashboard .ny-review'))
+    click(document.querySelector('#needsYouList .triage-btn'))
     await settle()
     type(document.querySelector<HTMLTextAreaElement>('#lightbox .reply-input:not(.reply-context-input)'), 'foobar')
     click(document.querySelector('#lightbox .lb-close'))

@@ -1,4 +1,4 @@
-// Notes: read-state + expiry (spec §8) and the calm state's ambient counts (§7).
+// Notes: read-state + expiry (spec §8).
 // Pure — no DOM, no storage; the viewer passes `nowMs` and the last-seen stamp in.
 import { NOTE_AGE_MS } from './attention.js'
 
@@ -32,25 +32,6 @@ export function unreadNotes(notes, lastSeenIso, nowMs, seenIds) {
 
 export function unreadNoteCount(notes, lastSeenIso, nowMs, seenIds) {
   return unreadNotes(notes, lastSeenIso, nowMs, seenIds).length
-}
-
-const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`
-
-// Ambient status for the "Nothing needs you" panel, as DISCRETE chips. None of
-// these is attention (spec §7) — they are the things you may glance at and leave.
-export function ambientChips(items, boards, nowMs, lastSeenIso, seenIds) {
-  const open = items.filter((i) => i.status === 'open')
-  const awaiting = open.filter((i) => i.kind === 'question' && i.reply && !i.reply_seen_at).length
-  // a hand-off (#612) is an ask in Needs you, not a milestone
-  const milestones = open.filter((i) => i.kind === 'done' && !i.handoff).length
-  const unread = unreadNoteCount(open.filter((i) => i.kind === 'note'), lastSeenIso, nowMs, seenIds)
-  const complete = boards.filter((b) => b.progress.fraction === 1 && b.progress.countable > 0).length
-  const chips = []
-  if (awaiting) chips.push({ key: 'awaiting', label: `${awaiting} answered · awaiting agent` })
-  if (unread) chips.push({ key: 'notes', label: `${unread} new note${unread > 1 ? 's' : ''}` })
-  if (milestones) chips.push({ key: 'milestones', label: plural(milestones, 'milestone') })
-  if (boards.length) chips.push({ key: 'boards', label: `${plural(boards.length, 'board')}${complete ? ` · ${complete} complete` : ''}` })
-  return chips
 }
 
 // Read-marking is a single watermark (`notesSeenAt`), so it can only honestly

@@ -26,7 +26,7 @@ function scope(id: string): HTMLElement {
   return document.querySelector<HTMLElement>(`.panel:not([hidden]) [data-card-id="${id}"]`)!
 }
 
-async function showItem(id: string, tab: 'notes' | 'done' | 'needsYou') {
+async function showItem(id: string, tab: 'notes' | 'done' | 'dashboard') {
   click(document.querySelector(`.tab[data-tab="${tab}"]`))
   await settle()
   const host = scope(id)
@@ -105,7 +105,7 @@ describe('informational item feedback', () => {
     expect(markReplySeen(db, id, repliedAt)).toBe(true)
     advanceClock(60_000)
     await bootApp(db)
-    await showItem(id, 'needsYou')
+    await showItem(id, 'dashboard')
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Keep the rollback.')
     click(buttonLabelled('Note', scope(id)))
     await settle()
@@ -134,7 +134,7 @@ describe('informational item feedback', () => {
     const saved = getItem(db, id)!
     markItemAnnotationDelivered(db, id, saved.response_revision, 'reader')
     await bootApp(db)
-    await showItem(id, 'needsYou')
+    await showItem(id, 'dashboard')
     expect(receipt(id)?.dataset.noteState).toBe('picked')
     expect(scope(id).querySelector('.reply-block')).toBeNull()
     expect(scope(id).querySelector('.lifecycle-receipt')?.textContent ?? '').not.toContain('You answered')

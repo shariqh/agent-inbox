@@ -41,7 +41,7 @@ durable human-attention and work-status surface.
 
 ## Capabilities and Constraints
 
-- Preserve Inbox, Plans, Notes, History, project filtering, agent filtering, global
+- Preserve the action queue (on Home since the Inbox page folded into it), Plans, Notes, History, project filtering, agent filtering, global
   search, live sessions, handoffs, plan flow, and action-aware responses.
 - The product is local-first, single-user, and has no telemetry or hosted service.
 - The core data path has no model calls. Dashboard explanations and rollups must be
@@ -89,8 +89,8 @@ durable human-attention and work-status surface.
 2. Monitoring should be glanceable first and explorable second.
 3. Every metric and trend must be backed by local product data.
 4. Dense operational information should feel calm, legible, and controllable.
-5. The dashboard complements focused triage; it does not turn the Inbox into an
-   analytics maze.
+5. Home puts focused triage first: the asks and the ask in front lead, and the
+   monitoring lanes complement them without turning the page into an analytics maze.
 6. Responsive layouts reflow structure instead of hiding ownership, attention,
    actions, or outcomes.
 7. New visual work must preserve the current app's trust guarantees: human attention

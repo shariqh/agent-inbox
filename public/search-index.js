@@ -3,7 +3,7 @@ import { createBoundedMatcher, haystackFor, searchTerms } from './search.js'
 const groupedItems = (groups = []) => groups.flatMap((group) => group.items ?? [])
 
 const SECTION_DEFS = [
-  { id: 'open', label: 'Open items', kind: 'Open item', tab: 'needsYou' },
+  { id: 'open', label: 'Open items', kind: 'Open item', tab: 'dashboard' },
   { id: 'plans', label: 'Active plans', kind: 'Active plan', tab: 'boards' },
   { id: 'notes', label: 'Notes', kind: 'Note', tab: 'notes' },
   { id: 'history', label: 'History', kind: 'History', tab: 'done' },

@@ -96,20 +96,12 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(rowRecovery(before.id, before.revision, before.action_version, 'Approve the old ask.'))
     await bootApp(db)
 
-    // the Dashboard's rail button
-    click(document.querySelector('.ny-review'))
-    await settle()
-    expect(lightbox().hidden).toBe(false)
-    expect(lightbox().textContent).toContain('Approve launch')
-    await closeDeck()
-
-    // the Inbox toolbar's button
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
-    await settle()
+    // the list's toolbar button on Home (the Needs you lane's own button went with the lane)
     expect(fold()?.textContent).toContain('Approve the old ask.')
     click(buttonLabelled('Review queue'))
     await settle()
     expect(lightbox().hidden).toBe(false)
+    expect(lightbox().textContent).toContain('Approve launch')
     await closeDeck()
 
     // and `t`
@@ -131,7 +123,7 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(itemRecovery(closed, 'Friday.', QUESTION_CLOSED))
     await bootApp(db)
 
-    click(document.querySelector('.ny-review'))
+    click(document.querySelector('#needsYouList .triage-btn'))
     await settle()
     expect(lightbox().hidden).toBe(false)
     expect(lightbox().textContent).toContain('Other ask')
@@ -145,12 +137,12 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(itemRecovery(id, 'Friday.', QUESTION_CHANGED))
     await bootApp(db)
 
-    const railButton = document.querySelector<HTMLButtonElement>('.ny-review')!
+    const railButton = document.querySelector<HTMLButtonElement>('#needsYouList .triage-btn')!
     railButton.focus()
     click(railButton)
     await settle()
     expect(lightbox().hidden).toBe(true)
-    expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
     expect(document.querySelector('.triage-hold-text')?.getAttribute('role')).toBe('status')
     const show = buttonLabelled('Show it')!
@@ -190,7 +182,7 @@ describe('Review queue and unsent responses (#407)', () => {
       ...rowRecovery('gone-row', 1, 1, 'For a removed row.'),
     })
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
 
     click(buttonLabelled('Review queue'))
@@ -219,13 +211,14 @@ describe('Review queue and unsent responses (#407)', () => {
     seed(rowRecovery(r.id, r.revision, r.action_version, 'Approve the same ask.'))
     await bootApp(db)
 
-    click(document.querySelector('.ny-review'))
+    click(document.querySelector('#needsYouList .triage-btn'))
     await settle()
     expect(lightbox().hidden).toBe(true)
     expect(holdText()).toBe('Finish or discard the 1 unsent response first.')
     click(buttonLabelled('Show it'))
     await settle()
-    expect(document.activeElement?.closest('.stale-drafts-fold')).not.toBeNull()
+    // UX slice 2: on a wide window the row came to the front, so its kept text shows beside its editor (#636)
+    expect(document.activeElement?.closest('.stale-drafts-fold, .nrow-card .row-recovery')).not.toBeNull()
     expect(document.activeElement?.textContent).toContain('Approve the same ask.')
   })
 
@@ -240,7 +233,7 @@ describe('Review queue and unsent responses (#407)', () => {
     })
     seed({ ...note(open, 'Check the calendar.'), ...note(closed, 'Stale thought.') })
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     expect(fold()?.querySelectorAll('.stale-draft-line')).toHaveLength(2)
     click(buttonLabelled('Review queue'))
@@ -254,7 +247,7 @@ describe('Review queue and unsent responses (#407)', () => {
     const r = plan(db).rows[0]!
     seed(rowRecovery(r.id, r.revision, r.action_version, 'Approve as written.'))
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     click(buttonLabelled('Review queue'))
     await settle()
@@ -278,7 +271,7 @@ describe('Review queue and unsent responses (#407)', () => {
     const second = insertItem(db, { ...AGENT, kind: 'question', title: 'Release time?' })
     seed({ ...itemRecovery(first, 'Friday.', QUESTION_CHANGED), ...itemRecovery(second, 'Noon.', QUESTION_CHANGED) })
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     const toolbar = buttonLabelled('Review queue')!
     toolbar.focus()
@@ -312,7 +305,7 @@ describe('Review queue and unsent responses (#407)', () => {
     const id = insertItem(db, { ...AGENT, kind: 'question', title: 'Release day?' })
     seed(itemRecovery(id, 'Friday.', QUESTION_CHANGED))
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     const toolbar = buttonLabelled('Review queue')!
     toolbar.focus()
@@ -334,7 +327,7 @@ describe('Review queue and unsent responses (#407)', () => {
       ...rowRecovery('gone-row', 1, 1, 'For a removed row.'),
     })
     await bootApp(db)
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     expect(fold()?.querySelector('.stale-drafts-help')?.textContent)
       .toBe('Retry sends a response again; Copy copies a step’s text; Discard removes an entry for good.')

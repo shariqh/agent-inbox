@@ -809,7 +809,7 @@ describe('the session panel’s editor', () => {
     const { block } = await typeInPanel(d, rowId)
     agentWrite(d, { issue: { repo: 'example/repo', number: 7 } })
     await pollTick()
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
 
     expect(block()!.querySelector<HTMLTextAreaElement>('.reply-input')?.value).toBe('Half an answer')
@@ -823,7 +823,7 @@ describe('the session panel’s editor', () => {
     const { block } = await typeInPanel(d, rowId)
     agentWrite(d, { note: 'The 1.4.1 build is ready.' })
     await pollTick()
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
 
     expect(block()!.querySelector<HTMLTextAreaElement>('.reply-input')?.value).toBe('Half an answer')

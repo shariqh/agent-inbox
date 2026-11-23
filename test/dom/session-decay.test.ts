@@ -44,7 +44,7 @@ describe('a session card after a claim goes cold (#45)', () => {
     expect(document.querySelector('#sessionsIndicator .si-s')?.textContent).toBe('all quiet')
 
     // the row did NOT expire, so the item is still an agent blocked on you
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     const nrow = rows().find((r) => r.dataset['cardId'] === ask)!
     expect(nrow.textContent).toContain('Waiting')

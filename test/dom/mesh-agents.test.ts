@@ -160,7 +160,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(log.map((entry) => entry.replace(/^GET /, ''))).toEqual(BOOT_REQUESTS)
     expect(section()).toBeNull()
     // no navigation posts anything without `mesh` in the last /api/version
-    tab('needsYou')
+    tab('boards')
     await settle()
     tab('dashboard')
     await settle()
@@ -204,7 +204,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
 
     // leaving the Dashboard stops the read and keeps the last body
     const reads = meshReads(log)
-    tab('needsYou')
+    tab('boards')
     await settle()
     s.body = body(unslop(), requestPost())
     await pollTick()
@@ -261,7 +261,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       let release = () => {}
       const held = new Promise<void>((done) => { release = done })
       const { bridge } = await boot({ intercept: (url, _init, next) => (url === '/api/version' ? held.then(next) : null) })
-      tab('needsYou')
+      tab('boards')
       await settle()
       release()
       await settle()
@@ -326,7 +326,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     const { bridge, log, s } = await boot()
     await pollTick()
     expect(shown()).toEqual(UP_ROWS)
-    tab('needsYou')
+    tab('boards')
     await settle()
     s.onTrigger = () => { s.body = body(unslop({ state: 'up', reason: null, card: summarizeCard(UNSLOP_CARD), cardJson: cardJson(UNSLOP_CARD), lastSeen: null, checkedAt: at(0) }), requestPost()) }
     const loads = () => log.filter((entry) => entry === 'GET /api/items').length
@@ -467,7 +467,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       return {
         title: document.title,
         badge: badgeCount(),
-        tabs: ['needsYou', 'notes', 'boards', 'done', 'agent'].map(tabCount),
+        tabs: ['dashboard', 'notes', 'boards', 'done', 'agent'].map(tabCount),
         needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
       }
     }
@@ -728,7 +728,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await pollTick()
       expect(posted(bridge)).toHaveLength(2)
       // the agent tab from another tab is an open for that agent; it stays in the list meanwhile
-      tab('needsYou')
+      tab('boards')
       await settle()
       expect(agentTab().hidden).toBe(false)
       tab('agent')
@@ -743,7 +743,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect([activeTab(), agentTab().hidden, page().hidden]).toEqual(['dashboard', true, true])
       expect(posted(bridge).slice(3)).toEqual([{ trigger: 'open' }])
       expect(document.activeElement).toBe(rowButton('unslop'))
-      expect(heading()).toEqual(['Monitor', 'Live Operations Desk'])
+      expect(heading()).toEqual(['', 'Home'])
 
       // a second press within 60 s posts one open (the server skips the check)
       await openAgent('unslop')
@@ -752,7 +752,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       tab('dashboard')
       await settle()
       await openAgent('request-post')
-      expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(7)
+      expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(6)
       expect([agentTab().querySelector('.tab-name')?.textContent, page().querySelector('.map-name')?.textContent, heading()[1]])
         .toEqual(['request-post', 'request-post', 'request-post'])
       expect(pageLines()).toContainEqual(['Where', 'Remote · https://request-post.tailnet-name.ts.net'])
@@ -816,11 +816,11 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await settle()
       navigateToHash(`#item/${id}`)
       await settle()
-      expect([activeTab(), page().hidden]).toEqual(['needsYou', true])
+      expect([activeTab(), page().hidden]).toEqual(['dashboard', true])
       // and the hidden tab's own click (selectTab('agent')) does nothing
       click(agentTab())
       await settle()
-      expect(activeTab()).toBe('needsYou')
+      expect(activeTab()).toBe('dashboard')
     })
 
     it('an agent leaving mesh.json keeps the tab under one line; a reload starts with no agent tab', async () => {
@@ -1090,7 +1090,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(runsReads(log)).toBe(3)
 
       // another tab stops it too
-      tab('needsYou')
+      tab('boards')
       await settle()
       await pollTick()
       expect(runsReads(log)).toBe(3)
@@ -1111,7 +1111,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
 
       // Details is kept while the tab stays open; every open (a re-open of the same agent too) starts on Run history
       click(innerTab('Details'))
-      tab('needsYou')
+      tab('boards')
       await settle()
       tab('agent')
       await settle()

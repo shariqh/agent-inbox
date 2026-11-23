@@ -50,7 +50,7 @@
   --app-code-error: #b93643;
   --app-shadow: 0 1px 2px rgba(15, 23, 31, .12);
   --sidebar-width: 220px;
-  --inspector-width: 520px;
+  --inspector-width: 640px;
   /* Motion tokens (#302, proposal §10). Every transition takes its duration
      and easing from here; Dashboard animations use them for one-shots. */
   --motion-fast: 120ms;
@@ -724,8 +724,6 @@ body.settings-open #rail, body.settings-open #tabs, body.settings-open .floating
 
 .calm-panel { border: 1px solid color-mix(in srgb, var(--app-success) 22%, transparent); background: color-mix(in srgb, var(--app-success) 6%, transparent); border-radius: 10px; padding: 22px 18px; text-align: center; }
 .calm-head { font-size: 15px; opacity: .75; }
-.calm-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 12px; }
-.calm-chip { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--app-text) 15%, transparent); opacity: .6; }
 .notes-chip { display: block; width: 100%; margin: 14px 0 2px; padding: 6px; font: inherit; font-size: 12.5px; background: transparent; border: 1px dashed var(--app-border-strong); border-radius: 6px; color: var(--app-muted); opacity: 1; cursor: pointer; }
 .notes-chip:hover { color: var(--app-text); }
 
@@ -1166,6 +1164,8 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   letter-spacing: .09em;
   text-transform: uppercase;
 }
+/* Home has no kicker: an empty one draws nothing (its display: block beats the UA's [hidden]) */
+.page-kicker[hidden] { display: none; }
 .page-heading h1 { margin: 0; font-size: clamp(22px, 2.3vw, 30px); font-weight: 650; letter-spacing: -.035em; line-height: 1.18; }
 .topbar-notices { grid-column: 1 / -1; min-height: 17px; margin-top: -2px; }
 #status { color: var(--app-danger); }
@@ -1331,29 +1331,28 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
 }
 main { width: 100%; max-width: 1460px; margin: 0 auto; padding: 0 32px 64px; }
 .panel { min-width: 0; }
-#needsYou { position: relative; min-height: calc(100vh - 150px); }
-#needsYouList { min-height: 420px; padding-right: calc(var(--inspector-width) + 28px); container: needs-queue / inline-size; }
-.inspector-empty {
-  position: fixed;
-  top: 116px;
-  right: 28px;
-  bottom: 104px;
-  display: grid;
-  width: var(--inspector-width);
-  align-content: center;
-  padding: 32px;
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--app-surface) 72%, transparent);
-  color: var(--app-text-soft);
-  text-align: center;
-}
-.inspector-empty span { color: var(--app-text); font-size: 14px; font-weight: 600; }
-.inspector-empty p { margin: 7px auto 0; max-width: 250px; font-size: 12.5px; }
-body:has(.nrow[data-open="1"]) .inspector-empty { display: none; }
+#needsYou { position: relative; }
+#needsYouList { container: needs-queue / inline-size; }
+/* UX pass, slice 2: the ask in front. While a row is open on a wide window, Home
+   (app.js syncAskFront) keeps the list and the lanes clear of the fixed card; with
+   nothing in front both use the full width. Every lane stays in the column. */
+body.ask-front #needsYouList, body.ask-front #dashboard { padding-right: calc(var(--inspector-width) + 28px); }
+.inspector-resizer { display: none; }
+body.ask-front .inspector-resizer { display: block; }
 .tab-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--app-border); }
 .queue-filter-group, .queue-tool-group { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .queue-tool-group { justify-content: flex-end; }
+/* UX pass, slice 2: the header's first line is the list's heading, its count and the
+   Filter toggle; the tools rest out of sight in one wrapper that leaves the grid to
+   its two groups while shown. Shown and hidden by state (app.js), never by focus. */
+.queue-head { grid-column: 1 / -1; display: flex; min-width: 0; align-items: baseline; gap: var(--sp-2); }
+.queue-title { margin: 0; color: var(--app-text); font-size: var(--fs-title); font-weight: 650; line-height: 1.3; }
+.queue-count { color: var(--app-attention); font-size: var(--fs-body); font-weight: 650; font-variant-numeric: tabular-nums; }
+.queue-count[hidden] { display: none; }
+.queue-tools-toggle { margin-left: auto; padding: var(--sp-1) var(--sp-3); border: 1px solid var(--app-border); border-radius: 8px; background: transparent; color: var(--app-muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.queue-tools-toggle:hover, .queue-tools-toggle[aria-expanded="true"] { border-color: var(--app-border-strong); color: var(--app-text); }
+.queue-tools { display: contents; }
+.queue-tools[hidden] { display: none; }
 /* #407: why the Review queue did not open. Out of sight but still in the
    accessibility tree while empty, so its live region announces a new message. */
 .triage-hold { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12.5px; color: var(--app-text); }
@@ -1806,52 +1805,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   max-width: 1500px;
   margin: 0 auto;
 }
-/* Dashboard lanes design §3.1: the page head's lane chips. Each scrolls to its
-   lane and focuses its first card; none filters. New session… sits at its end. */
-.dash-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
-.dash-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
-.dash-chip { display: inline-flex; align-items: baseline; gap: var(--sp-2); padding: var(--sp-1) var(--sp-3); border: 1px solid var(--app-border); border-radius: 999px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-body); font-weight: 600; cursor: pointer; }
-.dash-chip:hover { background: var(--app-soft); }
-.dash-chip:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
-.dash-chip-label { color: var(--app-muted); }
-.dash-chip-count { font-variant-numeric: tabular-nums; }
-.dash-chip.att { border-color: color-mix(in srgb, var(--app-attention) 45%, var(--app-border)); }
-.dash-chip.att .dash-chip-count { color: var(--app-attention); }
-.dash-head-actions { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
-/* §3.2: the Needs you lane, one card per ask. A card opens its ask in the
-   Inbox's panel and never answers, so it holds no control. */
-.needs-you-lane { margin-top: var(--lane-gap); }
-.ny-later { padding: 0; border: 0; background: none; color: var(--app-attention); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; }
-.ny-review { padding: var(--sp-1) var(--sp-3); border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-meta); font-weight: 650; cursor: pointer; }
-.ny-later[hidden], .ny-empty[hidden], .ny-card [hidden] { display: none; }
-/* min(): a card narrower than 340px (a phone) takes the full width rather than overflowing */
-.ny-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: var(--sp-3); }
-.ny-cards:empty { display: none; }
-.ny-card { display: grid; min-width: 0; align-content: start; gap: var(--sp-1); padding: var(--sp-3) var(--sp-4); border: 1px solid var(--app-border); border-left: 2px solid var(--app-attention); border-radius: 0 10px 10px 0; background: color-mix(in srgb, var(--app-attention) 5%, var(--app-surface)); cursor: pointer; }
-.ny-card:hover { border-color: var(--app-border-strong); border-left-color: var(--app-attention); }
-.ny-card:focus { outline: none; }
-.ny-card:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
-/* one line, and under it the session's note when there is one ("session ended"): held on
-   the line, the note squeezed a short branch down to an ellipsis in a narrow card */
-.ny-meta { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); white-space: nowrap; }
-.ny-meta > span + span::before { margin-right: var(--sp-2); content: "·"; }
-.ny-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--ny-project, var(--app-text-soft)); }
-.ny-project { flex: none; color: var(--app-text); font-weight: 650; }
-/* a zero basis, so a long branch never sends itself or the age to a second line; it grows
-   to its own width at most and takes an ellipsis only when the line is too short for it */
-.ny-branch { max-width: max-content; min-width: 0; flex: 1 1 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; }
-.ny-age { flex: none; font-variant-numeric: tabular-nums; }
-.ny-session { order: 2; flex: 0 0 100%; font-style: italic; }
-.ny-meta > .ny-session::before { content: none; }
-/* the Inbox holds an unsent answer for this ask (app.js holdsDraft) */
-.ny-draft { order: 1; flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-muted); font-weight: 600; }
-/* a done item the server stored as a hand-off (#612): the same pill as Draft */
-.ny-kind { order: 1; flex: none; padding: 0 var(--sp-1); border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-soft); font-weight: 600; }
-.ny-title { min-width: 0; overflow-wrap: anywhere; color: var(--app-text); font-size: var(--fs-title); font-weight: 650; line-height: 1.3; }
-.ny-title.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 500; }
-.ny-next { display: -webkit-box; overflow: hidden; color: var(--app-text-soft); font-size: var(--fs-body); line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.ny-plan { min-width: 0; overflow: hidden; color: var(--app-muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
-.ny-empty { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
 /* §3.5: Plans in progress, Just landed and Today follow Working and Quiet, each a
    full-width lane, the ribbon last. A plan row is one link-like control: a click
    or Enter opens the plan in Plans, and it holds no button. Every cell has its
@@ -2215,7 +2168,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ah-spacer { flex: 1; }
 .ah-new { padding: 4px 10px; border: 1px solid var(--app-accent); border-radius: 7px; background: var(--app-accent); color: var(--app-on-accent); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
 .ah-new:disabled { opacity: .45; cursor: default; }
-.ah-note { margin: var(--sp-2) 0 0; color: var(--app-muted); font-size: var(--fs-meta); text-align: right; } /* under the page head's New session… */
+.ah-note { margin: var(--sp-2) 0 0; color: var(--app-muted); font-size: var(--fs-meta); text-align: right; } /* under the Working lane's head, where New session… is */
 .ah-outside { margin: calc(-1 * var(--sp-2)) 0 var(--sp-3); color: var(--app-muted); font-size: 12px; }
 .ah-outside-all { padding: 0; border: 0; background: none; color: var(--app-link); font: inherit; font-weight: 600; cursor: pointer; }
 .ah-outside-all:hover { text-decoration: underline; }
@@ -2500,8 +2453,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 @container operations-desk (max-width: 900px) {
   /* Compact desk: a 24px lane header and a 40px gap between lanes (§4). */
   .dashboard-grid { --fs-lane: 24px; --lane-gap: 40px; }
-  .needs-you-lane { --fs-lane: 24px; --lane-gap: 40px; }
-  .ny-cards { grid-template-columns: minmax(0, 1fr); }
   /* §3.5: a plan row on two lines, Just landed two across */
   .pl-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr); grid-template-areas: "title title updated" "project progress waiting"; }
   .dashboard-outcome-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2523,8 +2474,6 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 }
 
 @container operations-desk (max-width: 620px) {
-  /* Later and Review queue wrap under the lane's title (§3.2) */
-  .ny-head > h2 { flex-basis: 100%; }
   /* §3.5: a plan row stacked, Just landed one across */
   .pl-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "progress waiting" "project updated"; }
   .dashboard-outcome-list { grid-template-columns: minmax(0, 1fr); }
@@ -3134,9 +3083,6 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
   .topbar-notices { min-height: 0; flex: 1 0 100%; margin-top: -4px; }
   main { padding: 0 16px 64px; }
   #dashboard { padding: 0 0 64px; }
-  #needsYou { min-height: 0; }
-  #needsYouList { min-height: 0; padding-right: 0; }
-  .inspector-empty { display: none; }
   #needsYouList .nrow-card {
     position: static;
     inset: auto;
@@ -3433,11 +3379,6 @@ body.hub-reconnecting #status { display: none; }
 .nrow > .nrow-l1 .nrow-caret { display: none; }
 .nrow > .nrow-l1 .nrow-glyph { order: 1; }
 .nrow:not(:is(:hover, :focus-within, .selected, [data-open="1"])) > .nrow-l1 :is(.nrow-glyph, .nrow-dismiss, .nrow-star:not(:has(.undo-btn))) { display: none; }
-/* The Dashboard's Needs you card: its meta line at rest is the project dot, the project, the age and the
-   Hand-off and Draft markers. Each separator belongs to the part it precedes, so a hidden part takes its
-   own along; the age drops its separator when it is the first text left. */
-.ny-card :is(.ny-agent, .ny-branch, .ny-session, .ny-plan) { display: none; }
-.ny-meta > .ny-project[hidden] ~ .ny-age::before { content: none; }
 /* The inspector's head: the opened ask's title leads; the session token and Show on Agents › stay, quietly. */
 /* :where() keeps these at one class, so the phone sheet's smaller head title (in the 1279px block) still wins */
 :where(.nrow-card-head > div, .lb-card > .card, .lb-row-card, .row-panel) > .card-title { font-size: 24px; font-weight: 700; line-height: 1.2; }
@@ -3472,3 +3413,32 @@ body.hub-reconnecting #status { display: none; }
 :is(.lb-card, .lb-row-card, .row-panel) .opt-pill.rec { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
 /* In Plans the row above the panel already carries the headline, so the panel's own title stays smaller. */
 .row-panel > .card-title { font-size: 18px; }
+
+/* UX pass, slice 2: one Home. Its sections (Needs you, Working, Quiet, Plans in progress, Just landed,
+   Today) share one quiet heading and sit on the page itself, edge to edge with the list of asks; what a
+   section holds keeps its own cards and rows. */
+#dashboard { padding: 0 0 var(--sp-7); }
+/* one gap between sections at every width; set on the variable, so everything measured against the
+   lane gap (the session panel's place under a narrow window's lanes) follows */
+.dashboard-grid { --lane-gap: var(--sp-6); }
+.dashboard .dashboard-card { padding: 0; border: 0; border-radius: 0; background: none; }
+.dashboard .dashboard-card-head { margin-bottom: var(--sp-3); }
+.dashboard .dashboard-card h2, .queue-title { color: var(--app-text-soft); font-size: var(--fs-body); font-weight: 650; letter-spacing: 0; line-height: 1.3; }
+#needsYouList > .tab-header { margin-bottom: var(--sp-3); padding-bottom: 0; border-bottom: 0; }
+/* A project's sessions are labelled by one small line, quieter than the cards under it, and the
+   projects sit side by side where there is room. Each project takes an equal share of its row and
+   its cards fill that share at every width (the narrow window's two fixed card columns left half of
+   each share empty), so one busy project still spreads across the page. */
+.ah-groups { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-4); }
+.ah-groups:empty { display: none; }
+.ah-group { min-width: 0; flex: 1 1 340px; }
+.ah-group + .ah-group { margin-top: 0; }
+.ah-cards { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
+.ah-group-head { margin-bottom: var(--sp-2); padding-bottom: 0; border-bottom: 0; font-size: var(--fs-body); }
+/* Filter is a quiet word until it is used. */
+.queue-tools-toggle { border-color: transparent; }
+/* Nothing waiting is one calm line on the page, not a panel. */
+#needsYouList > .calm-panel { padding: var(--sp-1) 0; border: 0; border-radius: 0; background: none; text-align: start; }
+#needsYouList > .calm-panel .calm-head { color: var(--app-text); font-size: var(--fs-title); font-weight: 650; opacity: 1; }
+/* New notes are a quiet chip under the asks, as wide as its words. */
+#needsYouList > .notes-chip { width: auto; align-self: flex-start; margin: var(--sp-1) 0 0; padding: var(--sp-1) var(--sp-3); border-style: solid; border-radius: 999px; font-size: var(--fs-meta); }

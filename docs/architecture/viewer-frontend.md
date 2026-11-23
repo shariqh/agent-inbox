@@ -86,7 +86,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   window deletes only the copy it loaded or last wrote, and its leaving save
   writes back a draft another window deleted; the viewer-restart hold stays.
 - Messages to a running session (#411 PR 2) are written in one composer per
-  session, in the Dashboard's session panel (#454: the Live drawer that also held
+  session, in the session panel on Home (#454: the Live drawer that also held
   one is retired), and read from `/api/messages`, the poll's ninth read (a 404,
   error or refused body is no messages). Each composer is one node kept for the
   page's life and updated in place. A send claims an id once and reuses it while
@@ -106,7 +106,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   block at the end of `public/style.css`: the context editor stays in the DOM, out of
   sight until the person works in the answer area or it holds text (`answerEl` marks
   its row `.shown` after a click or on keyboard focus, and `contextEditorFor` keeps
-  that until another ask opens); the Inbox row is one line
+  that until another ask opens); a row of Home's list of asks is one line
   (`chip-rest` marks a chip that only says the ask waits on you; the title is the part
   that is cut, and ★, ✕ and a plan step's Plan button show on the row you are on); and
   shortcut tiles draw only under `.keys-shown`, which `keyboard-ui.js` sets on the root
@@ -228,11 +228,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   hint claiming "paused" over data already on screen. Pinned in `test/shell.test.ts` +
   `test/issue-31-followups.test.ts`; the behavioural half (including both the protected draft and
   live ambient signals) is `test/dom/silent-send.test.ts`.
-  Answer editors have two hosts and one rule: the Inbox card (and the Review queue's
+  Answer editors have two hosts and one rule: the ask's card in Home's list (and the Review queue's
   deck) and the session panel's Asking you section (`#dashFocus`, #454 A.2; #303's rail,
   `#dashRail`, retired by #454's PR 6). Each mounts the same `answerEl`/`rowAnswerEl`, so
   a draft is one entry in `draftReplies`/`rowDrafts` whichever host holds it; a draft
-  pauses only the panel's ask section on the Dashboard, a forced paint rebuilds it, and
+  pauses only the panel's ask section, a forced paint rebuilds it, and
   `restoreDraftFocus` scopes the bookmark to the host's id, so the same ask drawn twice
   never takes the other's focus.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
@@ -385,13 +385,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   else (a closed, gone or since-advanced target) stays in the unsent responses and
   the queue opens over it. `hasDraftRecovery()` still guards the viewer-restart
   reload, which protects every entry. A held queue never moves focus to the
-  off-screen fold: every door (the Dashboard rail's button, the Inbox toolbar's
-  button and `t`) switches to the Inbox and writes "Finish or discard the N unsent
-  response(s) first." into the Needs-you header's polite `role="status"` region,
-  with a Show control that focuses it. That header node is never rebuilt, so
+  off-screen fold: every door (the list header's Review queue button and `t`)
+  selects Home, shows the header's tools (UX pass, slice 2: they rest out of sight)
+  and writes "Finish or discard the N unsent response(s) first." into the list
+  header's polite `role="status"` region, outside the tools' wrapper, with a Show
+  control that focuses it. That header node is never rebuilt, so
   `paintTriageHold()` writes it in place (Discard calls it too, even while the list's
   rebuild is held back); `triageHeld` is in `frameInputs()` and ends when the queue
-  opens, the held entries are gone or the human leaves the Inbox. Show is an
+  opens, the held entries are gone or the human leaves Home. Show is an
   explicit navigation: it opens the row (`requestDraftRecovery(target)`) for an
   inline recovery, then `revealDetailsAncestors`, `revealControl` and a
   `motion.scrollBehavior()` scroll of the in-flow row or line, and focuses the
@@ -437,11 +438,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
      (`retireRowDraft`), nothing is shown and nothing is sent again.
   4. *A new ask, or none* (`changed`, `closed`, `removed`, `projectClosed`). The text
      goes to `staleRowDrafts` with its reason. `rowRecoveryEl` shows it beside the row
-     while the row's open card is in the Inbox list (and in any other surface that draws
+     while the row's open card is in Home's list (and in any other surface that draws
      the row's editor), and `renderOrphanedDrafts` lists it in the unsent responses only
-     when the Inbox card does not show it. Both offer **Use this text** whenever the row
+     when that card does not show it (Show it in the Review queue's hold line then focuses
+     it beside the editor). Both offer **Use this text** whenever the row
      still has an editor (`rowRecoveryUsable`: it is listed and its project is open; a
-     blocked row's card opens in the Inbox, a step that asks nothing opens in Plans;
+     blocked row's card opens on Home, a step that asks nothing opens in Plans;
      after anything already typed, focus to the editor, nothing sent), **Copy** and
      **Discard**. An entry stored with no reason reads "Kept from before you set this
      aside." (`setAside`) or "Your text was not sent.". A refused option click is not

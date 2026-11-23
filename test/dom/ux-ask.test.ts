@@ -467,7 +467,7 @@ describe('shortcut tiles (UX ask, point 7)', () => {
     expect(keysShown()).toBe(false)
     const pills = [...row(id)!.querySelectorAll('.opt-pill')]
     expect(pills.map((pill) => pill.getAttribute('data-shortcut'))).toEqual(['1', '2'])
-    expect(document.querySelector('[data-tab="needsYou"]')?.getAttribute('data-shortcut')).toBe('G I')
+    expect(document.getElementById('needsYouTitle')?.getAttribute('data-shortcut')).toBe('G I')
     expect(buttonLabelled('Send', row(id)!)?.getAttribute('data-shortcut')).toBeTruthy()
     const hints = document.getElementById('keyboardHints')!
     click(hints)

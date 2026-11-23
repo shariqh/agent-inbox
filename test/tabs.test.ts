@@ -16,10 +16,11 @@ const boards = [
 ]
 
 describe('tab model', () => {
-  it('boots to Dashboard and keeps Live as a footer strip rather than a tab', () => {
+  it('boots to Home and keeps Live as a footer strip rather than a tab', () => {
     expect(DEFAULT_TAB).toBe('dashboard')
+    // Home (`dashboard`) holds the asks: there is no separate Inbox tab.
     // `agent` (cards view V5 §3.3): the mesh agent tab, last, shown only while an agent is open
-    expect(TAB_IDS).toEqual(['dashboard', 'needsYou', 'boards', 'notes', 'done', 'chats', 'agent'])
+    expect(TAB_IDS).toEqual(['dashboard', 'boards', 'notes', 'done', 'chats', 'agent'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 
@@ -35,7 +36,7 @@ describe('tab model', () => {
       unreadNotes: 2,
       scoped: { boards: [{ id: 'b1' }], done: [{ id: 'd1' }] },
     })
-    expect(c).toEqual({ needsYou: 7, boards: 1, notes: 2, done: 1 })
+    expect(c).toEqual({ dashboard: 7, boards: 1, notes: 2, done: 1 })
   })
 
   it('never counts the agent tab (cards view V5 §3.3)', () => {
@@ -59,12 +60,12 @@ describe('filter-blindness invariant (spec §7)', () => {
   const live = new Set(['s1'])
   const global = attentionCount(items as never, boards as never, NOW, live)
 
-  it('the Needs-you tab count ignores the project filter that empties the list', () => {
+  it('Home\'s count ignores the project filter that empties the list', () => {
     const scopedToApi = { boards: boards.filter((b) => b.project === 'api'), done: [] }
     const scopedToNothing = { boards: [], done: [] }
     expect(global).toBeGreaterThan(1) // api + web both contribute
-    expect(tabCounts({ globalAttention: global, unreadNotes: 0, scoped: scopedToApi }).needsYou).toBe(global)
-    expect(tabCounts({ globalAttention: global, unreadNotes: 0, scoped: scopedToNothing }).needsYou).toBe(global)
+    expect(tabCounts({ globalAttention: global, unreadNotes: 0, scoped: scopedToApi }).dashboard).toBe(global)
+    expect(tabCounts({ globalAttention: global, unreadNotes: 0, scoped: scopedToNothing }).dashboard).toBe(global)
     expect(tabCounts({ globalAttention: global, unreadNotes: 0, scoped: scopedToNothing }).boards).toBe(0)
   })
 
@@ -73,7 +74,7 @@ describe('filter-blindness invariant (spec §7)', () => {
     expect(apiOnly.boards).toBe(1)
     expect(apiOnly.notes).toBe(1)
     expect(apiOnly.done).toBe(0)
-    expect(apiOnly.needsYou).toBe(global) // the one count the filter may never touch
+    expect(apiOnly.dashboard).toBe(global) // the one count the filter may never touch
   })
 })
 

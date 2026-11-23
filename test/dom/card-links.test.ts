@@ -426,7 +426,7 @@ describe('links are never attention (issue #300)', () => {
     })
     await bootApp(db)
     await showInbox()
-    expect([badgeCount(), tabCount('needsYou'), tabCount('notes'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
+    expect([badgeCount(), tabCount('dashboard'), tabCount('notes'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
       .toEqual([2, '2', '1', 2])
   })
 
@@ -605,7 +605,7 @@ describe('repo-relative paths (issue #324)', () => {
     })
     await bootApp(db)
     await showInbox()
-    expect([badgeCount(), tabCount('needsYou'), tabCount('notes'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
+    expect([badgeCount(), tabCount('dashboard'), tabCount('notes'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
       .toEqual([2, '2', '1', 2])
   })
 })

@@ -372,7 +372,7 @@ describe('verified update downloads', () => {
     const signal = () => ({
       badge: badgeCount(),
       title: document.title,
-      needsYou: tabCount('needsYou'),
+      needsYou: tabCount('dashboard'),
       rows: rowTitles(),
     })
     const bridge = await boot(state('idle'), seed)

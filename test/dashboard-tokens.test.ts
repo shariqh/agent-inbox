@@ -60,8 +60,6 @@ describe('the Dashboard region headers and gaps', () => {
   it('go compact under 900px: 24px headers and a 40px lane gap', () => {
     const compact = css.slice(css.indexOf('@container operations-desk (max-width: 900px) {'))
     expect(compact.slice(0, compact.indexOf('\n}'))).toMatch(/\.dashboard-grid \{ --fs-lane: 24px; --lane-gap: 40px; \}/)
-    // the Needs you lane sits above the grid (dashboard lanes PR 3), so it takes the compact values of its own
-    expect(compact.slice(0, compact.indexOf('\n}'))).toMatch(/\.needs-you-lane \{ --fs-lane: 24px; --lane-gap: 40px; \}/)
   })
 
   it('space regions by --lane-gap and a header from its content by --sp-5', () => {

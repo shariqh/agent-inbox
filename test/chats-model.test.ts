@@ -381,7 +381,7 @@ describe('chats model (#586 PR 2)', () => {
 
     it('is for a live chat the list named a session for, on either tool', () => {
       expect(JUMP_LABEL).toBe('Jump to session')
-      expect(jumpControl(chat({ live: true, session: SESSION }))).toEqual({ session: SESSION, title: 'Open this chat’s session on the Dashboard' })
+      expect(jumpControl(chat({ live: true, session: SESSION }))).toEqual({ session: SESSION, title: 'Open this chat’s session on Home' })
       expect(jumpControl(chat({ tool: 'copilot', live: true, session: SESSION }))?.session).toBe(SESSION)
     })
 

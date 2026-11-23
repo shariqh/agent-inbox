@@ -54,8 +54,9 @@ const foldIds = () => ids(quietLane(), '.ah-folds [data-session-card]')
 const groups = () => [...workingLane().querySelectorAll<HTMLElement>('.ah-groups > .ah-group')]
   .map((group) => [group.querySelector('.ah-group-name')?.textContent, ids(group, '[data-session-card]')])
 const item = (id: string) => [...document.querySelectorAll<HTMLElement>('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === id) ?? null
-const chip = (key: string) => document.querySelector<HTMLButtonElement>(`#dashboard [data-dash-chip="${key}"]`)!
-const chipCount = (key: string) => chip(key).querySelector('.dash-chip-count')?.textContent
+// the lane chips are gone (UX slice 2): a lane's size is its cards or rows
+const chipCount = (key: string) => String(document.querySelectorAll(key === 'working'
+  ? '#dashboard .working-lane .ah-cards [data-session-card]' : '#dashboard .quiet-lane .qt-rows [data-session-card]').length)
 const panel = () => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
 const labels = (el: Element | null) => [...(el?.querySelectorAll('[data-ah-action]') ?? [])].map((b) => b.textContent)
 const key = (target: Element, name: string) =>
@@ -67,7 +68,7 @@ const forced = async () => {
 }
 
 describe('the Working and Quiet lanes (§3.3, §3.4)', () => {
-  it('sit after Needs you, Working then Quiet, each with its lane heading and no count, and no filter or group-by', async () => {
+  it('sit at the top of the Dashboard part of Home, Working then Quiet, each with its lane heading and no count, and no filter or group-by', async () => {
     db = freshDb()
     work(db, 'w', 'Writing')
     rest(db, 'q')
@@ -77,7 +78,8 @@ describe('the Working and Quiet lanes (§3.3, §3.4)', () => {
     expect([...home().querySelectorAll('.ah-lane-head h2')].map((h) => [h.id, h.textContent])).toEqual([
       ['workingLaneTitle', 'Working'], ['quietLaneTitle', 'Quiet'],
     ])
-    expect(document.querySelector('#dashboard .needs-you-lane')?.nextElementSibling?.classList.contains('dashboard-grid')).toBe(true)
+    // no lane above the grid: only the "Since you last looked" line precedes it
+    expect(document.querySelector('#dashboard .dashboard-grid')?.previousElementSibling?.classList.contains('dash-since')).toBe(true)
     // the lanes share the split with the session panel (§3.6), and the split is the grid's
     expect(home().parentElement?.classList.contains('dash-split')).toBe(true)
     expect(home().parentElement?.parentElement?.classList.contains('dashboard-grid')).toBe(true)
@@ -334,7 +336,7 @@ describe('the Quiet table (§3.4)', () => {
     host.remove()
   })
 
-  it('carries the Asking you chip on a row with open asks; the chip goes to Needs you', async () => {
+  it('carries the Asking you chip on a row with open asks; the chip opens the first ask in front', async () => {
     db = freshDb()
     rest(db, 'q')
     const first = insertItem(db, { ...A, kind: 'question', title: 'First ask', session: 'q' })
@@ -347,7 +349,7 @@ describe('the Quiet table (§3.4)', () => {
     expect(item('session:q')?.textContent).not.toContain('First ask')
     click(asking)
     await settle()
-    expect((document.activeElement as HTMLElement | null)?.dataset.nyAsk).toBe(first)
+    expect(document.querySelector(`#needsYouList .nrow[data-card-id="${first}"]`)?.getAttribute('data-open')).toBe('1')
     expect(panel().hidden).toBe(true)
   })
 
@@ -435,43 +437,7 @@ describe('empty and reading states (§3.3, §3.4)', () => {
   })
 })
 
-describe('chips and keys (§3.1)', () => {
-  it('the Working and Quiet chips focus their own lane’s first card or row and never filter', async () => {
-    db = freshDb()
-    work(db, 'w', 'Working')
-    rest(db, 'q1')
-    advanceClock()
-    rest(db, 'q2')
-    await bootApp(db)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    const before = [workingIds(), quietIds()]
-    click(chip('quiet'))
-    expect(document.activeElement).toBe(item(quietIds()[0]!))
-    expect((document.activeElement as HTMLElement).tabIndex).toBe(0)
-    click(chip('working'))
-    expect(document.activeElement).toBe(item('session:w'))
-    expect([workingIds(), quietIds()]).toEqual(before)
-    expect([chipCount('working'), chipCount('quiet')]).toEqual(['1', '2'])
-  })
-
-  it('an empty Working lane’s chip lands on its heading', async () => {
-    db = freshDb()
-    rest(db, 'q')
-    await bootApp(db)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    click(chip('working'))
-    expect(document.activeElement).toBe(document.getElementById('workingLaneTitle'))
-  })
-
-  it('an empty Quiet lane’s chip lands on its heading', async () => {
-    db = freshDb()
-    work(db, 'w', 'Working')
-    await bootApp(db)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    click(chip('quiet'))
-    expect(document.activeElement).toBe(document.getElementById('quietLaneTitle'))
-  })
-
+describe('keys (§3.1)', () => {
   it('gives each lane one tab stop in page order; J/K and the arrows stay in a lane; Enter opens', async () => {
     db = freshDb()
     work(db, 'w1', 'One')
@@ -585,7 +551,7 @@ describe('the session panel from both lanes (§3.6)', () => {
     // a trusted click elsewhere still closes it
     click(item('session:q')?.querySelector('.sc-doing'))
     await settle()
-    click(document.querySelector('#dashboard .dash-head'))
+    click(document.getElementById('dashLandedTitle'))
     await settle()
     expect(panel().hidden).toBe(true)
   })

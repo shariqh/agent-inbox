@@ -55,7 +55,7 @@ describe('I1 · the triage deck runs the same attention predicate as the badge',
     await bootApp(d)
     expect(document.title, 'the badge must rest at zero').toBe('Agent Inbox')
     expect(badgeCount()).toBe(0)
-    expect(tabCount('needsYou')).toBe('')
+    expect(tabCount('dashboard')).toBe('')
 
     click(document.querySelector('.triage-btn'))
     await settle()
@@ -98,7 +98,7 @@ describe('I4 · an answered question awaiting pickup is still rendered somewhere
     expect(row(id)?.className).toContain('answered')
     // …but it is NOT attention: answering it is what took it out of the badge
     expect(badgeCount()).toBe(0)
-    expect(tabCount('needsYou')).toBe('')
+    expect(tabCount('dashboard')).toBe('')
   })
 })
 

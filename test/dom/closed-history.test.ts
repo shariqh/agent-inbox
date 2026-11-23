@@ -581,7 +581,7 @@ describe('paged closed history (issue #184)', () => {
     db = freshDb()
     seedHub(db)
     await bootApp(db)
-    document.querySelector<HTMLButtonElement>('#dashboard [data-dashboard-focus-key="chip:needs"]')!.focus()
+    document.querySelector<HTMLButtonElement>('#dashboard [data-dashboard-focus-key="activity-range"]')!.focus()
     click(document.querySelector('.relay-btn'))
     await settle()
     const lane = document.querySelector('#relaybox [data-relay-lane="outcome"]')!

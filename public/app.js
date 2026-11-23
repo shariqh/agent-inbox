@@ -24,7 +24,7 @@ import {
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
-import { partitionNotes, unreadNoteCount, ambientChips, seenWatermark, markSeenIds } from '/notes.js'
+import { partitionNotes, unreadNoteCount, seenWatermark, markSeenIds } from '/notes.js'
 import { sessionBuild, sessionsSummary, activityFrameKey } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
@@ -44,9 +44,7 @@ import { fileLinksCopy, initLinkOpening, linkFileActions, refreshLinkPermission 
 import { refreshLinkSettings, renderLinkSettings, renderTerminalSettings } from '/link-settings.js'
 import { createLaunchUi } from '/launch-ui.js'
 import { installAgentsHome, moveKeepingFocus } from '/agents-home.js'
-import { installNeedsYouLane } from '/needs-you-lane.js'
 import { installPlansLane } from '/plans-lane.js'
-import { installDashHead } from '/dash-head.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
@@ -456,8 +454,8 @@ function renderIfIdle() {
     // the badge, rail and Sessions line above keep reporting fresh data. Before the
     // first editable frame no editor exists to protect, so a draft restored at
     // boot (#279) cannot leave the lists blank.
-    if (editablePanesPainted && (dashboardInteractionActive()
-      || shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now))) {
+    if (editablePanesPainted
+      && shouldDeferRender({ ...suspendState(), pressedAt, scrolledAt: lastInteractionScrollAt }, now)) {
       renderDirty = true
       showPauseHint()
       restoreSelection(textSelection)
@@ -544,10 +542,106 @@ function setOpenRow(id, { resume = true } = {}) {
     contextEditorFor = null // each ask opens at rest (answerEl)
   }
   openRowId = id
-  // another row opened (or none): the way back belonged to the ask that was open (§3.2)
-  if (dashReturn && dashReturn.id !== id) dashReturn = null
+  // only the frame that brought an ask to the front marks it so (bringAskToFront)
+  frontAutoId = null
+  if (id !== null) {
+    // UX pass, slice 2: a row opened by any path is the ask in front again
+    frontClosed = false
+    // one thing in front on a wide window: the ask, never with a session panel
+    if (layout === 'wide' && focusSession) closeSessionPanelQuietly()
+  }
+  syncAskFront()
   if (resume) resumeRender()
   else showPauseHint()
+}
+
+// ── the ask in front (UX pass, slice 2) ─────────────────────────────────────
+// The person closed the open card on a wide window (its ✕ or Esc): no waiting
+// ask comes to the front by itself until they open a row again, Home is
+// entered from another tab, or a paint finds nothing waiting.
+let frontClosed = false
+// The row that came to the front by itself and has not been clicked since: the
+// person's first click or Enter on it opens it as theirs, focus into its card.
+let frontAutoId = null
+// The model and entry each list row was drawn from, so a frame can draw the
+// card of the ask it brings to the front (bringAskToFront).
+const rowBuilds = new WeakMap()
+// An ask is ready to come forward and only the lanes being in use holds it back:
+// the poll paints again once they no longer are (frameInputs).
+let frontWaitsOnLanes = false
+const lanesHoldFocus = () => Boolean(activeFocusElement()?.closest?.('#dashboard'))
+const lanesUnderPointer = () => Boolean(document.querySelector('#needsYou:hover, #dashboard:hover'))
+const lanesInUse = () => lanesHoldFocus() || (pollPaint && editablePanesPainted && lanesUnderPointer())
+
+// body.ask-front: exactly while the window is wide, Home is showing and a row is
+// open and drawn in the list (not in a closed fold). The CSS keeps the list and
+// the lanes clear of the fixed card only then.
+function syncAskFront() {
+  const row = openRowId ? needsYouRowEl(openRowId) : null
+  const on = layout === 'wide' && activeTab === 'dashboard' && !settingsOpen()
+    && Boolean(row) && !row.closest('[hidden], details:not([open])')
+  document.body.classList.toggle('ask-front', on)
+}
+
+// From render(), after the list is painted and reconciled, so never while a
+// frame is held and never from the ambient painter: on a wide window with Home
+// showing and nothing in front (no open row, no session panel, no modal), the
+// first row drawn outside a closed fold that still waits on the person opens,
+// its card drawn in this frame. It moves no focus, scrolls nothing and writes
+// nothing, except that a keyboard user already in the list lands on that row.
+// While the page is in use it waits (lanesInUse: focus rests in the lanes, or the
+// pointer is over the list or the lanes on a later poll's frame): an ask coming
+// forward narrows them under whatever the person is using there. Two exceptions:
+// `fromPanel`, the person just closed the session panel, focus is back on that
+// session's card, and the ask they had in front returns now (closeSessionFocus);
+// and `steady`, the ask in front left the list in this frame, so the next one
+// takes its place without moving anything beside it.
+function bringAskToFront({ fromPanel = false, steady = false } = {}) {
+  frontWaitsOnLanes = false
+  if (layout !== 'wide' || activeTab !== 'dashboard' || settingsOpen()) return
+  const waiting = new Set(attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
+    .map(needsEntryId))
+  // the person's close holds until nothing waits anywhere: a lens or a filter that shows no
+  // waiting ask must not bring back, on the way out of it, the ask they closed
+  if (!waiting.size) frontClosed = false
+  const first = rowEls().find((el) => waiting.has(el.dataset.cardId))
+  if (!first) return
+  if (openRowId !== null || focusSession || frontClosed) return
+  // a native dialog (New session…) carries no aria-modal, so keyboardScope() does not see it
+  if (triageDeck || relayOpen || missionBoardId || missionDetailRowId || keyboardScope() !== document
+    || document.querySelector('dialog[open]')) return
+  // The page is in use: focus rests in the lanes, or, on a poll's frame after the first, the
+  // pointer is over the list or the lanes (an ask coming forward narrows both under the pointer
+  // before a press). `steady`: an ask was in front when this frame began and left the list, so
+  // the next one takes its place and nothing beside it moves.
+  if (!fromPanel && !steady && lanesInUse()) {
+    frontWaitsOnLanes = true
+    return
+  }
+  const build = rowBuilds.get(first)
+  if (!build) return
+  const id = first.dataset.cardId
+  const listFocus = Boolean(activeFocusElement()?.closest?.('#needsYouList .nrow[data-card-id]'))
+  selectedId = id
+  setOpenRow(id, { resume: false })
+  frontAutoId = id
+  first.dataset.open = '1'
+  first.setAttribute('aria-expanded', 'true')
+  first.appendChild(rowCardBodyEl(build.entry, build.m, build.nowMs))
+  markSelectedRow(id)
+  if (listFocus && document.activeElement !== first) first.focus({ preventScroll: true })
+  syncAskFront()
+}
+
+// Opening a session panel on a wide window closes the ask in front; its drafts
+// stay, as on any close.
+function closeFrontAsk() {
+  if (layout !== 'wide' || openRowId === null) return
+  const row = needsYouRowEl(openRowId)
+  setOpenRow(null, { resume: false })
+  row?.removeAttribute('data-open')
+  row?.setAttribute('aria-expanded', 'false')
+  row?.querySelector('.nrow-card')?.remove()
 }
 
 // Existing rows keep their relative order for the session; genuinely new work
@@ -1318,11 +1412,12 @@ function restorePagedCardFocus(bookmark) {
   return false
 }
 
-// Which tab holds an item — a deep link must land on the right one.
+// Which tab holds an item — a deep link must land on the right one. An open ask
+// is on Home, in its list of asks.
 function tabForItem(it) {
   if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
   if (lastData.g.done.some((x) => x.id === it.id)) return 'done'
-  return 'needsYou'
+  return 'dashboard'
 }
 
 // Notification click / URL hash entry point (spec §11): select the item's
@@ -1784,9 +1879,9 @@ function runPaletteAction(action) {
     renderSearchResults()
     return
   }
-  // the ask's Inbox card, as a lane card opens it (dashboard lanes design §6)
+  // the ask in front on Home, as a click on its row opens it
   resetSearch()
-  jumpToAsk(entry)
+  openAskInInbox(entry)
 }
 
 function renderSearchResults() {
@@ -2191,10 +2286,6 @@ function dashboardEntryProject(entry) {
   return entry?.kind === 'row' ? entry.board?.project : entry?.item?.project
 }
 
-function dashboardInteractionActive() {
-  return activeTab === 'dashboard' && Boolean(activeFocusElement()?.closest?.('#dashboard'))
-}
-
 function dashboardFocusBookmark() {
   return activeFocusElement()?.closest?.('#dashboard [data-dashboard-focus-key]')?.dataset.dashboardFocusKey ?? null
 }
@@ -2226,11 +2317,8 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     // the agent the agent tab holds: its card carries aria-current (cards view V5 §2.2)
     meshOpen: meshAgentPage.current()?.key ?? null,
   })
-  // dashboard lanes design §3.1–3.2: every attention entry once, in rail order, and each lane counted once
-  needsYouLane.paint({ entries: model.needsYou, later: model.later, nowMs: Date.now() })
   // §3.5: the lens's plans with open steps, each naming its project only under All projects
   plansLane.paint({ plans: model.plansInProgress, showProject: !projectFilter, nowMs: Date.now() })
-  dashHead.paint({ needs: model.needsYou.length, ...(agentsHome.counts() ?? { working: null, quiet: null }) })
   renderDashFocus(focusPanelEl, model, { forced })
   placeFocusPanel()
   renderDashRibbon(host.querySelector('.dashboard-activity'), model)
@@ -2289,8 +2377,21 @@ const agentsHome = installAgentsHome({
   // a card's or row's click toggles its panel; Enter and Open open it at its head, Message,
   // Transcript and Resume… at that part
   openSession: (key, part, ask) => (part ? openSessionFocus(key, part, ask) : toggleSessionFocus(key)),
-  // "Asking you · N": that session's first ask in the Needs you lane (dashboard lanes design §3.3)
-  showAsk: (id) => { if (id) needsYouLane.focusAsk(id) },
+  // "Asking you · N": that session's first waiting ask, opened in front on Home as a click on its row opens it
+  showAsk: (id) => {
+    const entry = id ? waitingAskEntry(id) : null
+    if (!entry) return
+    // already drawn in the list: open it where it is, as a click on its row does, changing
+    // no lens (a deep link's narrowing to the ask's project would hide the other projects)
+    const drawn = needsYouRowEl(id)
+    if (drawn && !drawn.closest('[hidden], details:not([open])')) {
+      selectRow(id)
+      setOpenRow(id)
+      forceRender()
+      return
+    }
+    openAskInInbox(entry)
+  },
   // a card's action that failed says why in the launch's panel
   launchAction: (id, action) => launchUi?.run(id, action).then((noted) => {
     if (noted && focusSession !== `launch:${id}`) openSessionFocus(`launch:${id}`)
@@ -2315,20 +2416,6 @@ const agentsHome = installAgentsHome({
   },
 })
 
-// ── the Needs you lane and the page head (dashboard lanes design §3.1–3.2) ───
-// The lane never answers: a card opens its ask in the Inbox's detail panel
-// (jumpToAsk). "Later N ›" and Review queue moved to its header from the
-// old Agents card's.
-const needsYouLane = installNeedsYouLane({
-  open: (entry) => jumpToAsk(entry),
-  openLater,
-  openReview: openTriage,
-  projectColor: (project) => pcolor(project).dot,
-  sessionTag: (entry) => laneSessionTag(entry),
-  scrollBehavior: () => motion.scrollBehavior(),
-  // the old "Answer · draft" hint, now on the ask's own card: the drafts suspendState() reads
-  hasDraft: (id) => Boolean(id) && holdsDraft(id),
-})
 // ── the Plans in progress lane (dashboard lanes design §3.5) ─────────────────
 // A row opens its plan the way every other link to a plan does (focusItem: its
 // project as the lens, the Plans tab, the card focused); "All plans ›" opens
@@ -2339,24 +2426,7 @@ const plansLane = installPlansLane({
   projectColor: (project) => pcolor(project).dot,
   scrollBehavior: () => motion.scrollBehavior(),
 })
-const dashHead = installDashHead({
-  onChip: (key) => (key === 'needs' ? needsYouLane.focusFirst() : agentsHome.focusFirst(key)),
-})
 
-// §6: an ask whose session no card holds says why in its meta line: "session
-// ended" when it names a session that is listed nowhere (the unlensed activity
-// and every launch's sessions, so a lens never makes a live session look
-// ended), else "no session". Nothing before /api/activity is read.
-function laneSessionTag(entry) {
-  if (!Array.isArray(lastData?.activity)) return ''
-  if (agentsHome.askKey(needsEntryId(entry)) !== null) return ''
-  const owner = entry.kind === 'row' ? entry.board : entry.item
-  const session = typeof owner?.session === 'string' && owner.session ? owner.session : null
-  if (!session) return 'no session'
-  const listed = lastData.activity.some((row) => row.session === session)
-    || (lastData.launches ?? []).some((launch) => Array.isArray(launch.sessions) && launch.sessions.includes(session))
-  return listed ? '' : 'session ended'
-}
 
 // One iteration of a CSS one-shot, restarted when it is still running and
 // removed when it ends or is cancelled (Calm switched on, the Dashboard left
@@ -2392,46 +2462,19 @@ function playOnce(el, name, animation = `dash-lane-${name}`) {
 // Activity motion runs only where the human allows it and can see it.
 const dashboardMotion = () => motion.activityMotion() && !document.getElementById('dashboard')?.hidden
 
-// Dashboard lanes design §3.2, §6: an ask opens in the Inbox's detail panel,
-// as a click on its Inbox row does. Opened from the Dashboard, the way back is
-// kept (dashReturn): Esc or the card's close returns to the Dashboard, scrolled
-// where it was, focus on the lane card.
-let dashReturn = null // { id, project, agent, scrollY } while an ask opened from the Dashboard is open
 
-function jumpToAsk(entry) {
-  if (!entry) return
-  const id = needsEntryId(entry)
-  const back = activeTab === 'dashboard' ? { id, project: projectFilter, agent: agentFilter, scrollY: window.scrollY } : null
-  dashReturn = null
-  openAskInInbox(entry)
-  // kept only once the ask's row is open in the Inbox: the clears below then guard it
-  if (back && activeTab === 'needsYou' && openRowId === id) dashReturn = back
-}
-
-// Whether the ask is still in the attention set: answered, snoozed, pinned or
-// dismissed, it is not, and closing its card stays in the Inbox (§3.2).
-function askStillWaiting(id) {
-  if (!lastData) return false
+// The ask still in the attention set by its id (unlensed): answered, snoozed,
+// pinned or dismissed, it is not.
+function waitingAskEntry(id) {
+  if (!lastData) return null
   return attentionEntries(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? [])
-    .some((entry) => needsEntryId(entry) === id)
+    .find((entry) => needsEntryId(entry) === id) ?? null
 }
 
-// The way back (§3.2): the lens the Dashboard had, a round trip (no fresh
-// open), the scroll it was at, and focus on the ask's lane card.
-function returnToDashboard(back) {
-  projectFilter = back.project
-  agentFilter = back.agent
-  resetPaging()
-  selectTab('dashboard', { paint: false, open: false })
-  forceRender()
-  if (window.scrollY !== back.scrollY) window.scrollTo(0, back.scrollY)
-  // an ask outside the restored lens (⌘K "answer…") has no card: land on the lane
-  if (!needsYouLane.focusAsk(back.id, { scroll: false })) document.getElementById('needsYouLaneTitle')?.focus({ preventScroll: true })
-}
 
-// #454 A.2: "Show on Agents ›" on an Inbox card: the ask in its session's
+// #454 A.2: "Show on Agents ›" on an ask's card: the ask in its session's
 // panel, at that ask; the lens widens to the ask's project when it hides it.
-// An ask no card holds opens in the Inbox instead.
+// An ask no card holds opens in front on Home instead.
 function openAskInSession(entry) {
   if (!entry) return
   const id = needsEntryId(entry)
@@ -2624,7 +2667,7 @@ function approvalHtml(entry, granted) {
     ? options.map((label, index) => focusButton(`approve:${id}:${index}`, label, () => answerInPanel(id, label),
       { className: index === 0 ? 'sp-option rec' : 'sp-option', attrs: held })).join('')
     : `<p class="dash-focus-none">Answer it from Agent Inbox’s own window.</p>` +
-      focusButton(`item:${id}`, 'Open in Inbox', () => openAskInInbox(entry))
+      focusButton(`item:${id}`, 'Open ask', () => openAskInInbox(entry))
   const error = writeErrors[id] ?? ''
   return `<div class="sp-appr" data-focus-approval="${esc(id)}"><strong class="sp-appr-title">${esc(it.title ?? '')}</strong>` +
     `<div class="sp-appr-options">${buttons}</div>` +
@@ -2750,7 +2793,7 @@ function panelAskEl(entry, nowMs) {
   if (pinOffered(ask, entry.kind)) {
     actions.appendChild(askIconButton('pin', 'Pin', 'Pin for later: it waits in Later until you bring it back', () => pinAsk(entry)))
   }
-  actions.appendChild(askIconButton('open', 'Open in Inbox', 'Open in Inbox', () => openAskInInbox(entry)))
+  actions.appendChild(askIconButton('open', 'Open ask', 'Open ask', () => openAskInInbox(entry)))
   block.appendChild(actions)
   return block
 }
@@ -3041,6 +3084,7 @@ function focusPanelPart(part, ask = null) {
 }
 
 function openSessionFocus(session, part = null, ask = null) {
+  closeFrontAsk()
   focusSession = session
   // #197: the build hint follows an install made since
   refreshLiveVersion()
@@ -3066,6 +3110,8 @@ function closeSessionFocus() {
   paintSessionFocus()
   // "Message · draft" on the card the panel leaves
   agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
+  // UX pass, slice 2: with the panel gone, the first waiting ask is in front again
+  bringAskToFront({ fromPanel: true })
   if (!owned || !document.hasFocus()) return
   const own = [...document.querySelectorAll('#dashboard [data-session-card]')].find((el) => el.dataset.sessionCard === card)
   ;[own?.querySelector('[data-ah-action]'), title]
@@ -3081,6 +3127,14 @@ function closeSessionFocus() {
 // layout, or held inline by focus) it is part of the page, with its own close
 // and Esc, so an outside click never closes it there: the cards below it would
 // jump up under the press.
+// A row opened on a wide window closes the session panel as closeSessionFocus
+// does, moving no focus into the lanes (one thing in front).
+function closeSessionPanelQuietly() {
+  focusSession = null
+  paintSessionFocus()
+  agentsHome.repaint({ selected: null, forced: false, nowMs: Date.now() })
+}
+
 function closeSessionFocusOnClick(event) {
   if (!focusSession || !trustedInput(event) || !(event.target instanceof Element)) return
   if (event.target.closest('#dashboard .dash-focus, #dashboard [data-session-card]')) return
@@ -3103,6 +3157,7 @@ function jumpToSession(session) {
   if (!row) return false
   projectFilter = row.project
   agentFilter = null
+  closeFrontAsk()
   focusSession = session
   resetSearch()
   selectTab('dashboard', { paint: false, open: false })
@@ -3178,7 +3233,7 @@ function dashRibbonEl() {
   const range = document.createElement('select')
   range.className = 'dashboard-range'
   range.dataset.dashboardFocusKey = 'activity-range'
-  range.setAttribute('aria-label', 'Dashboard activity range')
+  range.setAttribute('aria-label', 'Home activity range')
   for (const [value, [label]] of RIBBON_RANGES) {
     const option = document.createElement('option')
     option.textContent = label === 'Today' ? '24 hours' : label.replace('Last ', '')
@@ -3463,8 +3518,8 @@ function openAskInInbox(entry) {
   actionFilter = 'all'
   changedOnly = false
   resetSearch()
-  selectTab('needsYou', { paint: false })
-  // a protected id, so the first page always holds it, however far down the Inbox sorts it
+  selectTab('dashboard', { paint: false })
+  // a protected id, so the first page always holds it, however far down the list sorts it
   selectedId = id
   forceRender()
   const target = needsYouRowEl(id)
@@ -3480,18 +3535,16 @@ function renderDashboard(model) {
   // Keep native controls mounted; ambient updates replace only their data regions.
   if (!host || host.querySelector('.dashboard-grid')) return
 
-  // the page head (§3.1): the lane chips, New session… at its right end, then its note
-  const head = dashHead.element()
-  const start = agentsHome.newSessionElements()
-  dashHead.actions().appendChild(start.button)
-  host.append(head, start.note)
   const since = document.createElement('p')
   since.className = 'dash-since'
   since.hidden = true
   host.appendChild(since)
   sinceEl = since
-  // the Needs you lane (§3.2), first and above the grid: the desktop session panel splits the lanes only
-  host.appendChild(needsYouLane.element())
+  // New session… at the right end of the Working lane's head, its note directly after that head
+  const start = agentsHome.newSessionElements()
+  const workingHead = agentsHome.element().querySelector('.working-lane > .ah-lane-head')
+  workingHead?.append(start.button)
+  workingHead?.after(start.note)
 
   const grid = document.createElement('div')
   grid.className = 'dashboard-grid'
@@ -3570,6 +3623,7 @@ function paintAmbient() {
   // the agent tab, from the same body, whether or not mesh is still on (it then says the agent left)
   meshAgentPage.paint(lastData.mesh ?? null, Date.now(), lastData.runs ?? null)
   paintTabCounts(g, boards)
+  paintQueueCount(g, boards)
   paintLaterSectionHint()
   // #407: a poll held back by a draft, a press or a scroll still ends a stale
   // hold line; it writes in place and builds the deck only while held
@@ -3682,6 +3736,8 @@ function frameInputs() {
     ...lastData.reads, JSON.stringify(lastData.closed), navigationKey(), openRowId,
     focusSession, outsideChanges, liveVersion, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available(),
     triageHeld,
+    // an ask held back while the lanes were in use comes forward on the tick after they no longer are
+    frontWaitsOnLanes && (lanesHoldFocus() || lanesUnderPointer()),
     agentsHome.state(),
     meshAgentPage.state(),
     chatsView.state(),
@@ -3746,12 +3802,16 @@ function render() {
   if (activeFocusElement()?.closest?.('.stale-drafts-fold')) draftRecoveryFocusPending = true
   reconcileDraftOwners()
   requestedDraftFocusBookmark = null
+  const hadFront = document.body.classList.contains('ask-front')
   const restoreQueueView = paintEditableSurfaces(frame)
+  bringAskToFront({ steady: hadFront })
   pagedFocusId = null
   if (ownsFocus) {
     if (missionFocus && missionBoardId) {
       restoreMissionFocus(missionFocus)
     } else if (!restoreDashboardFocus(dashboardFocus)
+      // a poll's frame never takes focus out of the lanes (it used to be held while focus was there)
+      && !(pollPaint && lanesHoldFocus())
       && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus) && !restorePagedCardFocus(pagedFocus)
       && plansHeaderFocusId) {
       document.getElementById(plansHeaderFocusId)?.focus({ preventScroll: true })
@@ -3762,6 +3822,7 @@ function render() {
   keyboardUI?.refresh()
   restoreQueueView()
   restoreSelection(textSelection)
+  syncAskFront()
   editablePanesPainted = true
   // Draft recovery may move navigationKey() part way (reconcileDraftOwners →
   // requestDraftRecovery): the panes then show data filtered for the old tab,
@@ -4136,7 +4197,8 @@ function restoreTriageReturnFocus(bookmark) {
     target = document.querySelector('.triage-btn')
   }
   target ??= needsYouRowEl(selectedId) ?? document.querySelector('.triage-btn')
-  target?.focus({ preventScroll: true })
+  // the Review queue button rests out of sight: show the tools before it takes focus
+  focusQueueControl(target)
 }
 
 // Issue #407: the unsent responses that hold the Review queue back. The hold
@@ -4205,19 +4267,21 @@ function paintTriageHold() {
   show.hidden = !count
   if (hadFocus) {
     const next = document.querySelector('.stale-drafts-fold summary') ?? document.querySelector('.triage-btn')
-    next?.focus({ preventScroll: true })
+    focusQueueControl(next)
   }
   hold.classList.toggle('active', Boolean(count))
 }
 
 function holdTriage() {
   triageHeld = true
+  // the person asked for the Review queue: its button (and the hold line's way back to it) in view
+  showQueueTools()
   // nothing passive moves focus to the off-screen fold; the hold line does
   draftRecoveryFocusPending = false
   if (triageDeck) closeTriage({ restoreFocus: false })
   if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
-  selectTab('needsYou', { paint: false })
+  selectTab('dashboard', { paint: false })
   forceRender()
   paintTriageHold()
   const show = needsYouHeaderNode?.querySelector('.triage-hold-show')
@@ -4233,7 +4297,7 @@ function revealHeldDraft() {
   const first = heldDraftRecoveries()[0]
   if (!first) {
     paintTriageHold()
-    document.querySelector('.triage-btn')?.focus({ preventScroll: true })
+    focusQueueControl(document.querySelector('.triage-btn'))
     return
   }
   if (first.inline) {
@@ -4245,6 +4309,8 @@ function revealHeldDraft() {
     ? needsYouRowEl(first.inline.rowId)?.querySelector('.reply-input[data-recovered-draft="1"]')
     : null)
     ?? document.querySelector(`.stale-drafts-fold .stale-draft-line[data-recovery-line="${CSS.escape(first.line)}"]`)
+    // a row's kept text shows beside its editor while its card is open (#636), as the ask in front's is
+    ?? document.querySelector(`#needsYouList .nrow-card .row-recovery[data-recovery-line="${CSS.escape(first.line)}"]`)
     ?? document.querySelector('.stale-drafts-fold summary')
   if (!target) return
   revealDetailsAncestors(target)
@@ -4488,15 +4554,13 @@ function holdsDraft(id) {
 // renders open. From the Review queue or a plan panel it was not the open card,
 // and those ignore the list's filters, so widen any filter that would hide it.
 // A Review queue opened with `t` on another tab would return there when it
-// closes, so the Inbox becomes the visible tab and the queue returns to its
+// closes, so Home becomes the visible page and the queue returns to its
 // Review queue button instead; nothing is focused now.
 function keepDraftInView(entry) {
-  if (triageDeck && activeTab !== 'needsYou') {
-    selectTab('needsYou', { paint: false })
+  if (triageDeck && activeTab !== 'dashboard') {
+    selectTab('dashboard', { paint: false })
     triageReturnFocus = { kind: 'triageButton' }
-  } else if (activeTab === 'dashboard') {
-    // #303, #454: no card shows a deferred ask, so its draft goes to the Inbox card.
-    selectTab('needsYou', { paint: false })
+    showQueueTools()
   }
   const ask = entryEntity(entry)
   if (openRowId === ask.id) return
@@ -5478,7 +5542,7 @@ function focusRelayEntry(entry, lane) {
     focusItem(entry.board.id, { rowId: entry.row.id })
     return
   }
-  jumpToCard('needsYou', entry.row.id)
+  jumpToCard('dashboard', entry.row.id)
 }
 
 function relayCardEl(entry, lane) {
@@ -5862,9 +5926,10 @@ function selectTab(id, { paint = true, open = true } = {}) {
   archivedLookup = null
   if (id !== 'done') historyTabPinned = false
   activeTab = id
-  if (id !== 'needsYou') triageHeld = false
-  // leaving the Inbox gives up the way back to the Dashboard (§3.2)
-  if (id !== 'needsYou') dashReturn = null
+  // the Review queue's hold line is in Home's list header: leaving Home ends it
+  if (id !== 'dashboard') triageHeld = false
+  // entering Home from another tab brings the first waiting ask forward again
+  if (id === 'dashboard' && from !== 'dashboard') frontClosed = false
   for (const t of document.querySelectorAll('#tabs .tab')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
@@ -5877,7 +5942,7 @@ function selectTab(id, { paint = true, open = true } = {}) {
     forceRender()
     requestHistoryPaint()
   }
-  if (id === 'needsYou') restoreRowSelection(false)
+  if (id === 'dashboard') restoreRowSelection(false)
   // An open, from the last known /api/version (agent cards view §4.5); never re-selecting the
   // Dashboard, and never from a session panel's own navigation (`open: false`), which posts none.
   if (open && id === 'dashboard' && from !== 'dashboard') meshOpen()
@@ -5909,9 +5974,9 @@ function filterData({ g, boards, archived }) {
   }
 }
 
+// An empty kicker draws nothing.
 const PAGE_META = {
-  dashboard: { kicker: 'Monitor', title: 'Live Operations Desk' },
-  needsYou: { kicker: 'Inbox', title: 'Your queue' },
+  dashboard: { kicker: '', title: 'Home' },
   boards: { kicker: 'Workspace', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
   done: { kicker: 'Workspace', title: 'History' },
@@ -6094,7 +6159,13 @@ function initResponsive() {
   const apply = () => {
     const next = mq.matches ? 'narrow' : 'wide'
     if (next === layout) return
+    // An ask that came to the front by itself and that the person has not touched (no click on
+    // its row, no focus in it, no unsent answer) does not stay open as an inline card or a
+    // phone sheet nobody asked for when the window turns narrow.
+    if (next === 'narrow' && frontAutoId !== null && openRowId === frontAutoId && !holdsDraft(frontAutoId)
+      && !needsYouRowEl(frontAutoId)?.contains(activeFocusElement())) setOpenRow(null, { resume: false })
     layout = next
+    syncAskFront()
     applySidebarCollapse()
     if (lastData) forceRender() // the rail's visible labels change, so rebuild it
   }
@@ -6671,7 +6742,7 @@ function renderClosedBanner() {
   bar.className = 'closed-banner'
   const text = document.createElement('span')
   // textContent — project names are agent-authored
-  text.textContent = `${name} is closed — these items are not included in your Inbox count or Review queue.`
+  text.textContent = `${name} is closed — these items are not included in your Needs you count or Review queue.`
   const reopen = btn('Reopen', () => reopenProjectAction(name))
   reopen.className = 'closed-reopen'
   bar.append(text, reopen)
@@ -6849,12 +6920,17 @@ function showPanel(id) {
   }
   const openingSettings = id === 'setup' && document.getElementById('setup').hidden
   const panel = id === 'agent' ? 'agentPage' : id
-  for (const p of document.querySelectorAll('main > .panel')) p.hidden = p.id !== panel
+  // Home is two panels, the list of asks and then the lanes, shown and hidden together
+  const shows = (p) => p.id === panel || (panel === 'dashboard' && p.id === 'needsYou')
+  for (const p of document.querySelectorAll('main > .panel')) p.hidden = !shows(p)
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
   document.body.classList.toggle('settings-open', id === 'setup')
-  const page = PAGE_META[id] ?? PAGE_META.needsYou
-  document.getElementById('pageKicker').textContent = page.kicker
+  const page = PAGE_META[id] ?? PAGE_META.dashboard
+  const kicker = document.getElementById('pageKicker')
+  kicker.textContent = page.kicker
+  kicker.hidden = !page.kicker
   document.getElementById('pageTitle').textContent = id === 'agent' ? meshAgentPage.current()?.name ?? '' : page.title
+  syncAskFront()
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
   gear.setAttribute('aria-pressed', String(id === 'setup'))
@@ -7432,20 +7508,12 @@ function renderSessionsIndicator(activity) {
   setHidden(older, !s.older)
   const title = ['Sessions', s.label, s.sub, older.textContent].filter(Boolean).join(' · ')
   setAttr(el, 'title', title)
-  setAttr(el, 'aria-label', `${title}. Open the Dashboard’s sessions`)
+  setAttr(el, 'aria-label', `${title}. Show the sessions on Home`)
 }
 
-// The indicator and G L: the Dashboard, its Working lane's heading focused.
+
+// The indicator and G L: Home, its Working lane's heading focused.
 // Each re-reads the build state (#197), as opening the Live drawer did; the next tick paints it.
-// "Later N ›" (#454 A.2, the rail's "N in Later" before it): the Inbox, its Later section open.
-function openLater() {
-  openDeferredFolds.add('later')
-  selectTab('needsYou')
-  const fold = document.querySelector('#needsYouList [data-deferred-fold="later"]')
-  fold?.scrollIntoView?.({ block: 'nearest' })
-  fold?.querySelector('summary')?.focus({ preventScroll: true })
-}
-
 function showAgentsHome() {
   // one navigation, one open: after the read, never a second from selectTab
   refreshLiveVersion().then(() => { if (activeTab === 'dashboard') meshOpen() })
@@ -7516,6 +7584,42 @@ let actionFilter = 'all'
 let changedOnly = false
 let askSort = savedAskSort()
 let needsYouHeaderNode = null
+// UX pass, slice 2: the filters, Sort, Handoffs and Review queue rest out of
+// sight behind the header's Filter toggle (in memory only). They show whatever
+// the toggle says while a filter or a non-default sort is in force.
+let queueToolsOpen = false
+// the asks in the list that still wait on the person, under the lens and the
+// filters (not the answered foot, not the folds); painted with the ambient frame
+let queueWaitingCount = 0
+
+function queueToolsForced() {
+  return actionFilter !== 'all' || changedOnly || askSort !== savedAskSort()
+}
+
+// Show the tools before anything focuses one of their controls: a hidden
+// control is never a focus target.
+function showQueueTools() {
+  if (queueToolsOpen) return
+  queueToolsOpen = true
+  if (needsYouHeaderNode) syncNeedsYouHeader(needsYouHeaderNode)
+}
+
+function focusQueueControl(el) {
+  if (!el) return
+  if (el.closest('.queue-tools')) showQueueTools()
+  el.focus({ preventScroll: true })
+}
+
+// The ambient count (#needsYouTitle's): a poll held back by a draft or a press
+// still keeps it current, as the badge and the tab count are.
+function paintQueueCount(g, boardsInView) {
+  const items = g.needsYou.flatMap((gr) => gr.items)
+  queueWaitingCount = filterActionEntries(attentionEntries(items, boardsInView, Date.now(), liveSessionIds())).length
+  const count = needsYouHeaderNode?.querySelector('.queue-count')
+  if (!count) return
+  setText(count, queueWaitingCount ? String(queueWaitingCount) : '')
+  setHidden(count, !queueWaitingCount)
+}
 
 function entryEntity(entry) {
   return entry.kind === 'row' ? entry.row : entry.item
@@ -7531,6 +7635,12 @@ function filterActionEntries(entries) {
 }
 
 function syncNeedsYouHeader(bar) {
+  const shown = queueToolsOpen || queueToolsForced()
+  setHidden(bar.querySelector('.queue-tools'), !shown)
+  setAttr(bar.querySelector('.queue-tools-toggle'), 'aria-expanded', String(shown))
+  const count = bar.querySelector('.queue-count')
+  setText(count, queueWaitingCount ? String(queueWaitingCount) : '')
+  setHidden(count, !queueWaitingCount)
   for (const filter of bar.querySelectorAll('[data-action-filter]')) {
     filter.classList.toggle('active', filter.dataset.actionFilter === actionFilter)
   }
@@ -7558,11 +7668,35 @@ function needsYouHeader() {
   }
   const bar = document.createElement('div')
   bar.className = 'tab-header'
+  // Home's list of asks has no tab of its own: this heading names it (the
+  // region's label, and where G I's tile sits), then its count and the Filter
+  // toggle at the right end of the line
+  const head = document.createElement('div')
+  head.className = 'queue-head'
+  const title = document.createElement('h2')
+  title.id = 'needsYouTitle'
+  title.className = 'queue-title'
+  title.tabIndex = -1
+  title.textContent = 'Needs you'
+  const count = document.createElement('b')
+  count.className = 'queue-count'
+  count.hidden = true
+  const toggle = btn('Filter', () => {
+    queueToolsOpen = !(queueToolsOpen || queueToolsForced())
+    syncNeedsYouHeader(bar)
+  })
+  toggle.type = 'button'
+  toggle.className = 'queue-tools-toggle'
+  toggle.setAttribute('aria-controls', 'queueTools')
+  toggle.setAttribute('aria-expanded', 'false')
+  head.append(title, count, toggle)
   const filters = document.createElement('div')
   filters.className = 'queue-filter-group'
   for (const [value, label] of [['all', 'All'], ['decision', 'Decisions'], ['task', 'To do']]) {
     const filter = btn(label, () => {
       actionFilter = value
+      // the tools stay in view under the hand that just used them
+      queueToolsOpen = true
       renderIfIdle()
     })
     filter.className = 'header-toggle'
@@ -7571,6 +7705,7 @@ function needsYouHeader() {
   }
   const changed = btn('Updates', () => {
     changedOnly = !changedOnly
+    queueToolsOpen = true
     renderIfIdle()
   })
   changed.className = 'header-toggle'
@@ -7589,6 +7724,7 @@ function needsYouHeader() {
   sort.addEventListener('change', () => {
     askSort = sort.value
     pinnedIds = []
+    queueToolsOpen = true
     renderIfIdle()
   })
   sortLabel.append(sortText, sort)
@@ -7610,7 +7746,13 @@ function needsYouHeader() {
   holdShow.className = 'triage-hold-show'
   holdShow.hidden = true
   hold.append(holdText, holdShow)
-  bar.append(filters, tools, hold)
+  // out of sight at rest, one wrapper; the hold line stays outside it, always in the document
+  const wrap = document.createElement('div')
+  wrap.className = 'queue-tools'
+  wrap.id = 'queueTools'
+  wrap.hidden = true
+  wrap.append(filters, tools)
+  bar.append(head, wrap, hold)
   needsYouHeaderNode = bar
   syncNeedsYouHeader(bar)
   return bar
@@ -7682,32 +7824,10 @@ function renderEmptyState(host, laterCount = 0) {
   panel.className = 'calm-panel'
   const head = document.createElement('div')
   head.className = 'calm-head'
-  head.textContent = laterCount ? `Nothing needs you now · ${laterCount} in Later` : 'Your queue is clear'
+  head.textContent = laterCount ? `Nothing needs you · ${laterCount} in Later` : 'Nothing needs you'
   panel.appendChild(head)
-  // the unread-note count already has its own actionable footer button
-  // (renderNeedsYouExtras' .notes-chip) — an inert duplicate here is one
-  // number shown twice for the same fact.
-  // Honest note: because that filter drops the ONLY chip `notesSeenIds` can
-  // change, passing it here is inert TODAY. It is passed anyway so that dropping
-  // the filter can never resurrect a chip that disagrees with the tab count —
-  // the two note numbers disagreeing is precisely fix round 2's I3.
-  // issue #32: read visibleData, so the calm panel's chips agree with the
-  // suppressed badge. The existing justification above holds verbatim for a
-  // closed project too — a project the human retired is, by definition, not
-  // something that needs them, so the claim stays true.
-  const chips = ambientChips(allItems(visibleData.g), visibleData.boards, Date.now(), notesSeenAt, notesSeenIds)
-    .filter((c) => c.key !== 'notes')
-  if (chips.length) {
-    const row = document.createElement('div')
-    row.className = 'calm-chips'
-    for (const c of chips) {
-      const s = document.createElement('span')
-      s.className = `calm-chip chip-${c.key}`
-      s.textContent = c.label // ambient labels are agent-derived counts — textContent, never innerHTML
-      row.appendChild(s)
-    }
-    panel.appendChild(row)
-  }
+  // One calm line and nothing else (UX pass, slice 2): the counts it used to carry (plans,
+  // milestones, answers awaiting pickup) are on the page under it or in History.
   host.appendChild(panel)
 }
 
@@ -7985,7 +8105,7 @@ function renderOrphanedDrafts(host) {
       else fold.remove()
       if (hadFocus) {
         const target = next ?? (fold.isConnected ? summary : null) ?? document.querySelector('.triage-btn')
-        target?.focus({ preventScroll: true })
+        focusQueueControl(target)
       }
       paintTriageHold()
       renderIfIdle()
@@ -8109,6 +8229,7 @@ function needsRowEl(m, entry, nowMs) {
   const sourceAction = entry.kind === 'row' ? entry.row : entry.item
   el.className = `nrow nrow-${m.kind}${m.answered ? ' answered' : ''}${stagedDismiss.has(m.id) ? ' staged' : ''}`
   el.dataset.cardId = m.id
+  rowBuilds.set(el, { m, entry, nowMs })
   setHintOwner(el, entry.kind === 'row' ? entry.row : entry.item, entry.kind === 'row' ? entry.board : null)
   el.setAttribute('role', 'listitem')
   el.setAttribute('aria-current', 'false')
@@ -8272,7 +8393,7 @@ function needsRowEl(m, entry, nowMs) {
   el.addEventListener('keydown', (ev) => {
     if (ev.target !== el) return
     if (ev.key === 'Enter') { ev.preventDefault(); activateRow(el, m, entry, nowMs) }
-    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); collapseRow(m.id, { back: true }) }
+    if (ev.key === 'Escape' && openRowId === m.id) { ev.preventDefault(); collapseRow(m.id, { explicit: true }) }
   })
   // a full render (poll or user action) rebuilds the open row from openRowId
   if (openRowId === m.id) {
@@ -8315,7 +8436,7 @@ function rowCardBodyEl(entry, m, nowMs) {
       })
       show.type = 'button'
       show.className = 'nrow-show-agents'
-      show.title = 'Open this ask in its session’s panel on the Dashboard'
+      show.title = 'Open this ask in its session’s panel'
       where.append(show)
     }
     if (where.childElementCount) heading.append(where)
@@ -8328,7 +8449,7 @@ function rowCardBodyEl(entry, m, nowMs) {
   close.textContent = '×'
   close.addEventListener('click', (ev) => {
     ev.stopPropagation()
-    collapseRow(m.id, { back: true })
+    collapseRow(m.id, { explicit: true })
   })
   head.append(heading, close)
 
@@ -8377,6 +8498,14 @@ function rowInteractiveDescendant(target, row) {
 // The fixed desktop inspector is selection, while the compact inline card keeps
 // its accordion toggle. `setOpenRow` remains the only writer of logical state.
 function activateRow(el, m, entry, nowMs) {
+  if (openRowId === m.id && frontAutoId === m.id && layout === 'wide') {
+    // the ask that came to the front by itself: this click opens it, as on any row
+    frontAutoId = null
+    selectedId = m.id
+    markSelectedRow(m.id)
+    focusOpenCard(m.id)
+    return
+  }
   if (openRowId === m.id) {
     if (layout !== 'wide') {
       collapseRow(m.id)
@@ -8404,8 +8533,12 @@ function activateRow(el, m, entry, nowMs) {
   liveEl.setAttribute('aria-expanded', 'true')
   liveEl.appendChild(rowCardBodyEl(entry, m, nowMs))
   resumeRender()
+  focusOpenCard(m.id)
+}
+
+function focusOpenCard(id) {
   requestAnimationFrame(() => {
-    const card = needsYouRowEl(m.id)?.querySelector('.nrow-card')
+    const card = needsYouRowEl(id)?.querySelector('.nrow-card')
     if (card && !card.contains(document.activeElement)) {
       card.tabIndex = -1
       card.focus({ preventScroll: true }) // focus moves into the card (spec §13)
@@ -8415,13 +8548,11 @@ function activateRow(el, m, entry, nowMs) {
 
 // Explicit collapse is separate from activation so pointer/Enter re-selection is
 // idempotent while Escape still closes and restores focus to the owning row.
-// `back` (Esc and the card's close, never the narrow row toggle) returns to the
-// Dashboard when the ask was opened from its Needs you lane and still waits
-// there (dashboard lanes design §3.2); answering it leaves you in the Inbox.
-function collapseRow(id, { back = false } = {}) {
+// `explicit`: the person closed the card (Esc or its ✕), never the narrow row toggle.
+function collapseRow(id, { explicit = false } = {}) {
   if (openRowId !== id) return
-  const ret = back && dashReturn?.id === id && activeTab === 'needsYou' && askStillWaiting(id) ? dashReturn : null
-  dashReturn = null
+  // closed by the person on a wide window: nothing comes to the front by itself
+  const closesFront = explicit && layout === 'wide'
   selectedId = id
   markSelectedRow(id)
   setOpenRow(null)
@@ -8429,11 +8560,7 @@ function collapseRow(id, { back = false } = {}) {
   el?.removeAttribute('data-open')
   el?.setAttribute('aria-expanded', 'false')
   el?.querySelector('.nrow-card')?.remove()
-  // no Inbox repaint or row focus behind the return: the row is hidden
-  if (ret) {
-    returnToDashboard(ret)
-    return
-  }
+  if (closesFront) frontClosed = true
   renderIfIdle()
   requestAnimationFrame(() => selectRow(id))
 }
@@ -9113,7 +9240,7 @@ function requestDraftRecovery(target = draftRecoveryTarget) {
   if (triageDeck) closeTriage({ restoreFocus: false })
   if (missionBoardId) closeMission({ restoreFocus: false })
   if (relayOpen) closeRelay()
-  selectTab('needsYou', { paint: false })
+  selectTab('dashboard', { paint: false })
 }
 
 function restoreDraftRecoveryFocus() {
@@ -10630,6 +10757,9 @@ function keyTargetItem() {
     if (data?.r) return { kind: 'row', board: data.b, row: data.r, options: data.r.options }
     return null
   }
+  // Home shows the list and the lanes together (UX pass, slice 2): while focus is in the
+  // lanes or the session panel, a key never reaches across to the list's selected ask.
+  if (lanesHoldFocus()) return null
   const operable = rowEls()
   const focused = document.activeElement?.closest?.('#needsYouList .nrow[data-card-id]')
   const focusedId = focused && operable.includes(focused) ? focused.dataset.cardId : null
@@ -10649,7 +10779,8 @@ function runIntent(intent) {
   const it = target?.kind === 'item' ? target.item : null
   switch (intent.type) {
     case 'move': {
-      if (!ids.length) return
+      // the lanes own their keys: J, K and Enter from there never move or open the list's ask
+      if (!ids.length || lanesHoldFocus()) return
       const at = ids.indexOf(selectedId)
       const from = at < 0 ? (intent.delta > 0 ? -1 : ids.length) : at
       selectRow(ids[Math.max(0, Math.min(ids.length - 1, from + intent.delta))])
@@ -10657,13 +10788,13 @@ function runIntent(intent) {
     }
     case 'expand': {
       // A real row click shares pointer activation and focus-into-card behavior.
-      if (!selectedId) return
+      if (!selectedId || lanesHoldFocus()) return
       rowEls().find((el) => el.dataset.cardId === selectedId)?.click()
       return
     }
     case 'collapse': {
       if (!openRowId) return
-      collapseRow(openRowId, { back: true })
+      collapseRow(openRowId, { explicit: true })
       return
     }
     case 'exitPeek': {
@@ -10746,6 +10877,8 @@ function keyboardActionScope() {
     '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item, #dashFocus [data-panel-ask]',
   )
   if (focused && !focused.closest('[hidden]')) return focused
+  // in the lanes the scope is the focused panel ask above or nothing: never the list's row
+  if (lanesHoldFocus()) return null
   const rows = rowEls()
   return rows.find((element) => element.dataset.cardId === selectedId)
     ?? rows.find((element) => element.dataset.cardId === openRowId)
@@ -10754,6 +10887,7 @@ function keyboardActionScope() {
 
 function focusKeyboardPanel(id) {
   if (window.scrollY !== 0) window.scrollTo(0, 0)
+  // G I: Home's list of asks, its first operable row focused
   const firstRow = id === 'needsYou' ? rowEls()[0] : null
   if (firstRow) { firstRow.focus(); return }
   const panel = document.getElementById(id)
@@ -10772,6 +10906,10 @@ function navigateKeyboard(destination) {
     focusProjectFallback(projectFilter)
   } else if (destination === 'sessions') {
     showAgentsHome()
+  } else if (destination === 'needsYou') {
+    // G I: the asks on Home, no longer a tab of their own
+    selectTab('dashboard')
+    if (activeTab === 'dashboard') focusKeyboardPanel('needsYou')
   } else if (TAB_IDS.includes(destination)) {
     selectTab(destination)
     // selectTab refuses an empty agent tab; focus stays where it was
@@ -10856,7 +10994,8 @@ function initKeys() {
     const intent = keyAction(e.key, {
       typing,
       deckOpen: !!triageDeck,
-      expanded: openRowId != null,
+      // from the lanes or the session panel, Esc never closes the list's ask in front (keyTargetItem)
+      expanded: openRowId != null && !lanesHoldFocus(),
       peeking: !!projectFilter && closedSet().has(projectFilter),
       optionCount: optionOrder(keyTargetItem()?.options).length,
     })

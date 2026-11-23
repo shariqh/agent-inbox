@@ -234,7 +234,8 @@ describe('the session panel’s composer (#411, #454)', () => {
     expect(input('mcp-a')).toBe(box)
     expect(document.activeElement).toBe(box)
     expect([box.selectionStart, box.selectionEnd]).toEqual([2, 6])
-    // the Inbox keeps updating: a message draft is not a typed answer
+    // the list of asks keeps updating: a message draft is not a typed answer, and focus in the
+    // composer holds nothing although the list shares its page
     await showInbox()
     insertItem(db, { project: 'alpha', stream: 'main', agent: 'copilot', kind: 'question', title: 'A new question' })
     await pollTick()
@@ -616,12 +617,11 @@ describe('an older viewer and attention parity (#411)', () => {
       const items = await fetch('/api/items?scope=attention')
       const boards = await fetch('/api/boards?scope=attention')
       const dashboard = {
-        head: document.querySelector('#dashboard .dash-head')?.textContent,
         // the cards are presence: their doing lines say nothing of messages
         cards: [...document.querySelectorAll('#dashboard [data-session-card] .sc-doing')].map((el) => el.textContent),
       }
       const view = {
-        title: document.title, badge: badgeCount(), tabs: ['needsYou', 'notes', 'boards', 'done'].map(tabCount), ...dashboard,
+        title: document.title, badge: badgeCount(), tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount), ...dashboard,
         dock: [items.headers.get('etag'), await items.text(), boards.headers.get('etag'), await boards.text()],
       }
       await showInbox()

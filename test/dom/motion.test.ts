@@ -81,7 +81,7 @@ describe('Motion setting (#302)', () => {
     await pollTick()
     expect(rowTitles(), 'the draft must hold the poll, or this test proves nothing').not.toContain('draft-gated arrival')
     const badge = badgeCount()
-    const needsYou = tabCount('needsYou')
+    const needsYou = tabCount('dashboard')
 
     await chooseMotion('calm')
 
@@ -91,7 +91,7 @@ describe('Motion setting (#302)', () => {
     expect(answerInput(id)?.value).toBe('half-written answer')
     expect(document.activeElement).toBe(motionSelect())
     expect(badgeCount()).toBe(badge)
-    expect(tabCount('needsYou')).toBe(needsYou)
+    expect(tabCount('dashboard')).toBe(needsYou)
 
     await chooseMotion('full')
     expect(localStorage.getItem(MOTION_KEY)).toBe('full')

@@ -75,16 +75,16 @@ older `--gap` (16px) stays for the layout it already serves.
 
 The primary navigation order is:
 
-1. Dashboard
-2. Inbox
-3. Plans
-4. Notes
-5. History
-6. Chats
+1. Home
+2. Plans
+3. Notes
+4. History
+5. Chats
 
-Dashboard is the cold-launch view. It monitors real current state and truthful local
-claim history. Inbox remains the focused action queue. History is an outcome ledger
-that expands into audit detail.
+Home is the cold-launch view and the one place for asks: the focused action queue
+(Needs you) comes first, the opened ask in front beside it, then the lanes that monitor
+real current state and truthful local claim history. There is no separate Inbox page.
+History is an outcome ledger that expands into audit detail.
 
 At wide widths the project library can collapse to a 72px icon rail. The collapse
 state is window-persistent, preserves the prior resizable width, and never changes
@@ -94,14 +94,16 @@ The ownership grammar is consistent everywhere:
 
 **Waiting on you → With agents → Outcome**
 
-## Dashboard
+## Home
 
-The first viewport contains, top to bottom:
+Home is one page. The first viewport contains, top to bottom:
 
-- the page head: one row of lane chips, **Needs you N**, **Working N** and **Quiet N**,
-  with New session… at its right end;
-- the **Needs you** lane: one card per ask;
-- the **Working** lane: one card per session with live work, grouped by project;
+- **Needs you**, the list of asks: a quiet first line (the heading, the number still
+  waiting on you under the current lens and filters, and a **Filter** toggle at its right
+  end), then one row per ask, answered asks dimmed at the foot, Later and the other folds
+  below;
+- the **Working** lane: one card per session with live work, grouped by project, New
+  session… at the right end of its heading;
 - the **Quiet** lane: one table row per idle, quiet or parked session, with the folds at
   its end;
 - the **Plans in progress** lane: one row per active plan with open steps;
@@ -109,34 +111,38 @@ The first viewport contains, top to bottom:
 - **Today**: the activity ribbon of local agent-claim history, with explicit empty and
   error states, last on the page.
 
-A lane chip is a button that scrolls to its lane and moves focus to its first card. It
-never filters, and it shows 0 when its lane is empty. The Needs you count shows only on
-its chip: no lane header, group head or session card repeats it. Working counts the cards
-in the Working lane and Quiet the rows in the Quiet lane, so each chip equals what its lane
-shows; the lane headers carry no count. The Working and Quiet chips focus their own lane's
-first card or row. There are no session filters and no group-by.
+The filters (All, Decisions, To do, Updates), Sort, Handoffs and Review queue rest out of
+sight behind **Filter**; an active filter or a sort other than the saved default keeps them
+shown, so nothing that narrows the list is ever out of sight. There are no lane chips, no
+session filters and no group-by, and the lane headers carry no count.
 
-The Needs you lane holds the Inbox's attention set under the Dashboard's lens, in rail
-order (asks an agent is waiting on first, oldest first), so with All projects its count is
-the Inbox badge and every ask shows exactly once. A card leads with what the Inbox row leads
-with: a meta line (project, agent kind, branch, age, and a muted "Draft" tag while the Inbox
-holds an unsent answer for it), then the same headline (`actionPresentation`: the requested
-step while the ask is unanswered, else its title), then up to two lines of its summary (or
-its next step when the headline is not the step), and for a blocked plan row one line,
-"Plan · plan title · row label". A Dashboard card's heading is never narrower than its text:
-the controls beside it wrap to the next line instead. A card never
-answers and holds no control: a click or Enter opens the ask in the Inbox's detail panel,
-which is the one action card per ask. When it was opened from the lane, Esc or the card's
-close returns to the Dashboard, scrolled where it was, with focus on the card; answering
-stays in the Inbox. The lane's header holds "Later N ›" (only above 0) and Review queue.
-Empty, it says "Nothing in this view is waiting on you." and keeps its place. A card under
-the pointer, or holding keyboard focus, does not move.
+**The ask in front** (1280px and wider). The open ask is the card fixed at the right, the
+question, one line and its answers (UX slice 1), 640px wide by default. When nothing is
+open, the first ask waiting on you comes to the front by itself at the first paint, moving
+no focus and scrolling nothing; the person's ✕ or Esc keeps it closed until they open an
+ask again, come back to Home, or a new ask arrives when none was waiting. After the ask in
+front is resolved, dismissed, snoozed or pinned, the next one comes forward; an answered
+ask stays. While an ask is in front, the list and every lane sit in a column beside it;
+with nothing in front they use the full width. The ask and the session panel never show
+together: opening one closes the other, and closing the panel brings the ask back at once.
+While the page is in use (focus rests in the lanes, or the pointer is over the list or the
+lanes) the list keeps updating, and an ask waits to come forward until it no longer is, so
+nothing narrows under a control in use; an ask that replaces one that just left comes
+forward at once, since nothing beside it moves. Keys pressed in the lanes or the session
+panel, Esc included, never reach the list's selected ask. Below 1280px
+nothing opens by itself: Home is one column, the list with its inline card or phone sheet,
+then the lanes.
+
+**One look for Home's sections.** Needs you, Working, Quiet, Plans in progress, Just landed
+and Today share one quiet heading and sit on the page itself, edge to edge; only what a
+section holds (an ask's row, a session's card) is boxed. Projects with working sessions sit
+side by side where there is room. When nothing waits, the list is one line, "Nothing needs
+you", with no count chips.
 
 A session card never shows an ask. A session that has asks carries a pink "Asking you · N"
-chip, which scrolls to its first ask in Needs you. An ask no session card holds shows in the
-lane with "session ended" or "no session" on a line of its own under the meta line, so the
-note never squeezes the branch. The session panel keeps its Asking you section, so you can
-answer while reading that session's transcript.
+chip, which puts its first waiting ask in front. An ask in the list names its session
+("live · branch", or "session ended"). The session panel keeps its Asking you section, so
+you can answer while reading that session's transcript.
 
 Every live session is in exactly one place: Working, Quiet or a fold. **Working** holds the
 sessions whose state is working (a running host turn included), under a project head (dot,
@@ -158,14 +164,14 @@ through a forced one while the pointer or keyboard focus is in the lane, so a ca
 under the pointer never moves. A session that starts or stops working changes lane on the
 next paint.
 
-**Plans in progress** holds every active plan under the Dashboard's lens that has an open
+**Plans in progress** holds every active plan under Home's lens that has an open
 step (a row neither done nor na), from the plans already loaded. A row shows the plan's
 title (on one line, the whole of it in its tooltip), its project's dot and name with All
 projects, a bar of done out of countable steps with the numbers beside it ("7/15"), the
 rows waiting on you in pink ("2 need you", only above 0), and when the plan last changed,
 with the exact time in its tooltip. The numbers are the ones the Working card's plan bar
 and the Plans tab show. Plans with a row waiting on you come first, then the newest change;
-the order holds while the pointer or keyboard focus is in the lane, as Needs you's does. Six
+the order holds while the pointer or keyboard focus is in the lane, as the session lanes' does. Six
 show, then one line, "All plans ›" ("All plans · N more ›" when more qualify), which opens
 Plans under the same lens. A row is one link-like control: a click or Enter opens that plan
 in Plans, as every other link to a plan does, and it holds no button and never answers. The
@@ -173,10 +179,10 @@ lane's header carries no count. Empty, it says "No plan in this view has open st
 keeps its place. **Just landed** and the **Today** ribbon follow it as full-width lanes,
 their content unchanged.
 
-Keyboard: Tab reaches the chips, then each lane in page order. In each lane, Plans in
-progress included, J/K and the arrow keys move between its cards or rows with one roving tab
-stop, never into the next lane, and Enter opens the card, the session panel or the plan.
-G I still opens the Inbox.
+Keyboard: Tab reaches the list of asks, then each lane in page order. In the list J/K and
+the arrow keys move between asks and Enter opens one; in each lane, Plans in progress
+included, they move between its cards or rows with one roving tab stop, never into the next
+lane, and Enter opens the session panel or the plan. G D is Home; G I focuses the first ask.
 
 The session panel: at 1280px and wider it opens beside Working and Quiet as a split. The
 lanes take the left column and reflow to it: Working to the card columns that fit, each
@@ -185,7 +191,7 @@ right column, stays in view under the top bar with its own scroll, and covers no
 Opening or closing it keeps the card or row you opened where it was on screen, and closing
 gives the lanes their full width back. Below 1280px it opens inline under its card or row.
 
-Every summary is a working entry point into an existing view. Dashboard data never
+Every summary is a working entry point into an existing view. Home's lane data never
 enters the attention predicate, badge count, or alert system.
 
 Dashboard composition is label-and-data first. Semantic icons, number relationships,
@@ -251,29 +257,29 @@ with the message kept. Escape and Cancel close it and return focus to the row's 
 
 ## Responsive Contract
 
-- **1280px and wider:** fixed project library, resizable queue/inspector split,
-  the lane chips on one row; with the session panel closed, Working cards three a row
+- **1280px and wider:** fixed project library; the ask in front at the right, resizable
+  (640px by default), the list and the lanes beside it only while an ask is in front;
+  with the session panel closed, Working cards three a row
   at 1440px and two at 1280px; an open session panel splits the lanes: lanes left,
   panel right, nothing covered, with one Working card a row beside it up to about
   1485px wide and two above, and each Quiet row on two lines. Plans in progress,
   Just landed and the Today ribbon span the page: a plan row on one line, Just
   landed four across.
-- **900–1279px:** compact masthead, inline queue detail; the lane chips wrap
-  before they shrink; two Working cards a row, and the session panel inline under
+- **900–1279px:** compact masthead, inline queue detail, nothing opens by itself;
+  two Working cards a row, and the session panel inline under
   its card or Quiet row.
-- **620–899px:** stacked dashboard regions, one Needs you card and one Working
-  card a row, reflowed metadata, and each Quiet row on two lines with no header
+- **620–899px:** stacked regions, one Working card a row, reflowed metadata, and each Quiet row on two lines with no header
   (keyed on the lanes' own width, so also beside an open session panel);
   a plan row on two lines, Just landed two across.
 - **Below 620px:** horizontally scrollable navigation preserves every tab and
-  count; dashboard is single-column, the Needs you lane's Later and Review
-  queue wrap under its title; a plan row stacks, Just landed is one across.
+  count; Home is single-column; a plan row stacks, Just landed is one across.
   The masthead uses three compact rows: identity/settings, tabs, then project
   and agent selectors side by side.
 - **440px and below:** full-viewport action card. Verify at 320px, 375px, and
   430px. Project and agent selectors remain side by side rather than adding a
   fourth masthead row.
-- **Every width:** the Today ribbon is the Dashboard's last lane, at full width.
+- **Every width:** the Today ribbon is Home's last lane, as wide as the lanes are (the column
+  beside an ask in front on a wide window, the full width otherwise).
 
 Responsive design reflows meaning. It never removes ownership, attention, actions,
 outcomes, or global counts.

@@ -41,7 +41,7 @@ it('holds the Review queue on `t`, says why, and shows the response', async () =
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true }))
   await settle()
   expect(document.getElementById('lightbox')!.hidden).toBe(true)
-  expect(document.querySelector('.tab[data-tab="needsYou"]')?.getAttribute('aria-selected')).toBe('true')
+  expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.triage-hold-text')?.textContent).toBe('Finish or discard the 1 unsent response first.')
   click(buttonLabelled('Show it'))
   await settle()

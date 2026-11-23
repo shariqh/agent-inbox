@@ -9,9 +9,10 @@
 Agent Inbox gives GitHub Copilot CLI and Claude Code one shared place to surface
 decisions, handoffs, notes, milestones, and multi-step plans. You respond in the
 Electron app; agents pick the response up through MCP and continue working.
-The app opens on the Dashboard: a card for each session, with its asks answered
-in its session panel, the plans still in progress, what just landed, and a Today
-ribbon of each project's activity. You can also send a message to a running session.
+The app opens on Home: the requests waiting on you, the first one open beside
+the list, then a card for each session, the plans still in progress, what just
+landed, and a Today ribbon of each project's activity. You can also send a message
+to a running session.
 
 ![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
 
@@ -23,7 +24,7 @@ share one SQLite database on your machine.
 
 | Capability | What you get |
 |---|---|
-| **Dashboard** | A card per session with its asks, its plan's progress and recent activity, a session panel you answer from, the plans in progress, and a Today ribbon of asks and outcomes |
+| **Home** | The requests waiting on you with the first one open in front, a card per session with its plan's progress and recent activity, a session panel you answer from, the plans in progress, and a Today ribbon of asks and outcomes |
 | **Cross-project inbox** | Questions and handoffs from every active coding session in one prioritized queue |
 | **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
@@ -244,21 +245,33 @@ it. After Setup matches agents back to an older app, sessions still on the newer
 build are marked too. A server too old to report its build shows nothing rather than
 a guess.
 
-## The Dashboard
+## Home
 
-The app opens on the Dashboard (`G D`), for all projects and agents.
+The app opens on Home (`G D`), for all projects and agents. Home is one page: the
+requests waiting on you first, then your sessions and what they did. There is no
+separate Inbox page.
 
-- **The page head** has one row of lane chips, **Needs you**, **Working** and
-  **Quiet**, each with its count, and **New session…** at its right end. A chip
-  scrolls to its lane and moves focus to its first card or row; it never filters.
 - **Needs you** lists the requests waiting on you, the same set the badge counts,
-  with requests whose agent is still waiting on the answer first. Each card leads
-  with what its Inbox row leads with, the step you are asked to take, and shows its
-  summary (up to two lines), the project, agent, branch and age, the plan and row for a plan
-  step, and **Draft** when you have started an answer in the Inbox. Cards don't answer:
-  a click or `Enter` opens the request in the Inbox, and `Esc` brings you back to
-  the Dashboard where you were. `J`/`K` or the arrow keys move between cards. The
-  lane's header links to **Later** when something is there, and to the Review queue.
+  with the number still waiting beside the heading. Answered requests stay at the
+  foot, dimmed, until the agent picks the answer up; set-aside ones wait in
+  **Later** below. **Filter** shows the filters (All, Decisions, To do, Updates),
+  the sort order, **Handoffs** and the **Review queue**; they stay shown while a
+  filter or a sort other than your default is on. `G I` goes straight to the list.
+- **The request in front.** In a window 1280 pixels wide or more, the first request
+  waiting on you opens by itself beside the list, with its question and its answers,
+  and nothing moves your focus or the page. Click any other request to put it in
+  front instead. Close it with **×** or `Esc` and it stays closed until you open a
+  request again, come back to Home from another page, or a new request arrives when
+  nothing was waiting. Once you answer, the request stays in front; once you resolve,
+  dismiss, snooze or pin it, the next one comes forward, and the keys work on it. While
+  a request is in front, the rest of Home sits in a column beside it; close the request
+  and the page uses the full width. A session panel and a request never show together
+  there: opening one closes the other, and closing the panel brings the request back.
+  While you are working in the sessions or the plans below (your focus is there, or your
+  pointer is over the page), a new request appears in the list and waits to come forward
+  until you leave them, and the number keys, `E`, `X` and `Esc` never act on a request
+  from there. In a narrower window a
+  request opens under its row when you click it, and nothing opens by itself.
 - **Working** has a card for every session with live work, grouped by project: what
   it reports, its agent, branch and time since its last call, its plan's progress
   (done, in progress, waiting on you, to do), its subagents and a small trace of its
@@ -273,8 +286,9 @@ The app opens on the Dashboard (`G D`), for all projects and agents.
   folds under **Dormant**, and ended sessions under **Ended**, at the end of the lane.
   A session moves between Working and Quiet as soon as it starts or stops working,
   but a card under your pointer stays where it is. A session that is asking you
-  something shows an **Asking you · N** chip in either lane, which takes you to its
-  first request in Needs you. Click a card or row to open its session panel: its
+  something shows an **Asking you · N** chip in either lane, which puts its first
+  waiting request in front. **New session…** sits at the right end of the Working
+  lane's heading. Click a card or row to open its session panel: its
   requests, its plan, its recent outcomes, PR and CI state, links, and a place to
   message it.
 - **Plans in progress** lists up to six plans that still have open steps, in the
@@ -299,7 +313,7 @@ setting turns motion off whichever you choose.
 ## Messaging a running session
 
 You can write to a connected session without finding its terminal. Each session's
-card or row in the Dashboard's Working and Quiet lanes has a **Message** button, which opens its session
+card or row in the Working and Quiet lanes on Home has a **Message** button, which opens its session
 panel at the **Message** section. Messages go to the whole CLI
 session: any of its agents, a subagent included, may pick one up first. A message
 can be up to 4,000 characters, and it never changes a badge or a count.
@@ -363,7 +377,7 @@ It is off until you turn it on, and it works only in the macOS app, not in a bro
 1. Open **Settings → Agent sessions** and turn on **Start sessions from Agent Inbox**.
    The key that signs your approvals is protected by the macOS Keychain, so macOS
    may ask once to allow Agent Inbox to use it.
-2. On the Dashboard, choose **New session…** at the right end of its page head. Pick a project Agent Inbox has seen (or **Choose folder…**), a
+2. On Home, choose **New session…** at the right end of the Working lane's heading. Pick a project Agent Inbox has seen (or **Choose folder…**), a
    mode, optionally a model and reasoning effort, the budgets, and the task. Don't
    paste secrets into the task: it is stored with the session.
 3. Agent Inbox shows its own confirmation of exactly what will start. **Start** runs
@@ -411,7 +425,7 @@ with no return time. **Not now · 4h**, **Tomorrow** and **Next week** snooze it
 until then. A request you set aside leaves the title badge, the tab count and the
 app icon badge, but it stays on screen.
 
-Set-aside requests wait in the **Later** section at the foot of the Inbox. It is
+Set-aside requests wait in the **Later** section at the foot of the Needs you list on Home. It is
 collapsed under one count for the current filters, such as `Later · 3` and
 `2 pinned · 1 snoozed, next back in 2h`. Snoozed requests come first, soonest
 back first, then pinned requests, oldest first. Each row says why it waits, and
@@ -419,7 +433,7 @@ back first, then pinned requests, oldest first. Each row says why it waits, and
 request inside Later. A snoozed request comes back by itself when its time
 passes. A pinned request comes back when you return it, or when the agent ends
 the request or starts a new one. When nothing else needs you, the queue says how
-many requests wait in Later. Search still finds them: a question is listed under
+many requests wait in Later ("Nothing needs you · 3 in Later"). Search still finds them: a question is listed under
 Open items with a Later label, and a plan row under Active plans with its plan.
 
 The Later section is on by default. Turn it off in **Settings → Inbox** to keep
@@ -446,7 +460,7 @@ plan step while its card is open, otherwise under **unsent responses**. **Retry*
 sends a question's reply again, **Use this text** puts a step's text in its editor,
 **Copy** copies it, and **Discard** removes an entry for good.
 While one of these is for a question or plan step the Review queue would show, the
-queue waits and the Inbox says "Finish or discard the 1 unsent response first", with
+queue waits and the Needs you list says "Finish or discard the 1 unsent response first", with
 a **Show it** button; one for a question or step that has since closed or moved on
 never holds the queue. If you had already sent it and no answer came back,
 it says the send was not confirmed rather than that it was never sent. When you
@@ -475,7 +489,7 @@ Letters do not run shortcuts while you are typing or using a select.
 
 | Keys | Action |
 |---|---|
-| `G D` / `G I` / `G P` / `G N` / `G H` / `G C` | Dashboard / Inbox / Plans / Notes / History / Chats |
+| `G D` / `G I` / `G P` / `G N` / `G H` / `G C` | Home / Needs you (the first request on Home) / Plans / Notes / History / Chats |
 | `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Sessions (the Agents view) |
 | `Cmd/Ctrl K` or `/` | Focus search |
 | `J` / `K`, then `Enter` | Move through the queue and expand an item |
@@ -692,7 +706,7 @@ Like sharing, this works only in the viewer the app started itself.
 
 ## Agents view
 
-The Dashboard's Working and Quiet lanes are the one home for your sessions: a card for
+The Working and Quiet lanes on Home are the one home for your sessions: a card for
 each working session, grouped by project with its agent kind on the card, and a row for
 each other one. The sidebar's **Sessions** line, on every tab, says how many are working
 and connected and opens them.

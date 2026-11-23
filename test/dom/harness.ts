@@ -455,9 +455,9 @@ export function click(el: Element | null | undefined): void {
   ;(el as HTMLElement).click()
 }
 
-/** Enter the focused action queue explicitly now that Dashboard is the cold-launch view. */
+/** Select Home, where the list of asks lives (the Inbox tab folded into it); the name stays for its callers. */
 export async function showInbox(): Promise<void> {
-  click(document.querySelector('.tab[data-tab="needsYou"]'))
+  click(document.querySelector('.tab[data-tab="dashboard"]'))
   await settle()
 }
 

@@ -1,4 +1,4 @@
-export const PANE_DEFAULTS = Object.freeze({ sidebar: 220, inspector: 520 })
+export const PANE_DEFAULTS = Object.freeze({ sidebar: 220, inspector: 640 })
 
 const LIMITS = Object.freeze({
   sidebar: { min: 180, max: 320 },

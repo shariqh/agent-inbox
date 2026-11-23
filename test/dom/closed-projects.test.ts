@@ -59,7 +59,7 @@ describe('closing a project from the rail (issue #32)', () => {
 
     const bridge = await bootApp(d)
     expect(badgeCount()).toBe(2)
-    expect(tabCount('needsYou')).toBe('2')
+    expect(tabCount('dashboard')).toBe('2')
 
     click(rowAction('beta', 'rail-close'))
     await settle()
@@ -70,7 +70,7 @@ describe('closing a project from the rail (issue #32)', () => {
     // the number leaves the badge, the title and the tab count together
     expect(badgeCount()).toBe(1)
     expect(document.title).toBe('(1) Agent Inbox')
-    expect(tabCount('needsYou')).toBe('1')
+    expect(tabCount('dashboard')).toBe('1')
     // …and the list
     expect(rowTitles()).toEqual(['a-question'])
     // the tab moved, it was not deleted
@@ -180,7 +180,7 @@ describe('peeking into a closed project (issue #32)', () => {
 
     const text = banner()?.textContent ?? ''
     expect(text).toContain('beta is closed')
-    expect(text).toContain('Inbox count or Review queue')
+    expect(text).toContain('Needs you count or Review queue')
     // agent-authored project name never becomes live markup
     expect(banner()?.querySelectorAll('img, script')).toHaveLength(0)
   })

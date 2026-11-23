@@ -19,11 +19,14 @@ function open(): Database.Database {
 }
 
 // the page head's lane chips (dashboard lanes design §3.1), which replaced the Now strip
-const chip = (key: 'needs' | 'working' | 'quiet'): string =>
-  document.querySelector(`#dashboard [data-dash-chip="${key}"] .dash-chip-count`)?.textContent ?? ''
+// The lane chips are gone (UX slice 2): a lane's size is its cards, and Needs you
+// is the asks in Home's list that still wait on the person.
+const chip = (key: 'needs' | 'working' | 'quiet'): string => String(key === 'needs'
+  ? Number(document.querySelector('#needsYouList .queue-count')?.textContent || 0)
+  : document.querySelectorAll(key === 'working' ? '#dashboard .working-lane .ah-cards [data-session-card]' : '#dashboard .quiet-lane .qt-rows [data-session-card]').length)
 
 // the Needs you lane: every ask once (§3.2)
-const askCount = (): number => document.querySelectorAll('#dashboard .needs-you-lane .ny-card').length
+const askCount = (): number => document.querySelectorAll('#needsYouList > .nrow:not(.answered)').length
 
 // #454: the session cards and rows of the Working and Quiet lanes, past the folds (dashboard lanes design §3.3, §3.4)
 const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('#dashboard .agents-home .ah-groups [data-session-card], #dashboard .agents-home .qt-rows [data-session-card]')]
@@ -70,12 +73,10 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
     expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(document.getElementById('pageTitle')?.textContent).toBe('Live Operations Desk')
+    expect(document.getElementById('pageTitle')?.textContent).toBe('Home')
     expect(chip('working')).toBe('1')
     expect(chip('needs')).toBe('1')
     expect(chip('quiet')).toBe('0')
-    expect(document.querySelector('[data-dash-chip="working"] .dash-chip-label')?.textContent).toBe('Working')
-    expect(document.querySelector('[data-dash-chip="working"]')?.getAttribute('aria-label')).toBe('Working: 1')
     expect(cards().map((card) => card.dataset.sessionCard)).toEqual(['session:live'])
     expect(cards()[0]!.querySelector('.sc-doing')?.textContent).toBe('Building the dashboard')
     expect(cards()[0]!.closest('.ah-group')?.querySelector('.ah-group-name')?.textContent).toBe('alpha')
@@ -111,7 +112,7 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.querySelector('.dashboard-history-empty')?.textContent?.trim()).toBe('')
     expect(document.querySelector<HTMLElement>('.agents-home .ah-empty')?.hidden).toBe(false)
     expect(document.querySelector('.agents-home .ah-empty-text')?.textContent).toMatch(/^No sessions yet\./)
-    expect([...document.querySelectorAll('.dash-chip')].map((el) => el.textContent)).toEqual(['Needs you0', 'Working0', 'Quiet0'])
+    expect(document.querySelector('.dash-chips')).toBeNull()
     expect(document.querySelector('.dash-now')).toBeNull()
   })
 
@@ -194,31 +195,10 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(chip('working')).toBe('0')
     expect(chip('quiet')).toBe('1')
-    expect(document.querySelector('[data-dash-chip="working"]')?.getAttribute('aria-label')).toBe('Working: 0')
     expect(working()).toHaveLength(0)
     expect(cards()[0]!.querySelector('.sc-state')?.textContent).toBe('Quiet')
     // the Quiet lane draws it only as what the session was doing (#454)
     expect(document.querySelector('.sc-doing')?.textContent).toMatch(/^Last reported: Checking the build · /)
-  })
-
-  it('the Needs you chip lands on the lane’s first card and filters nothing (lanes design §3.1)', async () => {
-    const d = open()
-    const id = insertItem(d, {
-      project: 'alpha',
-      stream: 'main',
-      agent: 'copilot',
-      kind: 'question',
-      title: 'Choose release window',
-    })
-
-    await bootApp(d)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-    click(document.querySelector('[data-dash-chip="needs"]'))
-    await settle()
-
-    expect(document.getElementById('dashboard')?.hidden).toBe(false)
-    expect(document.querySelector('.agents-home [data-ah-filter]')).toBeNull()
-    expect(document.activeElement).toBe(document.querySelector(`#dashboard [data-ny-ask="${id}"]`))
   })
 
   it('opens the complete outcomes projection and reaches an archived plan outcome', async () => {
@@ -278,7 +258,7 @@ describe('Live Operations Desk dashboard', () => {
     })
     await bootApp(d)
 
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     click(row(first))
     await settle()
@@ -317,7 +297,6 @@ describe('Live Operations Desk dashboard', () => {
     expect(document.activeElement).toBe(range)
     expect(document.querySelector('.dashboard-range')).toBe(range)
     expect(document.getElementById('pauseHint')?.textContent).toContain('paused')
-    expect(askCount()).toBe(2)
     expect(answerInput(first)?.value).toBe('unfinished answer')
   })
 
@@ -380,6 +359,7 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(chip('needs')).toBe('6')
     expect(chip('working')).toBe('0')
+    // the list of asks is on the same page and keeps up while focus rests in the lanes
     expect(askCount()).toBe(6)
     expect(working()).toHaveLength(0)
     expect(cards().map((card) => card.querySelector('.sc-state')?.textContent)).toEqual(['Quiet'])
@@ -547,6 +527,5 @@ describe('Live Operations Desk dashboard', () => {
 
     expect(chip('needs')).toBe('1')
     expect(askCount()).toBe(1)
-    expect(document.querySelector('[data-dash-chip="needs"]')?.getAttribute('aria-label')).toBe('Needs you: 1')
   })
 })

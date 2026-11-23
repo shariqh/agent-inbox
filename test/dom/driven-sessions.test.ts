@@ -95,7 +95,7 @@ function recordingBoot(d: Database.Database) {
 // #454: a launch is a card in the Working lane or a row in the Quiet lane (dashboard lanes
 // design §3.3, §3.4), and its actions live in the session panel
 const panel = (): HTMLElement => document.querySelector<HTMLElement>('#dashboard .dash-focus')!
-const newSessionButton = () => document.querySelector<HTMLButtonElement>('#dashboard .dash-head .ah-new')
+const newSessionButton = () => document.querySelector<HTMLButtonElement>('#dashboard .working-lane > .ah-lane-head .ah-new')
 const anyCard = (id: string) => [...document.querySelectorAll<HTMLElement>('[data-session-card]')].find((el) => el.dataset.sessionCard === id) ?? null
 function openFolds(): void {
   for (const key of ['ended', 'earlier']) {
@@ -144,7 +144,7 @@ describe('off means off on the page (§9 b)', () => {
     }
     expect(urls.filter((u) => u.includes('/api/launch'))).toEqual([])
     expect(document.querySelector('[data-session-card^="launch:"]')).toBeNull()
-    expect(document.querySelector<HTMLElement>('#dashboard .dash-head .ah-new')?.hidden).toBe(true)
+    expect(document.querySelector<HTMLElement>('#dashboard .working-lane > .ah-lane-head .ah-new')?.hidden).toBe(true)
     expect(document.querySelector<HTMLElement>('[data-session-card="session:mcp-1"] .sc-agent')?.title).toBe('Copilot · driven')
   })
 
@@ -1450,7 +1450,7 @@ describe('session cards for launches (#454, #412)', () => {
     // its card keeps its own state and counts the approval; the Inbox's Show on Agents › opens its panel there (lanes design §6)
     expect(card(id)?.querySelector('.sc-state')?.textContent).toBe('Idle')
     expect(card(id)?.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
-    click(document.querySelector('.tab[data-tab="needsYou"]'))
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
     await settle()
     click(row(ask.itemId))
     await settle()
@@ -1603,7 +1603,7 @@ describe('session cards for launches (#454, #412)', () => {
     await bootApp(db)
     await changedPollTick(db)
     await settle()
-    const start = document.querySelector<HTMLButtonElement>('#dashboard .dash-head .ah-new')!
+    const start = document.querySelector<HTMLButtonElement>('#dashboard .working-lane > .ah-lane-head .ah-new')!
     expect([start.hidden, start.disabled]).toEqual([false, false])
     expect(document.querySelector<HTMLElement>('#dashboard .ah-note')?.hidden).toBe(true)
     click(start)
@@ -1617,7 +1617,7 @@ describe('session cards for launches (#454, #412)', () => {
     await bootApp(db)
     await changedPollTick(db)
     await settle()
-    expect(document.querySelector<HTMLButtonElement>('#dashboard .dash-head .ah-new')?.disabled).toBe(true)
+    expect(document.querySelector<HTMLButtonElement>('#dashboard .working-lane > .ah-lane-head .ah-new')?.disabled).toBe(true)
     expect(document.querySelector('#dashboard .ah-note')?.textContent).toBe('Starting and approving sessions works only in Agent Inbox’s own window.')
   })
 })

@@ -238,7 +238,7 @@ describe('#223 · a text selection survives the 3-second rebuild', () => {
     await pollTick()
 
     expect(badgeCount()).toBe(2)
-    expect(tabCount('needsYou')).toBe('2')
+    expect(tabCount('dashboard')).toBe('2')
     expect(selected()).toBe('migration command')
   })
 

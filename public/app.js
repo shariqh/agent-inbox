@@ -1487,6 +1487,7 @@ function focusItem(id, source = null) {
   if (board && hasSearchSource && !source?.rowId) planOpen.set(board.id, true)
   if (source?.rowId) {
     openRows.add(source.rowId)
+    if (board) visitRows.add(source.rowId)
     if (board) {
       showDoneBoards.add(board.id)
       // UX pass, slice 3: a way in that targets a step opens its plan in full, over an earlier close
@@ -5180,6 +5181,7 @@ function discardRowRecovery(key, draft) {
 // deep link opens it, but without moving the page's address.
 function showPlanRow(owner) {
   openRows.add(owner.row.id)
+  visitRows.add(owner.row.id)
   showDoneBoards.add(owner.board.id)
   planOpen.set(owner.board.id, true)
   if (projectFilter && projectFilter !== owner.board.project) projectFilter = owner.board.project
@@ -8802,6 +8804,9 @@ let stalledOpen // the Stalled fold: undefined (no choice), true or false
 // A plan the person writes to from Plans keeps its section for the visit, and
 // the order pin keeps its slot, so nothing moves under the hand.
 const planHold = new Map()
+// Steps the person opened or wrote to from Plans this visit: they stay in hand, shown with
+// their mark, after their panel closes.
+const visitRows = new Set()
 let plansPin = { needs: [], moving: [], stalled: [] }
 let plansVisit = null // navigationKey() of the Plans visit the pin, hold and notice belong to
 let plansViewOpen = false // the header's View: Group by parent issue and Hide completed rows
@@ -8823,6 +8828,7 @@ function syncPlansVisit() {
   plansVisit = key
   plansPin = { needs: [], moving: [], stalled: [] }
   planHold.clear()
+  visitRows.clear()
   plansNotice = null
   disarmStalled()
 }
@@ -8840,11 +8846,12 @@ function workingPlanIds(nowMs) {
   return ids
 }
 
-// A step the person has in hand: it waits on them, is open, or holds their unsent words.
-function keptRowIds(b, archived) {
+// A step the person has in hand: it waits on them, is open, was opened or written to this
+// visit, or holds their unsent words.
+function keptRowIds(b, archived, { asks = !archived } = {}) {
   const ids = new Set()
   for (const { row: r, needsAnswer } of boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })) {
-    if ((needsAnswer && !archived) || openRows.has(r.id) || String(rowDrafts[r.id] ?? '').trim()
+    if ((needsAnswer && asks) || openRows.has(r.id) || visitRows.has(r.id) || String(rowDrafts[r.id] ?? '').trim()
       || Object.values(staleRowDrafts).some((draft) => draft?.rowId === r.id)) ids.add(r.id)
   }
   return ids
@@ -8852,7 +8859,12 @@ function keptRowIds(b, archived) {
 
 // Closing a plan (or the Stalled fold) by hand closes its open steps; their drafts stay stored.
 function closePlanSteps(plans) {
-  for (const b of plans) for (const r of b.rows ?? []) openRows.delete(r.id)
+  for (const b of plans) {
+    for (const r of b.rows ?? []) {
+      openRows.delete(r.id)
+      visitRows.delete(r.id)
+    }
+  }
 }
 
 // The order of a section for this visit: drawn plans keep their places, new ones join the foot.
@@ -8881,7 +8893,11 @@ function planSectionHead(name, count) {
     const n = document.createElement('span')
     n.className = 'plan-section-count'
     n.textContent = String(count)
-    head.append(' ', n)
+    // a screen reader hears what is counted; the visible text is the number alone
+    const noun = document.createElement('span')
+    noun.className = 'visually-hidden'
+    noun.textContent = count === 1 ? ' plan' : ' plans'
+    head.append(' ', n, noun)
   }
   return head
 }
@@ -8901,6 +8917,8 @@ function boardsHeader(firstHead) {
   tools.id = 'plansTools'
   tools.hidden = !shown()
   const view = btn('View', () => {
+    // forced open while grouping is on: there is nothing for View to do
+    if (groupByParent) return
     plansViewOpen = !shown()
     tools.hidden = !shown()
     view.setAttribute('aria-expanded', String(shown()))
@@ -8910,6 +8928,10 @@ function boardsHeader(firstHead) {
   view.className = 'plans-view-toggle'
   view.setAttribute('aria-controls', 'plansTools')
   view.setAttribute('aria-expanded', String(shown()))
+  if (groupByParent) {
+    view.setAttribute('aria-disabled', 'true')
+    view.title = 'Shown while grouping is on'
+  }
   line.appendChild(view)
   const t = btn(hideCompleted ? 'Show completed rows' : 'Hide completed rows', () => {
     hideCompleted = !hideCompleted
@@ -9001,7 +9023,11 @@ function renderBoards(boards, archived) {
   host.appendChild(boardsHeader(heads[0] ?? null))
   if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
   if (grouping) {
-    const { visible, remaining } = paginateWithPending(grouping.plans, 'boards')
+    const page = paginateWithPending(grouping.plans, 'boards')
+    // the page also holds any plan with a step in hand (an open step, a restored draft), as Moving's does
+    const onPage = new Set(page.visible.map((b) => b.id))
+    const visible = grouping.plans.filter((b) => onPage.has(b.id) || keptRowIds(b, false, { asks: false }).size > 0)
+    const remaining = grouping.plans.length - visible.length
     visible.forEach((b, i) => {
       const group = grouping.groupOf.get(b.id)
       const previous = i > 0 ? grouping.groupOf.get(visible[i - 1].id) : undefined
@@ -9207,7 +9233,9 @@ async function archiveStalled(button, event) {
 function initPlansHold() {
   const hold = (event) => {
     const target = event.target instanceof Element ? event.target : null
-    if (!target?.closest('#boards tr.row-panel-row')) return
+    const panelRow = target?.closest('#boards tr.row-panel-row')
+    if (!panelRow) return
+    if (panelRow.dataset.rowId) visitRows.add(panelRow.dataset.rowId)
     const id = target.closest('#boards [data-card-id]')?.dataset.cardId
     const drawn = id ? plansDrawn.get(id) : null
     if (drawn && !planHold.has(id)) planHold.set(id, drawn.section)
@@ -9351,7 +9379,11 @@ function boardEl(b, archived = false, lingering = false, section = null) {
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {
-      openRows.has(r.id) ? openRows.delete(r.id) : openRows.add(r.id)
+      if (openRows.has(r.id)) openRows.delete(r.id)
+      else {
+        openRows.add(r.id)
+        visitRows.add(r.id)
+      }
       forceRender()
     }
     if (needs) {
@@ -11490,6 +11522,9 @@ function initKeys() {
       optionCount: optionOrder(keyTargetItem()?.options).length,
     })
     if (!intent) return
+    // only Home has rows to move through and an ask to close: elsewhere the arrows scroll the page
+    // and Escape is left alone
+    if ((intent.type === 'move' || intent.type === 'collapse') && activeTab !== 'dashboard') return
     e.preventDefault()
     runIntent(intent)
   })

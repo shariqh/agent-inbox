@@ -65,7 +65,14 @@ const shown = (el: Element | null | undefined): boolean => {
 }
 const boardsChildren = () => [...document.querySelector('#boards .boards')!.children] as HTMLElement[]
 const activePlanIds = () => boardsChildren().filter((el) => el.matches('[data-card-id]')).map((el) => el.dataset['cardId'])
-const sectionHeads = () => [...document.querySelectorAll<HTMLElement>('#boards .plan-section-head')].map((el) => el.textContent)
+/** What a sighted person reads: the text without the words kept for a screen reader. */
+const visibleText = (el: Element | null | undefined): string | undefined => {
+  if (!el) return undefined
+  const copy = el.cloneNode(true) as Element
+  for (const hidden of copy.querySelectorAll('.visually-hidden')) hidden.remove()
+  return copy.textContent ?? undefined
+}
+const sectionHeads = () => [...document.querySelectorAll<HTMLElement>('#boards .plan-section-head')].map((el) => visibleText(el))
 const stalledFold = () => document.querySelector<HTMLDetailsElement>('#boards .stalled-fold')
 const archiveAll = () => document.getElementById('plans-archive-stalled') as HTMLButtonElement | null
 const notice = () => document.querySelector<HTMLElement>('#boards .plans-notice')
@@ -153,7 +160,7 @@ describe('sections (D3)', () => {
     const kids = boardsChildren()
     expect(kids[0]!.matches('.tab-header')).toBe(true)
     // the first heading sits in the header's line, beside View
-    expect(kids[0]!.querySelector('.plans-head > .plan-section-head')?.textContent).toBe('Needs you 1')
+    expect(visibleText(kids[0]!.querySelector('.plans-head > .plan-section-head'))).toBe('Needs you 1')
     expect(kids[0]!.querySelector('.plans-head > #plans-view-toggle')).not.toBeNull()
     expect(kids.slice(1).map((el) => el.dataset['cardId'] ?? el.className)).toEqual([
       n1.id, 'plan-section-head', m2.id, m1.id, 'stalled-fold',
@@ -1153,6 +1160,92 @@ describe('review fixes: Archive all', () => {
       expect(buttonLabelled('Un-archive', card(ids[0]!)!)).not.toBeNull()
     })
   }
+})
+
+describe('review fixes: held steps, paging, View, keys, count', () => {
+  it('a step the person answered stays on screen, with its mark, when they close its panel (RT-1)', async () => {
+    db = freshDb()
+    const b = plan(db, 'Release', [tracked('Prepare'), asks('Approve')])
+    const ask = b.rows[1]!.id
+    await bootApp(db)
+    await showPlans()
+    expect(card(b.id)!.dataset['form']).toBe('brief')
+    click(buttonLabelled('Answer', stepRow(ask)!))
+    await settle()
+    type(panelRow(ask)!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Approved.')
+    click(buttonLabelled('Send', panelRow(ask)!))
+    await settle()
+    expect(card(b.id)!.dataset['section']).toBe('needs')
+    expect(shown(stepRow(ask))).toBe(true)
+    click(stepRow(ask)!.querySelector('.row-expand'))
+    await settle()
+    expect(panelRow(ask)).toBeNull()
+    expect(shown(stepRow(ask))).toBe(true)
+    expect(stepRow(ask)!.querySelector('.step-mark')).not.toBeNull()
+    await changedPollTick(db)
+    expect(shown(stepRow(ask))).toBe(true)
+    // a step never touched stays out of the brief form
+    expect(shown(stepRow(b.rows[0]!.id))).toBe(false)
+    // leaving Plans ends the visit
+    await showInbox()
+    await showPlans()
+    expect(shown(stepRow(ask))).toBe(false)
+  })
+
+  it('in grouped mode the first page of 5 also holds a plan with a kept step (SDA-5)', async () => {
+    db = freshDb()
+    localStorage.setItem('agent-inbox-group-plans', 'true')
+    const kept = plan(db, 'Oldest docs', [{ label: 'Write notes', status: 'partial', note: 'Drafting.' }, tracked()])
+    const step = kept.rows[0]!
+    for (let i = 0; i < 6; i++) plan(db, `Other ${i}`, [tracked()])
+    localStorage.setItem('agent-inbox-drafts-v1', JSON.stringify({ v: 1, entries: {
+      [`row:${step.id}`]: { savedAt: Date.now(), draft: {
+        type: 'row', rowId: step.id, boardId: kept.id, boardRevision: kept.revision, revision: step.revision,
+        text: 'Mention the migration.', kind: 'answer', boardTitle: kept.title, label: step.label, context: '', blocked: false,
+      } },
+    } }))
+    await bootApp(db)
+    await showPlans()
+    expect(activePlanIds()).toHaveLength(6)
+    expect(activePlanIds()).toContain(kept.id)
+    expect(panelRow(step.id)?.querySelector<HTMLTextAreaElement>('.reply-input')?.value).toBe('Mention the migration.')
+    expect(document.querySelector('#boards .boards > .show-more')?.textContent).toBe('Show 1 more (1 hidden)')
+  })
+
+  it('View does nothing and says so while Group by parent issue forces the tools open (CFK-8, RT-7a)', async () => {
+    db = freshDb()
+    localStorage.setItem('agent-inbox-group-plans', 'true')
+    plan(db, 'Waiting', [asks()])
+    await bootApp(db)
+    await showPlans()
+    const view = () => document.getElementById('plans-view-toggle')!
+    expect(view().getAttribute('aria-disabled')).toBe('true')
+    expect(view().title).toBe('Shown while grouping is on')
+    click(view())
+    expect(document.getElementById('plansTools')!.hidden).toBe(false)
+    expect(view().getAttribute('aria-expanded')).toBe('true')
+    // switching grouping off gives View back, open
+    click(document.getElementById('group-plans-switch'))
+    await settle()
+    expect(view().hasAttribute('aria-disabled')).toBe(false)
+    expect(view().title).toBe('')
+    click(view())
+    expect(document.getElementById('plansTools')!.hidden).toBe(true)
+  })
+
+  it('the count after Needs you has a noun for a screen reader and the same visible text (CPA-7)', async () => {
+    db = freshDb()
+    plan(db, 'One', [asks('A')])
+    await bootApp(db)
+    await showPlans()
+    const head = document.querySelector<HTMLElement>('#boards .plan-section-head')!
+    expect(visibleText(head)).toBe('Needs you 1')
+    expect(head.querySelector('.visually-hidden')?.textContent).toBe(' plan')
+    expect(head.textContent).toBe('Needs you 1 plan')
+    plan(db, 'Two', [asks('B')])
+    await changedPollTick(db)
+    expect(document.querySelector('#boards .plan-section-head .visually-hidden')?.textContent).toBe(' plans')
+  })
 })
 
 describe('the stylesheet (CSS)', () => {

@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import type { ChatEntry, ChatIndex } from '../../src/chat-index.js'
+import { insertItem } from '../../src/store.js'
 import { TRUNCATED_TEXT } from '../../public/chats.js'
 import {
   advanceClock, bootApp, changedPollTick, chatRowFor, click, findFor, freshDb, openChatRow, openFindChats, pollTick, repaint, settle, T0, useDomTest,
@@ -395,15 +396,29 @@ describe('Chats in Find (#586 PR 2; UX pass, slice 4, step B)', () => {
   })
 
   it('keeps the other rows and Home’s nodes when its own read settles', async () => {
-    const { reads } = await boot()
-    await openChats()
-    const first = document.querySelector('#findList')!.firstElementChild
+    // a note and the chats share one All list for "alpha"; the first chats read fails, then Retry reads
+    let failing = true
+    const { reads } = await boot({
+      intercept: async (input, _init, next) => (failing && String(input).startsWith('/api/chats') ? new Response('x', { status: 500 }) : await next()),
+    })
+    const noteId = insertItem(db!, { project: 'alpha', stream: 'main', agent: 'claude-code', kind: 'note', title: 'Alpha ran twice' })
+    await changedPollTick(db!)
+    await openTab('find')
+    await findFor('alpha')
+    const noteRow = () => document.querySelector(`#findList > [data-find-key="item:${noteId}"]`)
+    const note = noteRow()
     const dashboard = document.querySelector('#dashboard .dashboard')!.firstElementChild
-    expect(first).not.toBeNull()
-    click(q('.chats-refresh'))
+    expect(note).not.toBeNull()
+    expect(dashboard).not.toBeNull()
+    expect(document.querySelector('#findList > .find-row[data-find-type="chat"]')).toBeNull()
+    failing = false
+    click(document.querySelector('#findChatsFoot .chats-retry'))
+    await settle()
     await settle()
     expect(reads).toHaveLength(2)
-    expect(document.querySelector('#findList')!.firstElementChild).toBe(first)
+    // the read landed: chat rows are listed beside the note, and neither it nor Home was rebuilt
+    expect(document.querySelectorAll('#findList > .find-row[data-find-type="chat"]').length).toBeGreaterThan(0)
+    expect(noteRow()).toBe(note)
     expect(document.querySelector('#dashboard .dashboard')!.firstElementChild).toBe(dashboard)
   })
 

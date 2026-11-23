@@ -1401,13 +1401,15 @@ function restorePlansControlFocus(id) {
   const revealed = movingMoreReveals
   movingMoreReveals = null
   const same = document.getElementById(id)
-  if (same) {
+  // a control the person cannot see counts as gone: a browser refuses focus inside a closed <details>
+  if (same && (same.matches('details > summary') || !same.closest('[hidden], details:not([open])'))) {
     same.focus({ preventScroll: true })
     return
   }
   let next = null
   if (id === 'plans-stalled-summary' || id === 'plans-archive-stalled') {
-    next = document.getElementById('plans-archived-summary') ?? document.getElementById('plans-view-toggle')
+    next = document.getElementById('plans-stalled-summary') ?? document.getElementById('plans-archived-summary')
+      ?? document.getElementById('plans-view-toggle')
   } else if (id === 'plans-moving-more' && revealed) {
     next = document.querySelector(`#boards [data-card-id="${CSS.escape(revealed)}"] > summary`)
   }
@@ -9119,6 +9121,7 @@ function stalledFoldEl(plans, planEl) {
   const archive = document.createElement('button')
   archive.type = 'button'
   archive.id = 'plans-archive-stalled'
+  ignoreKeyRepeat(archive)
   archive.className = 'archive-stalled'
   const qualifying = plans.filter(meetsStalledRule).length
   labelArchiveStalled(archive, qualifying)
@@ -9165,6 +9168,7 @@ async function archiveStalled(button, event) {
   const lens = navigationKey()
   if (!stalledArm || stalledArm.lens !== lens) {
     disarmStalled()
+    disarmArchive() // one armed button at a time
     // only plans that are Stalled on their own: a hold may keep another drawn in the fold
     const ids = [...plansDrawn].filter(([, d]) => d.section === 'stalled' && meetsStalledRule(d.board)).map(([id]) => id)
     if (!ids.length) return
@@ -9383,11 +9387,11 @@ function boardEl(b, archived = false, lingering = false, section = null) {
     const actionTd = document.createElement('td')
     actionTd.className = 'row-action'
     const toggle = () => {
+      // any press counts as a touch this visit, so the row stays on screen when its panel closes,
+      // also for a step left open from an earlier visit
+      visitRows.add(r.id)
       if (openRows.has(r.id)) openRows.delete(r.id)
-      else {
-        openRows.add(r.id)
-        visitRows.add(r.id)
-      }
+      else openRows.add(r.id)
       forceRender()
     }
     if (needs) {
@@ -9423,6 +9427,7 @@ function boardEl(b, archived = false, lingering = false, section = null) {
     actions.appendChild(btn('Un-archive', async () => {
       const res = await postJSON(`/api/boards/${b.id}/unarchive`, { expected_version: b.revision })
       if (res === null) return // network failure — postJSON already signaled it
+      handArchived.delete(b.id) // back among the active plans, it may linger again when its agent finishes it
       await reloadAndPaint() // #38 — the human's own click gets its frame
     }))
   } else {
@@ -9445,6 +9450,12 @@ function paintArchiveButton(el, armed) {
   if (el.textContent !== text) el.textContent = text
 }
 
+// A held Enter clicks a focused button once per repeat: the first arms and a later one would confirm.
+// Only a fresh key press may activate an archive button.
+function ignoreKeyRepeat(button) {
+  button.addEventListener('keydown', (e) => { if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault() })
+}
+
 function disarmArchive() {
   if (!archiveArm) return
   clearTimeout(archiveArm.timer)
@@ -9455,7 +9466,9 @@ function disarmArchive() {
 }
 
 function archiveBtn(board) {
-  const armed = () => archiveArm?.id === board.id && Date.now() < archiveArm.until
+  // armed only while the plan is the one the person armed: a change to it (a new ask, say) shows
+  // "Archive" again, so they see the new state before they can confirm
+  const armed = () => archiveArm?.id === board.id && archiveArm.revision === board.revision && Date.now() < archiveArm.until
   const el = btn('Archive', async () => {
     if (armed()) {
       disarmArchive()
@@ -9468,12 +9481,14 @@ function archiveBtn(board) {
       return
     }
     disarmArchive()
+    disarmStalled() // one armed button at a time
     const timer = setTimeout(() => {
       if (archiveArm?.id === board.id) disarmArchive()
     }, ARCHIVE_ARM_MS)
-    archiveArm = { id: board.id, until: Date.now() + ARCHIVE_ARM_MS, timer }
+    archiveArm = { id: board.id, revision: board.revision, until: Date.now() + ARCHIVE_ARM_MS, timer }
     paintArchiveButton(el, true)
   })
+  ignoreKeyRepeat(el)
   el.id = `plan-archive-${board.id}` // the in-place disarm finds the button by it
   paintArchiveButton(el, armed())
   return el

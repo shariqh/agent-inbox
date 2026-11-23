@@ -8997,8 +8997,11 @@ function updateFindRow(el, row, nowMs) {
     if (!slot) {
       slot = document.createElement('div')
       slot.className = 'find-slot'
+      // twenty rows hold the same button: the group says whose it is
+      slot.setAttribute('role', 'group')
       main.after(slot)
     }
+    if (slot.getAttribute('aria-label') !== row.title) slot.setAttribute('aria-label', row.title)
     chatsView.paintSlot(slot, row.id)
   } else slot?.remove()
   let body = el.querySelector(':scope > .find-row-body')
@@ -9205,8 +9208,8 @@ function renderFind() {
 }
 
 // Step B: the line under the chips while Chats is selected (the tool toggles, Show all, Refresh,
-// the notes and the empty texts), and the one line at the list's foot when the chats could not be
-// read for a query under All.
+// the notes and the empty texts), and the foot after the list: one line when the chats could not
+// be read for a query under All, and the retention note under the Chats chip.
 function paintFindChatsLines(model) {
   const line = document.getElementById('findChats')
   if (line) {
@@ -9215,7 +9218,7 @@ function paintFindChatsLines(model) {
     if (onChats) chatsView.paintBar(line, { shown: model.rows.filter((row) => row.type === 'chat').length })
   }
   const fail = document.getElementById('findChatsFoot')
-  if (fail) chatsView.paintFoot(fail, findChip === 'all' && Boolean(model.query))
+  if (fail) chatsView.paintFoot(fail, findChip === 'all' && Boolean(model.query), { note: findChip === 'chats' })
 }
 
 // A chats change to draw. Every Find repaint goes through the page's render: one nobody pressed

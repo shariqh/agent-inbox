@@ -300,8 +300,13 @@ describe('Chats in Find (#586 PR 2; UX pass, slice 4, step B)', () => {
   it('states the retention period, and says when the list is incomplete', async () => {
     const { index } = await boot()
     await openChats()
-    expect(q('.chats-retention')?.textContent).toBe('Claude Code deletes chats that have been untouched for 21 days. Agent Inbox does not copy them.')
-    expect(q('.chats-retention')?.hidden).toBe(false)
+    // said once, after the list (the foot), not in the line under the chips
+    expect(q('.chats-retention')).toBeNull()
+    const foot = document.getElementById('findChatsFoot') as HTMLElement
+    const retention = foot.querySelector<HTMLElement>('.chats-retention')
+    expect(retention?.textContent).toBe('Claude Code deletes chats that have been untouched for 21 days. Agent Inbox does not copy them.')
+    expect([foot.hidden, retention?.hidden]).toEqual([false, false])
+    expect(foot.compareDocumentPosition(document.getElementById('findList')!) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
     expect(q('.chats-truncated')?.hidden).toBe(true)
     index.truncated = true
     click(q('.chats-refresh'))

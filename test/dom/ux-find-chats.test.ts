@@ -243,7 +243,10 @@ describe('B · chats under All', () => {
     await settle()
     click(line().querySelector('.chats-refresh'))
     await settle()
-    expect(foot.hidden).toBe(true)
+    // under the Chats chip the line under the chips says the failure; the foot never repeats it,
+    // and holds only the retention note
+    expect(foot.querySelector<HTMLElement>('.chats-error')?.hidden).toBe(true)
+    expect(foot.querySelector<HTMLElement>('.chats-retention')?.hidden).toBe(false)
     expect(line().querySelector<HTMLElement>('.chats-error')?.hidden).toBe(false)
   })
 })

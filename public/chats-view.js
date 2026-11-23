@@ -34,7 +34,8 @@ import { writeClipboard } from './structured-copy.js'
 
 const COPY_LABEL = 'Copy resume'
 const CONFIRM_MS = 1500
-const TOOL_FILTERS = [['all', 'All'], ['claude', 'Claude Code'], ['copilot', 'Copilot']]
+// "All tools", not "All": the line sits right under Find's chips, whose first one is All
+const TOOL_FILTERS = [['all', 'All tools'], ['claude', 'Claude Code'], ['copilot', 'Copilot']]
 
 /**
  * @param {import('./chats-view.js').ChatsViewDeps} deps
@@ -569,7 +570,6 @@ export function installChatsView({
     })
     const controls = make('div', 'chats-header')
     controls.append(tools, all, refresh)
-    const retention = make('p', 'chats-note chats-retention')
     const truncated = make('p', 'chats-note chats-truncated', TRUNCATED_TEXT)
     truncated.hidden = true
     const errorBox = make('div', 'chats-error')
@@ -580,8 +580,8 @@ export function installChatsView({
       if (!loading) read()
     }))
     const state = make('p', 'empty chats-state')
-    root.replaceChildren(controls, retention, truncated, errorBox, state)
-    return { root, tools, allInput, allLabel: all.querySelector('.chats-all-label'), refresh, retention, truncated, errorBox, errorText, state }
+    root.replaceChildren(controls, truncated, errorBox, state)
+    return { root, tools, allInput, allLabel: all.querySelector('.chats-all-label'), refresh, truncated, errorBox, errorText, state }
   }
 
   const errorWords = () => {
@@ -616,8 +616,6 @@ export function installChatsView({
     setText(bar.refresh, loading ? 'Refreshing…' : 'Refresh')
     // aria-disabled, not disabled: a focused control that becomes disabled drops focus to the page
     setAttr(bar.refresh, 'aria-disabled', loading ? 'true' : null)
-    setText(bar.retention, retentionText(body?.claudeDays ?? 30))
-    setHidden(bar.retention, !body)
     setHidden(bar.truncated, !body?.truncated)
     setHidden(bar.errorBox, !error)
     if (error) setText(bar.errorText, errorWords())
@@ -630,7 +628,10 @@ export function installChatsView({
   }
 
   /** Paints the failure line at the list's foot (All with a query), or empties it. */
-  function paintFoot(root, show) {
+  // The foot after the list. `show`: say a failed or unfinished chats read (All with a query).
+  // `note`: say why an old chat is not listed (the Chats chip): once, after the list, where the
+  // question comes up, so the page's head stays light.
+  function paintFoot(root, show, { note = false } = {}) {
     if (!foot || foot.root !== root) {
       const line = make('div', 'chats-error find-chats-fail')
       line.setAttribute('role', 'status')
@@ -639,8 +640,9 @@ export function installChatsView({
         if (!loading) read()
       })
       line.append(text, ' ', retry)
-      root.replaceChildren(line)
-      foot = { root, text, retry }
+      const retention = make('p', 'chats-note chats-retention')
+      root.replaceChildren(line, retention)
+      foot = { root, line, text, retry, retention }
     }
     // the first read still in flight is said here too: with no chats listed yet, an empty list
     // under a query is not "Nothing matches", and the foot is the line that speaks for them
@@ -648,8 +650,12 @@ export function installChatsView({
     const visible = show && (Boolean(error) || reading)
     if (visible) setText(foot.text, error ? errorWords() : 'Loading chats…')
     setHidden(foot.retry, !error)
-    foot.root.firstElementChild.classList.toggle('chats-reading', !error)
-    setHidden(root, !visible)
+    foot.line.classList.toggle('chats-reading', !error)
+    setHidden(foot.line, !visible)
+    const noted = note && Boolean(body)
+    if (noted) setText(foot.retention, retentionText(body.claudeDays ?? 30))
+    setHidden(foot.retention, !noted)
+    setHidden(root, !visible && !noted)
   }
 
   return {

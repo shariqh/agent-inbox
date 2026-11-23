@@ -27,18 +27,30 @@ describe('chats styles (#586 PR 2; step B)', () => {
     for (const rule of [/position:\s*absolute;/, /width:\s*var\(--find-slot\);/, /height:\s*var\(--find-slot-h\);/]) expect(slot).toMatch(rule)
     // laid over the space: right of it are the age and the project columns, at their fixed widths
     expect(slot).toMatch(/right:\s*calc\(18px \+ var\(--find-age\) \+ 14px \+ var\(--find-project\) \+ 14px\);/)
-    // the slot's button fills it and cuts a long label rather than growing
+    // the slot's button is as wide as its label, at the slot's end beside the project, and cuts a
+    // label longer than the slot rather than growing
+    expect(slot).toMatch(/justify-content:\s*flex-end;/)
+    // the reserved width beside the button is not a dead zone: a press there reaches the row
+    expect(slot).toMatch(/pointer-events:\s*none;/)
+    expect(ruleBody('.find-slot > button')).toMatch(/pointer-events:\s*auto;/)
     const button = ruleBody('.find-slot > button')
-    for (const rule of [/min-width:\s*0;/, /overflow:\s*hidden;/, /text-overflow:\s*ellipsis;/, /margin:\s*0;/]) expect(button).toMatch(rule)
+    for (const rule of [/flex:\s*0 1 auto;/, /min-width:\s*0;/, /overflow:\s*hidden;/, /text-overflow:\s*ellipsis;/, /margin:\s*0;/]) expect(button).toMatch(rule)
     expect(ruleBody('.find-row')).toMatch(/position:\s*relative;/)
     expect(ruleBody('.find')).toMatch(/--find-slot:\s*152px;/)
   })
 
-  it('stacks a narrow chat row with its slot at the first line’s end, in Find’s own container query', () => {
+  it('stacks a narrow chat row with the title on its own line and the slot leading the second, in Find’s own container query', () => {
     expect(findStart).toBeGreaterThan(0)
-    expect(ruleBody('.find-slot-space', findStart)).toMatch(/grid-area:\s*new;/)
-    expect(ruleBody('.find-slot', findStart)).toMatch(/right:\s*18px;/)
-    expect(ruleBody('.find-live', findStart)).toMatch(/grid-area:\s*extra;/)
+    // the title keeps the whole first line: the slot's space leads the second, the Live mark ends the first
+    expect(ruleBody('.find-slot-space', findStart)).toMatch(/grid-area:\s*extra;/)
+    expect(ruleBody('.find-live', findStart)).toMatch(/grid-area:\s*new;/)
+    // the slot is laid over that space: below the first line, at the title's left edge
+    const narrowSlot = ruleBody('.find-slot', findStart)
+    expect(narrowSlot).toMatch(/top:\s*calc\(var\(--sp-2\) \+ var\(--find-line\) \+ var\(--sp-1\)\);/)
+    expect(narrowSlot).toMatch(/left:\s*calc\(18px \+ var\(--find-icon\) \+ var\(--sp-3\)\);/)
+    expect(narrowSlot).toMatch(/right:\s*auto;/)
+    // the two lines have fixed heights, so the slot's place never depends on the text
+    expect(css.slice(findStart)).toMatch(/\.find-row\[data-find-type="chat"\] > \.find-row-main \{ grid-template-rows: var\(--find-line\) var\(--find-slot-h\); \}/)
     expect(findBlock).not.toMatch(/order:/)
   })
 

@@ -3501,6 +3501,7 @@ body.hub-reconnecting #status { display: none; }
 .find {
   --find-slot: 152px;
   --find-slot-h: 32px;
+  --find-line: 24px;
   --find-column: 780px;
   --find-field: 64px;
   --find-chip: 34px;
@@ -3568,11 +3569,20 @@ body.hub-reconnecting #status { display: none; }
    width that the button reserves, so the slot never shifts the row when its label changes. */
 .find-chats { display: flex; flex-direction: column; gap: var(--sp-2); padding: 0 var(--sp-1); }
 .find-chats[hidden], .find-chats-foot[hidden] { display: none; }
+/* the line is a quiet sub-filter under the chips, never a second row of chips; Refresh ends it */
+.find-chats .chats-header { gap: var(--sp-1) var(--sp-2); }
+.find-chats .header-toggle { padding: var(--sp-1) var(--sp-2); border-color: transparent; color: var(--app-text-soft); font-size: var(--fs-meta); }
+.find-chats .header-toggle.active { border-color: transparent; background: var(--app-soft); color: var(--app-text); }
+.find-chats .header-switch { color: var(--app-text-soft); font-size: var(--fs-meta); }
+.find-chats .chats-refresh { margin-left: auto; }
+/* why an old chat is not listed: after the list, where the question comes up */
+.find-chats-foot .chats-retention { color: var(--app-text-soft); }
 .find-live { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--app-agent) 12%, transparent); color: var(--app-agent); font-size: var(--fs-meta); font-weight: 600; }
 .find-slot-space { flex: none; width: var(--find-slot); height: var(--find-slot-h); margin-left: auto; }
 .find-slot-space + .find-project { margin-left: 0; }
-.find-slot { position: absolute; top: calc((var(--find-row) - var(--find-slot-h)) / 2); right: calc(18px + var(--find-age) + 14px + var(--find-project) + 14px); display: flex; width: var(--find-slot); height: var(--find-slot-h); }
-.find-slot > button { flex: 1 1 auto; min-width: 0; height: 100%; margin: 0; padding: 0 12px; overflow: hidden; border: 1px solid var(--app-border); border-radius: 8px; background: none; color: var(--app-text); font-size: 13px; text-overflow: ellipsis; }
+.find-slot { position: absolute; top: calc((var(--find-row) - var(--find-slot-h)) / 2); right: calc(18px + var(--find-age) + 14px + var(--find-project) + 14px); display: flex; justify-content: flex-end; width: var(--find-slot); height: var(--find-slot-h); pointer-events: none; }
+/* the slot is wider than its button: only the button takes a press, the rest falls through to the row */
+.find-slot > button { pointer-events: auto; flex: 0 1 auto; min-width: 0; height: 100%; margin: 0; padding: 0 12px; overflow: hidden; border: 1px solid var(--app-border); border-radius: 8px; background: none; color: var(--app-text); font-size: 13px; font-weight: 500; text-overflow: ellipsis; }
 .find-loading { margin: 0; color: var(--app-muted); font-size: var(--fs-body); }
 @container find (max-width: 620px) {
   /* the row stacks: the icon and the title over the extra, the project and the age */
@@ -3584,8 +3594,12 @@ body.hub-reconnecting #status { display: none; }
   .find-project { grid-area: project; width: auto; max-width: var(--find-project); margin-left: 0; }
   .find-age { grid-area: age; }
   .find-row-body { padding-left: 18px; }
-  /* a chat row: its slot at the first line's end, its Live mark first on the second */
-  .find-live { grid-area: extra; justify-self: start; }
-  .find-slot-space { grid-area: new; margin-left: 0; }
-  .find-slot { top: var(--sp-2); right: 18px; }
+  /* a chat row: the title keeps the whole first line (its Live mark at the end); the slot leads the
+     second line, before the project and the age */
+  .find-row[data-find-type="chat"] > .find-row-main { grid-template-rows: var(--find-line) var(--find-slot-h); }
+  .find-live { grid-area: new; }
+  .find-slot-space { grid-area: extra; justify-self: start; margin-left: 0; }
+  .find-slot { top: calc(var(--sp-2) + var(--find-line) + var(--sp-1)); right: auto; left: calc(18px + var(--find-icon) + var(--sp-3)); justify-content: flex-start; }
+  /* the Chats line wraps here: Refresh follows the other controls instead of sitting alone at the right */
+  .find-chats .chats-refresh { margin-left: 0; }
 }

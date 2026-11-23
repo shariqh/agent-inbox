@@ -42,7 +42,8 @@ export interface ChatsView {
   paintSlot(slot: HTMLElement, key: string): void
   paintBody(body: HTMLElement, key: string, nowMs: number): void
   paintBar(root: HTMLElement, options?: { shown?: number }): void
-  paintFoot(root: HTMLElement, show: boolean): void
+  /** The foot after the list: a failed or unfinished chats read when `show`; the retention note when `note`. */
+  paintFoot(root: HTMLElement, show: boolean, opts?: { note?: boolean }): void
   state(): string
 }
 

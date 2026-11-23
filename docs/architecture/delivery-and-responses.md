@@ -59,8 +59,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - Item/row `updated_at` is for content changes only. Delivery stamp writes must
   never bump it or the New/changed filter becomes a polling firehose.
 
-- **Hand-offs (#612).** A `flag` with `kind: 'done'` is a milestone, shown only in
-  History, unless its `next_step` asks the human to act. The server decides, in
+- **Hand-offs (#612).** A `flag` with `kind: 'done'` is a milestone, shown only among
+  Find's finished things (History until UX pass slice 4), unless its `next_step` asks the human to act. The server decides, in
   `insertItem` (`isHandoffInput`), when it writes. The step is NFKC-normalised, its
   whitespace collapsed and leading characters that are not letters or digits
   stripped (quotes, backticks, bullets, dashes, brackets); an empty result is a
@@ -91,7 +91,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `pending()` hands over only its annotations, as for any milestone, and the agent
   need not poll for it. Items written before the column, and by an older server, have
   `handoff` NULL and stay milestones. An older viewer on a newer hub shows a hand-off
-  as a milestone in History, which is what it did before. An OLDER server sharing the
+  as a milestone among the finished things, which is what it did before. An OLDER server sharing the
   database dedupes a milestone against an open hand-off of the same project and
   title: its lookup does not read `handoff`, so it returns the hand-off's id and
   writes nothing (`test/mixed-version.test.ts`); this build cannot change that. The

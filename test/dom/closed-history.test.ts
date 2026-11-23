@@ -144,7 +144,7 @@ describe('paged closed history (issue #184)', () => {
     await settle()
     expect(historyReads(reads)).toHaveLength(1)
     const option = results.querySelector<HTMLElement>(`[role="option"][data-search-target="${archive[1]}"]`)
-    expect(option?.closest('.search-result-group')?.querySelector('.search-result-group-label')?.textContent).toBe('History')
+    expect(option?.closest('.search-result-group')?.querySelector('.search-result-group-label')?.textContent).toBe('Finished')
     expect(option?.querySelector('.search-result-match-source')?.textContent).toBe('Background')
     expect(option?.querySelector('.search-result-match mark')?.textContent?.toLowerCase()).toBe('quokka')
 

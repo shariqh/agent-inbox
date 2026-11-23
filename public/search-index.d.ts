@@ -5,8 +5,8 @@ export interface SearchResult {
   targetId: string
   tab: 'dashboard' | 'boards' | 'find'
   section: 'open' | 'plans' | 'notes' | 'history' | 'archived'
-  sectionLabel: 'Open items' | 'Active plans' | 'Notes' | 'History' | 'Archived plans'
-  kind: 'Open item' | 'Active plan' | 'Note' | 'History' | 'Archived plan'
+  sectionLabel: 'Open items' | 'Active plans' | 'Notes' | 'Finished' | 'Archived plans'
+  kind: 'Open item' | 'Active plan' | 'Note' | 'Finished' | 'Archived plan'
   title: string
   titleRanges: number[]
   match: { label: string; text: string; ranges: number[] } | null

@@ -131,7 +131,7 @@ A second read-only route answers `{ chat, launch }` for one Copilot chat. Its re
 
 ## Chats tab (PR 2)
 
-A tab after History (`G C`, `#chats`) lists the chats as a table. `public/chats.js` is the pure model (reading the body, sort, search, filters, the home folder, labels, the fetch rule and the resume command); `public/chats-view.js` is the DOM; `app.js` only wires them.
+A tab after Find (History until UX pass slice 4; `G C`, `#chats`) lists the chats as a table. `public/chats.js` is the pure model (reading the body, sort, search, filters, the home folder, labels, the fetch rule and the resume command); `public/chats-view.js` is the DOM; `app.js` only wires them.
 
 **Reads.** `/api/chats` is read when the panel is entered from another tab or from Settings and no list is loaded or the last one is over 60 seconds old, and on Refresh, Retry and either change of Show all. Re-selecting the open tab reads nothing. `load()` and the 3 s poll never read it. Each read takes a sequence number and only the newest is applied, so turning Show all on or off mid-read never shows the other set. A failed read keeps the last list ("Couldn't refresh chats (500). Showing the last list.") with Retry; with no list it says "Couldn't load chats (500)." Refresh is `aria-disabled` while a read runs, so a focused button keeps focus.
 

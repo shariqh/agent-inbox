@@ -6,7 +6,8 @@ const SECTION_DEFS = [
   { id: 'open', label: 'Open items', kind: 'Open item', tab: 'dashboard' },
   { id: 'plans', label: 'Active plans', kind: 'Active plan', tab: 'boards' },
   { id: 'notes', label: 'Notes', kind: 'Note', tab: 'find' },
-  { id: 'history', label: 'History', kind: 'History', tab: 'find' },
+  // UX pass, slice 4: History is Find's finished things
+  { id: 'history', label: 'Finished', kind: 'Finished', tab: 'find' },
   { id: 'archived', label: 'Archived plans', kind: 'Archived plan', tab: 'boards' },
 ]
 

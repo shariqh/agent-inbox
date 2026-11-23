@@ -257,7 +257,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   never takes the other's focus.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
   rebuild must restore their `open` state instead of collapsing text under the reader.
-  Passive polls retain inactive Notes, History and Plans DOM, but not their data:
+  Passive polls retain inactive Find and Plans DOM, but not their data:
   the action/recovery queue, ambient signals and visible overlays still refresh.
   Boot, library navigation and successful human writes use the existing complete
   forced paint. Keep active-board tracking outside the skipped Plans painter and

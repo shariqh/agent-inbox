@@ -288,7 +288,7 @@ describe('buildSearchResults', () => {
       { targetId: 'open', sectionLabel: 'Open items' },
       { targetId: 'plan', sectionLabel: 'Active plans' },
       { targetId: 'note', sectionLabel: 'Notes' },
-      { targetId: 'history', sectionLabel: 'History' },
+      { targetId: 'history', sectionLabel: 'Finished' },
       { targetId: 'archive', sectionLabel: 'Archived plans' },
     ])
   })

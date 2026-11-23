@@ -77,14 +77,15 @@ The primary navigation order is:
 
 1. Home
 2. Plans
-3. Notes
-4. History
-5. Chats
+3. Find
+4. Chats
 
 Home is the cold-launch view and the one place for asks: the focused action queue
 (Needs you) comes first, the opened ask in front beside it, then the lanes that monitor
 real current state and truthful local claim history. There is no separate Inbox page.
-History is an outcome ledger that expands into audit detail.
+Find is one list of answers, notes, plans and finished work (UX pass, slice 4, in place of
+Notes and History): a row at rest is its type, title, one small extra, project and age, and
+expands in place into the full card.
 
 At wide widths the project library can collapse to a 72px icon rail. The collapse
 state is window-persistent, preserves the prior resizable width, and never changes
@@ -312,8 +313,8 @@ Avoid generic productivity framing.
 
 Current snapshots and historical measures are labelled distinctly. Empty history
 renders an honest empty state; it never draws a zero trend. Recorded outcomes include
-both items and plan rows, so their total is intentionally broader than the History
-item count.
+both items and plan rows, so their total is intentionally broader than Find's
+finished items.
 
 Terminal action labels keep the generic word ("Open in Terminal", "Take over in Terminal").
 The chosen app (Settings → Terminal, #586) is named in the control's `title` and, when it is not
@@ -325,7 +326,7 @@ screen-reader users too.
 - floating controls that cover working content;
 - hiding ownership or counts at narrow widths;
 - raw internal hashes/status values at title weight;
-- full decision cards in History;
+- full decision cards in a Find row at rest;
 - activity presented as human attention;
 - multiple competing overview surfaces;
 - per-site opacity and `color-mix()` as the primary hierarchy system;

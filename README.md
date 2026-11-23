@@ -308,6 +308,13 @@ separate Inbox page.
 In search (`Cmd/Ctrl K`), type `answer `, `open plan ` or `jump to session ` to list
 those targets first.
 
+**Find** (`G F`) is one list of your answers, notes, plans and finished work, newest
+first, with a large field and four chips: All, Answers, Notes and Plans. A row shows
+what it is, its title, one small extra (the answer you gave, the start of a note, a
+plan's bar, an outcome), the project and an age. A note or a finished item opens in
+place with its full card; an open ask goes to Home and a plan to Plans. The Find tab
+counts notes you have not seen; they count as seen when shown under the Notes chip.
+
 **Settings → Motion** chooses Full or Calm. Calm turns off looping animation and the
 brief pulse a card gives when its session makes a call. Your system's Reduce motion
 setting turns motion off whichever you choose.
@@ -491,9 +498,10 @@ Letters do not run shortcuts while you are typing or using a select.
 
 | Keys | Action |
 |---|---|
-| `G D` / `G I` / `G P` / `G N` / `G H` / `G C` | Home / Needs you (the first request on Home) / Plans / Notes / History / Chats |
+| `G D` / `G I` / `G P` / `G F` / `G C` | Home / Needs you (the first request on Home) / Plans / Find / Chats |
+| `G N` / `G H` | Find with Notes / Find with All, the query cleared and the list focused |
 | `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Sessions (the Agents view) |
-| `Cmd/Ctrl K` or `/` | Focus search |
+| `Cmd/Ctrl K` or `/` | Focus search (on Find, Find’s own field) |
 | `J` / `K`, then `Enter` | Move through the queue and expand an item |
 | `R` / `1`-`4` | Focus the current reply / choose an answer |
 | `Cmd/Ctrl Enter` | Send a multiline response; plain Enter adds a line |

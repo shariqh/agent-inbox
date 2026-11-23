@@ -408,7 +408,7 @@ describe('workspace search index', () => {
     await searchFor('covered')
 
     expect([...results().querySelectorAll('.search-result-group-label')].map((label) => label.textContent))
-      .toEqual(['Open items', 'Active plans', 'Notes', 'History', 'Archived plans'])
+      .toEqual(['Open items', 'Active plans', 'Notes', 'Finished', 'Archived plans'])
   })
 
   it('closes outside the dock, preserves the query, and reopens when the combobox regains focus', async () => {

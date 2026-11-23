@@ -27,7 +27,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   draws it: `issueRef` delegates to `issueKeyFor`, a linked row names its own
   issue, every relationship link is built from a validated slug and number while
   the issue chip keeps #30's URL rules (filtered by `safeHttpUrl()`), every href
-  comes from `chipHtml()`, and the word "Blocked" never appears. History keeps its
+  comes from `chipHtml()`, and the word "Blocked" never appears. A closed item on Find keeps its
   plain chip, and labels open their target only through `focusItem`.
 - "Waits on" in Plans (#103 slice 2 PR D) is ambient. `buildIssueView` gives a drawn
   relation `dependencies` only when its root says `dependencies: "ok"` (open blockers and
@@ -95,7 +95,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   before), and `issueRelations` reads the same field, so the chips and the agent's
   `issue_rel` agree by construction (`test/issues.test.ts` checks every state). A soft
   failure before any success, an unreadable snapshot, a root the node cap omitted, an
-  uncertain identity or History (`sourceOptions` passes no view for a closed item) draws
+  uncertain identity or a closed item (`sourceOptions` passes no view for a closed item) draws
   #30's plain chip byte for byte. (3) **Identity before relationships.** `issueRef` now delegates to
   `issueKeyFor` (closing over `issue-key.js`, which imports `source.js` back; both only
   call each other inside functions): a plan's pin names its chip, a PR closing several

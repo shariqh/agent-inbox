@@ -12,10 +12,13 @@
 // nothing. Agent text reaches the DOM only through textContent, and an
 // unchanged value is never rewritten, so a selection in a row survives a poll.
 // Painted from app.js's renderDashboardAmbient, so from both render entries.
-import { pinLaneOrder, planBar } from './lanes.js'
+import { pinLaneOrder, planBar, planSegments, planStepStates } from './lanes.js'
 import { relMs } from './rowview.js'
 
 export const PLANS_LANE_CAP = 6
+// UX pass, slice 3: the bar draws the Plans page's segments, one per step up to
+// this many (the lane is narrowest beside a fronted ask), then runs
+const PLANS_LANE_STEPS = 10
 export const PLANS_EMPTY = 'No plan in this view has open steps.'
 
 /** A step still to do: anything but done or na. */
@@ -45,6 +48,8 @@ export function plansInProgress(boards, nowMs) {
       done: bar.done,
       countable: bar.countable,
       waiting: bar.segments.waiting,
+      // the steps in their order, as the Plans page's bar draws them
+      states: planStepStates(board, nowMs).states,
       updatedAt: updatedMs === null ? null : board.updated_at,
       updatedMs,
     })
@@ -70,6 +75,7 @@ export function installPlansLane(deps) {
   let roving = null // the row Tab lands on
   let hovered = false
   const rowEls = new Map()
+  const barKeys = new WeakMap() // the segments each bar last drew, so an unchanged bar is never rewritten
   const known = new Set() // the ids the last paint showed
 
   const make = (tag, className, text) => {
@@ -161,7 +167,6 @@ export function installPlansLane(deps) {
     const progress = make('span', 'pl-progress')
     const bar = make('span', 'pl-bar')
     bar.setAttribute('aria-hidden', 'true')
-    bar.append(make('i'))
     progress.append(bar, make('span', 'pl-count'))
     el.append(make('div', 'pl-title'), project, progress, make('span', 'pl-waiting'), make('time', 'pl-updated'))
     return el
@@ -181,10 +186,20 @@ export function installPlansLane(deps) {
     const project = showProject ? plan.project : ''
     setText(el.querySelector('.pl-project-name'), project)
     setHidden(el.querySelector('.pl-project'), !project)
-    // done of countable; a plan with nothing countable is 0/0 and an empty bar, never NaN
-    const pct = plan.countable > 0 ? Math.round((Math.min(plan.done, plan.countable) / plan.countable) * 100) : 0
-    const fill = el.querySelector('.pl-bar > i')
-    if (fill.style.getPropertyValue('--pl-done') !== `${pct}%`) fill.style.setProperty('--pl-done', `${pct}%`)
+    // the plan's steps in order, the Plans page's segments; a plan with nothing countable is an empty track
+    const bar = el.querySelector('.pl-bar')
+    const { runs, segments } = planSegments(plan.states ?? [], PLANS_LANE_STEPS)
+    const key = JSON.stringify(segments)
+    if (barKeys.get(bar) !== key) {
+      barKeys.set(bar, key)
+      bar.classList.toggle('runs', runs)
+      bar.replaceChildren(...segments.map(({ state, grow }) => {
+        const segment = make('i')
+        segment.dataset.state = state
+        if (grow > 1) segment.style.flexGrow = String(grow)
+        return segment
+      }))
+    }
     setText(el.querySelector('.pl-count'), `${plan.done}/${plan.countable}`)
     const waiting = plan.waiting > 0 ? `${plan.waiting} ${plan.waiting === 1 ? 'needs' : 'need'} you` : ''
     const waitingEl = el.querySelector('.pl-waiting')

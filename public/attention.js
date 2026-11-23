@@ -43,7 +43,7 @@ function isPinnedForLater(entity) {
 // wins over a snooze when an older server's snooze left both set. The predicates
 // below and laterEntries all read this one function, so an ask can never be
 // dropped by one and missed by the other.
-function laterReason(entity, nowMs) {
+export function laterReason(entity, nowMs = Date.now()) {
   if (isPinnedForLater(entity)) return 'pinned'
   return isSnoozed(entity, nowMs) ? 'snoozed' : null
 }

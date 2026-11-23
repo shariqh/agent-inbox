@@ -14,7 +14,7 @@ import {
 } from '../../src/store.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, navigateToHash,
-  pollTick, row, rows, searchFor, sendButton, settle, showInbox, tabCount, type, useDomTest,
+  pollTick, row, rows, searchFor, sendButton, settle, showInbox, tabCount, type, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -1056,7 +1056,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     await settle()
     const panel = () => document.querySelector(`#boards [data-row-id="${rowId}"] + .row-panel-row`)
     type(panel()!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Half an answer')
-    click(buttonLabelled('Pin for later', panel()!))
+    click(await reach(() => buttonLabelled('Pin for later', panel()!)))
     await settle()
 
     expect(getBoard(d, 'alpha', 'Release')!.rows[0]!.pinned_at).not.toBeNull()

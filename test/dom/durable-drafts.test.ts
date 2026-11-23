@@ -14,7 +14,7 @@ import {
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
-  repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest,
+  repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -201,7 +201,7 @@ describe('a draft comes back where it was', () => {
     await draftAnswer(blocked.id, 'Approved for Thursday.')
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector(`#boards tr.board-row[data-row-id="${partial.id}"] .row-expand`))
+    click(await reach(() => document.querySelector(`#boards tr.board-row[data-row-id="${partial.id}"] .row-expand`)))
     await settle()
     type(panelInput(partial.id), 'Mention the migration.')
 
@@ -252,7 +252,7 @@ describe('a draft comes back where it was', () => {
     await bootApp(db)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .hidden-hint'))
+    click(await reach(() => document.querySelector('#boards .hidden-hint')))
     await settle()
     click(document.querySelector(`#boards tr.board-row[data-row-id="${rowId}"] .row-expand`))
     await settle()
@@ -639,7 +639,7 @@ describe('a draft whose target changed goes to the unsent responses', () => {
       await bootApp(db)
       click(document.querySelector('.tab[data-tab="boards"]'))
       await settle()
-      click(document.querySelector(`#boards tr.board-row[data-row-id="${notes.id}"] .row-expand`))
+      click(await reach(() => document.querySelector(`#boards tr.board-row[data-row-id="${notes.id}"] .row-expand`)))
       await settle()
       type(panelInput(notes.id), 'Mention the migration.')
       window.dispatchEvent(new Event('pagehide'))

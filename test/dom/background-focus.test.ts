@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import { insertItem, upsertBoard } from '../../src/store.js'
 import {
   advanceClock, bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, showInbox, useDomTest,
-  changedPollTick,
+  changedPollTick, reach,
 } from './harness.js'
 
 useDomTest()
@@ -74,7 +74,7 @@ describe('passive refresh while the viewer is unfocused', () => {
     await bootApp(db)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(buttonLabelled('Plan flow', document.querySelector('#boards .board')!))
+    click(await reach(() => buttonLabelled('Plan flow', document.querySelector('#boards .board')!)))
     await settle()
     const before = buttonLabelled('Open details', document.getElementById('missionbox')!)!
     before.focus()

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type Database from 'better-sqlite3'
 import { archiveBoard, getBoard, insertItem, listBoards, resolveItem, updateBoardRow, upsertBoard } from '../../src/store.js'
 import {
-  advanceClock, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, searchFor, settle, useDomTest,
+  advanceClock, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick, searchFor, settle, useDomTest, reach,
 } from './harness.js'
 import type { BootOptions } from './harness.js'
 
@@ -378,8 +378,8 @@ describe('archived plans in brief (issue #299)', () => {
     await bootApp(db, { interceptFetch: archive.interceptFetch })
     await selectTab('boards')
     await toggleFold(true)
-    const card = document.querySelector(`#boards .archived-fold [data-card-id="${rollout}"]`)!
-    click(buttonLabelled('Plan flow', card))
+    const card = () => document.querySelector(`#boards .archived-fold [data-card-id="${rollout}"]`)!
+    click(await reach(() => buttonLabelled('Plan flow', card())))
     await settle()
     expect(document.getElementById('missionbox')?.hidden).toBe(false)
     // the fold behind it closes; the flow still needs the plan's rows

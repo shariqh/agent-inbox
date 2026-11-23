@@ -9,7 +9,7 @@ import { issueRelations } from '../../src/issue-graph.js'
 import { facts, snapshot } from '../issue-fixtures.js'
 import type { SnapshotOpts } from '../issue-fixtures.js'
 import {
-  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, showInbox, type, useDomTest,
+  advanceClock, answerInput, bootApp, buttonLabelled, click, freshDb, pollTick, row, settle, showInbox, type, useDomTest, reach,
 } from './harness.js'
 
 useDomTest()
@@ -208,7 +208,7 @@ describe('a poll that changes relationships (#103 PR3, criterion 6)', () => {
     expect(row(question)!.querySelector('.nrow-src a[data-issue-key]')?.getAttribute('title')).toContain('(2 of 10 done)')
 
     await showTab('boards')
-    click(boardCard(adapter.id).querySelector(`.board-row[data-row-id="${adapterRow.id}"]`))
+    click(await reach(() => boardCard(adapter.id).querySelector(`.board-row[data-row-id="${adapterRow.id}"]`)))
     await settle()
     expect(document.querySelector(`.row-panel-row[data-row-id="${adapterRow.id}"]`)).not.toBeNull()
     advanceClock(60_000)
@@ -223,7 +223,9 @@ describe('a poll that changes relationships (#103 PR3, criterion 6)', () => {
     const { adapter, adapterRow } = seed(db)
     await boot(db)
     await showTab('boards')
-    const chip = boardCard(adapter.id).querySelector(`.board-row[data-row-id="${adapterRow.id}"] .row-src a`)!
+    const chipSelector = `.board-row[data-row-id="${adapterRow.id}"] .row-src a`
+    // open the plan first: pressing its summary rebuilds the page, so the chip is taken afterwards
+    const chip = await reach(() => boardCard(adapter.id).querySelector(chipSelector))
     chip.addEventListener('click', (event) => event.preventDefault()) // jsdom cannot open a new tab
     click(chip)
     await settle()
@@ -240,7 +242,7 @@ describe('navigation from Agent Inbox activity (#103 PR3, criterion 7)', () => {
     const activityFor = (n: number) =>
       childEntry(boardCard(umbrella.id).querySelector('.board-issues')!, K(n))?.querySelector('button.src-activity')
 
-    click(activityFor(119))
+    click(await reach(() => activityFor(119)))
     await settle()
     expect(document.querySelector('.tab[data-tab="boards"]')?.getAttribute('aria-selected')).toBe('true')
     expect(location.hash).toBe(`#item/${adapter.id}`)

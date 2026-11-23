@@ -229,7 +229,8 @@ describe('deep links across paginated tabs', () => {
   it('reveals and persists a newly archived paged Plan before restoring its focused control', async () => {
     db = freshDb()
     const targetId = addBoard('Old active focus target')
-    for (let i = 0; i < 6; i++) {
+    // UX pass, slice 3: Moving pages by 12, so the target is the 13th fresh plan with no blocked step
+    for (let i = 0; i < 12; i++) {
       advanceClock()
       addBoard(`Newer active ${i}`)
     }
@@ -240,11 +241,17 @@ describe('deep links across paginated tabs', () => {
     await bootApp(db)
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(document.querySelector('#boards .show-more'))
+    expect(card(targetId)).toBeNull()
+    click(document.querySelector('#boards .boards > .show-more'))
     await settle()
 
+    // a Moving plan rests closed: the person opens it before reaching its Plan flow
+    click(card(targetId)!.querySelector(':scope > summary'))
+    await settle()
     const target = card(targetId)!
+    expect(target.open).toBe(true)
     const planFlow = buttonLabelled('Plan flow', target)!
+    expect(planFlow.closest('[hidden], details:not([open])')).toBeNull()
     planFlow.focus()
     const current = getBoard(db, 'alpha', 'Old active focus target')!
     expect(archiveBoard(db, current.id, current.revision)).toBe(true)

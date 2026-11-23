@@ -7,7 +7,7 @@ import {
 import {
   answerInput, bootApp, buttonLabelled, click, collapseRow, expectConsoleError, freshDb, pollTick, row,
   settle, type, useDomTest,
-  changedPollTick,
+  changedPollTick, reach,
 } from './harness.js'
 
 useDomTest()
@@ -1287,7 +1287,7 @@ describe('direct overlay draft reconciliation', () => {
 
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
-    click(buttonLabelled('Plan flow'))
+    click(await reach(() => buttonLabelled('Plan flow')))
     const missionBox = document.getElementById('missionbox')!
     const missionButton = (label: string): HTMLButtonElement =>
       [...missionBox.querySelectorAll<HTMLButtonElement>('.mission-node')]

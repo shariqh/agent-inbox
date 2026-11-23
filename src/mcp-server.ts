@@ -8,9 +8,12 @@ import { parseServerArgs } from './scope.js'
 // project. Anything else fails closed before the database opens or the
 // transport connects, so nothing is ever written under an inferred project;
 // the host shows the server as failed. No environment variable is read.
+// scripts/install-agents.sh looks for the flag's name in this file before it
+// registers an entry with it, so USAGE names it in code, not only in a comment.
+const USAGE = 'usage: mcp-server.js [--project <name>]'
 const args = parseServerArgs(process.argv.slice(2))
 if ('error' in args) {
-  process.stderr.write(`agent-inbox: ${args.error}\n`)
+  process.stderr.write(`agent-inbox: ${args.error} (${USAGE})\n`)
   process.exit(1)
 }
 const db = openDb()

@@ -9,6 +9,11 @@
 # managed block carries the shared snippet and both host appendices.
 # --apply also writes ~/.agent-inbox/bin/meshctl, which runs this install's
 # meshctl (#540); it never edits a shell profile, and prints the PATH line.
+# --claude-config-dir <dir> also sets up the Claude Code account whose config
+# folder is <dir> (its CLAUDE_CONFIG_DIR, #641): Agent Inbox only, last in every
+# step, in the same transaction; --project <name> fixes its sessions' project.
+# An exported CLAUDE_CONFIG_DIR is ignored: the personal install always uses
+# ~/.claude.json and ~/.claude.
 #
 # Usage:
 #   npm run install:agents
@@ -17,6 +22,9 @@
 #   npm run install:agents -- --apply --target copilot
 #   npm run install:agents -- --apply --force
 #   npm run install:agents -- --apply --uninstall
+#   npm run install:agents -- --apply --claude-config-dir ~/.claude-work --project work
+#   npm run install:agents -- --apply --target claude-config-dir --claude-config-dir ~/.claude-work --project work
+#   npm run install:agents -- --apply --uninstall --target claude-config-dir --claude-config-dir ~/.claude-work
 # Packaged releases additionally pass the fixed, verified runtime payload:
 #   install-agents.sh --apply --runtime-source <dir> --runtime-digest sha256:<hex>
 # Interrupted by HUP, INT, QUIT, PIPE, ALRM, TERM, XCPU or XFSZ, an --apply run
@@ -29,8 +37,14 @@ APPLY=0
 FORCE=0
 UNINSTALL=0
 TARGET="all"
+PROJECT_GIVEN=0
 RUNTIME_SOURCE=""
 RUNTIME_DIGEST=""
+# The second Claude Code config folder (#641): its folder, how often the flag
+# was given, and the project its sessions report under.
+SECOND_DIR=""
+SECOND_DIR_COUNT=0
+FIXED_PROJECT=""
 BEGIN='<!-- agent-inbox:begin -->'
 END='<!-- agent-inbox:end -->'
 SNIPPET_SOURCE="$ROOT/docs/reporting-snippet.md"
@@ -52,15 +66,33 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --target)
-      [ "$#" -ge 2 ] || { echo "install-agents: --target needs all, claude, or copilot" >&2; exit 2; }
+      [ "$#" -ge 2 ] || { echo "install-agents: --target needs all, claude, copilot, or claude-config-dir" >&2; exit 2; }
       TARGET="$2"
       shift 2
       ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    --claude-config-dir)
+      [ "$#" -ge 2 ] || { echo "install-agents: --claude-config-dir needs a folder" >&2; exit 2; }
+      SECOND_DIR="$2"
+      SECOND_DIR_COUNT=$((SECOND_DIR_COUNT + 1))
+      shift 2
+      ;;
+    --project)
+      [ "$#" -ge 2 ] || { echo "install-agents: --project needs a project name" >&2; exit 2; }
+      FIXED_PROJECT="$2"
+      PROJECT_GIVEN=1
+      shift 2
+      ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "install-agents: unknown flag: $1 (try --help)" >&2; exit 2 ;;
   esac
 
 done
+
+# The personal `claude mcp` calls always act on ~/.claude.json: an exported
+# CLAUDE_CONFIG_DIR would send them to another folder while the managed block
+# and the snapshots stay personal. Unset here, not with an `env -u` prefix, so
+# the personal command lines stay exactly as they were (#641).
+unset CLAUDE_CONFIG_DIR
 
 RUNTIME_MODE=0
 if [ -n "$RUNTIME_SOURCE" ] || [ -n "$RUNTIME_DIGEST" ]; then
@@ -79,8 +111,65 @@ fi
 case "$TARGET" in
   all) TARGETS=(claude copilot) ;;
   claude|copilot) TARGETS=("$TARGET") ;;
-  *) echo "install-agents: --target must be all, claude, or copilot" >&2; exit 2 ;;
+  claude-config-dir) TARGETS=(claude-config-dir) ;;
+  *) echo "install-agents: --target must be all, claude, copilot, or claude-config-dir" >&2; exit 2 ;;
 esac
+
+# ── a second Claude Code config folder (#641) ────────────────────────────────
+# Everything here needs only the flags and the file system, and runs before
+# the setup lock, so a refused run writes nothing at all. The folder is never
+# created: any `claude` command run against a missing CLAUDE_CONFIG_DIR would
+# create it, so it must exist and already hold the account's .claude.json.
+refuse_second() {
+  echo "install-agents: $1" >&2
+  exit 2
+}
+# Spelled out, never as a range: under a UTF-8 locale [a-z] also matches
+# letters outside ASCII.
+ASCII_ALNUM='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+valid_project_name() {
+  [ -n "$1" ] && [ "${#1}" -le 64 ] || return 1
+  case "$1" in
+    ["$ASCII_ALNUM"]*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *[!"$ASCII_ALNUM"._-]*) return 1 ;;
+  esac
+}
+real_dir() {
+  (cd "$1" 2>/dev/null && pwd -P)
+}
+[ "$PROJECT_GIVEN" -eq 0 ] || [ "$SECOND_DIR_COUNT" -gt 0 ] ||
+  refuse_second "--project needs --claude-config-dir <dir>"
+[ "$TARGET" != claude-config-dir ] || [ "$SECOND_DIR_COUNT" -gt 0 ] ||
+  refuse_second "--target claude-config-dir needs --claude-config-dir <dir>"
+[ "$SECOND_DIR_COUNT" -le 1 ] || refuse_second "--claude-config-dir can be given only once"
+if [ "$PROJECT_GIVEN" -eq 1 ] && ! valid_project_name "$FIXED_PROJECT"; then
+  refuse_second "--project must be ASCII letters, digits, '.', '_' or '-', start with a letter or a digit, and be at most 64 characters"
+fi
+if [ "$SECOND_DIR_COUNT" -eq 1 ]; then
+  case "$SECOND_DIR" in
+    /*) ;;
+    *) refuse_second "--claude-config-dir must be an absolute path" ;;
+  esac
+  case "$SECOND_DIR" in
+    *[[:cntrl:]]*) refuse_second "--claude-config-dir must not contain a line break or another control character" ;;
+  esac
+  while [ "${#SECOND_DIR}" -gt 1 ] && [ "${SECOND_DIR%/}" != "$SECOND_DIR" ]; do SECOND_DIR="${SECOND_DIR%/}"; done
+  [ -d "$SECOND_DIR" ] || refuse_second "$SECOND_DIR is not a folder; it is never created"
+  second_real="$(real_dir "$SECOND_DIR")"
+  if [ "$second_real" = "$(real_dir "$HOME")" ] || [ "$second_real" = "$(real_dir "$HOME/.claude")" ]; then
+    refuse_second "$SECOND_DIR is the personal Claude Code folder; --claude-config-dir is for a second one"
+  fi
+  [ -f "$SECOND_DIR/.claude.json" ] ||
+    refuse_second "$SECOND_DIR has no .claude.json; start Claude Code once with CLAUDE_CONFIG_DIR=$SECOND_DIR, then run this again"
+  if [ "$SECOND_DIR/.claude.json" -ef "$HOME/.claude.json" ]; then
+    refuse_second "$SECOND_DIR/.claude.json is the personal ~/.claude.json; --claude-config-dir is for a second one"
+  fi
+  [ "$RUNTIME_MODE" -eq 0 ] || refuse_second "a second Claude Code config folder needs a source checkout"
+  [ "$TARGET" = claude-config-dir ] || TARGETS+=(claude-config-dir)
+fi
 
 SETUP_LOCK_HELPER="$SCRIPT_DIR/setup-lock.sh"
 if [ ! -r "$SETUP_LOCK_HELPER" ]; then
@@ -122,16 +211,34 @@ resolve_node() {
   stable_path "$(command -v node || true)"
 }
 
+# Each per-target function knows the two personal hosts and the second Claude
+# Code config folder (#641); an unknown key is an error, never a fall-through.
+unknown_target() {
+  echo "install-agents: internal error: unknown target '$1'" >&2
+  return 1
+}
+
+# The host CLI a target runs: the second folder is Claude Code's.
+target_cli() {
+  case "$1" in
+    claude|claude-config-dir) echo claude ;;
+    copilot) echo copilot ;;
+    *) unknown_target "$1" ;;
+  esac
+}
+
 instruction_file() {
   case "$1" in
     claude) echo "$HOME/.claude/CLAUDE.md" ;;
     copilot) echo "$HOME/.copilot/copilot-instructions.md" ;;
+    claude-config-dir) echo "$SECOND_DIR/CLAUDE.md" ;;
+    *) unknown_target "$1" ;;
   esac
 }
 
 instruction_write_file() {
   local file
-  file="$(instruction_file "$1")"
+  file="$(instruction_file "$1")" || return 1
   if [ -L "$file" ]; then
     realpath "$file" 2>/dev/null || {
       echo "install-agents: $file is a dangling symlink — refusing to replace it" >&2
@@ -151,9 +258,24 @@ hosts_share_instruction_write_file() {
 
 instruction_appendix() {
   case "$1" in
-    claude) echo "$ROOT/docs/instructions/claude-code.md" ;;
+    claude|claude-config-dir) echo "$ROOT/docs/instructions/claude-code.md" ;;
     copilot) echo "$ROOT/docs/instructions/copilot-cli.md" ;;
+    *) unknown_target "$1" ;;
   esac
+}
+
+# The second folder's instruction file may not be either personal one (#641):
+# two targets cannot share one managed block. Both personal files count, even
+# when they are not selected.
+second_shares_personal_file() {
+  local second personal target
+  second="$(instruction_write_file claude-config-dir 2>/dev/null)" || return 1
+  for target in claude copilot; do
+    personal="$(instruction_write_file "$target" 2>/dev/null)" || continue
+    [ "$second" = "$personal" ] && return 0
+    [ -e "$second" ] && [ -e "$personal" ] && [ "$second" -ef "$personal" ] && return 0
+  done
+  return 1
 }
 
 marker_count() {
@@ -262,7 +384,7 @@ imports_snippet() {
 # inert text: skipping the inline there would silently delete the reporting
 # contract instead of de-duplicating it. Inlining is correct for Copilot, always.
 host_resolves_imports() {
-  [ "$1" = claude ]
+  [ "$1" = claude ] || [ "$1" = claude-config-dir ]
 }
 
 snippet_import_note() {
@@ -273,6 +395,13 @@ Not inlined here: this file already imports `docs/reporting-snippet.md` itself, 
 shared reporting contract stays live from that file. A copy in this block would be a
 snapshot that goes stale the next time the snippet changes.
 NOTE
+}
+
+# Only in the second folder's block, and only with --project (#641).
+fixed_project_section() {
+  printf '%s\n' '## This config folder reports under one project' ''
+  printf '`%s` is the correct Agent Inbox project for every session of this Claude Code config folder, in any folder or repository. `whoami` shows it with `project_fixed: true`. Any general rule to register the canonical repository name does not apply here: do not call `register` to change the project, and never archive, move or recreate anything to change it.\n' "$FIXED_PROJECT"
+  printf '%s\n' '' 'Every session of this config folder shares that one project, so its boards and its `pending()` queue are shared too. Start every board title with your `repo` as `whoami` reports it, or with the folder name when `repo` is null (for example `owner/name: Email draft review`). Upsert, advance or archive only boards whose title starts with that prefix. In `pending()`, act on and resolve only what your own session raised; leave everything else untouched, because it belongs to another session.'
 }
 
 build_block() {
@@ -291,6 +420,10 @@ build_block() {
       cat "$(instruction_appendix copilot)" || return 1
     else
       cat "$(instruction_appendix "$target")" || return 1
+    fi
+    if [ "$target" = claude-config-dir ] && [ "$PROJECT_GIVEN" -eq 1 ]; then
+      echo || return 1
+      fixed_project_section || return 1
     fi
     echo "$END" || return 1
   } > "$output"
@@ -345,16 +478,26 @@ mcp_commands() {
     copilot:get) MCP_CMD=(copilot mcp get agent-inbox --json) ;;
     copilot:add) MCP_CMD=(copilot mcp add agent-inbox -- "$NODE" "$ENTRY") ;;
     copilot:remove) MCP_CMD=(copilot mcp remove agent-inbox) ;;
+    # #641: `env` execs claude, so the isolated runner, its timeout and its
+    # process-group kill all still reach the CLI; only this folder is touched.
+    claude-config-dir:get) MCP_CMD=(env "CLAUDE_CONFIG_DIR=$SECOND_DIR" claude mcp get agent-inbox) ;;
+    claude-config-dir:add)
+      MCP_CMD=(env "CLAUDE_CONFIG_DIR=$SECOND_DIR" claude mcp add --scope user agent-inbox -- "$NODE" "$ENTRY")
+      if [ "$PROJECT_GIVEN" -eq 1 ]; then MCP_CMD+=(--project "$FIXED_PROJECT"); fi
+      ;;
+    claude-config-dir:remove) MCP_CMD=(env "CLAUDE_CONFIG_DIR=$SECOND_DIR" claude mcp remove --scope user agent-inbox) ;;
+    *) MCP_CMD=(false); unknown_target "$target" ;;
   esac
 }
 
 has_user_registration() {
   local target="$1" output
-  mcp_commands "$target" get
+  mcp_commands "$target" get || return 1
   output="$(run_node_step --stdout -- "${MCP_CMD[@]}" 2>/dev/null)" || return 1
   case "$target" in
-    claude) printf '%s\n' "$output" | grep -Fq 'Scope: User config' ;;
+    claude|claude-config-dir) printf '%s\n' "$output" | grep -Fq 'Scope: User config' ;;
     copilot) printf '%s\n' "$output" | grep -Eq '"source"[[:space:]]*:[[:space:]]*"user"' ;;
+    *) unknown_target "$target" ;;
   esac
 }
 
@@ -362,6 +505,39 @@ registration_config_file() {
   case "$1" in
     claude) echo "$HOME/.claude.json" ;;
     copilot) echo "$HOME/.copilot/mcp-config.json" ;;
+    claude-config-dir) echo "$SECOND_DIR/.claude.json" ;;
+    *) unknown_target "$1" ;;
+  esac
+}
+
+# Is the second folder's agent-inbox registration fixed to --project <name>
+# (#641)? One Node step reads <dir>/.claude.json and prints nothing at all (a
+# JSON parse error would quote the file), answering by exit code only: 0 no
+# agent-inbox entry, 10 one whose args end with exactly --project <name>, 11
+# one without it or with another name, 12 unreadable, 13 not JSON.
+second_registration_project_status() {
+  "$JSON_NODE" -e '
+    const fs = require("node:fs")
+    let text
+    try { text = fs.readFileSync(process.argv[1], "utf8") } catch { process.exit(12) }
+    let parsed
+    try { parsed = JSON.parse(text) } catch { process.exit(13) }
+    const entry = parsed && parsed.mcpServers && parsed.mcpServers["agent-inbox"]
+    if (!entry) process.exit(0)
+    const args = Array.isArray(entry.args) ? entry.args : []
+    process.exit(args.length >= 2 && args[args.length - 2] === "--project" && args[args.length - 1] === process.argv[2] ? 10 : 11)
+  ' "$SECOND_DIR/.claude.json" "$FIXED_PROJECT" >/dev/null 2>&1
+}
+
+# The refusal for a second-folder registration that is not fixed to the
+# project: it names the narrow remedy and never a config value.
+second_registration_refusal() {
+  local code="$1"
+  case "$code" in
+    11) echo "install-agents: the registration in $SECOND_DIR is not fixed to the project $FIXED_PROJECT; remove it with \`--apply --uninstall --target claude-config-dir --claude-config-dir $SECOND_DIR\`, then apply again" >&2 ;;
+    12) echo "install-agents: could not read $SECOND_DIR/.claude.json (the file cannot be read)" >&2 ;;
+    13) echo "install-agents: could not read $SECOND_DIR/.claude.json (it is not valid JSON)" >&2 ;;
+    *) echo "install-agents: could not read $SECOND_DIR/.claude.json (the check failed)" >&2 ;;
   esac
 }
 
@@ -371,7 +547,7 @@ user_registration_state() {
     echo present
     return 0
   fi
-  config="$(registration_config_file "$target")"
+  config="$(registration_config_file "$target")" || return 1
   if [ ! -e "$config" ] && [ ! -L "$config" ]; then
     echo absent
     return 0
@@ -415,7 +591,7 @@ NEWLY_ADDED=""
 NEEDS_RESTORE=""
 capture_registration_config() {
   local target="$1" config
-  config="$(registration_config_file "$target")"
+  config="$(registration_config_file "$target")" || return 1
   if [ -z "$JSON_NODE" ] || [ ! -f "$config" ]; then
     echo "install-agents: cannot safely snapshot the $target user MCP configuration at $config" >&2
     return 1
@@ -452,7 +628,7 @@ restore_registration_config() {
 rollback_mcp_changes() {
   local target status reason
   for target in $NEWLY_ADDED; do
-    mcp_commands "$target" remove
+    mcp_commands "$target" remove || { ROLLBACK_INCOMPLETE=1; continue; }
     isolated -- "${MCP_CMD[@]}" >/dev/null 2>&1
     status=$?
     if [ "$status" -eq 0 ]; then
@@ -856,11 +1032,36 @@ meshctl_path_hint() {
 for target in "${TARGETS[@]}"; do
   file="$(instruction_write_file "$target")" || exit 1
   preflight_markers "$file" || exit 1
-  if [ "$APPLY" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] && ! command -v "$target" >/dev/null 2>&1; then
-    echo "install-agents: '$target' CLI is not installed; choose a different --target" >&2
+  cli="$(target_cli "$target")" || exit 1
+  if [ "$APPLY" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] && ! command -v "$cli" >/dev/null 2>&1; then
+    echo "install-agents: '$cli' CLI is not installed; choose a different --target" >&2
     exit 1
   fi
 done
+
+# The second Claude Code config folder's own checks (#641), in the dry run
+# too, before any work folder and before any `claude` call.
+if [ "$SECOND_DIR_COUNT" -eq 1 ]; then
+  if second_shares_personal_file; then
+    echo "install-agents: $SECOND_DIR/CLAUDE.md is the same file as a personal Claude Code or Copilot instruction file; two targets cannot share one managed block" >&2
+    exit 1
+  fi
+  if [ "$PROJECT_GIVEN" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+    # A stale dist/ would register a flag the server ignores.
+    if ! grep -q -- '--project' "$ENTRY" 2>/dev/null; then
+      echo "install-agents: $ENTRY does not support --project yet; run npm run build first" >&2
+      exit 1
+    fi
+    if [ "$FORCE" -eq 0 ]; then
+      second_registration_project_status
+      second_status=$?
+      case "$second_status" in
+        0 | 10) ;;
+        *) second_registration_refusal "$second_status"; exit 1 ;;
+      esac
+    fi
+  fi
+fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-inbox-install.XXXXXX")" || exit 1
 # The EXIT trap. Bash also runs it before dying from a fatal signal the script
@@ -875,7 +1076,7 @@ cleanup() {
     keep_snapshots=1
     divert_report
   fi
-  for target in claude copilot; do
+  for target in claude copilot claude-config-dir; do
     if [ -f "$WORK/$target.temp-path" ]; then
       temp_path="$(< "$WORK/$target.temp-path")"
       rm -f "$temp_path"
@@ -1138,12 +1339,16 @@ for target in "${TARGETS[@]}"; do
   file="$(instruction_write_file "$target")" || exit 1
   block="$WORK/$target.block"
   rendered="$WORK/$target.rendered"
+  # The personal hosts' shared-file decision is theirs alone: the second
+  # folder's file is never one of theirs (#641), so its block is its own.
+  shared_file="$SHARED_INSTRUCTION_FILE"
+  [ "$target" != claude-config-dir ] || shared_file=0
   omit_snippet=0
-  if [ "$UNINSTALL" -eq 0 ] && [ "$SHARED_INSTRUCTION_FILE" -eq 0 ] && host_resolves_imports "$target" && imports_snippet "$file"; then
+  if [ "$UNINSTALL" -eq 0 ] && [ "$shared_file" -eq 0 ] && host_resolves_imports "$target" && imports_snippet "$file"; then
     omit_snippet=1
     echo "$target: $display_file already imports docs/reporting-snippet.md — skipping the inlined snippet; the managed block carries the $target appendix only" >&2
   fi
-  if ! build_block "$target" "$block" "$omit_snippet" "$SHARED_INSTRUCTION_FILE"; then
+  if ! build_block "$target" "$block" "$omit_snippet" "$shared_file"; then
     echo "install-agents: could not build the $target instruction block" >&2
     exit 1
   fi
@@ -1155,9 +1360,9 @@ for target in "${TARGETS[@]}"; do
   if [ "$APPLY" -eq 0 ]; then
     echo "── $target MCP command ──"
     if [ "$UNINSTALL" -eq 1 ]; then
-      mcp_commands "$target" remove
+      mcp_commands "$target" remove || exit 1
     else
-      mcp_commands "$target" add
+      mcp_commands "$target" add || exit 1
     fi
     print_command "${MCP_CMD[@]}"
     echo "── $display_file ──"
@@ -1260,7 +1465,7 @@ if [ "$RUNTIME_MODE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
 fi
 
 for target in "${TARGETS[@]}"; do
-  if ! command -v "$target" >/dev/null 2>&1; then
+  if ! command -v "$(target_cli "$target")" >/dev/null 2>&1; then
     echo "$target: CLI is unavailable; removing the managed instruction block only" >&2
     continue
   fi
@@ -1271,6 +1476,22 @@ for target in "${TARGETS[@]}"; do
     exit 1
   }
   had_user=0
+  if [ "$registration_state" = present ] && [ "$target" = claude-config-dir ] &&
+      [ "$PROJECT_GIVEN" -eq 1 ] && [ "$FORCE" -eq 0 ] && [ "$UNINSTALL" -eq 0 ]; then
+    # Checked again (#641): a registration kept as "already registered" must
+    # be fixed to the project. Fail closed on anything but a match.
+    second_registration_project_status
+    second_status=$?
+    if [ "$second_status" -ne 10 ]; then
+      rollback_transaction
+      if [ "$second_status" -eq 0 ]; then
+        echo "install-agents: could not confirm that the registration in $SECOND_DIR is fixed to the project $FIXED_PROJECT; refusing to keep it" >&2
+      else
+        second_registration_refusal "$second_status"
+      fi
+      exit 1
+    fi
+  fi
   if [ "$registration_state" = present ]; then
     had_user=1
     release_owned=0
@@ -1291,7 +1512,7 @@ for target in "${TARGETS[@]}"; do
         exit 1
       fi
       NEEDS_RESTORE="$NEEDS_RESTORE $target"
-      mcp_commands "$target" remove
+      mcp_commands "$target" remove || { rollback_transaction; exit 1; }
       if ! "${MCP_CMD[@]}" >/dev/null; then
         rollback_transaction
         echo "install-agents: could not remove the $target user-scoped MCP registration; instructions were not changed" >&2
@@ -1311,7 +1532,7 @@ for target in "${TARGETS[@]}"; do
   if [ "$had_user" -eq 0 ]; then
     NEWLY_ADDED="$NEWLY_ADDED $target"
   fi
-  mcp_commands "$target" add
+  mcp_commands "$target" add || { rollback_transaction; exit 1; }
   if ! "${MCP_CMD[@]}" >/dev/null; then
     rollback_transaction
     echo "install-agents: could not register the $target user-scoped MCP; instructions were not changed" >&2

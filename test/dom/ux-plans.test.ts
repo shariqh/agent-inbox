@@ -79,6 +79,12 @@ function pressOn(el: HTMLElement, key: 'Enter' | ' '): void {
 }
 /** A plan the caller ages past a week with advanceClock(8 * DAY) before boot. */
 const oldPlan = plan
+function twoQuietPlans(d: Database.Database) {
+  const a = oldPlan(d, 'Quiet A', [tracked('A step')])
+  const b = oldPlan(d, 'Quiet B', [tracked('B step')])
+  advanceClock(8 * DAY)
+  return { a, b }
+}
 
 describe('a plan is one line (D1, D2)', () => {
   it('draws the project dot, the title, the bar with its words, "3 of 7" hidden from speech and a chevron; nothing else', async () => {
@@ -761,6 +767,172 @@ describe('Home’s Plans in progress lane (D10)', () => {
     expect(bar.classList.contains('runs')).toBe(true)
     expect([...bar.children].map((seg) => [(seg as HTMLElement).dataset['state'], (seg as HTMLElement).style.flexGrow]))
       .toEqual([['done', '2'], ['needs', ''], ['todo', '8']])
+  })
+})
+
+describe('review fixes: focus and ways in', () => {
+  it('a passive focus restore never records a closed plan as opened (CFK-1)', async () => {
+    db = freshDb()
+    const b = plan(db, 'Waiting', [tracked('First'), asks()])
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    expect(card(b.id)!.dataset['form']).toBe('brief')
+    const answer = buttonLabelled('Answer', stepRow(b.rows[1]!.id)!)!
+    answer.focus()
+    expect(document.activeElement).toBe(answer)
+    // answered from another surface: this poll is not the person's write on Plans
+    expect(annotateBoardRow(db, b.rows[1]!.id, 'Go ahead.')).toBe(true)
+    await pollTick()
+    expect(card(b.id)!.dataset['section']).toBe('moving')
+    expect(card(b.id)!.open).toBe(false)
+    expect(document.activeElement).toBe(summary(b.id))
+    await changedPollTick(db)
+    expect(card(b.id)!.dataset['form']).toBe('closed')
+  })
+
+  it('Dismiss keeps focus across a poll that rebuilds the notice (CFK-4)', async () => {
+    db = freshDb()
+    const { a } = twoQuietPlans(db)
+    await bootApp(db)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await showPlans()
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    click(summary(a.id))
+    await settle()
+    click(stepRow(a.rows[0]!.id)!.querySelector('.row-expand'))
+    await settle()
+    type(panelRow(a.rows[0]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), 'Not yet sent')
+    click(archiveAll())
+    await vi.advanceTimersByTimeAsync(500)
+    click(archiveAll())
+    await settle()
+    type(panelRow(a.rows[0]!.id)!.querySelector<HTMLTextAreaElement>('.reply-input'), '')
+    await vi.advanceTimersByTimeAsync(30_000)
+    await changedPollTick(db)
+    const dismiss = buttonLabelled('Dismiss', notice()!)!
+    expect(dismiss.id).toBe('plans-notice-dismiss')
+    dismiss.focus()
+    plan(db, 'Fresh plan', [tracked()])
+    await pollTick()
+    expect(buttonLabelled('Dismiss', notice()!)).not.toBe(dismiss)
+    expect(document.activeElement).toBe(document.getElementById('plans-notice-dismiss'))
+  })
+
+  describe('a poll that removes the Stalled fold while focus is on it (CFK-7a)', () => {
+    for (const control of ['plans-stalled-summary', 'plans-archive-stalled'] as const) {
+      it(`${control}: focus goes to the View button`, async () => {
+        db = freshDb()
+        const q = oldPlan(db, 'Quiet', [tracked()])
+        advanceClock(8 * DAY)
+        await bootApp(db)
+        vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+        await showPlans()
+        click(stalledFold()!.querySelector('summary'))
+        await settle()
+        document.getElementById(control)!.focus()
+        rewrite(db, 'Quiet', [tracked(), asks('Late ask')])
+        await pollTick()
+        expect(stalledFold()).toBeNull()
+        expect(card(q.id)!.dataset['section']).toBe('needs')
+        expect(document.activeElement?.id).toBe('plans-view-toggle')
+      })
+    }
+
+    it('focus goes to the Archived plans summary when there is one', async () => {
+      db = freshDb()
+      const shelved = plan(db, 'Shelved', [tracked()])
+      expect(archiveBoard(db, shelved.id, shelved.revision)).toBe(true)
+      oldPlan(db, 'Quiet', [tracked()])
+      advanceClock(8 * DAY)
+      await bootApp(db)
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      await showPlans()
+      document.getElementById('plans-stalled-summary')!.focus()
+      rewrite(db, 'Quiet', [tracked(), asks('Late ask')])
+      await pollTick()
+      expect(stalledFold()).toBeNull()
+      expect(document.activeElement?.id).toBe('plans-archived-summary')
+    })
+  })
+
+  describe('Moving’s Show more (CFK-7b)', () => {
+    async function fourteenMoving() {
+      db = freshDb()
+      const ids: string[] = []
+      for (let i = 0; i < 14; i++) ids.unshift(plan(db, `Moving ${i}`, [tracked()]).id)
+      await bootApp(db)
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      await showPlans()
+      return ids
+    }
+    it('has a stable id, and a changed poll keeps focus on it', async () => {
+      await fourteenMoving()
+      const more = document.getElementById('plans-moving-more')!
+      expect(more.className).toBe('show-more')
+      more.focus()
+      plan(db!, 'Fresh', [tracked()])
+      await pollTick()
+      expect(document.activeElement).toBe(document.getElementById('plans-moving-more'))
+    })
+    it('pressed, with the pager gone, focus lands on the first plan it revealed', async () => {
+      const ids = await fourteenMoving()
+      const more = document.getElementById('plans-moving-more')!
+      more.focus()
+      click(more)
+      await settle()
+      expect(document.getElementById('plans-moving-more')).toBeNull()
+      expect(card(ids[12]!)).not.toBeNull()
+      expect(document.activeElement).toBe(summary(ids[12]!))
+    })
+  })
+
+  it('a search hit on a plan’s agent opens the plan in full so the highlight shows (CFK-5, RT-5)', async () => {
+    db = freshDb()
+    const b = plan(db, 'Waiting', [tracked('First'), asks()], { agent: 'zanzibar-bot' })
+    plan(db, 'Other', [tracked()])
+    await bootApp(db)
+    await showPlans()
+    expect(card(b.id)!.dataset['form']).toBe('brief')
+    await searchFor('zanzibar')
+    click(document.querySelector(`[data-search-target="${b.id}"]`) ?? document.querySelector('#searchResults [role="option"]'))
+    await settle()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(card(b.id)!.dataset['form']).toBe('full')
+    const mark = card(b.id)!.querySelector('.search-jump-highlight')
+    expect(mark, 'no highlight was drawn').not.toBeNull()
+    expect(shown(mark)).toBe(true)
+  })
+
+  it('"Use this text" into a step of a plan in a Stalled fold the person closed opens the fold and the plan (SDA-2)', async () => {
+    db = freshDb()
+    const b = oldPlan(db, 'Quiet', [{ label: 'Write it up', status: 'tracked' }])
+    const step = b.rows[0]!
+    advanceClock(8 * DAY)
+    localStorage.setItem('agent-inbox-drafts-v1', JSON.stringify({ v: 1, entries: {
+      [`row-recovery:${step.id}:${step.revision}`]: { savedAt: Date.now(), draft: {
+        type: 'row-recovery', rowId: step.id, revision: step.revision, actionVersion: 0,
+        text: 'Kept words', kind: 'answer', boardTitle: b.title, label: step.label, context: '',
+        setAside: false, choice: false, reason: '',
+      } },
+    } }))
+    await bootApp(db)
+    await showPlans()
+    // a kept line draws the fold open at rest; the person closes it by hand
+    expect(stalledFold()!.open).toBe(true)
+    click(stalledFold()!.querySelector('summary'))
+    await settle()
+    expect(stalledFold()!.open).toBe(false)
+    await showInbox()
+    click(buttonLabelled('Use this text', document.querySelector('#needsYouList .stale-drafts-fold')!))
+    await settle()
+    const input = panelRow(step.id)?.querySelector<HTMLTextAreaElement>('.reply-input')
+    expect(input?.value).toContain('Kept words')
+    expect(shown(input)).toBe(true)
+    expect(stalledFold()!.open).toBe(true)
+    await changedPollTick(db)
+    expect(shown(panelRow(step.id)?.querySelector('.reply-input'))).toBe(true)
   })
 })
 

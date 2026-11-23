@@ -1393,6 +1393,27 @@ function pagedCardFocusBookmark() {
   return { ...bookmark, section: card.closest('section')?.id ?? '', rowId: null }
 }
 
+// Focus was on one of the Plans page's own controls and the list was rebuilt. When the
+// control is gone, focus goes where the person was heading instead of to <body>: the
+// Stalled fold's controls to the Archived plans summary (else View), Moving's "Show N
+// more" to the first plan it revealed.
+function restorePlansControlFocus(id) {
+  const revealed = movingMoreReveals
+  movingMoreReveals = null
+  const same = document.getElementById(id)
+  if (same) {
+    same.focus({ preventScroll: true })
+    return
+  }
+  let next = null
+  if (id === 'plans-stalled-summary' || id === 'plans-archive-stalled') {
+    next = document.getElementById('plans-archived-summary') ?? document.getElementById('plans-view-toggle')
+  } else if (id === 'plans-moving-more' && revealed) {
+    next = document.querySelector(`#boards [data-card-id="${CSS.escape(revealed)}"] > summary`)
+  }
+  next?.focus({ preventScroll: true })
+}
+
 function restorePagedCardFocus(bookmark) {
   if (!bookmark) return false
   const scope = bookmark.section ? document.getElementById(bookmark.section) : document
@@ -1406,6 +1427,9 @@ function restorePagedCardFocus(bookmark) {
   const fallback = card.querySelector(':scope > summary') ?? card
   for (const target of [exact, fallback]) {
     if (!target) continue
+    // a passive restore never opens a closed plan (that would record the open as
+    // the person's choice): a step control inside one falls back to its summary
+    if (target !== fallback && target.closest('#boards details.board:not([open])')) continue
     // a summary shows while its own <details> is closed: restoring focus to a
     // closed plan's summary must not open the plan under the person
     const shownFrom = target.matches('details > summary') ? target.parentElement.parentElement : target
@@ -1458,6 +1482,9 @@ function focusItem(id, source = null) {
   if (hasSearchSource) searchJumpSource = { targetId: id, ...source }
   else if (searchJumpSource?.targetId !== id) searchJumpSource = null
   pendingFocusId = id
+  // a search hit on a plan itself (its title, project, stream or agent) draws the full
+  // form, so the meta line holds the highlight in plain sight
+  if (board && hasSearchSource && !source?.rowId) planOpen.set(board.id, true)
   if (source?.rowId) {
     openRows.add(source.rowId)
     if (board) {
@@ -3811,7 +3838,7 @@ function render() {
   const draftFocus = ownsFocus ? activeDraftFocusBookmark() ?? requestedDraftFocusBookmark : null
   const pagedFocus = pagedCardFocusBookmark()
   // the Plans header's controls and the Stalled fold's are rebuilt with the list; keep a keyboard user on them
-  const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id], #boards .stalled-fold [id]')?.id ?? null
+  const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id], #boards .stalled-fold [id], #plans-moving-more')?.id ?? null
   pagedFocusId = pagedFocus?.id ?? null
   // a rebuilt unsent response keeps the control a keyboard user is on (#321)
   const recoveryControl = activeFocusElement()?.closest?.('.stale-draft-line[data-recovery-line] button')
@@ -3838,7 +3865,7 @@ function render() {
       && !(pollPaint && lanesHoldFocus())
       && !restoreDraftRecoveryFocus() && !restoreDraftFocus(draftFocus) && !restorePagedCardFocus(pagedFocus)
       && plansHeaderFocusId) {
-      document.getElementById(plansHeaderFocusId)?.focus({ preventScroll: true })
+      restorePlansControlFocus(plansHeaderFocusId)
     }
   }
   applySearchJumpHighlight()
@@ -5189,6 +5216,8 @@ function useRowRecovery(key, draft, button) {
         ? needsYouRowEl(id)?.querySelector('.reply-input:not(.reply-context-input)')
         : document.querySelector(`#boards [data-row-id="${CSS.escape(id)}"] + .row-panel-row .reply-input`)
     if (!editor) return
+    // a step of a plan inside a Stalled fold the person closed: open the fold and the plan first
+    if (editor.closest('#boards')) revealDetailsAncestors(editor)
     editor.focus({ preventScroll: true })
     editor.setSelectionRange(editor.value.length, editor.value.length)
     resizeReplyEditor(editor)
@@ -8777,6 +8806,7 @@ let stalledArm = null // { ids, lens, timer } while "Really archive N plans?" wa
 let stalledArchiving = null // { n } while Archive all runs
 const handArchived = new Set() // plans Archive all archived: they never linger as "completed — archived"
 let plansNotice = null // { text, lens }: Archive all's report
+let movingMoreReveals = null // the first plan Moving's "Show N more" reveals, until the next frame has restored focus
 
 // A new visit (Plans entered, or a lens change) drops the pin, the holds, the
 // notice and an armed Archive all, as Home's list drops its own on a lens change.
@@ -8907,6 +8937,7 @@ function plansNoticeEl() {
     if (hadFocus) document.getElementById('plans-view-toggle')?.focus({ preventScroll: true })
   })
   dismiss.type = 'button'
+  dismiss.id = 'plans-notice-dismiss' // stable, so the header's focus restore keeps it
   dismiss.className = 'plans-notice-dismiss'
   notice.append(text, ' ', dismiss)
   return notice
@@ -8980,7 +9011,13 @@ function renderBoards(boards, archived) {
       const onPage = new Set(page.visible.map((b) => b.id))
       const listed = moving.filter((b) => onPage.has(b.id) || keptRowIds(b, false).size > 0)
       for (const b of listed) host.appendChild(planEl(b))
-      if (moving.length > listed.length) host.appendChild(moreButton('moving', moving.length - listed.length))
+      if (moving.length > listed.length) {
+        const more = moreButton('moving', moving.length - listed.length)
+        const firstHidden = moving.find((b) => !listed.includes(b))?.id
+        more.id = 'plans-moving-more'
+        more.addEventListener('click', () => { movingMoreReveals = firstHidden ?? null }, true)
+        host.appendChild(more)
+      }
     }
     if (stalled.length) host.appendChild(stalledFoldEl(stalled, planEl))
   }

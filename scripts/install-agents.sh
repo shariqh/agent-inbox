@@ -243,7 +243,9 @@ instruction_write_file() {
   local file
   file="$(instruction_file "$1")" || return 1
   if [ -L "$file" ]; then
-    realpath "$file" 2>/dev/null || {
+    # GNU realpath resolves a link whose target is missing, BSD realpath fails;
+    # the existence test makes the refusal the same on both.
+    { [ -e "$file" ] && realpath "$file" 2>/dev/null; } || {
       echo "install-agents: $file is a dangling symlink — refusing to replace it" >&2
       return 1
     }

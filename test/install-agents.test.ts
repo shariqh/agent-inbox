@@ -2311,6 +2311,31 @@ describe('the personal install without the new flags (#641)', () => {
     })
   }
 
+  // GNU realpath resolves a link whose target is missing while its folder
+  // exists; BSD realpath fails. The refusal must not depend on which one runs.
+  for (const which of ['claude', 'copilot'] as const) {
+    for (const apply of [false, true]) {
+      it(`refuses a dangling personal ${which} instruction link (${apply ? 'apply' : 'dry run'})`, () => {
+        const f = fixture()
+        const file = which === 'claude' ? f.claudeFile : f.copilotFile
+        const other = which === 'claude' ? f.copilotFile : f.claudeFile
+        const target = join(dirname(file), 'moved-away.md')
+        rmSync(file)
+        symlinkSync(target, file)
+        const otherBefore = readFileSync(other, 'utf8')
+
+        const result = run(f, apply ? ['--apply'] : [])
+
+        expect(result.code, result.err).toBe(1)
+        expect(result.err).toMatch(/is a dangling symlink — refusing to replace it/)
+        expect(existsSync(f.log)).toBe(false)
+        expect(lstatSync(file).isSymbolicLink()).toBe(true)
+        expect(existsSync(target)).toBe(false)
+        expect(readFileSync(other, 'utf8')).toBe(otherBefore)
+      })
+    }
+  }
+
   it('prints the personal Claude command line exactly in the dry run', () => {
     const f = fixture()
     const node = process.execPath

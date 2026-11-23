@@ -2802,6 +2802,39 @@ describe('refusals for a second Claude Code config folder (#641)', () => {
     }
   }
 
+  // On a case-insensitive file system (macOS by default) a differently-cased
+  // spelling is the same folder, and `pwd -P` keeps the case that was typed.
+  // The cases are skipped where the file system tells the two spellings apart.
+  const swapCase = (text: string) => text.replace(/[A-Za-z]/g, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()))
+  for (const apply of [false, true]) {
+    for (const spelling of ['~/.claude', '$HOME'] as const) {
+      it(`refuses a different-case spelling of ${spelling} (${apply ? 'apply' : 'dry run'}) with exit 2 and nothing written`, (context) => {
+        const f = fixture()
+        secondFolder(f) // only for its MCP entry, which accepts --project
+        // no personal CLAUDE.md, so check 9 cannot be what refuses it, and no
+        // personal ~/.claude.json, so the .claude.json check cannot either
+        renameSync(f.claudeFile, join(f.tmp, 'CLAUDE.md.away'))
+        renameSync(f.env.CLAUDE_CONFIG!, join(f.tmp, 'claude.json.away'))
+        // a folder that holds its own .claude.json, as after a first run of Claude Code
+        writeFileSync(join(f.home, '.claude', '.claude.json'), '{"mcpServers":{}}\n')
+        const dir = spelling === '~/.claude' ? join(f.home, '.CLAUDE') : join(dirname(f.home), swapCase(f.home.slice(f.home.lastIndexOf('/') + 1)))
+        if (dir === f.home || !existsSync(spelling === '~/.claude' ? dir : join(dir, '.claude'))) {
+          // a case-sensitive file system: the other spelling is another folder
+          context.skip()
+          return
+        }
+        const before = tree(f.home)
+
+        const result = run(f, [...(apply ? ['--apply'] : []), '--claude-config-dir', dir, '--project', 'work'])
+
+        expect(result.code, result.err).toBe(2)
+        expect(result.err).toMatch(/is the personal Claude Code folder/)
+        expect(existsSync(f.log)).toBe(false)
+        expect(tree(f.home)).toEqual(before)
+      })
+    }
+  }
+
   it('refuses a self-detected runtime install with exit 2 before anything', () => {
     const f = fixture()
     const second = secondFolder(f)

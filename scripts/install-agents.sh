@@ -159,7 +159,10 @@ if [ "$SECOND_DIR_COUNT" -eq 1 ]; then
   while [ "${#SECOND_DIR}" -gt 1 ] && [ "${SECOND_DIR%/}" != "$SECOND_DIR" ]; do SECOND_DIR="${SECOND_DIR%/}"; done
   [ -d "$SECOND_DIR" ] || refuse_second "$SECOND_DIR is not a folder; it is never created"
   second_real="$(real_dir "$SECOND_DIR")"
-  if [ "$second_real" = "$(real_dir "$HOME")" ] || [ "$second_real" = "$(real_dir "$HOME/.claude")" ]; then
+  # `pwd -P` keeps the case that was typed, so a different-case spelling on a
+  # case-insensitive file system also needs the same-file test.
+  if [ "$second_real" = "$(real_dir "$HOME")" ] || [ "$second_real" = "$(real_dir "$HOME/.claude")" ] ||
+      [ "$SECOND_DIR" -ef "$HOME" ] || [ "$SECOND_DIR" -ef "$HOME/.claude" ]; then
     refuse_second "$SECOND_DIR is the personal Claude Code folder; --claude-config-dir is for a second one"
   fi
   [ -f "$SECOND_DIR/.claude.json" ] ||

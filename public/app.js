@@ -9317,6 +9317,9 @@ function setFindChip(chip) {
   findActiveKey = null
   shown.find = FIND_PAGE
   endFindStay()
+  // reaching the chats from inside Find is an entry into them: the 60-second rule and the
+  // bridges' asks run as on entering Find (the tab's own entry already did when Find was hidden)
+  if (chip === 'chats' && !document.getElementById('find').hidden) chatsView.opened()
   forceRender()
   requestHistoryPaint()
 }
@@ -9359,6 +9362,7 @@ function leaveFind() {
 
 // G F, G N, G H and Home's notes chip. `focus`: the field, the list or nothing.
 function openFind({ chip = null, clearQuery = false, focus = 'field' } = {}) {
+  const wasShowing = !document.getElementById('find').hidden
   selectTab('find', { paint: false })
   if (activeTab !== 'find') return
   // a go-to destination starts at the top, as every tab's does (focusKeyboardPanel)
@@ -9369,6 +9373,9 @@ function openFind({ chip = null, clearQuery = false, focus = 'field' } = {}) {
     findActiveKey = null
     shown.find = FIND_PAGE
   }
+  // G C, #chats and the "Continued from a Copilot chat" link from inside Find enter the chats
+  // too (selectTab did when Find was hidden)
+  if (wasShowing && findChip === 'chats') chatsView.opened()
   forceRender()
   requestHistoryPaint()
   if (focus === 'field') focusFindField()

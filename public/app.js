@@ -8724,6 +8724,15 @@ function findKeepKeys() {
 
 const findRowHasText = (row) => Boolean(row?.entity && itemNoteEditors[row.id]?.text.trim())
 
+// A deliberate change of chip or settled query ends the "stays in place" window: rows the
+// person acted on and the row a way in landed on go back to their own place. Only a row
+// whose Note editor holds text stays listed (findKeepKeys).
+function endFindStay() {
+  findKept.clear()
+  findLandingKey = null
+  findPainted = []
+}
+
 // ⌘K's commands typed in Find's field: their rows lead the list, as in the top bar.
 function findCommandRows(query, rows) {
   const actions = paletteResults(query, paletteTargets(), fuzzySearch).map((result) => ({
@@ -9085,6 +9094,7 @@ function setFindQueryText(text) {
   findSettled = text
   findActiveKey = null
   shown.find = FIND_PAGE
+  endFindStay()
   const input = findField()
   if (input) input.value = text
 }
@@ -9094,6 +9104,7 @@ function setFindChip(chip) {
   findChip = chip
   findActiveKey = null
   shown.find = FIND_PAGE
+  endFindStay()
   forceRender()
   requestHistoryPaint()
 }
@@ -9113,9 +9124,7 @@ function enterFind() {
     setFindQueryText(top.value)
     resetSearch()
   } else closeSearchResults()
-  findKept.clear()
-  findPainted = []
-  findLandingKey = null
+  endFindStay()
   findHistoryPinned = false
   findNewIds = lastData
     ? new Set(unreadNotes(filterData(withoutClosed(lastData)).g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds)
@@ -9129,9 +9138,7 @@ function leaveFind() {
     findTimer = null
     findSettled = findQuery
   }
-  findKept.clear()
-  findPainted = []
-  findLandingKey = null
+  endFindStay()
   findNewIds = null
   findHistoryPinned = false
 }
@@ -9147,6 +9154,7 @@ function openFind({ chip = null, clearQuery = false, focus = 'field' } = {}) {
     findChip = chip
     findActiveKey = null
     shown.find = FIND_PAGE
+    endFindStay()
   }
   forceRender()
   requestHistoryPaint()
@@ -9173,6 +9181,12 @@ function prepareFindLanding(item) {
     setFindQueryText('')
     const type = findRow(item).type
     findChip = type === 'note' ? 'notes' : type === 'answer' ? 'answers' : 'all'
+    // outside the lens is decided again now the query is gone: the no-query list hides a
+    // closed project, so it is peeked as for any landing
+    if (closed.has(item.project) && projectFilter !== item.project) {
+      projectFilter = item.project
+      agentFilter = null
+    }
   }
   findLandingKey = key
   findOpen.add(key)
@@ -9195,6 +9209,7 @@ function initFind() {
       findSettled = findQuery
       findActiveKey = null
       shown.find = FIND_PAGE
+      endFindStay()
       forceRender()
       // the person's own query asked for this frame: what it searches is read and painted
       // outside the poll's gate, as an unrelated draft must not hide it (#38)

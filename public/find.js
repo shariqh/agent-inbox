@@ -117,7 +117,9 @@ export function findRow(entity, { nowMs = Date.now(), archived = false, fromCoun
 
 // What each chip holds, as a predicate over rows.
 const CHIP_ROWS = {
-  all: (row) => row.type !== 'ask' && !(row.type === 'finished' && row.entity.kind === 'question'),
+  // with no query: no open asks, no asks closed without a reply, and no plans (each write
+  // to a plan moves its stamp, so they would sit above everything: the Plans chip lists them)
+  all: (row) => row.type !== 'ask' && row.type !== 'plan' && !(row.type === 'finished' && row.entity.kind === 'question'),
   answers: (row) => row.type === 'answer',
   notes: (row) => row.type === 'note',
   plans: (row) => row.type === 'plan',
@@ -155,12 +157,15 @@ const newestFirst = (a, b) => b.stamp - a.stamp || (a.key < b.key ? -1 : a.key >
 
 // Rows the person acted on, or whose editor holds text, stay where they were painted:
 // each goes back after the row that preceded it last time (the first row when none
-// did). One that was not painted before goes first, so it is in sight.
+// did). A kept row the list already holds, with no earlier place (a landing target), keeps
+// its sorted place; one the list does not hold goes first, so it is in sight.
 function keepInPlace(rows, keptRows, previous) {
-  const list = rows.filter((row) => !keptRows.has(row.key))
+  const inList = new Set(rows.map((row) => row.key))
+  const moving = new Map([...keptRows].filter(([key]) => previous.includes(key) || !inList.has(key)))
+  const list = rows.filter((row) => !moving.has(row.key))
   const placed = new Set(list.map((row) => row.key))
   const lead = []
-  for (const [key, row] of keptRows) {
+  for (const [key, row] of moving) {
     const at = previous.indexOf(key)
     if (at < 0) {
       lead.push(row)
@@ -180,7 +185,7 @@ function keepInPlace(rows, keptRows, previous) {
  * The rows under a chip, in Find's order.
  *
  * No query: newest first by each row's own stamp (Notes: open notes first, then closed
- * ones), with asks closed without a reply left out of All. While older history is not
+ * ones), with asks closed without a reply, and plans, left out of All. While older history is not
  * loaded (`before` is its newest omitted touch), a closed item whose own stamp is not
  * later than `before` is below the cut: it is left out and counted in `cut`. Open
  * items and plans are never cut. With a query: search's order (current work first,

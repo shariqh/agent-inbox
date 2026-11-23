@@ -266,18 +266,16 @@ describe('A3, A4 · the chips and what the list holds', () => {
     expect(group.getAttribute('aria-label')).toBe('Show')
     expect([...group.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['All', 'Answers', 'Notes', 'Plans'])
     expect(chip('all')?.getAttribute('aria-pressed')).toBe('true')
-    // no open unanswered ask and no ask closed without a reply under All
+    // no open unanswered ask, no ask closed without a reply and no plan under All with no query
     expect(findKeys()).toEqual([
-      `item:${ids.note}`, `item:${ids.answered}`, expect.stringMatching(/^board:/), `item:${ids.milestone}`,
-      `item:${ids.oldNote}`, `item:${ids.closedAsk}`,
+      `item:${ids.note}`, `item:${ids.answered}`, `item:${ids.milestone}`, `item:${ids.oldNote}`, `item:${ids.closedAsk}`,
     ])
     expect(findRowEl(`item:${ids.answered}`)?.querySelector('.find-extra')?.textContent).toBe('Managed')
     expect(findRowEl(`item:${ids.closedAsk}`)?.querySelector('.find-extra')?.textContent).toBe('30 days')
     expect(findRowEl(`item:${ids.oldNote}`)?.querySelector('.find-extra')?.textContent).toBe('Resolved')
     expect(findRowEl(`item:${ids.milestone}`)?.querySelector('.find-extra')?.textContent).toBe('Completed')
-    expect(findRows()[2]?.querySelector('.find-extra .plan-bar')?.getAttribute('aria-label')).toBe('1 of 2 steps done, 1 in progress')
     expect(findRows().map((el) => el.querySelector('.find-icon')?.getAttribute('aria-label')))
-      .toEqual(['Note', 'Answer', 'Plan', 'Finished', 'Note', 'Answer'])
+      .toEqual(['Note', 'Answer', 'Finished', 'Note', 'Answer'])
 
     await pressChip('answers')
     expect(chip('answers')?.getAttribute('aria-pressed')).toBe('true')
@@ -286,6 +284,20 @@ describe('A3, A4 · the chips and what the list holds', () => {
     expect(findKeys()).toEqual([`item:${ids.note}`, `item:${ids.oldNote}`])
     await pressChip('plans')
     expect(findKeys()).toEqual([expect.stringMatching(/^board:/)])
+    expect(findRows()[0]?.querySelector('.find-extra .plan-bar')?.getAttribute('aria-label')).toBe('1 of 2 steps done, 1 in progress')
+  })
+
+  it('leaves a plan out of the plain All list, but All with a query that matches it lists it', async () => {
+    db = freshDb()
+    seed(db)
+    await bootApp(db)
+    await openFindTab()
+    expect(findKeys().filter((k) => k!.startsWith('board:'))).toEqual([])
+    await pressChip('plans')
+    expect(findKeys().filter((k) => k!.startsWith('board:'))).toHaveLength(1)
+    await pressChip('all')
+    await findFor('restore drill')
+    expect(findKeys().filter((k) => k!.startsWith('board:'))).toHaveLength(1)
   })
 
   it('with a query, All also finds open asks and asks closed without a reply; they go where they live', async () => {
@@ -319,6 +331,7 @@ describe('A3, A4 · the chips and what the list holds', () => {
     seed(db)
     await bootApp(db)
     await openFindTab()
+    await pressChip('plans')
     const planKey = findKeys().find((k) => k!.startsWith('board:'))!
     await pressRow(planKey)
     expect(document.getElementById('boards')!.hidden).toBe(false)
@@ -589,5 +602,183 @@ describe('A12 · texts', () => {
     expect(status()).toBe('')
     await findFor('zebra')
     expect(status()).toBe('Nothing matches "zebra".')
+  })
+})
+
+// ── the build review's fixes ────────────────────────────────────────────────
+
+// One hashchange, as a real browser fires for one navigation: jsdom fires its own for a
+// write to location.hash, and navigateToHash dispatches another on top of it.
+function landOnce(id: string) {
+  history.replaceState(null, '', `#item/${id}`)
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'))
+}
+
+describe('A8 · a row that stays in place leaves its place with the chip or the query', () => {
+  it('a note resolved under All is not listed under Plans, and a query it misses lists nothing', async () => {
+    db = freshDb()
+    advanceClock()
+    upsertBoard(db, { ...LEDGER, title: 'Backups plan', rows: [{ label: 'Write the job', status: 'done' }] })
+    advanceClock()
+    const note = insertItem(db, { ...ATLAS, kind: 'note', title: 'Nightly backups', detail: 'cron removed' })
+    await bootApp(db)
+    await openFindTab()
+    const k = `item:${note}`
+    await pressRow(k)
+    click(buttonLabelled('Resolve', findRowEl(k)!.querySelector('.find-row-body')!))
+    await settle()
+    expect(findKeys(), 'it stays in place under All').toContain(k)
+    await pressChip('plans')
+    expect(findKeys()).toEqual([expect.stringMatching(/^board:/)])
+    await findFor('zzzqqq')
+    expect(findKeys()).toEqual([])
+    expect(status()).toBe('Nothing matches "zzzqqq".')
+  })
+
+  it('Enter in the field opens the best match, not the row resolved a moment ago', async () => {
+    db = freshDb()
+    advanceClock()
+    const milestone = insertItem(db, { ...ATLAS, kind: 'done', title: 'Shipped the exporter', next_step: 'No action' })
+    advanceClock()
+    const note = insertItem(db, { ...ATLAS, kind: 'note', title: 'Backups now run nightly' })
+    await bootApp(db)
+    await openFindTab()
+    await pressRow(`item:${note}`)
+    click(buttonLabelled('Resolve', findRowEl(`item:${note}`)!.querySelector('.find-row-body')!))
+    await settle()
+    await findFor('exporter')
+    expect(findKeys()[0]).toBe(`item:${milestone}`)
+    expect(findRowEl(`item:${milestone}`)?.dataset.active, 'the match takes the highlight').toBe('true')
+    key(field(), 'Enter')
+    await settle()
+    expect(findRowEl(`item:${milestone}`)?.querySelector('.find-row-body')).not.toBeNull()
+  })
+
+  it('a press in an open row (Note, then Cancel) does not make it follow the person to another chip', async () => {
+    db = freshDb()
+    advanceClock()
+    const ask = insertItem(db, { ...ATLAS, kind: 'question', title: 'Keep 30 or 90 days?', options: [{ label: '30 days' }] })
+    replyItem(db, ask, '30 days')
+    resolveItem(db, ask, 'Retention set to 30 days.')
+    advanceClock()
+    const milestone = insertItem(db, { ...LEDGER, kind: 'done', title: 'Shipped the exporter', next_step: 'No action' })
+    await bootApp(db)
+    await openFindTab()
+    const k = `item:${milestone}`
+    await pressRow(k)
+    click(buttonLabelled('Note', findRowEl(k)!.querySelector('.find-row-body')!))
+    await settle()
+    click(buttonLabelled('Cancel', findRowEl(k)!.querySelector('.note-editor')!))
+    await settle()
+    expect(findKeys()).toContain(k)
+    await pressChip('answers')
+    expect(findKeys()).toEqual([`item:${ask}`])
+  })
+
+  it('the row a way in landed on does not lead a later query or hide "Nothing matches"', async () => {
+    db = freshDb()
+    advanceClock()
+    const landed = insertItem(db, { ...ATLAS, kind: 'note', title: 'Nightly backups' })
+    advanceClock()
+    const zebra = insertItem(db, { ...ATLAS, kind: 'note', title: 'Zebra crossing rollout' })
+    await bootApp(db)
+    navigateToHash(`#item/${landed}`)
+    await settle()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(findRowEl(`item:${landed}`)?.querySelector('.find-row-body .card')).not.toBeNull()
+    field().focus()
+    await findFor('zebra')
+    expect(findKeys()).toEqual([`item:${zebra}`])
+    key(field(), 'Enter')
+    await settle()
+    expect(findRowEl(`item:${zebra}`)?.querySelector('.find-row-body')).not.toBeNull()
+    await findFor('zzzqqq')
+    expect(findKeys()).toEqual([])
+    expect(status()).toBe('Nothing matches "zzzqqq".')
+  })
+
+  it('a row whose Note editor holds text stays listed with its text after leaving Find, and under another chip', async () => {
+    db = freshDb()
+    const ids = seed(db)
+    await bootApp(db)
+    await openFindTab()
+    const k = `item:${ids.note}`
+    await pressRow(k)
+    click(buttonLabelled('Note', findRowEl(k)!.querySelector('.find-row-body')!))
+    await settle()
+    type(noteEditor(findRowEl(k)), 'half a thought')
+    noteEditor(findRowEl(k))!.blur()
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    await openFindTab()
+    await pressChip('plans')
+    expect(findKeys()).toContain(k)
+    expect(noteEditor(findRowEl(k))?.value).toBe('half a thought')
+    expect(unreachableReason(noteEditor(findRowEl(k))!)).toBeNull()
+    await findFor('zzzqqq')
+    expect(findKeys()).toEqual([k])
+    expect(noteEditor(findRowEl(k))?.value).toBe('half a thought')
+  })
+})
+
+describe('A10 · a landing finds its row', () => {
+  it('lands on a note of a closed project while the query misses it: the project is peeked, the row drawn', async () => {
+    db = freshDb()
+    const note = insertItem(db, { ...ATLAS, kind: 'note', title: 'Backups now run nightly' })
+    insertItem(db, { ...LEDGER, kind: 'note', title: 'Ledger note' })
+    closeProject(db, 'atlas')
+    await bootApp(db)
+    await openFindTab()
+    await findFor('ledger')
+    landOnce(note)
+    await settle()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(document.getElementById('find')!.hidden).toBe(false)
+    expect(field().value).toBe('')
+    const k = `item:${note}`
+    expect(findRowEl(k)?.querySelector('.find-row-body .card')).not.toBeNull()
+    expect(document.activeElement).toBe(mainOf(k))
+    expect(document.getElementById('projectDisclosureName')?.textContent).toBe('atlas')
+  })
+
+  it('keeps a target the list already holds at its sorted place', async () => {
+    db = freshDb()
+    advanceClock()
+    const milestone = insertItem(db, { ...ATLAS, kind: 'done', title: 'Shipped the exporter', next_step: 'No action' })
+    for (let i = 0; i < 3; i += 1) {
+      advanceClock()
+      insertItem(db, { ...LEDGER, kind: 'note', title: `Newer note ${i}` })
+    }
+    await bootApp(db)
+    await openFindTab()
+    const sorted = findKeys()
+    expect(sorted.indexOf(`item:${milestone}`)).toBe(3)
+    click(document.querySelector('.tab[data-tab="dashboard"]'))
+    await settle()
+    navigateToHash(`#item/${milestone}`)
+    await settle()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(findKeys(), 'the sorted order holds').toEqual(sorted)
+    expect(findRowEl(`item:${milestone}`)?.querySelector('.find-row-body .card')).not.toBeNull()
+    await pollTick()
+    expect(findKeys()).toEqual(sorted)
+  })
+
+  it('places a target past the first page after it, still opened and focused', async () => {
+    db = freshDb()
+    const ids: string[] = []
+    for (let i = 0; i < 25; i += 1) {
+      advanceClock()
+      ids.push(insertItem(db, { ...ATLAS, kind: 'note', title: `Note ${i}` }))
+    }
+    await bootApp(db)
+    navigateToHash(`#item/${ids[0]}`)
+    await settle()
+    await vi.advanceTimersByTimeAsync(50)
+    const k = `item:${ids[0]}`
+    expect(findKeys()).toHaveLength(21)
+    expect(findKeys()[20]).toBe(k)
+    expect(findRowEl(k)?.querySelector('.find-row-body .card')).not.toBeNull()
+    expect(document.activeElement).toBe(mainOf(k))
   })
 })

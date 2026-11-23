@@ -129,20 +129,29 @@ describe('buildFindRows with no query', () => {
     expect(keys(build({ chip: 'plans' }).rows)).toEqual(['board:p1', 'board:p2'])
     // open notes first, newest first, then closed ones
     expect(keys(build({ chip: 'notes' }).rows)).toEqual(['item:n1', 'item:n2', 'item:n3', 'item:n4'])
-    // All: answers, notes, plans and finished things; no open ask, no ask closed without a reply
+    // All: answers, notes and finished things; no open ask, no ask closed without a reply, no plan
     expect(keys(build({ chip: 'all' }).rows)).toEqual([
-      'item:n1', 'board:p1', 'item:n3', 'item:m2', 'item:m1', 'item:qa', 'item:n4', 'item:h1', 'item:qc', 'item:n2', 'board:p2',
+      'item:n1', 'item:n3', 'item:m2', 'item:m1', 'item:qa', 'item:n4', 'item:h1', 'item:qc', 'item:n2',
     ])
     expect(build().rows.map((row) => row.key)).toEqual(keys(build({ chip: 'all' }).rows))
+  })
+
+  it('leaves plans out of the plain All list, lists them under Plans, and finds them with a query under All', () => {
+    expect(keys(build({ chip: 'all' }).rows).filter((key) => key.startsWith('board:'))).toEqual([])
+    expect(keys(build({ chip: 'plans' }).rows)).toEqual(['board:p1', 'board:p2'])
+    expect(keys(build({ chip: 'all', query: 'plan p1', searchFn: fuzzy }).rows)).toContain('board:p1')
+    expect(keys(build({ chip: 'all', query: 'second', searchFn: fuzzy }).rows), 'a plan-step hit').toContain('board:p1')
   })
 
   it('cuts closed items by their own stamp, never open items or plans', () => {
     // older history is omitted; its newest touch was five days ago
     const before = at(5 * DAY)
     const { rows, cut } = build({ chip: 'all', before })
-    // qc (8 days), h1 (6 days) are closed and older: cut. n2 (an aged OPEN note) and p2 (a plan) stay.
-    expect(keys(rows)).toEqual(['item:n1', 'board:p1', 'item:n3', 'item:m2', 'item:m1', 'item:qa', 'item:n4', 'item:n2', 'board:p2'])
+    // qc (8 days), h1 (6 days) are closed and older: cut. n2 (an aged OPEN note) stays.
+    expect(keys(rows)).toEqual(['item:n1', 'item:n3', 'item:m2', 'item:m1', 'item:qa', 'item:n4', 'item:n2'])
     expect(cut).toBe(2)
+    // a plan is never cut: the Plans chip lists both whatever the cut
+    expect(keys(build({ chip: 'plans', before }).rows)).toEqual(['board:p1', 'board:p2'])
     // created long ago, closed recently: its own stamp is later than the cut, so it stays
     const late = item('late', { kind: 'done', title: 'Old item, new outcome', status: 'resolved', created_at: at(60 * DAY), outcome: 'Done now', outcome_at: at(MIN) })
     const withLate = buildFindRows(data({ done: [late, closedAnswered] }), { nowMs: NOW, before, chip: 'all' })
@@ -202,5 +211,16 @@ describe('rows the person acted on stay where they were', () => {
     expect(keys(plans.rows)).toEqual(['item:n1', 'board:p1', 'board:p2'])
     // a kept key whose entity is gone is not drawn
     expect(keys(buildFindRows(everything, { nowMs: NOW, chip: 'plans', keep: ['item:gone'] }).rows)).toEqual(['board:p1', 'board:p2'])
+  })
+
+  it('puts a kept row the list already holds at its sorted place, and only one it does not hold first', () => {
+    const plain = keys(build({ chip: 'notes' }).rows)
+    expect(plain.indexOf('item:n2'), 'the aged note sorts after the fresh one').toBeGreaterThan(plain.indexOf('item:n1'))
+    // never painted before, but in the list: its sorted index, not the top
+    const landed = build({ chip: 'notes', keep: ['item:n2'], previous: [] })
+    expect(keys(landed.rows)).toEqual(plain)
+    // not in the list under this chip: it leads
+    const outside = build({ chip: 'plans', keep: ['item:n2'], previous: [] })
+    expect(keys(outside.rows)[0]).toBe('item:n2')
   })
 })

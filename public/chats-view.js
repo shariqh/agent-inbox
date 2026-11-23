@@ -635,14 +635,20 @@ export function installChatsView({
       const line = make('div', 'chats-error find-chats-fail')
       line.setAttribute('role', 'status')
       const text = make('span')
-      line.append(text, ' ', button('header-toggle chats-retry', 'Retry', () => {
+      const retry = button('header-toggle chats-retry', 'Retry', () => {
         if (!loading) read()
-      }))
+      })
+      line.append(text, ' ', retry)
       root.replaceChildren(line)
-      foot = { root, text }
+      foot = { root, text, retry }
     }
-    const visible = show && Boolean(error)
-    if (visible) setText(foot.text, errorWords())
+    // the first read still in flight is said here too: with no chats listed yet, an empty list
+    // under a query is not "Nothing matches", and the foot is the line that speaks for them
+    const reading = !body && !error && loading
+    const visible = show && (Boolean(error) || reading)
+    if (visible) setText(foot.text, error ? errorWords() : 'Loading chats…')
+    setHidden(foot.retry, !error)
+    foot.root.firstElementChild.classList.toggle('chats-reading', !error)
     setHidden(root, !visible)
   }
 
@@ -659,6 +665,8 @@ export function installChatsView({
     tool: () => filter.tool,
     /** Whether the last read failed. */
     failed: () => error !== null,
+    /** Whether a read is in flight. */
+    loading: () => loading,
     /** Whether a chat (`<tool>:<id>`) is live: in the index, or run by a launch of this app (§3.5). */
     live: (key) => chatByKey.get(key)?.live === true || drivenByKey.get(key)?.here === true,
     beginPaint,

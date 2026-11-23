@@ -327,3 +327,62 @@ describe('a chat that holds a note stays listed until the note is cleared', () =
   })
 })
 
+describe('Find never claims "Nothing matches" or "Nothing here yet." over chats that are not counted', () => {
+  it('under All with a query, a slow first chats read says nothing is matched yet, not "Nothing matches"', async () => {
+    let release: (() => void) | null = null
+    await boot({
+      chats: [entry(1, { title: 'Zebra migration' })],
+      intercept: async (input, _init, next) => {
+        if (String(input).startsWith('/api/chats') && !release) await new Promise<void>((resolve) => { release = resolve })
+        return await next()
+      },
+    })
+    await openFindTab()
+    await findFor('zebra')
+    expect(statusText()).toBeNull()
+    expect(document.getElementById('findChatsFoot')!.textContent).toContain('Loading chats…')
+    expect(document.getElementById('findChatsFoot')!.querySelector<HTMLElement>('button')!.hidden).toBe(true)
+    release!()
+    await settle()
+    await settle()
+    expect(rowKeys()).toEqual([chatKey(1)])
+    expect(statusText()).toBeNull()
+  })
+
+  it('under All with a query, a failed first chats read leaves the foot to speak, not "Nothing matches"', async () => {
+    await boot({
+      chats: [entry(1, { title: 'Zebra migration' })],
+      intercept: async (input, _init, next) => (String(input).startsWith('/api/chats') ? new Response('x', { status: 500 }) : await next()),
+    })
+    await openFindTab()
+    await findFor('zebra')
+    expect(statusText()).toBeNull()
+    const foot = document.getElementById('findChatsFoot')!
+    expect(foot.hidden).toBe(false)
+    expect(foot.textContent).toContain("Couldn't load chats (500).")
+  })
+
+  it('under All with a query that nothing matches once the chats are read, it still says so', async () => {
+    await boot({ chats: [entry(1, { title: 'Zebra migration' })] })
+    await openFindTab()
+    await findFor('walrus')
+    expect(statusText()).toBe('Nothing matches "walrus".')
+  })
+
+  for (const name of ['all', 'answers', 'notes', 'plans'] as const) {
+    it(`${name} with chats and nothing else does not say "Nothing here yet."`, async () => {
+      await boot({ chats: [entry(1)] })
+      await openFindTab()
+      click(chip(name))
+      await settle()
+      expect(statusText()).not.toBeNull()
+      expect(statusText()).not.toBe('Nothing here yet.')
+    })
+  }
+
+  it('with no chats and nothing else, All still says "Nothing here yet."', async () => {
+    await boot({ chats: [] })
+    await openFindTab()
+    expect(statusText()).toBe('Nothing here yet.')
+  })
+})

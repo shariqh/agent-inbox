@@ -36,6 +36,7 @@ export interface ChatsView {
   list(): Chat[] | null
   tool(): 'all' | 'claude' | 'copilot'
   failed(): boolean
+  loading(): boolean
   live(key: string): boolean
   beginPaint(): void
   paintSlot(slot: HTMLElement, key: string): void

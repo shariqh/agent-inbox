@@ -9160,13 +9160,17 @@ function renderFind() {
   if (waitFailed) setFindStatus(findWaitText())
   // under the Chats chip the Chats line says what a short or empty list means
   else if (drawn.length || findChip === 'chats') setFindStatus('')
+  // under All with a query the chats are searched too: unread (still loading, or failed) they are
+  // not searched, so "Nothing matches" would be false; the foot's own line says why
+  else if (model.query && findChip === 'all' && chatsView.list() === null && (chatsView.loading() || chatsView.failed())) setFindStatus('')
   else if (model.query) setFindStatus(`Nothing matches "${model.query}".`)
   else if (olderWaits) setFindStatus('')
   else {
-    // "Nothing here yet." only when the lens holds nothing at all, plans included
+    // "Nothing here yet." only when the lens holds nothing at all, plans and chats included
     const feed = buildFindRows(model.data, { chip: 'all', nowMs }).rows.length
     const plans = buildFindRows(model.data, { chip: 'plans', nowMs }).rows.length
-    setFindStatus(feed + plans === 0 ? FIND_EMPTY.none : FIND_EMPTY[findChip])
+    const chats = chatsView.list()?.filter((chat) => !chat.hidden?.length).length ?? 0
+    setFindStatus(feed + plans + chats === 0 ? FIND_EMPTY.none : FIND_EMPTY[findChip])
   }
   // the first row "Show 20 more" reveals; the foot is rebuilt only when its KIND changes (more,
   // older, loading), and a changed number is written into the button in place, so a poll never

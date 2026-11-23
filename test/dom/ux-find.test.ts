@@ -782,3 +782,167 @@ describe('A10 · a landing finds its row', () => {
     expect(document.activeElement).toBe(mainOf(k))
   })
 })
+
+describe('A6, A7 · the foot and the rows keep focus across a poll', () => {
+  it('keeps the foot button, its focus and its place when a poll changes how many rows are left', async () => {
+    db = freshDb()
+    for (let i = 0; i < 25; i += 1) {
+      advanceClock()
+      insertItem(db, { ...ATLAS, kind: 'note', title: `Note ${i}` })
+    }
+    await bootApp(db)
+    await openFindTab()
+    const more = buttonLabelled('Show 5 more', foot())!
+    more.focus()
+    expect(document.activeElement).toBe(more)
+    advanceClock()
+    insertItem(db, { ...LEDGER, kind: 'note', title: 'One more note from an agent' })
+    await pollTick()
+    expect(foot().querySelector('button'), 'the same node').toBe(more)
+    expect(more.textContent).toBe('Show 6 more')
+    expect(document.activeElement).toBe(more)
+    click(more)
+    await settle()
+    expect(findRows()).toHaveLength(26)
+    expect(foot().querySelector('button')).toBeNull()
+  })
+
+  it('keeps focus on a plan row a poll re-sorts to the top', async () => {
+    db = freshDb()
+    advanceClock()
+    upsertBoard(db, { ...ATLAS, title: 'Older plan', rows: [{ label: 'One', status: 'partial' }] })
+    advanceClock()
+    upsertBoard(db, { ...ATLAS, title: 'Newer plan', rows: [{ label: 'One', status: 'partial' }] })
+    await bootApp(db)
+    await openFindTab()
+    await pressChip('plans')
+    expect(findTitles()).toEqual(['Newer plan', 'Older plan'])
+    const main = findRows()[1]!.querySelector<HTMLButtonElement>('.find-row-main')!
+    main.focus()
+    advanceClock()
+    upsertBoard(db, { ...ATLAS, title: 'Older plan', expectedVersion: 1, rows: [{ label: 'One', status: 'partial', revision: 1 }, { label: 'Two', status: 'done' }] })
+    await pollTick()
+    expect(findTitles()).toEqual(['Older plan', 'Newer plan'])
+    expect(document.activeElement, 'focus stays on the row it moved').toBe(findRows()[0]!.querySelector('.find-row-main'))
+  })
+
+  it('keeps focus on a row when a row above it leaves the list', async () => {
+    db = freshDb()
+    advanceClock()
+    upsertBoard(db, { ...LEDGER, title: 'Older plan', rows: [{ label: 'One', status: 'done' }] })
+    advanceClock()
+    upsertBoard(db, { ...ATLAS, title: 'Newer plan', rows: [{ label: 'One', status: 'done' }] })
+    await bootApp(db)
+    await openFindTab()
+    await pressChip('plans')
+    expect(findTitles()).toEqual(['Newer plan', 'Older plan'])
+    const planKey = findKeys()[1]!
+    const planMain = mainOf(planKey)!
+    planMain.focus()
+    expect(document.activeElement).toBe(planMain)
+    // an agent closes project atlas: the plan above leaves on the next poll
+    closeProject(db, 'atlas')
+    await pollTick()
+    expect(findKeys()).toEqual([planKey])
+    expect(mainOf(planKey)).toBe(planMain)
+    expect(document.activeElement).toBe(planMain)
+  })
+})
+
+describe('A9 · New marks follow the lens', () => {
+  it('shows an unread note as New when the person narrows the rail to its project while on Find', async () => {
+    db = freshDb()
+    advanceClock()
+    const atlasNote = insertItem(db, { ...ATLAS, kind: 'note', title: 'Atlas unread note' })
+    advanceClock()
+    insertItem(db, { ...LEDGER, kind: 'note', title: 'Ledger unread note' })
+    await bootApp(db)
+    expect(tabCount('find')).toBe('2')
+    click(document.querySelector('#rail [data-project="ledger"]'))
+    await settle()
+    await openFindTab()
+    await pressChip('notes')
+    click(document.querySelector('#rail [data-project="atlas"]'))
+    await settle()
+    expect(findRowEl(`item:${atlasNote}`)?.querySelector('.find-new')?.textContent).toBe('New')
+  })
+})
+
+describe('A2 · a query waiting on older history', () => {
+  const OLD = 55
+  function seedWaiting(d: Database.Database) {
+    const closed: string[] = []
+    for (let i = 0; i < OLD; i += 1) {
+      advanceClock()
+      closed.push(insertItem(d, { ...ATLAS, kind: 'note', title: `Old note ${i}` }))
+    }
+    for (const id of closed) {
+      advanceClock()
+      resolveItem(d, id)
+    }
+    advanceClock()
+    const alpha = insertItem(d, { ...LEDGER, kind: 'note', title: 'Alpha open note' })
+    advanceClock()
+    const zebra = insertItem(d, { ...LEDGER, kind: 'note', title: 'Zebra open note' })
+    return { alpha, zebra }
+  }
+
+  it('marks the rows of the previous list busy and inert while it waits, and frees them with the results', async () => {
+    db = freshDb()
+    const ids = seedWaiting(db)
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let hold = false
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (String(input) === '/api/items/history' && hold) await held
+        return next()
+      },
+    })
+    await openFindTab()
+    expect(findKeys()).toEqual([`item:${ids.zebra}`, `item:${ids.alpha}`])
+    hold = true
+    field().focus()
+    type(field(), 'zebra')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(status()).toBe('Searching older history…')
+    const list = document.getElementById('findList')!
+    expect(list.getAttribute('aria-busy')).toBe('true')
+    expect(list.dataset.updating).toBe('true')
+    expect(field().hasAttribute('aria-activedescendant')).toBe(false)
+    for (const el of findRows()) expect(el.querySelector(':scope > .find-row-main')?.getAttribute('aria-disabled')).toBe('true')
+    click(mainOf(`item:${ids.alpha}`))
+    await settle()
+    expect(findRowEl(`item:${ids.alpha}`)?.querySelector('.find-row-body'), 'a press on a stale row does nothing').toBeNull()
+
+    release()
+    await settle()
+    await pollTick()
+    expect(findKeys()).toEqual([`item:${ids.zebra}`])
+    expect(list.hasAttribute('aria-busy')).toBe(false)
+    expect(list.hasAttribute('data-updating')).toBe(false)
+    expect(mainOf(`item:${ids.zebra}`)?.hasAttribute('aria-disabled')).toBe(false)
+    expect(field().getAttribute('aria-activedescendant')).toBe(mainOf(`item:${ids.zebra}`)?.id)
+  })
+
+  it('returns the rows to normal under the failure text when the read fails', async () => {
+    db = freshDb()
+    const ids = seedWaiting(db)
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (String(input) === '/api/items/history') return new Response('nope', { status: 500 })
+        return next()
+      },
+    })
+    await openFindTab()
+    field().focus()
+    await findFor('zebra')
+    await pollTick()
+    expect(status()).toBe('Older history is unavailable right now.')
+    const list = document.getElementById('findList')!
+    expect(list.hasAttribute('data-updating')).toBe(false)
+    expect(findRows().length).toBeGreaterThan(0)
+    for (const el of findRows()) expect(el.querySelector(':scope > .find-row-main')?.hasAttribute('aria-disabled')).toBe(false)
+    expect(ids.alpha).toBeTruthy()
+  })
+})

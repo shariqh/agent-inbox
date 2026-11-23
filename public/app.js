@@ -8676,6 +8676,7 @@ let findPainted = []           // keys in the order last painted on this visit
 let findNewIds = null          // unread notes on entering Find, marked New until the person leaves
 let findHistoryPinned = false  // "Show more" asked for the older history on this visit
 let findWaiting = false        // a query waits on older history or archived plans
+let findStale = false          // ...and the rows on screen are the previous list's: they do nothing
 let findRowsByKey = new Map()  // the rows (and command rows) last painted, by key
 let findRevealKey = null       // the first row "Show 20 more" reveals
 const findDomIds = new Map()   // key → the stable id of its main button
@@ -8774,6 +8775,26 @@ function findWaitText() {
   const loading = history && archived ? 'Searching older history and archived plans…'
     : history ? 'Searching older history…' : 'Searching archived plans…'
   return omittedWaitText(loading, { history, archived })
+}
+
+// Whether the read a waiting query depends on has failed: its rows are then as they were.
+function findWaitFailed() {
+  const needs = findNeeds()
+  return Boolean((needs.history && omitsHistory() && lastData?.olderError) || (needs.archived && omitsArchived() && lastData?.archivedError))
+}
+
+// The rows of the previous list while a query waits, as the top bar treats its options:
+// busy, disabled, and out of the field's active descendant. Freed when the read ends.
+function markFindStale(list, stale) {
+  if ((list.dataset.updating === 'true') === stale) return
+  if (stale) list.dataset.updating = 'true'
+  else delete list.dataset.updating
+  for (const main of list.querySelectorAll(':scope > .find-row > .find-row-main')) {
+    if (stale) main.setAttribute('aria-disabled', 'true')
+    else main.removeAttribute('aria-disabled')
+  }
+  if (stale) findField()?.removeAttribute('aria-activedescendant')
+  else paintFindActive()
 }
 
 function setFindStatus(text) {
@@ -8919,22 +8940,30 @@ function updateFindRow(el, row, nowMs) {
 }
 
 function reconcileFindList(list, rows, nowMs) {
+  // Moving a node that holds focus blurs it, and plan and command rows have no card focus
+  // bookmark: note the focused row (by key) and whether focus was on its main button
+  const focused = document.activeElement instanceof Element ? document.activeElement.closest('#findList > .find-row[data-find-key]') : null
+  const focusKey = focused?.dataset.findKey ?? null
+  const focusOnMain = Boolean(focused) && document.activeElement === focused.querySelector(':scope > .find-row-main')
+  const wanted = new Set(rows.map((row) => row.key))
   const existing = new Map()
   for (const child of [...list.children]) {
-    if (child.dataset.findKey) existing.set(child.dataset.findKey, child)
+    // the rows that left go first, so none of the placements below moves a row past them
+    if (child.dataset.findKey && wanted.has(child.dataset.findKey)) existing.set(child.dataset.findKey, child)
     else child.remove()
   }
   let previous = null
   for (const row of rows) {
     let el = existing.get(row.key)
-    existing.delete(row.key)
     if (!el) el = findRowEl(row.key)
     updateFindRow(el, row, nowMs)
     const expected = previous ? previous.nextElementSibling : list.firstElementChild
     if (el !== expected) list.insertBefore(el, expected)
     previous = el
   }
-  for (const el of existing.values()) el.remove()
+  if (focusOnMain && (!document.activeElement || document.activeElement === document.body)) {
+    list.querySelector(`:scope > [data-find-key="${CSS.escape(focusKey)}"] > .find-row-main`)?.focus({ preventScroll: true })
+  }
 }
 
 // The highlight Enter opens: the first row unless the arrows moved it. Painted only.
@@ -8973,14 +9002,18 @@ function renderFind() {
   if (model.waiting) {
     // a query waits for the whole of what it searches: the rows on screen stay, busy
     findWaiting = true
+    findStale = !findWaitFailed()
     list.setAttribute('aria-busy', 'true')
+    markFindStale(list, findStale)
     setFindStatus(findWaitText())
     foot.replaceChildren()
     foot.dataset.says = ''
     return
   }
   findWaiting = false
+  findStale = false
   list.removeAttribute('aria-busy')
+  markFindStale(list, false)
   const nowMs = Date.now()
   const { rows } = model
   const page = rows.slice(0, shown.find)
@@ -9005,29 +9038,33 @@ function renderFind() {
     const anything = findChip === 'all' ? 0 : buildFindRows(model.data, { chip: 'all', nowMs }).rows.length
     setFindStatus(anything ? FIND_EMPTY[findChip] : FIND_EMPTY.all)
   }
-  // the first row "Show 20 more" reveals; the foot is rebuilt only when what it says changes,
-  // so a poll never takes focus off its button
+  // the first row "Show 20 more" reveals; the foot is rebuilt only when its KIND changes (more,
+  // older, loading), and a changed number is written into the button in place, so a poll never
+  // takes focus off it
   findRevealKey = rows.slice(shown.find).find((row) => !extra.has(row.key))?.key ?? null
-  const footSays = rest > 0 ? `more:${Math.min(FIND_PAGE, rest)}`
-    : olderWaits ? (findHistoryPinned ? `loading:${olderHistoryWaitText('Loading older history…')}` : 'older') : ''
-  if (foot.dataset.says !== footSays) {
-    foot.dataset.says = footSays
+  const kind = rest > 0 ? 'more' : olderWaits ? (findHistoryPinned ? 'loading' : 'older') : ''
+  const footText = kind === 'more' ? `Show ${Math.min(FIND_PAGE, rest)} more`
+    : kind === 'loading' ? olderHistoryWaitText('Loading older history…') : kind === 'older' ? 'Show more' : ''
+  if (foot.dataset.says !== kind) {
+    foot.dataset.says = kind
     foot.replaceChildren()
-    if (rest > 0) {
-      const more = btn(`Show ${Math.min(FIND_PAGE, rest)} more`, showMoreInFind)
+    if (kind === 'more') {
+      const more = btn(footText, showMoreInFind)
       more.className = 'show-more find-more'
       foot.appendChild(more)
-    } else if (olderWaits && findHistoryPinned) {
+    } else if (kind === 'loading') {
       const loading = document.createElement('p')
       loading.className = 'find-loading'
       loading.setAttribute('role', 'status')
-      loading.textContent = olderHistoryWaitText('Loading older history…')
+      loading.textContent = footText
       foot.appendChild(loading)
-    } else if (olderWaits) {
-      const older = btn('Show more', showOlderInFind)
+    } else if (kind === 'older') {
+      const older = btn(footText, showOlderInFind)
       older.className = 'show-more find-older'
       foot.appendChild(older)
     }
+  } else if (kind && foot.firstElementChild && foot.firstElementChild.textContent !== footText) {
+    foot.firstElementChild.textContent = footText
   }
   markFindNotesSeen(listed, model.query)
 }
@@ -9061,7 +9098,7 @@ function markFindNotesSeen(listed, query) {
 
 function pressFindRow(key, { enter = false } = {}) {
   const row = findRowsByKey.get(key)
-  if (!row) return
+  if (!row || findStale) return
   findActiveKey = key
   if (row.action === 'run') {
     runPaletteAction(row.palette, findField())
@@ -9129,8 +9166,9 @@ function enterFind() {
   } else closeSearchResults()
   endFindStay()
   findHistoryPinned = false
+  // over every project, closed ones included, so a lens change on Find still shows the right marks
   findNewIds = lastData
-    ? new Set(unreadNotes(filterData(withoutClosed(lastData)).g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds)
+    ? new Set(unreadNotes(lastData.g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds)
       .map((note) => note.id))
     : new Set()
 }

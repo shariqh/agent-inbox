@@ -7,7 +7,7 @@ import {
 } from '/rail.js'
 import {
   attentionCount, attentionEntries, awaitingAgentRows, classifyLiveness, countsByProject,
-  isAskingItem, isBlockedRowAttention, isOpenHandoff, laterEntries, sortRail, staleEntries,
+  humanActedOnRow, isAskingItem, isBlockedRowAttention, isOpenHandoff, laterEntries, laterReason, sortRail, staleEntries,
 } from '/attention.js'
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
@@ -54,7 +54,9 @@ import { refreshRemoteSettings, renderRemoteSettings } from '/remote-settings.js
 import { installHubMode } from '/hub-mode.js'
 import { refreshConnectSettings, renderConnectSettings } from '/connect-settings.js'
 import { installHubStrip } from '/hub-strip.js'
-import { boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes } from '/boards.js'
+import {
+  boardRowsView, boardRowLine, progressLabel, hiddenDoneCount, lingeringBoards, omittedOutcomes, planForm, planSections,
+} from '/boards.js'
 import { titleWithBadge, focusHashFor, parseFocusHash } from '/badge.js'
 import { layoutMode, railLabel, NARROW_MAX, PROJECT_DISCLOSURE_MAX } from '/layout.js'
 import {
@@ -71,7 +73,7 @@ import { buildRelay, stamp } from '/relay.js'
 import { buildMission } from '/mission.js'
 import { buildDashboard } from '/dashboard.js'
 import { buildRibbon, ribbonWait, sinceKeepsOn, sinceLastLooked, trustedInput } from '/ribbon.js'
-import { isWorking, sessionFocus } from '/lanes.js'
+import { isWorking, linkedPlan, planBarLabel, planSegments, planStepStates, sessionFocus } from '/lanes.js'
 import { PANE_DEFAULTS, paneKeyValue, paneValueFromPointer, resolvePaneLayout } from '/panes.js'
 import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
@@ -111,7 +113,8 @@ function nativeKeyOwner(event) {
 }
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
-const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, archived: 5 }
+// UX pass, slice 3: Moving pages by 12; `boards` stays the grouped list's page (and its "(continued)" heads)
+const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, moving: 12, archived: 5 }
 let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
@@ -1403,8 +1406,11 @@ function restorePagedCardFocus(bookmark) {
   const fallback = card.querySelector(':scope > summary') ?? card
   for (const target of [exact, fallback]) {
     if (!target) continue
-    revealDetailsAncestors(target)
-    if (target.closest('[hidden], details:not([open])')) continue
+    // a summary shows while its own <details> is closed: restoring focus to a
+    // closed plan's summary must not open the plan under the person
+    const shownFrom = target.matches('details > summary') ? target.parentElement.parentElement : target
+    if (shownFrom) revealDetailsAncestors(shownFrom)
+    if (shownFrom?.closest('[hidden], details:not([open])')) continue
     target.tabIndex = 0
     target.focus({ preventScroll: true })
     if (document.activeElement === target) return true
@@ -1454,7 +1460,11 @@ function focusItem(id, source = null) {
   pendingFocusId = id
   if (source?.rowId) {
     openRows.add(source.rowId)
-    if (board) showDoneBoards.add(board.id)
+    if (board) {
+      showDoneBoards.add(board.id)
+      // UX pass, slice 3: a way in that targets a step opens its plan in full, over an earlier close
+      planOpen.set(board.id, true)
+    }
   }
   // UX pass, slice 1: Why it matters, Then and who acts sit inside Details too
   if (['context', 'impact', 'next', 'owner'].includes(source?.field)) {
@@ -1464,11 +1474,14 @@ function focusItem(id, source = null) {
     if (source.rowId) openRowCompares.add(source.rowId)
     else openCompares.add(id)
   }
-  projectFilter = target.project
-  agentFilter = null
-  actionFilter = 'all'
-  changedOnly = false
-  resetSearch()
+  // `keepLens` (Home's "Plan" button): the filters, "Updates" and the search box stay as the person left them
+  if (!source?.keepLens) {
+    projectFilter = target.project
+    agentFilter = null
+    actionFilter = 'all'
+    changedOnly = false
+    resetSearch()
+  }
   selectTab(board ? 'boards' : tabForItem(item), { paint: false }) // the explicit forceRender below paints the target
   // A History target the page alone cannot place keeps the complete history
   // loaded while History stays open (#184).
@@ -1476,7 +1489,12 @@ function focusItem(id, source = null) {
     historyTabPinned = !knownHistory(pageView().g.done, lastData.pageHistory?.before).some((entry) => entry.id === id)
   }
   const hash = focusHashFor(id)
-  if (location.hash !== hash) location.hash = hash // survives reload
+  if (location.hash !== hash) {
+    // the hashchange this write fires runs focusItem again with no source; a
+    // kept lens must not be narrowed by it (applyFocusHash)
+    keptLensHash = source?.keepLens ? hash : null
+    location.hash = hash // survives reload
+  }
   forceRender()
   requestHistoryPaint() // a History target the page alone cannot place (#184)
   // fix round 2 (C1): this used to call setOpenRow(id) for EVERY target. The
@@ -1993,8 +2011,14 @@ function renderSearchResults() {
 }
 
 let bootFocusDone = false
+// the hash focusItem just wrote for a way in that keeps the person's lens (Home's "Plan" button)
+let keptLensHash = null
 
 function applyFocusHash() {
+  const kept = keptLensHash
+  keptLensHash = null
+  // UX pass, slice 3: the landing already happened, with the lens left alone
+  if (kept !== null && location.hash === kept) return
   // #586: #chats opens the Chats tab; the viewer never writes it
   if (isChatsHash(location.hash)) {
     selectTab('chats')
@@ -3786,8 +3810,8 @@ function render() {
   const dashboardFocus = dashboardFocusBookmark()
   const draftFocus = ownsFocus ? activeDraftFocusBookmark() ?? requestedDraftFocusBookmark : null
   const pagedFocus = pagedCardFocusBookmark()
-  // the Plans header's controls are rebuilt with the list; keep a keyboard user on them
-  const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id]')?.id ?? null
+  // the Plans header's controls and the Stalled fold's are rebuilt with the list; keep a keyboard user on them
+  const plansHeaderFocusId = activeFocusElement()?.closest?.('#boards .tab-header [id], #boards .stalled-fold [id]')?.id ?? null
   pagedFocusId = pagedFocus?.id ?? null
   // a rebuilt unsent response keeps the control a keyboard user is on (#321)
   const recoveryControl = activeFocusElement()?.closest?.('.stale-draft-line[data-recovery-line] button')
@@ -4128,7 +4152,8 @@ function restoreDraftFocus(bookmark) {
   if (!input) return false
   input.focus({ preventScroll: true })
   input.setSelectionRange(input.value.length, input.value.length)
-  return true
+  // an editor in a hidden step or a closed plan takes no focus: say so, so the card's own restore runs
+  return document.activeElement === input
 }
 
 // fix round 2 (I1): the deck used to run a SECOND attention predicate of its own
@@ -5123,6 +5148,7 @@ function discardRowRecovery(key, draft) {
 function showPlanRow(owner) {
   openRows.add(owner.row.id)
   showDoneBoards.add(owner.board.id)
+  planOpen.set(owner.board.id, true)
   if (projectFilter && projectFilter !== owner.board.project) projectFilter = owner.board.project
   if (agentFilter && agentFilter !== owner.board.agent) agentFilter = null
   selectTab('boards', { paint: false })
@@ -5739,11 +5765,10 @@ function closeMission({ restoreFocus = true } = {}) {
 
 function focusMissionRow(board, row) {
   closeMission({ restoreFocus: false })
-  focusItem(board.id)
-  openRows.add(row.id)
-  forceRender()
+  // the step itself is the target: its plan opens in full and a done step shows
+  focusItem(board.id, { rowId: row.id })
   requestAnimationFrame(() => {
-    const target = document.querySelector(`[data-row-id="${CSS.escape(row.id)}"]`)
+    const target = document.querySelector(`#boards [data-row-id="${CSS.escape(row.id)}"]`)
     target?.scrollIntoView({ behavior: motion.scrollBehavior(), block: 'center' })
   })
 }
@@ -5977,7 +6002,7 @@ function filterData({ g, boards, archived }) {
 // An empty kicker draws nothing.
 const PAGE_META = {
   dashboard: { kicker: '', title: 'Home' },
-  boards: { kicker: 'Workspace', title: 'Plans' },
+  boards: { kicker: '', title: 'Plans' },
   notes: { kicker: 'Workspace', title: 'Notes' },
   done: { kicker: 'Workspace', title: 'History' },
   chats: { kicker: 'Workspace', title: 'Chats' },
@@ -8132,9 +8157,15 @@ const openDeferredFolds = new Set()
 function revealDetailsAncestors(target) {
   for (let node = target; node; node = node.parentElement) {
     if (node.tagName !== 'DETAILS') continue
+    const wasOpen = node.open
     node.open = true
     if (node.dataset.contextKey) openContexts.add(node.dataset.contextKey)
-    if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
+    // UX pass, slice 3: a plan or the Stalled fold this opens records the open, so
+    // the next frame keeps it; one already open keeps the form it was drawn in
+    if (node.matches('#boards details.board')) {
+      if (!wasOpen) planOpen.set(node.dataset.cardId, true)
+    } else if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
+    if (node.classList.contains('stalled-fold')) stalledOpen = true
     if (node.dataset.deferredFold) openDeferredFolds.add(node.dataset.deferredFold)
     else if (node.classList.contains('stale-fold')) staleFoldOpen = true
     if (node.classList.contains('archived-fold')) showArchived = true
@@ -8288,7 +8319,8 @@ function needsRowEl(m, entry, nowMs) {
     ${l2}`
   el.style.setProperty('--wash', color.wash)
   const boardBtn = el.querySelector('.nrow-glyph')
-  if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); jumpToCard('boards', m.boardId) })
+  // the plan wherever it sits (past the page, closed, in the Stalled fold), this step open, the lens kept
+  if (boardBtn) boardBtn.addEventListener('click', (ev) => { ev.stopPropagation(); focusItem(m.boardId, { rowId: m.id, keepLens: true }) })
   const askedEl = el.querySelector('.nrow-asked')
   if (askedEl) {
     const selectAskedRow = () => {
@@ -8658,7 +8690,6 @@ function renderDone(items) {
   } else if (total > listed.length) host.appendChild(moreButton('done', total - listed.length))
 }
 
-const GLYPH = { done: '✓', partial: '◐', missing: '×', tracked: '→', na: '—', blocked: '!' }
 const STATUS_LABEL = {
   done: 'Done',
   partial: 'In progress',
@@ -8666,6 +8697,29 @@ const STATUS_LABEL = {
   tracked: 'Tracked',
   na: 'Not applicable',
   blocked: 'Needs input',
+}
+
+// UX pass, slice 3: a step's mark on the Plans page, in the bar's vocabulary
+// (done, in progress, needs you, to do). Missing and not applicable keep their
+// marks. A blocked step that does not need the person (answered, set aside,
+// pinned) is a ring that says why; on an archived plan it is to do.
+function stepMark(r, needs, archived) {
+  if (r.status === 'blocked' && !archived) {
+    if (needs) return { glyph: '●', state: 'needs', label: 'Needs you' }
+    const later = laterReason(r)
+    const why = later === 'pinned' ? 'Pinned for later'
+      : later === 'snoozed' ? `Set aside until ${new Date(r.snoozed_until).toLocaleString()}`
+        : 'Answered, waiting for the agent'
+    const unseen = humanActedOnRow(r) && !rowPickup(r).pickedUp
+    return { glyph: '◯', state: 'todo', label: `${why}${unseen ? ' · not yet delivered' : ''}` }
+  }
+  const marks = {
+    done: { glyph: '✓', state: 'done', label: 'Done' },
+    partial: { glyph: '◐', state: 'progress', label: 'In progress' },
+    missing: { glyph: '×', state: 'todo', label: 'Missing' },
+    na: { glyph: '—', state: 'na', label: 'Not applicable' },
+  }
+  return marks[r.status] ?? { glyph: '○', state: 'todo', label: 'To do' }
 }
 
 // boards where the human clicked "show" on hidden done rows, overriding the
@@ -8702,17 +8756,125 @@ function cardify(el, id) {
 let showArchived = false            // session-only: the archived fold is not persisted
 const sessionActiveBoards = new Set() // board ids seen active at some point this session (§9)
 
-// the Boards tab header — this tab's only chrome, built here because the shell
-// ships an empty panel (no #rowTabs, no .panel-tools)
-function boardsHeader() {
+// ── UX pass, slice 3: Plans as bars ──
+// Every open or armed state lives here: the list is rebuilt on every painted frame.
+const PLAN_BAR_STEPS = 24 // one segment per step up to this many counted steps, then runs
+// The person's own choice for a plan, from a click on its summary or a way in
+// that targets it: true is the full plan, false the summary alone (session only).
+// A default form is never written here.
+const planOpen = new Map()
+let stalledOpen // the Stalled fold: undefined (no choice), true or false
+// A plan the person writes to from Plans keeps its section for the visit, and
+// the order pin keeps its slot, so nothing moves under the hand.
+const planHold = new Map()
+let plansPin = { needs: [], moving: [], stalled: [] }
+let plansVisit = null // navigationKey() of the Plans visit the pin, hold and notice belong to
+let plansViewOpen = false // the header's View: Group by parent issue and Hide completed rows
+// what the last paint drew, active plans only: id -> { section, board }. Replaced, never mutated:
+// Archive all reads the frame the person clicked.
+let plansDrawn = new Map()
+let stalledArm = null // { ids, lens, timer } while "Really archive N plans?" waits for its confirm
+let stalledArchiving = null // { n } while Archive all runs
+const handArchived = new Set() // plans Archive all archived: they never linger as "completed — archived"
+let plansNotice = null // { text, lens }: Archive all's report
+
+// A new visit (Plans entered, or a lens change) drops the pin, the holds, the
+// notice and an armed Archive all, as Home's list drops its own on a lens change.
+function syncPlansVisit() {
+  const key = activeTab === 'boards' ? navigationKey() : null
+  if (key !== null && key === plansVisit) return
+  plansVisit = key
+  plansPin = { needs: [], moving: [], stalled: [] }
+  planHold.clear()
+  plansNotice = null
+  disarmStalled()
+}
+
+// The plans a working session's Home card shows: never Stalled.
+function workingPlanIds(nowMs) {
+  const activity = lastData.activity ?? []
+  const working = new Set(activity.filter((row) => isWorking(row, nowMs)).map((row) => row.session))
+  const ids = new Set()
+  for (const row of activity) {
+    if (!isWorking(row, nowMs)) continue
+    const plan = linkedPlan(row, lastData.boards, working)
+    if (plan) ids.add(plan.id)
+  }
+  return ids
+}
+
+// A step the person has in hand: it waits on them, is open, or holds their unsent words.
+function keptRowIds(b, archived) {
+  const ids = new Set()
+  for (const { row: r, needsAnswer } of boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })) {
+    if ((needsAnswer && !archived) || openRows.has(r.id) || String(rowDrafts[r.id] ?? '').trim()
+      || Object.values(staleRowDrafts).some((draft) => draft?.rowId === r.id)) ids.add(r.id)
+  }
+  return ids
+}
+
+// Closing a plan (or the Stalled fold) by hand closes its open steps; their drafts stay stored.
+function closePlanSteps(plans) {
+  for (const b of plans) for (const r of b.rows ?? []) openRows.delete(r.id)
+}
+
+// The order of a section for this visit: drawn plans keep their places, new ones join the foot.
+function pinnedSection(name, plans) {
+  if (activeTab !== 'boards') return plans
+  plansPin[name] = pinOrder(plansPin[name], plans.map((b) => b.id))
+  const byId = new Map(plans.map((b) => [b.id, b]))
+  return plansPin[name].map((id) => byId.get(id))
+}
+
+const plansWord = (n) => (n === 1 ? '1 plan' : `${n} plans`)
+
+function planSectionHead(name, count) {
+  const head = document.createElement('h3')
+  head.className = 'plan-section-head'
+  head.dataset.section = name
+  head.textContent = name === 'needs' ? 'Needs you' : 'Moving'
+  if (count) {
+    const n = document.createElement('span')
+    n.className = 'plan-section-count'
+    n.textContent = String(count)
+    head.append(' ', n)
+  }
+  return head
+}
+
+// the Plans header: the list's first heading and View on one line, the tools
+// under View (out of sight until used, forced open while grouping), then the
+// notice Archive all leaves. Built on every paint; the shell ships an empty panel.
+function boardsHeader(firstHead) {
   const bar = document.createElement('div')
-  bar.className = 'tab-header'
+  bar.className = 'tab-header plans-header'
+  const line = document.createElement('div')
+  line.className = 'plans-head'
+  if (firstHead) line.appendChild(firstHead)
+  const shown = () => plansViewOpen || groupByParent
+  const tools = document.createElement('div')
+  tools.className = 'plans-tools'
+  tools.id = 'plansTools'
+  tools.hidden = !shown()
+  const view = btn('View', () => {
+    plansViewOpen = !shown()
+    tools.hidden = !shown()
+    view.setAttribute('aria-expanded', String(shown()))
+  })
+  view.type = 'button'
+  view.id = 'plans-view-toggle'
+  view.className = 'plans-view-toggle'
+  view.setAttribute('aria-controls', 'plansTools')
+  view.setAttribute('aria-expanded', String(shown()))
+  line.appendChild(view)
   const t = btn(hideCompleted ? 'Show completed rows' : 'Hide completed rows', () => {
     hideCompleted = !hideCompleted
+    plansViewOpen = true
     localStorage.setItem(HIDE_DONE_KEY, String(hideCompleted))
     forceRender()
   })
   t.className = `header-toggle${hideCompleted ? ' active' : ''}`
+  t.id = 'plans-hide-done'
   const group = document.createElement('label')
   group.className = 'header-switch'
   const input = document.createElement('input')
@@ -8722,20 +8884,45 @@ function boardsHeader() {
   input.checked = groupByParent
   input.addEventListener('change', () => {
     groupByParent = input.checked
+    plansViewOpen = true
     forceRender()
   })
   group.append(input, document.createTextNode('Group by parent issue'))
-  bar.append(group, t)
+  tools.append(group, t)
+  bar.append(line, tools)
+  if (plansNotice && plansNotice.lens === plansVisit) bar.appendChild(plansNoticeEl())
   return bar
+}
+
+function plansNoticeEl() {
+  const notice = document.createElement('p')
+  notice.className = 'plans-notice'
+  notice.setAttribute('role', 'status')
+  const text = document.createElement('span')
+  text.textContent = plansNotice.text
+  const dismiss = btn('Dismiss', () => {
+    const hadFocus = notice.contains(document.activeElement)
+    plansNotice = null
+    notice.remove()
+    if (hadFocus) document.getElementById('plans-view-toggle')?.focus({ preventScroll: true })
+  })
+  dismiss.type = 'button'
+  dismiss.className = 'plans-notice-dismiss'
+  notice.append(text, ' ', dismiss)
+  return notice
 }
 
 function renderBoards(boards, archived) {
   const host = document.querySelector('#boards .boards')
   host.innerHTML = ''
-  host.appendChild(boardsHeader())
+  syncPlansVisit()
+  const nowMs = Date.now()
+  const live = new Set(boards.map((b) => b.id))
+  for (const id of [...planHold.keys()]) if (!live.has(id)) planHold.delete(id)
   // a board that reaches 100% is archived by its agent seconds later; it lingers
-  // here as a "completed — archived" card so finished work never blinks out (§9)
-  const lingering = lingeringBoards(sessionActiveBoards, boards, archived)
+  // here as a "completed — archived" card so finished work never blinks out (§9).
+  // A plan the person archived with Archive all never does.
+  const lingering = lingeringBoards(sessionActiveBoards, boards, archived).filter((b) => !handArchived.has(b.id))
   const lingerIds = new Set(lingering.map((b) => b.id))
   const rest = archived.filter((b) => !lingerIds.has(b.id))
   // Issue #299: archived plans are drawn whole only from the complete list, or
@@ -8745,23 +8932,59 @@ function renderBoards(boards, archived) {
   const whole = Boolean(lastData.archivedFull)
   const lingerWhole = new Map(wholeArchived().map((plan) => [plan.id, plan]))
   const drawn = lingering.flatMap((b) => lingerWhole.get(b.id) ?? [])
-  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
-  // Grouping only reorders active plans; lingering and archived ones stay flat (§7.2).
-  const grouping = groupByParent ? planGroups(boards, issueView, linkIndex) : null
-  const { visible, remaining } = paginateWithPending(grouping ? grouping.plans : boards, 'boards')
-  visible.forEach((b, i) => {
-    const group = grouping?.groupOf.get(b.id)
-    const previous = i > 0 ? grouping?.groupOf.get(visible[i - 1].id) : undefined
-    // each "Show more" page that opens inside a group repeats its header
-    const continued = group !== undefined && group === previous && i % PAGE.boards === 0
-    if (group && (group !== previous || continued)) {
-      host.insertAdjacentHTML('beforeend', planGroupHeadHtml(group, Date.now(), { continued }))
-    }
-    const el = boardEl(b)
-    if (group) el.classList.add('in-group')
-    host.appendChild(el)
+  const sections = planSections(boards, {
+    nowMs, liveSessions: liveSessionIds(), workingPlanIds: workingPlanIds(nowMs), held: planHold,
   })
-  if (remaining > 0) host.appendChild(moreButton('boards', remaining))
+  const sectionOf = new Map()
+  for (const name of ['needs', 'moving', 'stalled']) for (const b of sections[name]) sectionOf.set(b.id, name)
+  const frame = new Map()
+  const planEl = (b) => {
+    frame.set(b.id, { section: sectionOf.get(b.id), board: b })
+    return boardEl(b, false, false, sectionOf.get(b.id))
+  }
+  // Grouping only reorders active plans; lingering and archived ones stay flat (§7.2).
+  // With it on the page keeps its grouped order, headings and paging: no sections.
+  const grouping = groupByParent ? planGroups(boards, issueView, linkIndex) : null
+  const needs = grouping ? [] : pinnedSection('needs', sections.needs)
+  const moving = grouping ? [] : pinnedSection('moving', sections.moving)
+  const stalled = grouping ? [] : pinnedSection('stalled', sections.stalled)
+  const asking = needs.filter((b) => (b.rows ?? []).some((r) => isBlockedRowAttention(r, nowMs))).length
+  const heads = []
+  if (needs.length) heads.push(planSectionHead('needs', asking))
+  if (moving.length) heads.push(planSectionHead('moving', 0))
+  // the first heading sits in the header's line, beside View: no almost-empty row above it
+  host.appendChild(boardsHeader(heads[0] ?? null))
+  if (!boards.length && !lingering.length && !rest.length) host.insertAdjacentHTML('beforeend', '<p class="empty">No plans yet.</p>')
+  if (grouping) {
+    const { visible, remaining } = paginateWithPending(grouping.plans, 'boards')
+    visible.forEach((b, i) => {
+      const group = grouping.groupOf.get(b.id)
+      const previous = i > 0 ? grouping.groupOf.get(visible[i - 1].id) : undefined
+      // each "Show more" page that opens inside a group repeats its header
+      const continued = group !== undefined && group === previous && i % PAGE.boards === 0
+      if (group && (group !== previous || continued)) {
+        host.insertAdjacentHTML('beforeend', planGroupHeadHtml(group, Date.now(), { continued }))
+      }
+      const el = planEl(b)
+      if (group) el.classList.add('in-group')
+      host.appendChild(el)
+    })
+    if (remaining > 0) host.appendChild(moreButton('boards', remaining))
+  } else {
+    // Needs you is never paged
+    for (const b of needs) host.appendChild(planEl(b))
+    if (moving.length) {
+      if (needs.length) host.appendChild(heads[1])
+      // Moving's first page always holds a deep-link target and any plan with a step in hand
+      const page = paginateWithPending(moving, 'moving')
+      const onPage = new Set(page.visible.map((b) => b.id))
+      const listed = moving.filter((b) => onPage.has(b.id) || keptRowIds(b, false).size > 0)
+      for (const b of listed) host.appendChild(planEl(b))
+      if (moving.length > listed.length) host.appendChild(moreButton('moving', moving.length - listed.length))
+    }
+    if (stalled.length) host.appendChild(stalledFoldEl(stalled, planEl))
+  }
+  plansDrawn = frame
   for (const b of drawn) host.appendChild(boardEl(b, true, true))
   if (drawn.length < lingering.length) host.appendChild(archivedWaitEl(lastData.archivedError ?? lastData.lingerError))
   if (rest.length) {
@@ -8777,7 +9000,7 @@ function renderBoards(boards, archived) {
       showArchived = fold.open
       if (opened) requestHistoryPaint()
     })
-    fold.innerHTML = `<summary>Archived plans (${rest.length})</summary>`
+    fold.innerHTML = `<summary id="plans-archived-summary">Archived plans (${rest.length})</summary>`
     if (whole) {
       const page = paginateWithPending(rest, 'archived')
       for (const b of page.visible) fold.appendChild(boardEl(b, true))
@@ -8787,6 +9010,155 @@ function renderBoards(boards, archived) {
     }
     host.appendChild(fold)
   }
+}
+
+// The Stalled fold: plans a week without a step, with nothing waiting on the
+// person and nothing an agent has yet to pick up. Its plans are built inside it,
+// open or closed, as the archived fold's are.
+function stalledFoldEl(plans, planEl) {
+  const fold = document.createElement('details')
+  fold.className = 'stalled-fold'
+  fold.open = stalledOpen ?? plans.some((b) => keptRowIds(b, false).size > 0)
+  const summary = document.createElement('summary')
+  summary.id = 'plans-stalled-summary'
+  const title = document.createElement('h3')
+  title.className = 'stalled-title'
+  title.textContent = 'Stalled'
+  const count = document.createElement('span')
+  count.className = 'stalled-count'
+  count.textContent = `${plansWord(plans.length)}, a week without a step`
+  summary.append(title, count)
+  // the person's own click is the only writer of its open state (as a plan's summary is)
+  summary.addEventListener('click', (e) => {
+    if (e.defaultPrevented) return
+    e.preventDefault()
+    stalledOpen = !fold.open
+    if (!stalledOpen) closePlanSteps(plans)
+    forceRender()
+  })
+  const actions = document.createElement('div')
+  actions.className = 'stalled-actions'
+  const archive = document.createElement('button')
+  archive.type = 'button'
+  archive.id = 'plans-archive-stalled'
+  archive.className = 'archive-stalled'
+  labelArchiveStalled(archive, plans.length)
+  archive.addEventListener('click', () => archiveStalled(archive))
+  actions.appendChild(archive)
+  fold.append(summary, actions)
+  for (const b of plans) fold.appendChild(planEl(b))
+  return fold
+}
+
+// One label at a time, all three sharing one width: "Archive all N plans",
+// armed "Really archive N plans?", in flight "Archiving N plans…".
+function labelArchiveStalled(button, drawnCount) {
+  const text = stalledArchiving ? `Archiving ${plansWord(stalledArchiving.n)}…`
+    : stalledArm ? `Really archive ${plansWord(stalledArm.ids.length)}?`
+      : `Archive all ${plansWord(drawnCount)}`
+  if (button.textContent !== text) button.textContent = text
+  button.classList.toggle('confirm', Boolean(stalledArm) && !stalledArchiving)
+  if (stalledArchiving) button.setAttribute('aria-disabled', 'true')
+  else button.removeAttribute('aria-disabled')
+}
+
+function relabelArchiveStalled() {
+  const button = document.getElementById('plans-archive-stalled')
+  if (!button) return
+  labelArchiveStalled(button, [...plansDrawn.values()].filter((d) => d.section === 'stalled').length)
+}
+
+function disarmStalled() {
+  if (!stalledArm) return
+  clearTimeout(stalledArm.timer)
+  stalledArm = null
+  relabelArchiveStalled()
+}
+
+// Arming and disarming change module state and the label in place, never the
+// node, so the confirm click lands on the button the first click armed.
+async function archiveStalled(button) {
+  if (stalledArchiving) return
+  const lens = navigationKey()
+  if (!stalledArm || stalledArm.lens !== lens) {
+    disarmStalled()
+    const ids = [...plansDrawn].filter(([, d]) => d.section === 'stalled').map(([id]) => id)
+    if (!ids.length) return
+    const timer = setTimeout(() => {
+      stalledArm = null
+      relabelArchiveStalled()
+    }, 4000)
+    stalledArm = { ids, lens, timer }
+    plansNotice = null
+    document.querySelector('#boards .plans-notice')?.remove()
+    labelArchiveStalled(button, ids.length)
+    return
+  }
+  clearTimeout(stalledArm.timer)
+  const armed = stalledArm.ids
+  stalledArm = null
+  // the list is taken ONCE, from the frame the person clicked: the plans it still
+  // drew as stalled, at the revisions it drew, minus any holding unsent text
+  const frame = plansDrawn
+  const list = []
+  let changed = 0
+  let kept = 0
+  for (const id of armed) {
+    const drawn = frame.get(id)
+    if (drawn?.section !== 'stalled') changed += 1
+    else if ((drawn.board.rows ?? []).some((r) => String(rowDrafts[r.id] ?? '').trim())) kept += 1
+    else list.push({ id, revision: drawn.board.revision })
+  }
+  const hadFocus = document.activeElement === button
+  stalledArchiving = { n: armed.length }
+  labelArchiveStalled(button, armed.length)
+  let done = 0
+  let failed = 0
+  try {
+    for (const { id, revision } of list) {
+      const res = await postJSON(`/api/boards/${id}/archive`, { expected_version: revision })
+      if (res === null) failed += 1 // network failure — postJSON already signaled it
+      else if (res.ok) {
+        done += 1
+        handArchived.add(id)
+      } else changed += 1
+    }
+    plansNotice = { lens, text: archiveReport(armed.length, done, changed, kept, failed) }
+    await reloadAndPaint() // #38 — the human's own click gets its frame
+  } finally {
+    stalledArchiving = null
+    relabelArchiveStalled()
+    if (hadFocus && !document.getElementById('plans-archive-stalled')) {
+      ;(document.getElementById('plans-archived-summary') ?? document.getElementById('plans-view-toggle'))?.focus({ preventScroll: true })
+    }
+  }
+}
+
+// A plan the person writes to from Plans (an answer, an option, "I've done my
+// part", set aside or stop waiting, "Not done after all", a note) is held in
+// the section it was drawn in before the write leaves, so its own repaint and
+// the next polls keep it under the hand. Every such write starts inside a
+// step's panel, by a click or Mod+Enter, so the panel row is where to listen.
+function initPlansHold() {
+  const hold = (event) => {
+    const target = event.target instanceof Element ? event.target : null
+    if (!target?.closest('#boards tr.row-panel-row')) return
+    const id = target.closest('#boards [data-card-id]')?.dataset.cardId
+    const drawn = id ? plansDrawn.get(id) : null
+    if (drawn && !planHold.has(id)) planHold.set(id, drawn.section)
+  }
+  const panel = document.getElementById('boards')
+  panel?.addEventListener('click', hold, true)
+  panel?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) hold(event) }, true)
+}
+
+function archiveReport(n, done, changed, kept, failed) {
+  if (done === n) return `Archived ${plansWord(n)}.`
+  const parts = [`Archived ${done} of ${plansWord(n)}.`]
+  if (changed) parts.push(changed === 1 ? '1 had changed since you looked and was left as it is.' : `${changed} had changed since you looked and were left as they are.`)
+  if (kept) parts.push(kept === 1 ? '1 has text you have not sent and was kept.' : `${kept} have text you have not sent and were kept.`)
+  if (failed) parts.push(failed === 1 ? '1 was not sent; try again.' : `${failed} were not sent; try again.`)
+  return parts.join(' ')
 }
 
 // Where archived plans are drawn whole while the complete list is not loaded
@@ -8800,40 +9172,68 @@ function archivedWaitEl(error = lastData?.archivedError) {
   return wait
 }
 
-function boardEl(b, archived = false, lingering = false) {
+// The segmented bar: one segment per step, or runs of equal states past the limit.
+function planBarHtml({ runs, segments }, label) {
+  const parts = segments.map(({ state, grow }) =>
+    `<span class="plan-seg" data-state="${state}"${grow > 1 ? ` style="flex-grow:${grow}"` : ''}></span>`)
+  return `<span class="plan-bar${runs ? ' runs' : ''}" role="img" aria-label="${esc(label)}">${parts.join('')}</span>`
+}
+
+// A plan is one line (its summary) and, below it, one of three forms (planForm):
+// closed, brief (only the steps in hand, then "All N steps") or full (the meta
+// line, chips, every step and the actions). Its steps are built in every form.
+function boardEl(b, archived = false, lingering = false, section = null) {
   const el = document.createElement('details')
   const p = progressLabel(b.progress)
   el.className = `board${p.complete ? ' complete' : ''}${archived ? ' archived' : ''}${lingering ? ' lingering' : ''}`
+  el.dataset.cardId = b.id
+  const kept = keptRowIds(b, archived)
+  const form = planForm({ choice: planOpen.get(b.id), section, kept: kept.size > 0 })
+  el.dataset.form = form
+  if (section) el.dataset.section = section
+  el.open = form !== 'closed'
+  const brief = form === 'brief'
   const stream = b.stream ? ` · ${esc(b.stream)}` : ''
   const c = pcolor(b.project)
   const hidden = hiddenDoneCount(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })
-  el.innerHTML = `
-    <summary class="card-summary">
-      <div class="board-head">
-        <div class="board-title"><span class="caret"></span><span class="proj-dot" style="background:${c.dot}"></span>${esc(b.title)}<span class="board-id" title="board id">#${esc(b.id.slice(0, 6))}</span></div>
-        <div class="board-meta">${esc(b.project)}${stream} · ${esc(b.agent)}</div>
-      </div>
-      <div class="bar"><div class="bar-fill" style="width:${p.secondary}"></div></div>
-      <div class="bar-label"><strong class="prog-primary">${p.primary}</strong> done <span class="prog-secondary">${p.secondary} weighted</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}${hidden ? `<span class="hidden-hint" title="show this board's completed rows">· ${hidden} done hidden — show</span>` : ''}</div>
-    </summary>`
-  cardify(el, b.id)
-  const hint = el.querySelector('.hidden-hint')
-  if (hint) hint.addEventListener('click', (e) => {
+  const { states, counts } = planStepStates(b, Date.now())
+  el.innerHTML = `<summary class="card-summary plan-line"><span class="proj-dot" style="background:${c.dot}" aria-hidden="true"></span><span class="board-title" title="${esc(b.title)}">${esc(b.title)}</span>${planBarHtml(planSegments(states, PLAN_BAR_STEPS), planBarLabel(counts))}<span class="plan-count" aria-hidden="true">${b.progress.done} of ${b.progress.countable}</span>${p.complete ? '<span class="complete-badge">✓ complete</span>' : ''}${lingering ? '<span class="linger-badge">completed — archived</span>' : ''}<span class="plan-chevron" aria-hidden="true"></span></summary>`
+  // The person's own click is the only writer of a plan's choice; the native
+  // toggle never is (every programmatic open fires it). During the click `open`
+  // still holds the old value. The page redraws the plan in its new form.
+  el.querySelector(':scope > summary').addEventListener('click', (e) => {
+    if (e.defaultPrevented) return
     e.preventDefault()
-    e.stopPropagation() // don't toggle the surrounding <details>
-    showDoneBoards.has(b.id) ? showDoneBoards.delete(b.id) : showDoneBoards.add(b.id)
+    planOpen.set(b.id, !el.open)
+    if (el.open) closePlanSteps([b])
     forceRender()
   })
+  // What the summary carried before: one quiet line at the top of the full plan
+  const meta = document.createElement('div')
+  meta.className = 'board-meta'
+  meta.hidden = brief
+  meta.innerHTML = `<span class="board-id" title="board id">#${esc(b.id.slice(0, 6))}</span> · <span>${esc(b.project)}${stream} · ${esc(b.agent)}</span> · <span class="prog-secondary">${p.secondary} weighted</span>`
+  if (hidden) {
+    const hint = btn(`${hidden} done hidden — show`, () => {
+      showDoneBoards.has(b.id) ? showDoneBoards.delete(b.id) : showDoneBoards.add(b.id)
+      forceRender()
+    })
+    hint.type = 'button'
+    hint.className = 'hidden-hint'
+    hint.title = "show this plan's completed steps"
+    meta.append(' · ', hint)
+  }
+  el.appendChild(meta)
   // issue #30 — deliberately OUTSIDE the <summary>: a summary's activation
-  // behaviour toggles its parent <details>, so a chip inside .board-meta would
-  // navigate AND collapse the card, writing a spurious collapsedCards entry that
-  // outlives the session. preventDefault (the .hidden-hint precedent above) is
-  // not reusable here — on an anchor it kills the navigation we want.
+  // behaviour toggles its parent <details>, so a chip inside it would navigate
+  // AND collapse the card. preventDefault is not reusable here — on an anchor it
+  // kills the navigation we want.
   const srcHtml = sourceChipsHtml(linkIndex, b, Date.now(), { tabbable: true, issues: issueView })
     + planWaitsChipHtml(b, Date.now(), { tabbable: true, issues: issueView })
   if (srcHtml) {
     const src = document.createElement('div')
     src.className = 'board-source'
+    src.hidden = brief
     src.innerHTML = srcHtml
     el.appendChild(src)
   }
@@ -8842,6 +9242,7 @@ function boardEl(b, archived = false, lingering = false) {
   if (relHtml) {
     const rel = document.createElement('div')
     rel.className = 'board-issues'
+    rel.hidden = brief
     rel.innerHTML = relHtml
     bindIssueActivity(rel)
     el.appendChild(rel)
@@ -8853,24 +9254,33 @@ function boardEl(b, archived = false, lingering = false) {
   table.innerHTML = '<colgroup><col class="col-num"><col class="col-glyph"><col class="col-label"><col class="col-4"><col class="col-5"></colgroup>'
   const shownRows = boardRowsView(b, { hideCompleted, showDone: showDoneBoards.has(b.id) })
   const runs = groupByParent && !archived ? rowParentRuns(shownRows.map(({ row }) => row), issueView) : null
+  let runHead = null
   for (const { row: r, num, needsAnswer } of shownRows) {
     const runParent = runs?.get(r.id)
     if (runParent) {
-      const head = document.createElement('tr')
-      head.className = 'row-parent-run'
-      head.innerHTML = rowParentHeadHtml(runParent, b)
-      table.appendChild(head)
+      runHead = document.createElement('tr')
+      runHead.className = 'row-parent-run'
+      runHead.innerHTML = rowParentHeadHtml(runParent, b)
+      // in the brief form a run's heading shows only above a step that shows
+      runHead.hidden = brief
+      table.appendChild(runHead)
     }
+    // the tint, the bold label and Answer belong to a step that waits on the person now
+    const needs = needsAnswer && !archived
+    const away = brief && !kept.has(r.id)
+    if (runHead && !away) runHead.hidden = false
     const tr = document.createElement('tr')
-    tr.className = `board-row${needsAnswer ? ' needs-answer' : ''}${openRows.has(r.id) ? ' open' : ''}`
+    tr.className = `board-row${needs ? ' needs-answer' : ''}${openRows.has(r.id) ? ' open' : ''}`
     tr.dataset.rowId = r.id
+    tr.hidden = away
+    const mark = stepMark(r, needs, archived)
     // one-line note only; the long context lives behind the row click. A row
     // linked to its own issue (#103) names it first, where a long note cannot hide it.
     // slice 2 §9.1: what the row waits on, after its issue chip
     const rowSrc = rowIssueChipsHtml(r, b, Date.now(), { issues: issueView }) + rowWaitsChipHtml(r, b, Date.now(), { issues: issueView })
     tr.innerHTML = `
       <td class="row-num">${num}</td>
-      <td class="row-glyph ${r.status}" title="${esc(STATUS_LABEL[r.status] ?? r.status)}">${GLYPH[r.status] || ''}</td>
+      <td class="row-glyph ${r.status} step-${mark.state}"><span class="step-mark" role="img" aria-label="${esc(mark.label)}" title="${esc(mark.label)}">${mark.glyph}</span></td>
       <td class="row-label">${esc(r.label)}</td>
       <td class="row-note">${rowSrc ? `<span class="row-src">${rowSrc}</span>` : ''}<span class="note-line">${esc(boardRowLine(r))}</span>${r.context ? '<span class="more-dot" title="has background — click the row">…</span>' : ''}${r.annotation ? `<span class="annotation-dot" title="${esc(r.annotation)}">Note${r.annotation_unseen ? '<span class="unseen" title="not yet delivered to an agent">●</span>' : ''}</span>` : ''}${r.handled_at ? `<span class="handled-dot" title="you marked your part done">✓${r.handled_seen_at ? '' : '<span class="unseen" title="not yet delivered to an agent">●</span>'}</span>` : ''}</td>`
     const actionTd = document.createElement('td')
@@ -8879,7 +9289,7 @@ function boardEl(b, archived = false, lingering = false) {
       openRows.has(r.id) ? openRows.delete(r.id) : openRows.add(r.id)
       forceRender()
     }
-    if (needsAnswer && !archived) {
+    if (needs) {
       const a = btn('Answer', toggle)
       a.className = 'answer-btn'
       actionTd.appendChild(a)
@@ -8895,6 +9305,7 @@ function boardEl(b, archived = false, lingering = false) {
       const ptr = document.createElement('tr')
       ptr.className = 'row-panel-row'
       ptr.dataset.rowId = r.id
+      ptr.hidden = away
       const td = document.createElement('td')
       td.colSpan = 5
       td.appendChild(rowPanelEl(b, r, archived))
@@ -8903,8 +9314,21 @@ function boardEl(b, archived = false, lingering = false) {
     }
   }
   el.appendChild(table)
+  if (brief) {
+    // the rest of the plan is one press away; the choice it records is the person's
+    const all = btn(`All ${b.rows.length} steps`, () => {
+      planOpen.set(b.id, true)
+      forceRender()
+      document.querySelector(`#boards [data-card-id="${CSS.escape(b.id)}"] > summary`)?.focus({ preventScroll: true })
+    })
+    all.type = 'button'
+    all.className = 'plan-all-steps'
+    all.id = `plan-all-${b.id}`
+    el.appendChild(all)
+  }
   const actions = document.createElement('div')
   actions.className = 'actions'
+  actions.hidden = brief
   actions.appendChild(btn('Plan flow', () => openMission(b)))
   if (archived) {
     actions.appendChild(btn('Un-archive', async () => {
@@ -9843,6 +10267,7 @@ function placeRestoredDraft(key, draft) {
         if (owner.row.status !== 'blocked') {
           openRows.add(id)
           if (owner.row.status === 'done') showDoneBoards.add(owner.board.id)
+          planOpen.set(owner.board.id, true)
         }
         return { id, queue: owner.row.status === 'blocked' }
       }
@@ -12502,6 +12927,7 @@ initDraftPersistence()
 initPressGuard()
 initScrollGuard()
 initIdleFrame()
+initPlansHold()
 initAgentSelect()
 initStructuredTextCopy()
 initLinkOpening({ hubFiles })

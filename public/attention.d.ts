@@ -92,6 +92,8 @@ export function isOpenHandoff(item: AttentionItem): boolean
 /** An open unanswered question or an open hand-off, not deferred: still asking. */
 export function isAskingItem(item: AttentionItem, nowMs?: number): boolean
 export function isBlockedRowAttention(row: AttentionRow, nowMs?: number): boolean
+/** #247: why an unanswered ask sits in Later rather than in attention, or null. */
+export function laterReason(entity: { pinned_at?: string | null; snoozed_until?: string | null }, nowMs?: number): 'pinned' | 'snoozed' | null
 /** issue #36 — the human answered it in words, or went and did it. Either ends their part. */
 export function humanActedOnRow(row: AttentionRow): boolean
 /** A closed set: project names, as a Set (browser) or a plain array (JSON). */

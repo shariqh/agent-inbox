@@ -1485,10 +1485,16 @@ describe('the stylesheet (CSS)', () => {
     expect(slice).not.toMatch(/@media\s*\(/)
     expect(slice).not.toMatch(/(^|[\s;{])order:/)
   })
-  it('keeps the tint and the bold label for the step that needs you, with a reset for a blocked step that does not', () => {
+  it('tints no step row on Plans: the bold label marks the step that needs you, and a blocked step that does not is reset', () => {
     expect(css).toMatch(/tr:has\(\.blocked\) \.row-label\s*\{[^}]*font-weight:/)
-    expect(slice).toMatch(/\.board-table tr:has\(\.blocked\):not\(\.needs-answer\) td \{ background: none; \}/)
-    expect(slice).toMatch(/\.board-table tr:has\(\.blocked\):not\(\.needs-answer\) \.row-label \{ color: inherit; font-weight: 500; \}/)
+    expect(slice).toMatch(/#boards \.board-table td \{[^}]*background: none;/)
+    expect(slice).toMatch(/#boards \.board-table tr:has\(\.blocked\) \.row-label \{ color: inherit; font-weight: 500; \}/)
+    expect(slice).toMatch(/#boards \.board-table tr\.needs-answer \.row-label \{[^}]*font-weight: 650;/)
+  })
+  it('draws a plan on a card only when it is expanded, and turns the chevron from the form', () => {
+    expect(slice).toMatch(/#boards \.board\[data-form="full"\] \{[^}]*background: var\(--app-elevated\);/)
+    expect(slice).toMatch(/#boards \.board\[data-form="full"\] > \.plan-line \.plan-chevron \{ transform: rotate\(45deg\); \}/)
+    expect(slice).not.toMatch(/#boards \.board\[open\] \{[^}]*margin:/)
   })
 })
 

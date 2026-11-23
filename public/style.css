@@ -3461,14 +3461,18 @@ body.hub-reconnecting #status { display: none; }
 .plans-head > .plan-section-head { margin: 0; }
 .plan-section-count { color: var(--app-attention); font-variant-numeric: tabular-nums; }
 #boards .board { margin: 0; padding: 0 var(--sp-5); border: 0; border-top: 1px solid var(--app-soft); border-radius: 0; background: none; box-shadow: none; }
-#boards .board[open] { margin: var(--sp-1) 0; padding-bottom: var(--sp-4); border-top-color: transparent; border-radius: 14px; background: var(--app-elevated); }
-#boards .board[open] + .board { border-top-color: transparent; }
+/* collapsed (closed, or brief with its asks showing) a plan sits on the page; expanded it sits on a card.
+   The summary keeps its place either way: no margin changes between the two. */
+#boards .board[open] { padding-bottom: var(--sp-2); }
+#boards .board[data-form="full"] { padding-bottom: var(--sp-4); border-top-color: transparent; border-radius: 14px; background: var(--app-elevated); }
+#boards .board[data-form="full"] + .board { border-top-color: transparent; }
+/* grouped by parent issue: a member keeps its indent and the group's rule */
+#boards .board.in-group { margin-left: 14px; border-left: 3px solid var(--app-border-strong); }
 #boards :is(.plan-section-head, .tab-header, .show-more) + .board { border-top-color: transparent; }
 #boards .board [hidden] { display: none; }
 .plan-line { display: flex; min-width: 0; min-height: 46px; align-items: center; gap: var(--sp-4); }
-#boards .board[data-section="needs"] > .plan-line { min-height: 52px; }
 .plan-line .proj-dot { flex: none; margin: 0; }
-.plan-line .board-title { flex: 0 1 280px; min-width: 0; overflow: hidden; color: var(--app-text); font-size: var(--fs-lead); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.plan-line .board-title { flex: 0 1 36%; min-width: 0; overflow: hidden; color: var(--app-text); font-size: var(--fs-lead); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 #boards .board[data-section="needs"] .board-title { font-weight: 650; }
 .plan-bar { display: flex; min-width: 48px; height: 8px; flex: 1 1 0; gap: var(--sp-1); }
 .plan-bar:empty, .plan-bar.runs { overflow: hidden; border-radius: 4px; background: var(--app-border); }
@@ -3476,9 +3480,9 @@ body.hub-reconnecting #status { display: none; }
 .plan-seg { min-width: 0; height: 100%; flex: 1 1 0; border-radius: 4px; }
 .plan-bar.runs .plan-seg { border-radius: 0; }
 .plan-count { flex: none; min-width: 4.5em; color: var(--app-text-soft); font-size: var(--fs-body); font-variant-numeric: tabular-nums; text-align: right; }
-.plan-line .complete-badge, .plan-line .linger-badge { flex: none; margin: 0; }
+.plan-line .complete-badge, .plan-line .linger-badge { min-width: 0; flex: 0 1 auto; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plan-chevron { width: 7px; height: 7px; flex: none; margin: 0 var(--sp-1); border-right: 2px solid var(--app-text-soft); border-bottom: 2px solid var(--app-text-soft); transform: rotate(-45deg); }
-#boards .board[open] > .plan-line .plan-chevron { transform: rotate(45deg); }
+#boards .board[data-form="full"] > .plan-line .plan-chevron { transform: rotate(45deg); }
 /* the four states, one set of colours wherever a plan's bar is drawn (the Working card's included) */
 :is(.plan-seg, .pl-bar > i)[data-state="done"], .sc-bar [data-seg="done"] { background: var(--app-border-strong); }
 :is(.plan-seg, .pl-bar > i)[data-state="progress"], .sc-bar [data-seg="partial"] { background: var(--app-text); }
@@ -3489,12 +3493,11 @@ body.hub-reconnecting #status { display: none; }
 .pl-bar:empty, .pl-bar.runs { background: var(--app-border); }
 .pl-bar.runs { gap: 0; }
 .pl-bar > i { width: auto; min-width: 0; height: 100%; flex: 1 1 0; }
-#boards .board-meta { margin: 0 0 var(--sp-2); color: var(--app-text-soft); font-size: var(--fs-meta); opacity: 1; }
+#boards .board-meta { margin-block: var(--sp-1) var(--sp-2); color: var(--app-text-soft); font-size: var(--fs-meta); opacity: 1; }
 #boards .board-meta .board-id { margin: 0; }
 #boards .board-meta .prog-secondary { margin: 0; font-size: inherit; opacity: 1; }
 #boards .board-meta .hidden-hint { margin: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; opacity: 1; }
-.plan-all-steps { margin: var(--sp-2) 0 0; padding: var(--sp-1) 0; border: 0; background: none; color: var(--app-text-soft); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
-.plan-all-steps:hover { color: var(--app-text); }
+.plan-all-steps { display: none; }
 /* a step at rest: its mark, its label and, at the right, Answer or the expander. The note is the first
    line of its panel; the number keeps its cell (so no cell shifts a column) and takes no width. */
 .board-table.matrix .row-note { display: none; }
@@ -3506,13 +3509,23 @@ body.hub-reconnecting #status { display: none; }
 .board-table.matrix .row-glyph.step-done, .board-table.matrix .row-glyph.step-todo { color: var(--app-text-soft); }
 .board-table.matrix .row-glyph.step-progress { color: var(--app-text); }
 .board-table.matrix .row-glyph.step-needs, #boards .board:not(.archived) .row-glyph.blocked { color: var(--app-attention); }
-/* the red tint and the bold label belong to a step that waits on the person now, not one answered or set aside */
-.board-table tr:has(.blocked):not(.needs-answer) td { background: none; }
-.board-table tr:has(.blocked):not(.needs-answer) .row-label { color: inherit; font-weight: 500; }
+/* steps sit under the plan's title, with no rules between them and no tinted rows: the mark, the bold
+   label and the filled Answer button say which step waits on the person. Done steps step back. */
+#boards .board > :not(summary) { margin-left: calc(var(--sp-2) + var(--sp-4)); }
+#boards .board .board-table { width: calc(100% - var(--sp-2) - var(--sp-4)); }
+#boards .board-table td { border-top: 0; background: none; vertical-align: middle; }
+#boards .board-table tr.board-row > td { padding-block: var(--sp-1); }
+#boards .board-table tr:has(.blocked) .row-label { color: inherit; font-weight: 500; }
+#boards .board-table tr.needs-answer .row-label { color: var(--app-text); font-weight: 650; }
+#boards .board-table tr:has(> .row-glyph.step-done) .row-label { color: var(--app-text-soft); }
+#boards .board-table .row-glyph :is(.step-mark) { font-size: var(--fs-meta); }
+#boards .answer-btn { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
 .stalled-fold { margin-top: var(--sp-5); padding: 0 var(--sp-5); border: 1px solid var(--app-soft); border-radius: 14px; }
 .stalled-fold > summary { display: flex; min-height: 52px; align-items: center; gap: var(--sp-2); cursor: pointer; }
 .stalled-title { margin: 0; color: var(--app-muted); font-size: var(--fs-body); font-weight: 650; }
 .stalled-count { color: var(--app-text-soft); font-size: var(--fs-body); }
+.stalled-fold > summary::after { margin-left: auto; color: var(--app-muted); font-size: var(--fs-meta); content: "Show"; }
+.stalled-fold[open] > summary::after { content: "Hide"; }
 .stalled-actions { display: flex; justify-content: flex-end; padding-bottom: var(--sp-2); }
 .archive-stalled { min-width: 14em; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--app-border); border-radius: 8px; background: none; color: var(--app-text); font: inherit; font-size: var(--fs-body); text-align: center; cursor: pointer; }
 .archive-stalled.confirm { border-color: var(--app-danger); color: var(--app-danger); }
@@ -3521,6 +3534,10 @@ body.hub-reconnecting #status { display: none; }
 #boards .stalled-fold > .board[open] { padding-inline: var(--sp-4); }
 @container (max-width: 560px) {
   .plan-line { gap: var(--sp-2); }
+  .plan-line .board-title { min-width: 6em; flex: 1 1 0; }
+  /* a short bar has no room for gaps: the steps share it edge to edge, in order */
+  .plan-bar { flex: 0 0 64px; gap: 0; overflow: hidden; border-radius: 4px; background: var(--app-border); }
+  .plan-seg { border-radius: 0; }
   #boards .board { padding-inline: var(--sp-3); }
   .stalled-fold { padding-inline: var(--sp-3); }
   .archive-stalled { min-width: 0; }

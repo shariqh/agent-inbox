@@ -9055,6 +9055,8 @@ function reconcileFindList(list, rows, nowMs) {
   const focused = document.activeElement instanceof Element ? document.activeElement.closest('#findList > .find-row[data-find-key]') : null
   const focusKey = focused?.dataset.findKey ?? null
   const focusOnMain = Boolean(focused) && document.activeElement === focused.querySelector(':scope > .find-row-main')
+  // a control inside a row (a chat's slot, a control in an open body) the move below would blur
+  const focusedInside = focused && !focusOnMain ? document.activeElement : null
   const wanted = new Set(rows.map((row) => row.key))
   const existing = new Map()
   for (const child of [...list.children]) {
@@ -9073,6 +9075,9 @@ function reconcileFindList(list, rows, nowMs) {
   }
   if (focusOnMain && (!document.activeElement || document.activeElement === document.body)) {
     list.querySelector(`:scope > [data-find-key="${CSS.escape(focusKey)}"] > .find-row-main`)?.focus({ preventScroll: true })
+  } else if (focusedInside?.isConnected && (!document.activeElement || document.activeElement === document.body)) {
+    // the row kept its control nodes, so the same node takes focus back
+    focusedInside.focus({ preventScroll: true })
   }
 }
 

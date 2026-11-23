@@ -151,3 +151,39 @@ describe('reaching the chats from inside Find reads under the 60-second rule', (
   })
 })
 
+describe('a chat row that a poll moves keeps the focus inside it', () => {
+  it('a keyboard user on the slot button stays on it when a note resolves and moves the row', async () => {
+    let note = ''
+    await boot({ seed: (d) => { note = insertItem(d, { ...ATLAS, kind: 'note', title: 'Backup ran twice' }) } })
+    await openFindTab()
+    await findFor('backup')
+    expect(rowKeys()).toEqual([`item:${note}`, chatKey(1)])
+    const slot = slotOf(1)
+    slot.focus()
+    expect(document.activeElement).toBe(slot)
+    resolveItem(db!, note, 'done')
+    await pollTick()
+    await settle()
+    expect(rowKeys()).toEqual([chatKey(1), `item:${note}`])
+    expect(document.activeElement).toBe(slotOf(1))
+  })
+
+  it('a keyboard user on a control in the open body stays on it', async () => {
+    // with the desktop bridge the open body holds Copy resume beside the slot's Resume
+    installBridge()
+    let note = ''
+    await boot({ seed: (d) => { note = insertItem(d, { ...ATLAS, kind: 'note', title: 'Backup ran twice' }) } })
+    await openFindTab()
+    await findFor('backup')
+    await openChatRow(`claude:${uuid(1)}`)
+    const control = rowFor(1)!.querySelector<HTMLButtonElement>('.find-row-body .chats-copy')!
+    control.focus()
+    expect(document.activeElement).toBe(control)
+    resolveItem(db!, note, 'done')
+    await pollTick()
+    await settle()
+    expect(rowKeys()[0]).toBe(chatKey(1))
+    expect(document.activeElement).toBe(control)
+  })
+})
+

@@ -3517,11 +3517,15 @@ body.hub-reconnecting #status { display: none; }
 .note-editor { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
 .note-editor .note-editor-input { width: 100%; min-height: 64px; }
 .note-editor-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.note-editor-actions button { min-height: 36px; padding: var(--sp-1) var(--sp-4); border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: var(--fs-body); font-weight: 600; cursor: pointer; }
+.note-editor-actions button:first-child { border-color: var(--app-accent); background: var(--app-accent); color: var(--app-on-accent); }
+.note-editor-actions button:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
 /* Step A: Find in place of Notes and History. One column of at most 780px: the field, the chips and
    the list. A row is one button: the type's icon, the title, the extra, the project and the age, at the
    picture's sizes. Rows that open show the card under the button. Nothing enters or leaves the layout
    on hover or focus; the narrow row follows the column's own width (a container query, never a second width query). */
 #topbar .floating-search[hidden] { display: none; }
+#topbar .floating-search[hidden] + .keyboard-tools { grid-column: 3; justify-self: end; margin-left: auto; }
 .find {
   --find-column: 780px;
   --find-field: 64px;
@@ -3537,7 +3541,7 @@ body.hub-reconnecting #status { display: none; }
   gap: var(--sp-4);
   max-width: var(--find-column);
   margin: 0 auto;
-  padding-top: var(--sp-6);
+  padding-top: var(--sp-2);
 }
 .find-field { display: flex; align-items: center; gap: var(--sp-3); height: var(--find-field); padding: 0 var(--sp-5); border: 1px solid var(--app-border); border-radius: 16px; background: var(--app-surface); }
 .find-field:focus-within { border-color: var(--app-focus); }
@@ -3557,15 +3561,17 @@ body.hub-reconnecting #status { display: none; }
 .find-row-main:focus-visible { outline: 2px solid var(--app-focus); outline-offset: -2px; }
 .find-icon { display: inline-flex; flex: none; width: var(--find-icon); height: var(--find-icon); color: var(--app-muted); }
 .find-icon svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
-.find-title { flex: 1; min-width: 0; overflow: hidden; font-size: var(--fs-lead); text-overflow: ellipsis; white-space: nowrap; }
+.find-title { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: var(--fs-lead); text-overflow: ellipsis; white-space: nowrap; }
 /* the New mark keeps its space on every note row, shown or not, so a mark never moves a row */
 .find-new { flex: none; width: 3em; color: var(--app-accent); font-size: var(--fs-meta); font-weight: 650; }
-.find-extra { flex: none; min-width: 0; max-width: 40%; overflow: hidden; color: var(--app-muted); font-size: var(--fs-body); text-overflow: ellipsis; white-space: nowrap; }
+/* a text extra (a note's first words, an outcome) takes the room the title leaves and gives way first;
+   a chip or a bar keeps its size at the right. With no extra, the project takes the right end. */
+.find-extra { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--app-muted); font-size: var(--fs-body); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .find-extra:empty { display: none; }
-.find-extra[data-extra="chip"] { max-width: 14em; padding: 3px 10px; border-radius: 999px; background: var(--app-border); color: var(--app-text); font-size: var(--fs-meta); font-weight: 600; }
-.find-extra[data-extra="bar"] { display: flex; width: var(--find-bar); max-width: none; }
+.find-extra[data-extra="chip"] { flex: none; max-width: 14em; margin-left: auto; padding: 3px 10px; border-radius: 999px; background: var(--app-border); color: var(--app-text); font-size: var(--fs-meta); font-weight: 600; text-align: left; }
+.find-extra[data-extra="bar"] { display: flex; flex: none; width: var(--find-bar); margin-left: auto; }
 .find-extra .plan-bar { flex: 1 1 auto; width: var(--find-bar); }
-.find-project { display: flex; flex: none; align-items: center; gap: 7px; width: var(--find-project); min-width: 0; color: var(--app-muted); font-size: var(--fs-body); }
+.find-project { display: flex; flex: none; align-items: center; gap: 7px; width: var(--find-project); margin-left: auto; min-width: 0; color: var(--app-muted); font-size: var(--fs-body); }
 .find-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
 .find-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .find-age { flex: none; width: var(--find-age); color: var(--app-text-soft); font-size: var(--fs-meta); text-align: right; }
@@ -3580,8 +3586,8 @@ body.hub-reconnecting #status { display: none; }
   .find-icon { grid-area: icon; }
   .find-title { grid-area: title; }
   .find-new { grid-area: new; }
-  .find-extra { grid-area: extra; justify-self: start; max-width: 100%; }
-  .find-project { grid-area: project; width: auto; max-width: var(--find-project); }
+  .find-extra, .find-extra[data-extra] { grid-area: extra; justify-self: start; max-width: 100%; margin-left: 0; text-align: left; }
+  .find-project { grid-area: project; width: auto; max-width: var(--find-project); margin-left: 0; }
   .find-age { grid-area: age; }
   .find-row-body { padding-left: 18px; }
 }

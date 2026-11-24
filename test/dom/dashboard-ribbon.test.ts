@@ -364,9 +364,9 @@ describe('older history for a longer ribbon range (#392)', () => {
     insertItem(d, { ...A, kind: 'question', title: 'Ship it?' })
     const { reads, interceptFetch } = recorder()
     await bootApp(d, { interceptFetch })
-    const before = { title: document.title, badge: badgeCount(), tabs: ['dashboard', 'notes', 'boards'].map(tabCount) }
+    const before = { title: document.title, badge: badgeCount(), tabs: ['dashboard', 'find', 'boards'].map(tabCount) }
     await pick(7 * DAY)
-    expect({ title: document.title, badge: badgeCount(), tabs: ['dashboard', 'notes', 'boards'].map(tabCount) }).toEqual(before)
+    expect({ title: document.title, badge: badgeCount(), tabs: ['dashboard', 'find', 'boards'].map(tabCount) }).toEqual(before)
     await pick(DAY)
     reads.length = 0
     await pollTick()
@@ -575,8 +575,8 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
   const surfaces = async () => ({
     title: document.title,
     badge: badgeCount(),
-    // History's count follows the outcome that landed; the attention tabs never move.
-    tabs: ['dashboard', 'notes', 'boards'].map(tabCount),
+    // Find's count follows the unread notes, not the outcome that landed; the attention tabs never move.
+    tabs: ['dashboard', 'find', 'boards'].map(tabCount),
     dock: [await (await fetch('/api/items?scope=attention')).text(), await (await fetch('/api/boards?scope=attention')).text()],
   })
 

@@ -3,26 +3,25 @@
 // rule is stated here instead of hiding inside a call site.
 
 // `agent` (cards view V5 §3.3) is shown only while a mesh agent is open, and never counted
-// `chats` (#586) reads its own list when opened and carries no count
 // Home (`dashboard`) holds the asks and the lanes on one page: there is no separate Inbox tab
-export const TAB_IDS = ['dashboard', 'boards', 'notes', 'done', 'chats', 'agent']
+// `find` (UX pass, slice 4) replaces Notes and History, and (step B) Chats: its Chats chip
+export const TAB_IDS = ['dashboard', 'boards', 'find', 'agent']
 
 // the active tab is never persisted — the app always opens at the live desk
 export const DEFAULT_TAB = 'dashboard'
 
 // `globalAttention` is the §7 predicate over UNFILTERED data; `scoped` is the
-// project/agent/search-narrowed view; `unreadNotes` is an ALREADY-COMPUTED
-// number (the caller decides what "unread" means). Home's count (the asks that
-// need you) is filter-blind by construction: selecting a project narrows the list, never the global signal.
-// Live is no longer a tab (spec §16) — it's an always-visible footer strip, so
-// it carries no count here at all. `olderDone` counts the closed items in the
-// same scope that the paged item snapshot omitted (issue #184).
-export function tabCounts({ globalAttention, unreadNotes, scoped, olderDone = 0 }) {
+// project/agent-narrowed view; `unreadNotes` is an ALREADY-COMPUTED number (the
+// caller decides what "unread" means). Home's count (the asks that need you) is
+// filter-blind by construction: selecting a project narrows the list, never the
+// global signal. Live is no longer a tab (spec §16) — it's an always-visible
+// footer strip, so it carries no count here at all. Find (UX pass, slice 4)
+// counts the unread notes; History's total went with its page.
+export function tabCounts({ globalAttention, unreadNotes, scoped }) {
   return {
     dashboard: globalAttention,
     boards: scoped.boards.length,
-    notes: unreadNotes ?? 0,
-    done: scoped.done.length + olderDone,
+    find: unreadNotes ?? 0,
   }
 }
 

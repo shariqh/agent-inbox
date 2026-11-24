@@ -351,13 +351,13 @@ describe('the list’s header is quiet (step 3)', () => {
 })
 
 describe('one Home (step 1)', () => {
-  it('names the tabs Home, Plans, Notes, History, Chats; Home carries the count; the page is Home with no kicker', async () => {
+  it('names the tabs Home, Plans, Find; Home carries the count; the page is Home with no kicker', async () => {
     db = freshDb()
     question(db, 'One')
     question(db, 'Two', { project: 'harbor' })
     await bootApp(db)
     expect([...document.querySelectorAll('#tabs .tab:not([hidden]) .tab-name')].map((el) => el.textContent))
-      .toEqual(['Home', 'Plans', 'Notes', 'History', 'Chats'])
+      .toEqual(['Home', 'Plans', 'Find'])
     expect(document.querySelector('[data-tab="needsYou"]')).toBeNull()
     expect(tabCount('dashboard')).toBe('2')
     // filter-blind: a lens narrows the list, never Home's count

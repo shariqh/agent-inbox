@@ -451,7 +451,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
 
   // The same seed with the mesh off and on: what the human's attention reads does not move.
   describe('the attention surfaces equal the run without mesh', () => {
-    const SURFACES = { title: '(2) Agent Inbox', badge: 2, tabs: ['2', '1', '1', '', ''], needsYou: ['Approve it.', 'Ship it?'] }
+    const SURFACES = { title: '(2) Agent Inbox', badge: 2, tabs: ['2', '1', '1', ''], needsYou: ['Approve it.', 'Ship it?'] }
     function seed(d: Database.Database): void {
       insertItem(d, { project: 'agent-inbox', stream: 'main', agent: 'copilot', kind: 'question', title: 'Ship it?' })
       advanceClock()
@@ -467,7 +467,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       return {
         title: document.title,
         badge: badgeCount(),
-        tabs: ['dashboard', 'notes', 'boards', 'done', 'agent'].map(tabCount),
+        tabs: ['dashboard', 'find', 'boards', 'agent'].map(tabCount),
         needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
       }
     }
@@ -752,7 +752,8 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       tab('dashboard')
       await settle()
       await openAgent('request-post')
-      expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(6)
+      // UX pass, slice 4: Home, Plans, Find and the agent (step B folded Chats into Find)
+      expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(4)
       expect([agentTab().querySelector('.tab-name')?.textContent, page().querySelector('.map-name')?.textContent, heading()[1]])
         .toEqual(['request-post', 'request-post', 'request-post'])
       expect(pageLines()).toContainEqual(['Where', 'Remote · https://request-post.tailnet-name.ts.net'])
@@ -794,11 +795,11 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await pollTick()
       expect([activeTab(), document.activeElement]).toEqual(['dashboard', rowButton('unslop')])
 
-      // roving in the library's tablist skips the hidden tab: End lands on Chats (#586)
+      // roving in the library's tablist skips the hidden tab: End lands on Find, the last shown (step B)
       const dashboardTab = document.querySelector<HTMLElement>('#tabs .tab[data-tab="dashboard"]')!
       dashboardTab.focus()
       dashboardTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
-      expect(document.activeElement?.getAttribute('data-tab')).toBe('chats')
+      expect(document.activeElement?.getAttribute('data-tab')).toBe('find')
       document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
       expect(document.activeElement?.getAttribute('data-tab')).toBe('dashboard')
 

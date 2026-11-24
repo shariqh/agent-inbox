@@ -47,11 +47,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (within 3 s), and a notification click at once only when it deep-links one
   item. Any state render reads that changes outside a paint must join
   `frameInputs()`.
-- The Chats tab (`public/chats-view.js`, #586) repaints only `#chats`, from its
-  own read and controls, as search does: `render()` paints it while it shows, its
-  read settling paints the region directly (keeping a selection and waiting out a
-  press inside it), and it is never in `load()`. Its state joins `frameInputs()`
-  through `chatsView.state()`; see `chats.md`.
+- The chats (`public/chats-view.js`, #586; Find's Chats chip since UX pass slice 4,
+  step B) are drawn by Find's frame. Their own read and controls ask for a frame
+  through `render()`'s two entries (`renderIfIdle` for a change nobody pressed for,
+  `forceRender` for the answer to a press), waiting out a press that is down; the
+  read is never in `load()`. Their state joins `frameInputs()` through
+  `chatsView.state()`; see `chats.md`.
 - A text selection is captured before and restored after each rebuild by both
   render entries (`public/selection.js`, #223). It never defers or suspends a
   frame, never focuses or scrolls, and is dropped when its text changed.
@@ -257,12 +258,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   never takes the other's focus.
   Nested Background disclosures are keyed by item/row id in `openContexts`; a poll or forced
   rebuild must restore their `open` state instead of collapsing text under the reader.
-  Passive polls retain inactive Notes, History and Plans DOM, but not their data:
+  Passive polls retain inactive Find and Plans DOM, but not their data:
   the action/recovery queue, ambient signals and visible overlays still refresh.
   Boot, library navigation and successful human writes use the existing complete
   forced paint. Keep active-board tracking outside the skipped Plans painter and
-  mark notes read only when Notes is actually visible, not while Settings retains
-  that tab identity. Deep-link and render-time recovery must preserve their
+  mark notes read only when Find's Notes chip with no query is actually visible, not
+  while Settings retains that tab identity. Deep-link and render-time recovery must preserve their
   explicit/deferred repaint ownership rather than recursively entering render.
 - **A viewer restart must not discard unsent responses.** A changed `x-inbox-boot`
   schedules a coherent frontend reload, but `load()` defers it while drafts, recovery

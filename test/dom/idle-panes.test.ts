@@ -23,13 +23,16 @@ describe('inactive expensive panes', () => {
     const board = getBoard(db, 'alpha', 'Plan')!
     await bootApp(db)
     const oldPlan = document.querySelector(`#boards [data-card-id="${board.id}"]`)
-    const oldNote = document.querySelector(`#notes [data-card-id="${note}"]`)
-    const oldHistory = document.querySelector(`#done [data-card-id="${done}"]`)
+    // UX pass, slice 4: notes and milestones are rows on the hidden Find pane
+    const oldNote = document.querySelector(`#find [data-card-id="${note}"]`)
+    const oldHistory = document.querySelector(`#find [data-card-id="${done}"]`)
     expect(oldPlan).not.toBeNull()
+    expect(oldNote).not.toBeNull()
+    expect(oldHistory).not.toBeNull()
     await pollTick()
     expect(document.querySelector(`#boards [data-card-id="${board.id}"]`)).toBe(oldPlan)
-    expect(document.querySelector(`#notes [data-card-id="${note}"]`)).toBe(oldNote)
-    expect(document.querySelector(`#done [data-card-id="${done}"]`)).toBe(oldHistory)
+    expect(document.querySelector(`#find [data-card-id="${note}"]`)).toBe(oldNote)
+    expect(document.querySelector(`#find [data-card-id="${done}"]`)).toBe(oldHistory)
 
     upsertBoard(db, {
       ...AGENT, title: 'Plan', expectedVersion: board.revision,

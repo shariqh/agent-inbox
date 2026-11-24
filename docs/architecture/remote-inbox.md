@@ -109,7 +109,7 @@ Later PRs add their files to the globs.
 
 ## What is not built yet
 
-- Open desk for This Mac's own sessions, and in the Chats tab: there, Copy attach command stays.
+- Open desk for This Mac's own sessions, and on the chats in Find: there, Copy attach command stays.
 - The design's `{host}` and `{target}` placeholders and a stored SSH host: the owner types the host
   into the command.
 
@@ -1314,7 +1314,7 @@ is blank. In hub mode:
   `hubMode.local()` guards; `/api/launches…`, `/api/launch-asks…` and `/api/launch-folders` are read
   only while `agentInboxLaunch` says its switch is on, and the hub view has no such bridge; the page
   never fetches `/api/owner` or `/api/chats/copilot/:id`. `test/dom/hub-mode.test.ts` boots the
-  whole page in hub mode, opens Settings and the Chats tab, polls, and checks every request against
+  whole page in hub mode, opens Settings and Find's Chats chip, polls, and checks every request against
   `remoteRouteAllowed`.
 - Settings draws the page's own preferences (Appearance, sort, motion, Later, Plans, Copy) and, in
   place of the rest, one line: "Settings for this Inbox are changed on <label> itself." Not drawn:
@@ -1329,8 +1329,8 @@ header, so the hub answers the page's requests with bare 403s (or the network fa
 (`load()`) throws on the 403 of `/api/items`, logs it, sets `#status` to "disconnected" (hidden
 above) and keeps the last frame; the next poll that is answered paints and clears it, so the page
 leaves that state by itself within 3 seconds of the hub answering again. A write (`postJSON`) fails
-with "write failed (403)" and keeps the draft with its own error beside Send. The Chats tab keeps
-"Couldn't load chats" until Refresh or until the tab is opened again. No request is retried by this
+with "write failed (403)" and keeps the draft with its own error beside Send. The Chats line keeps
+"Couldn't load chats" until Refresh or until Find is entered again. No request is retried by this
 PR.
 
 ## Attention from the hub (PR 4a)
@@ -1412,7 +1412,7 @@ On the connecting Mac, a session in the hub's page (its card, its Quiet row and 
 gets **Open desk**, which opens this Mac's terminal attached to that session's tmux session (its
 desk) on the hub. It runs one command template the owner typed in Settings on this Mac. The design
 is §3.4 of the spec, cut down: no `{host}` or `{target}`, no stored SSH host, nothing for This Mac's
-own sessions and nothing in the Chats tab.
+own sessions and nothing on the chats in Find.
 
 **The command.** One string per hub, `deskCommand` on the hub's entry in `remote-connect.json`.
 `validDeskCommand` (in `remote-connect-rules.cjs`) is its one rule: 1 to 512 printable ASCII

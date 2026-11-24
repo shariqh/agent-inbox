@@ -76,7 +76,7 @@ describe('viewer restart with human-owned work', () => {
     click(row(id))
     await settle()
     type(answerInput(id), 'Unsent reply.')
-    click(document.querySelector('.tab[data-tab="done"]'))
+    click(document.querySelector('.tab[data-tab="find"]'))
     await settle()
     expect(badgeCount()).toBe(1)
 
@@ -113,7 +113,7 @@ describe('viewer restart with human-owned work', () => {
     expect(bridge.posts).toHaveLength(0)
     expect(document.getElementById('pauseHint')?.textContent).toContain('Viewer updated')
 
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    click(document.querySelector('.tab[data-tab="find"]'))
     await settle()
     await showInbox()
     expect(answerInput(id)?.value).toBe('Approve only after the backup.')

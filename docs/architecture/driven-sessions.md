@@ -1122,7 +1122,7 @@ refusal of a chat driven here. The page that calls it is part 3, below.
 
 ## Continue a chat (#586 phase 2), part 3: the page
 
-Design §3.5. The Chats tab's **Continue here…** on a Copilot row, its dialog, Show session and the
+Design §3.5. The chats' **Continue here…** (Find's Chats chip since UX pass slice 4, step B) on a Copilot row, its dialog, Show session and the
 row states beside a chat driven here, and the session panel's line; `chats.md` ("Continue here…")
 has the row, the texts and the layout.
 

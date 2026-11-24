@@ -1,15 +1,15 @@
-// test/chats-model.test.ts — the Chats tab's pure model (#586 PR 2): the resume
+// test/chats-model.test.ts — the chats' pure model (#586 PR 2; Find's Chats chip since UX pass, slice 4, step B): the resume
 // command's quoting, the sort, search and filters, the home folder as ~, labels
 // and the fetch rule; and (#586 phase 2) Continue here…'s eligibility, a chat's
 // link to a launch of this app, and main's answer in the row. Fixtures are synthetic.
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, realpathSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   allSwitchText, chatLaunch, chatsUrl, continueControl, continueOutcome, displayFolder, drivenView, emptyText, filterChats,
-  hiddenLabel, inferHome, isChatsHash, JUMP_GONE_TEXT, JUMP_LABEL, jumpControl, lastActiveView, projectOptions, readChatsBody, resumeCommand, resumeControl, resumeOutcome,
-  resumeTerminalControl, retentionText, shouldFetchOnOpen, shownText, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
+  hiddenLabel, inferHome, isChatsHash, JUMP_GONE_TEXT, JUMP_LABEL, jumpControl, lastActiveView, readChatsBody, resumeCommand, resumeControl, resumeOutcome,
+  resumeTerminalControl, RESUME_CHECKING, RESUME_UNAVAILABLE, retentionText, shouldFetchOnOpen, sortChats, titleView, toolLabel, TRUNCATED_TEXT,
 } from '../public/chats.js'
 import chatResume from '../electron/chat-resume.cjs'
 import type { Chat, ChatFilter } from '../public/chats.js'
@@ -149,10 +149,6 @@ describe('chats model (#586 PR 2)', () => {
     })
   })
 
-  it('lists each project once, sorted', () => {
-    expect(projectOptions([chat({ project: 'beta' }), chat({ project: 'alpha' }), chat({ project: 'beta' })])).toEqual(['alpha', 'beta'])
-  })
-
   describe('home folder', () => {
     it('infers the one home every chat folder shares', () => {
       expect(inferHome([chat(), chat({ cwd: '/Users/tester' }), chat({ cwd: null }), chat({ cwd: '/private/tmp/x' })])).toBe('/Users/tester')
@@ -226,9 +222,6 @@ describe('chats model (#586 PR 2)', () => {
     expect(allSwitchText({ total: 1500, hidden: 1472, claude: 1, copilot: 1, live: 0 })).toBe('Show all (1,472 hidden)')
     expect(allSwitchText({ total: 3, hidden: 0, claude: 1, copilot: 1, live: 0 })).toBe('Show all')
     expect(allSwitchText(null)).toBe('Show all')
-    expect(shownText(71, 71)).toBe('71 chats')
-    expect(shownText(1, 1)).toBe('1 chat')
-    expect(shownText(3, 71)).toBe('Showing 3 of 71 chats')
     expect(emptyText({ loaded: 0, shown: 0, hidden: 0, all: false })).toBe('No chats found.')
     expect(emptyText({ loaded: 0, shown: 0, hidden: 2, all: false })).toBe('No chats found. 2 hidden chats: turn on Show all.')
     expect(emptyText({ loaded: 0, shown: 0, hidden: 2, all: true })).toBe('No chats found.')
@@ -251,6 +244,12 @@ describe('chats model (#586 PR 2)', () => {
   })
 
   describe('Resume in Terminal (#586 PR 3)', () => {
+    it('says it is checking until main answers, and main’s own reason when this window cannot resume (step B)', () => {
+      expect(RESUME_CHECKING).toBe('Checking…')
+      // the words main itself refuses a resume with in such a window
+      expect(readFileSync(join(process.cwd(), 'electron/chat-resume.cjs'), 'utf8')).toContain(`unavailable: '${RESUME_UNAVAILABLE}'`)
+    })
+
     it('is on with a title naming the app, and an aria-label only for iTerm2', () => {
       expect(resumeTerminalControl(chat(), 'terminal')).toEqual({ enabled: true, title: 'Resume in Terminal', ariaLabel: null })
       expect(resumeTerminalControl(chat(), 'iterm2')).toEqual({ enabled: true, title: 'Resume in iTerm2', ariaLabel: 'Resume in iTerm2' })

@@ -81,13 +81,15 @@ function seed() {
   return db
 }
 
-// Opens Settings, the Chats tab and Settings again, then two polls: a full page start.
+// Opens Settings, Find's Chats chip and Settings again, then two polls: a full page start.
 async function walk() {
   click(document.getElementById('gear'))
   await settle()
   click(document.getElementById('gear'))
   await settle()
-  click(document.querySelector('.tab[data-tab="chats"]'))
+  click(document.querySelector('.tab[data-tab="find"]'))
+  await settle()
+  click(document.querySelector('#find [data-find-chip="chats"]'))
   await settle()
   click(document.getElementById('gear'))
   await settle()

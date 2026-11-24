@@ -66,7 +66,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   through `focusQueueControl`, and `holdTriage` and `keepDraftInView` call
   `showQueueTools()`. The calm line reads "Nothing needs you" (or "Nothing needs you · N in
   Later") and is one line on the page: it carries no count chips (`ambientChips` is gone; the
-  plans, milestones and answered asks it counted are on the page under it or in History).
+  plans, milestones and answered asks it counted are on the page under it or on Find).
 - **Home's sections look alike** (slice 2). Needs you, Working, Quiet, Plans in progress,
   Just landed and Today share one quiet heading (`--fs-body`, soft text) and sit on the page
   itself, edge to edge with the list: `.dashboard .dashboard-card` has no border, padding or
@@ -296,13 +296,37 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   then repaints through `reloadAndPaint()`. The section's open state is window-local and joins
   `agentsHome.state()`, so `frameInputs()`. With no `mesh` the page's requests are unchanged and
   no section exists. Nothing it draws reaches attention.
-- The **Chats tab** (#586) sits after History: `data-tab="chats"` in `#tabs`, `'chats'` before
-  `'agent'` in `TAB_IDS`, `G C`, panel `#chats`, no count. `#chats` opens it on boot and on
-  `hashchange`. It reads `/api/chats` itself (never from the poll) and paints only its own
-  panel; `chats.md` has the rules.
+- **Find** (UX pass, slice 4, step A) replaces Notes and History: `data-tab="find"` after
+  Plans in `#tabs`, `'find'` in `TAB_IDS`, panel `#find`, its tab counting unread notes (the
+  History total went with its page). The panel's field `#findQuery` and its chips (All,
+  Answers, Notes, Plans; `button[aria-pressed]` in a `role="group"` labelled "Show") are static
+  markup; `public/find.js` builds the rows from the data the page already holds (no route of its
+  own) and `renderFind()` in `paintEditableSurfaces` reconciles them by `data-find-key`, so focus,
+  a selection and an open card keep their nodes. A row is `div.find-row` holding one
+  `button.find-row-main` of spans (icon and label, title, New mark on note rows, one extra,
+  project, age) and, while open, `div.find-row-body` with the shared card. A closed item or an
+  open note, milestone or aged note opens in place; an open ask goes to Home; a plan to Plans
+  keeping the lens. Order with no query is newest first by each row's own stamp (Notes: open
+  first); a closed item whose own stamp is not later than the page's `history.before` is below
+  the cut, and Show more reads the complete history (`findHistoryPinned`). With a query, rows
+  keep search's order with the chip applied inside each section and no limit; history and
+  archived plans load only for the chips that list them (`findInUse`). 20 rows, then Show 20
+  more. Rows the person acted on, or whose Note editor holds text, stay in their painted place
+  until they leave Find. Only the Notes chip with no query, in a visible focused window, marks
+  notes read; the New marks are a snapshot taken on entering. On Find the top bar's search is
+  not drawn and ⌘K and `/` focus `#findQuery`; `G F` opens Find on the field, `G N` and `G H`
+  open it with Notes or All, the query cleared and the list focused. `tabForItem` returns
+  `find` for notes and closed items; a landing keeps the query and chip when the target is
+  listed, else clears the query and selects the narrowest chip, changes the lens only when the
+  target is outside it, and opens and focuses the row. Printable keys that act on Home or the
+  Review queue do nothing on Find.
+- The **chats** (#586) are Find's fifth chip since UX pass slice 4, step B: there is no Chats tab
+  or `#chats` panel. `G C` is "Find: Chats" (the query cleared, the field focused) and `#chats`
+  opens the same. Entering Find reads `/api/chats` under its 60-second rule (never from the
+  poll); `chats.md` has the rules.
 - The **agent tab** (cards view V5c1, design
   `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §3, §4) is one slot after
-  Chats: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
+  Find: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
   `#agentPage`, painted by `public/mesh-agent-page.js` from `paintAmbient()` (so from `load()`
   and `reloadAndPaint()` only). It is `hidden` while no agent is open (`.tab[hidden]` beats
   `.tab`'s `display`), and `wireTablist` skips a hidden tab as it skips one in a closed
@@ -653,7 +677,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 
 These landed after v1 and still hold invariants; the release history itself is in `CHANGELOG.md`.
 
-- **Editorial desk shell** — user-facing navigation is Home / Plans / Notes / History (and Chats, #586;
+- **Editorial desk shell** — user-facing navigation is Home / Plans / Find (Notes and History until slice 4 of the UX pass) (and Chats, #586;
   Home since slice 2 of the UX pass folded the Inbox page into the Dashboard), while
   stored ids and API vocabulary remain `needsYou` / `boards` / `done` / `blocked`. The app is
   light-first with a warm canvas, white surfaces, deep rose accent, Segoe UI/Aptos typography,
@@ -676,10 +700,10 @@ These landed after v1 and still hold invariants; the release history itself is i
   the sticky topbar. While its results are open, raise that parent stacking context above
   the desktop inspector and resize handles, but below phone action cards and modal
   owners; raising only the child dropdown cannot escape a lower parent context. Closing
-  results restores the normal header layer. It is a combobox index over the open asks, Notes, History,
+  results restores the normal header layer. It is a combobox index over the open asks, Notes, finished things,
   and active/archived Plans; it never filters the queue, project rail, tab badges, or the
   Sessions line. Results use one visible lifecycle hierarchy — Open items, Active plans, Notes,
-  History, Archived plans — with relevant matches ranked inside each section, so past work never
+  Finished (History until UX pass slice 4), Archived plans — with relevant matches ranked inside each section, so past work never
   outranks current action. Every result explains its match: visible title characters are rendered
   through safe `<mark>` nodes, while hidden-field matches get a bounded, source-labelled snippet
   with ranges adjusted into snippet coordinates. Agent text still enters the DOM only through

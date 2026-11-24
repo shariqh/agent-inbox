@@ -145,6 +145,11 @@ export function draftEntry(raw) {
         || typeof raw.pending !== 'boolean') return null
       return { type: 'note', itemId: raw.itemId, title: raw.title, text: raw.text, error: raw.error, pending: raw.pending }
     }
+    case 'note-edit': {
+      // UX pass, slice 4, step 0: the text in an item's open Note editor, not yet saved
+      if (!isId(raw.itemId) || !isText(raw.title, MAX_LABEL) || !isText(raw.text) || !filled(raw.text)) return null
+      return { type: 'note-edit', itemId: raw.itemId, title: raw.title, text: raw.text }
+    }
     default:
       return null
   }
@@ -158,6 +163,7 @@ export function draftKey(draft) {
     case 'row': return `row:${draft.rowId}`
     case 'row-recovery': return `row-recovery:${draft.rowId}:${draft.revision}${draft.choice ? ':choice' : ''}`
     case 'note': return `note:${draft.itemId}`
+    case 'note-edit': return `note-edit:${draft.itemId}`
     // a message waiting in the unsent responses is its own entry, so a new draft
     // to the same session never overwrites it
     case 'message': return `${draft.reason ? 'message-recovery' : 'message'}:${draft.session}`

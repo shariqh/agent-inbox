@@ -42,5 +42,4 @@ export function olderHistory(
   summary: ClosedHistorySummary | null | undefined,
   lens?: { project?: string | null; agent?: string | null; hidden?: Set<string> | string[] },
 ): OlderHistory
-export function knownHistory<T extends HistoryItem>(done: T[], before: string | null | undefined): T[]
 export function knownOutcomes<T extends { item?: object; row?: object }>(outcomes: T[], latest: string | null | undefined): T[]

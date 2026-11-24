@@ -59,8 +59,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
 - Item/row `updated_at` is for content changes only. Delivery stamp writes must
   never bump it or the New/changed filter becomes a polling firehose.
 
-- **Hand-offs (#612).** A `flag` with `kind: 'done'` is a milestone, shown only in
-  History, unless its `next_step` asks the human to act. The server decides, in
+- **Hand-offs (#612).** A `flag` with `kind: 'done'` is a milestone, shown only among
+  Find's finished things (History until UX pass slice 4), unless its `next_step` asks the human to act. The server decides, in
   `insertItem` (`isHandoffInput`), when it writes. The step is NFKC-normalised, its
   whitespace collapsed and leading characters that are not letters or digits
   stripped (quotes, backticks, bullets, dashes, brackets); an empty result is a
@@ -91,7 +91,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `pending()` hands over only its annotations, as for any milestone, and the agent
   need not poll for it. Items written before the column, and by an older server, have
   `handoff` NULL and stay milestones. An older viewer on a newer hub shows a hand-off
-  as a milestone in History, which is what it did before. An OLDER server sharing the
+  as a milestone among the finished things, which is what it did before. An OLDER server sharing the
   database dedupes a milestone against an open hand-off of the same project and
   title: its lookup does not read `handoff`, so it returns the hand-off's id and
   writes nothing (`test/mixed-version.test.ts`); this build cannot change that. The
@@ -236,11 +236,18 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   nor the reader's client label proves that the intended session acted; no new
   informational host-wake guarantee or human-attention entry is implied.
   Item reply and annotation timelines are independent: neither may borrow the
-  other's timestamps to claim pickup. The Note prompt retires an attempt only on
+  other's timestamps to claim pickup. The Note control is an editor in place on the
+  item card (UX pass, slice 4, step 0: a `textarea` with Save and Cancel, prefilled with
+  the stored note; never the native `prompt()`, which throws in the desktop app's own
+  window and is disabled in another Mac's Inbox). Its unsaved text is a typed draft
+  (`itemNoteEditors`, focus key `note:<id>`, stored as a `note-edit` entry so it comes
+  back in its editor after a reload; moved to the recovery surface when its item
+  closes). A save retires an attempt only on
   JSON `ok:true`; refused or transport-unconfirmed text, including a clear intent,
   stays in the existing recovery surface (kept in this profile's storage since #279
   and restored as unconfirmed, never resent) and protects automatic
-  restart. Retry requires explicit review, closed targets cannot retry, and local
+  restart. Retry requires explicit review: it opens the item's editor holding the kept
+  text, and nothing is sent until Save. Closed targets cannot retry, and local
   recovery Clear never changes the stored annotation. Do not claim crash-durable
   persistence or that a transport error proves the write never committed.
 - **Two answer channels, ONE precedence rule: the inbox always wins.** A question can be

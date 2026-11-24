@@ -1,31 +1,23 @@
-export type TabId = 'dashboard' | 'boards' | 'notes' | 'done' | 'chats' | 'agent'
+export type TabId = 'dashboard' | 'boards' | 'find' | 'agent'
 
 export const TAB_IDS: TabId[]
 export const DEFAULT_TAB: TabId
 
 export interface ScopedCounts {
   boards: readonly unknown[]
-  done: readonly unknown[]
-  // tabCounts() never reads this — Notes now takes its number from the
-  // precomputed `unreadNotes` argument (spec §8) — but callers still pass the
-  // scoped note list through for shape symmetry with the rest of `g`, so the
-  // field is typed here (optional) to keep those call sites/tests honest.
-  notes?: readonly unknown[]
 }
 
 export interface TabCountsInput {
   globalAttention: number
+  /** the unread notes in the scope, already counted (spec §8) */
   unreadNotes?: number
   scoped: ScopedCounts
-  /** closed items in the same scope the paged item snapshot omitted (#184) */
-  olderDone?: number
 }
 
 export interface TabCounts {
   dashboard: number
   boards: number
-  notes: number
-  done: number
+  find: number
 }
 
 export function tabCounts(input: TabCountsInput): TabCounts

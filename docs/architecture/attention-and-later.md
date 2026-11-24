@@ -76,7 +76,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   so the dock badge and notifications need no change. Acknowledge resolves it, which ends it everywhere
   (`POST /api/items/:id/acknowledge`), offered on its card in Home's list (the
   Needs you lane's "Hand-off" label went with the lane, UX pass slice 2). Nothing is rewritten for older items: an old open milestone
-  with a real next step stays in History.
+  with a real next step stays among Find's finished things.
 - The agent tab (cards view V5) never carries a count, and nothing in the strip or Run history
   reaches attention.
 

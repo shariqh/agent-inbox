@@ -104,7 +104,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   lowercased; a number is never compared without its repository), `issueKeyFor` certainty
   (a PR closing several issues is never guessed; a PR row without a bound `closing_refs`
   record is display-only) and the refresh/display key sets (closed projects and archived
-  plans are displayed, never refreshed; closed items are History and in neither).
+  plans are displayed, never refreshed; closed items are finished things on Find and in neither).
   `/api/items` and `/api/boards` never carry GitHub data, so snapshot writes leave their
   bytes and validators unchanged. Both modules are pure, which is the only reason PR2's titled
   `board_get` summary may admit them (and `public/source.js`/`esc.js`) into the stdio MCP

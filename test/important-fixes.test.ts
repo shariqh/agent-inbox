@@ -96,8 +96,8 @@ describe('I3 · one scope for both note numbers, and only rendered notes get mar
     expect(mark).not.toMatch(/new Date\(\)/)
   })
 
-  it('renderGroups marks only viewed notes and keeps the global hidden set', () => {
-    const body = fn('function renderGroups(', '\nfunction renderDone')
+  it('Find marks only viewed notes and keeps the global hidden set (UX pass, slice 4: Notes\' renderGroups became Find\'s)', () => {
+    const body = fn('function markFindNotesSeen(', '\nfunction pressFindRow')
     expect(body).toMatch(/markNotesSeen\(viewed,/)
     expect(body).toMatch(/const shownIds = new Set\(viewed\./)
     // the hidden set is the GLOBAL one — a note behind the rail filter was never

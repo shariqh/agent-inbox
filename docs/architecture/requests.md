@@ -17,7 +17,7 @@ Claude Code and Copilot CLI load this file when they read or edit a file matchin
 - `activity.tracks_requests` exists as a column, and `listHostSessions` returns it with `started_at`, but **nothing writes it**. PR 4 turns it on. Until then no hook may act on requests, and main is safe at every commit. Tests set the column directly.
 - `closeRequest` writes the request's close and its item in one `.immediate()` transaction, so a close never leaves an item without its request being closed, or a closed request without its item. A `dropped` close writes no item. An item is not deleted with its request: retention prunes a request 30 days after it closed and leaves its item, which is an ordinary closed item.
 - The item a close writes carries the **scope at close** (project, stream, agent, repo, issue, head repo and repo root, all read from the session's scope at that moment, as `flag` stamps its items). The request row keeps the project and stream it opened in, so after a `register` or a branch change the two can differ.
-- A request is never an attention item, a badge or a count of its own. A review reaches Needs you through its hand-off item (`delivery-and-responses.md`), and a done request reaches Just landed and History through its outcome item.
+- A request is never an attention item, a badge or a count of its own. A review reaches Needs you through its hand-off item (`delivery-and-responses.md`), and a done request reaches Just landed and Find through its outcome item.
 
 ## The table
 
@@ -64,7 +64,7 @@ A tool id is the full id or a prefix of at least 8 characters of lowercase hex a
 
 `closeRequest` works from `open`, and from `unfiled` when a `title` is given (it files as new and closes in one transaction; without a title it answers `title_required`). `outcome` is required (1 to 240).
 
-- `done` (the default) inserts a **resolved outcome item** with `insertItemRow`, never `insertItem`, so there is no dedupe: `kind: 'done'`, `next_step: 'No action'`, `outcome`, `resolved_at` and `outcome_at` set. Just landed, History, the ribbon and "Since you last looked" show it with no new code.
+- `done` (the default) inserts a **resolved outcome item** with `insertItemRow`, never `insertItem`, so there is no dedupe: `kind: 'done'`, `next_step: 'No action'`, `outcome`, `resolved_at` and `outcome_at` set. Just landed, Find, the ribbon and "Since you last looked" show it with no new code.
 - `dropped` writes no item.
 - `review: true` needs a next step that is a real action (`isHandoffInput`: "No action", "None" and the like answer `next_step_required`) and refuses `dropped`. It sets `review` and inserts an open **hand-off item** (`handoff = 1`, `action_owner: 'task'`, title the request's, detail the outcome, `next_step` the request's) in the same transaction.
 - The item carries the scope at close: `project`, `stream`, `agent`, `repo`, `issue_ref`, `head_repo` and `repo_root` all come from the tool's scope at that moment, and `session` from the request. Without a scope the store falls back to the request's own project, stream and agent. `requests.item` names the item.

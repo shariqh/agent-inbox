@@ -40,17 +40,9 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
           <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
           <span class="tab-name">Plans</span><span class="tab-count" hidden></span>
         </button>
-        <button class="tab" type="button" role="tab" data-tab="notes" aria-selected="false">
-          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h10v12H3zM5.5 5h5M5.5 8h5M5.5 11h3"></path></svg>
-          <span class="tab-name">Notes</span><span class="tab-count" hidden></span>
-        </button>
-        <button class="tab" type="button" role="tab" data-tab="done" aria-selected="false">
-          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 4.5V8l2.5 1.5"></path></svg>
-          <span class="tab-name">History</span><span class="tab-count" hidden></span>
-        </button>
-        <button class="tab" type="button" role="tab" data-tab="chats" aria-selected="false">
-          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3h11v7.5H7L4 13v-2.5H2.5z"></path></svg>
-          <span class="tab-name">Chats</span>
+        <button class="tab" type="button" role="tab" data-tab="find" aria-selected="false" title="Find">
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"></circle><path d="m10.5 10.5 3 3"></path></svg>
+          <span class="tab-name">Find</span><span class="tab-count" hidden></span>
         </button>
         <button class="tab" type="button" role="tab" data-tab="agent" aria-selected="false" aria-controls="agentPage" tabindex="-1" hidden>
           <span class="ma-dot" aria-hidden="true"></span>
@@ -129,9 +121,32 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
         </section>
         <section class="panel" id="dashboard" role="tabpanel"><div class="dashboard"></div></section>
         <section class="panel" id="boards" role="tabpanel" hidden><div class="boards"></div></section>
-        <section class="panel" id="notes" role="tabpanel" hidden><div class="groups"></div></section>
-        <section class="panel" id="done" role="tabpanel" hidden><div class="items"></div></section>
-        <section class="panel" id="chats" role="tabpanel" hidden><div class="chats"></div></section>
+        <!-- UX pass, slice 4: Find. The field and the chips are static markup, never rebuilt by a
+          frame; the list's rows are reconciled by key (app.js renderFind). -->
+        <section class="panel" id="find" role="tabpanel" aria-labelledby="pageTitle" hidden>
+          <div class="find">
+            <div class="find-field">
+              <svg class="find-field-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M20 20l-4-4"></path></svg>
+              <input id="findQuery" class="find-query" type="search" aria-label="Find anything" placeholder="Find anything"
+                role="combobox" aria-autocomplete="list" aria-controls="findList" aria-expanded="true"
+                aria-keyshortcuts="Meta+K Control+K" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="find-chips" role="group" aria-label="Show">
+              <button class="find-chip" type="button" data-find-chip="all" aria-pressed="true">All</button>
+              <button class="find-chip" type="button" data-find-chip="answers" aria-pressed="false">Answers</button>
+              <button class="find-chip" type="button" data-find-chip="notes" aria-pressed="false">Notes</button>
+              <button class="find-chip" type="button" data-find-chip="plans" aria-pressed="false">Plans</button>
+              <button class="find-chip" type="button" data-find-chip="chats" aria-pressed="false">Chats</button>
+            </div>
+            <!-- step B: the Chats line, drawn only while the Chats chip is selected (chats-view.js paints it) -->
+            <div id="findChats" class="find-chats" role="group" aria-label="Chats" hidden></div>
+            <p id="findStatus" class="find-status" role="status" aria-live="polite" hidden></p>
+            <div id="findList" class="find-list" role="list" aria-label="Found" tabindex="-1"></div>
+            <div id="findFoot" class="find-foot"></div>
+            <!-- step B: under All with a query, a failed chats read is one line here, with Retry -->
+            <div id="findChatsFoot" class="find-foot find-chats-foot" hidden></div>
+          </div>
+        </section>
         <section class="panel" id="agentPage" role="tabpanel" aria-label="Mesh agent" hidden></section>
         <section class="panel" id="setup" role="tabpanel" hidden><div class="setup-body"></div></section>
       </main>

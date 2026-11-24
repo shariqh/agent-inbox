@@ -41,7 +41,7 @@ durable human-attention and work-status surface.
 
 ## Capabilities and Constraints
 
-- Preserve the action queue (on Home since the Inbox page folded into it), Plans, Notes, History, project filtering, agent filtering, global
+- Preserve the action queue (on Home since the Inbox page folded into it), Plans, Find (notes, answers and finished work, in place of Notes and History), project filtering, agent filtering, global
   search, live sessions, handoffs, plan flow, and action-aware responses.
 - The product is local-first, single-user, and has no telemetry or hosted service.
 - The core data path has no model calls. Dashboard explanations and rollups must be

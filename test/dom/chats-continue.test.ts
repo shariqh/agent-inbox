@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
-// Continue here… in the Chats tab (#586 phase 2, PR 6; design §3.5). The control, its dialog, Show
-// session, "· here" and Copy resume's off state exist only in the window main grants launches, with
-// the driven-sessions switch on; here a fake window.agentInboxLaunch stands in for main. The real
-// routes run over a fake chat index and a real hub. Every fixture is synthetic, and nothing starts.
+// Continue here… (#586 phase 2, PR 6; design §3.5), in an open chat row on Find's Chats chip since
+// UX pass, slice 4, step B. The control, its dialog, Show session, "· here" and Copy resume's off
+// state exist only in the window main grants launches, with the driven-sessions switch on; here a
+// fake window.agentInboxLaunch stands in for main. The real routes run over a fake chat index and a
+// real hub. Every fixture is synthetic, and nothing starts.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type Database from 'better-sqlite3'
 import { createLaunch, endLaunch, parkLaunch, upsertActivity } from '../../src/store.js'
 import type { ChatEntry, ChatIndex } from '../../src/chat-index.js'
-import { bootApp, buttonLabelled, changedPollTick, click, freshDb, pollTick, settle, T0, type, useDomTest } from './harness.js'
+import {
+  bootApp, buttonLabelled, changedPollTick, chatRowFor, click, freshDb, openChatRow, openFindChats, pollTick, settle, T0, type, useDomTest,
+} from './harness.js'
 
 useDomTest()
 
@@ -116,13 +119,24 @@ async function boot(chats = fixture(), setup: (d: Database.Database) => void = (
   return { reads, index }
 }
 
-const panel = () => document.getElementById('chats') as HTMLElement
-const q = <T extends Element = HTMLElement>(sel: string) => panel().querySelector<T>(sel)
-const rowFor = (n: number, tool = 'copilot') => q(`tr[data-chat-key="${tool}:${uuid(n)}"]`)
+const panel = () => document.getElementById('find') as HTMLElement
+// the Chats line under the chips
+const q = <T extends Element = HTMLElement>(sel: string) => document.getElementById('findChats')!.querySelector<T>(sel)
+const rowFor = (n: number, tool = 'copilot') => chatRowFor(`${tool}:${uuid(n)}`)
 const inRow = <T extends Element = HTMLButtonElement>(n: number, sel: string, tool = 'copilot') => rowFor(n, tool)?.querySelector<T>(sel) ?? null
 const continueFor = (n: number) => inRow(n, '.chats-continue')
 const noteFor = (n: number) => inRow<HTMLElement>(n, '.chats-resume-note')
-const actionsOf = (n: number, tool = 'copilot') => [...rowFor(n, tool)!.querySelector('.chats-actions')!.children].map((el) => el.className)
+// the row's controls in order: its one slot beside the main button, then the open body's
+const actionsOf = (n: number, tool = 'copilot') => [
+  ...rowFor(n, tool)!.querySelector(':scope > .find-slot')!.children,
+  ...(rowFor(n, tool)!.querySelector('.find-row-body .chats-actions')?.children ?? []),
+].map((el) => el.className)
+// every chat row open, as a person opens each one they look at
+async function openRows() {
+  for (const row of [...document.querySelectorAll<HTMLElement>('#findList > .find-row[data-find-type="chat"]')]) {
+    await openChatRow(row.dataset.findKey!.slice(5))
+  }
+}
 const dialog = () => document.querySelector<HTMLDialogElement>('dialog.launch-continue')
 const message = () => dialog()!.querySelector('.launch-dialog-message')!.textContent
 const promptBox = () => dialog()!.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]')!
@@ -132,22 +146,23 @@ const focusPanel = () => document.querySelector<HTMLElement>('#dashboard .dash-f
 const startTag = (api: ReturnType<typeof launchBridge>) => (api.continueChat.mock.calls.at(-1)![0] as { startId: string }).startId
 
 async function openChats(all = true) {
-  click(document.querySelector('.tab[data-tab="chats"]'))
-  await settle()
+  await openFindChats()
   await settle()
   if (all && !q<HTMLInputElement>('.chats-all input')!.checked) {
     click(q('.chats-all input'))
     await settle()
     await settle()
   }
+  await openRows()
 }
 
 async function leaveAndReturn() {
-  click(document.querySelector('.tab[data-tab="done"]'))
+  click(document.querySelector('.tab[data-tab="dashboard"]'))
   await settle()
-  click(document.querySelector('.tab[data-tab="chats"]'))
+  click(document.querySelector('.tab[data-tab="find"]'))
   await settle()
   await settle()
+  await openRows()
 }
 
 // opens the dialog on chat n and types its message
@@ -404,14 +419,16 @@ describe('the dialog (§3.5)', () => {
     expect(document.querySelector('.tab[data-tab="dashboard"]')!.getAttribute('aria-selected')).toBe('true')
     expect(focusPanel().hidden).toBe(false)
     expect(focusPanel().dataset.session).toBe(`launch:${LAUNCH}`)
-    // the session panel's line, linked to the Chats tab
+    // the session panel's line, linked to Find's Chats chip
     const line = focusPanel().querySelector<HTMLElement>('.sp-chat')!
     expect([line.hidden, line.textContent]).toEqual([false, 'Continued from a Copilot chat (00000000)'])
     expect(line.querySelector('a')!.getAttribute('href')).toBe('#chats')
     click(line.querySelector('a'))
     await settle()
     await settle()
-    expect(document.querySelector('.tab[data-tab="chats"]')!.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('.tab[data-tab="find"]')!.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('#find [data-find-chip="chats"]')!.getAttribute('aria-pressed')).toBe('true')
+    await openRows()
     expect(continueFor(1)).toBeNull()
     expect(inRow(1, '.chats-show')).not.toBeNull()
   })
@@ -428,29 +445,30 @@ describe('the dialog (§3.5)', () => {
     await settle()
     expect(message()).toBe(`<b>${hostile}</b>`)
     expect(noteFor(1)!.textContent).toBe(`<b>${hostile}</b>`)
-    expect(document.querySelectorAll('dialog img, dialog b, dialog script, #chats img, #chats b, #chats script')).toHaveLength(0)
+    expect(document.querySelectorAll('dialog img, dialog b, dialog script, #find img, #find b, #find script')).toHaveLength(0)
     expect((globalThis as { pwned?: number }).pwned).toBeUndefined()
   })
 })
 
 describe('a chat driven here (§3.5, §3.6)', () => {
-  it('a running launch: Live · here, Show session opens launch:<id>, and Resume and Copy resume are off', async () => {
+  it('a running launch: Live · here, Show session in the slot opens launch:<id>, and Copy resume is off', async () => {
     launchBridge()
     const resume = chatsBridge()
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     await boot(fixture(), (d) => chatLaunch(d, 1))
     await openChats()
-    expect(actionsOf(1)).toEqual(['chats-resume', 'chats-copy', 'chats-show', 'chats-resume-note'])
-    const live = rowFor(1)!.querySelector('td.chats-live')!
+    // step B: Show session takes the row's one slot; Resume, which could only be off beside it, is not drawn
+    expect(actionsOf(1)).toEqual(['chats-show', 'chats-copy', 'chats-resume-note'])
+    expect(inRow(1, '.chats-resume')).toBeNull()
+    const live = rowFor(1)!.querySelector('dd.chats-live')!
     expect([...live.children].map((el) => [el.className, el.textContent])).toEqual([['chip chats-live', 'Live'], ['chats-here', '· here']])
+    // and the row says Live at rest
+    expect(rowFor(1)!.querySelector('.find-row-main .find-live')?.textContent).toBe('Live')
     const off = 'This chat has a session here: use Show session, then Take over.'
     const copy = inRow(1, '.chats-copy')!
-    const resumeControl = inRow(1, '.chats-resume')!
-    expect([copy.getAttribute('aria-disabled'), copy.title, resumeControl.getAttribute('aria-disabled'), resumeControl.title])
-      .toEqual(['true', off, 'true', off])
+    expect([copy.getAttribute('aria-disabled'), copy.title]).toEqual(['true', off])
     click(copy)
-    click(resumeControl)
     await settle()
     expect(writeText).not.toHaveBeenCalled()
     expect(resume.resume).not.toHaveBeenCalled()
@@ -478,8 +496,8 @@ describe('a chat driven here (§3.5, §3.6)', () => {
       expect(continueFor(n)).toBeNull()
       expect(rowFor(n)!.querySelector('.chats-here')).toBeNull()
     }
-    // the folder-gone chat's Live cell stays empty: only a running launch is "here"
-    expect(rowFor(5)!.querySelector('td.chats-live')!.children).toHaveLength(0)
+    // the folder-gone chat's Live fact stays empty: only a running launch is "here"
+    expect(rowFor(5)!.querySelector('dd.chats-live')!.children).toHaveLength(0)
   })
 
   it('an ended launch that cannot resume gives the row back its Continue here…', async () => {
@@ -496,10 +514,14 @@ describe('a chat driven here (§3.5, §3.6)', () => {
   })
 })
 
-describe('with the switch off, the tab draws and reads exactly what phase 1 did (§3.7, §6)', () => {
+describe('with the switch off, Find draws and reads exactly what phase 1 did (§3.7, §6)', () => {
   const fixtureFile = (name: string) => readFileSync(resolve(process.cwd(), 'test/fixtures/chats-phase1', name), 'utf8')
-  // the exact local time in Last active's title follows the machine's time zone
-  const portable = (html: string) => html.replace(/(<td class="chats-active" title=")[^"]*(")/g, '$1…$2')
+  // the Chats line and every chat row, open. Step B: the capture is Find's (the Chats page is gone);
+  // the exact local time follows the machine's time zone, and a row's DOM id its order of first paint
+  const captured = () => [document.getElementById('findChats')!.outerHTML, document.getElementById('findList')!.outerHTML].join('\n')
+  const portable = (html: string) => html
+    .replace(/(<dd class="chats-active"[^>]*>)[^<]*(<\/dd>)/g, '$1…$2')
+    .replace(/find-row-\d+/g, 'find-row-#')
 
   it.each([
     ['in a browser', null, false],
@@ -512,16 +534,19 @@ describe('with the switch off, the tab draws and reads exactly what phase 1 did 
     // a launch that would hold chat 1 with the switch on, so nothing is drawn only because nothing is read
     const { reads } = await boot(phase1Chats(), (d) => chatLaunch(d, 1), { tick: false })
     await openChats()
-    expect(portable(document.querySelector('#chats .chats')!.innerHTML))
-      .toBe(portable(fixtureFile(withResume ? 'with-resume.html' : 'browser.html')))
+    const file = withResume ? 'with-resume.html' : 'browser.html'
+    if (process.env['WRITE_CHATS_CAPTURE'] === '1') {
+      writeFileSync(resolve(process.cwd(), 'test/fixtures/chats-phase1', file), portable(captured()))
+      writeFileSync(resolve(process.cwd(), 'test/fixtures/chats-phase1', 'reads.json'), `${JSON.stringify(reads.filter((u) => !u.startsWith('/api/version')), null, 1)}\n`)
+    }
+    expect(portable(captured())).toBe(fixtureFile(file))
     expect(reads.filter((u) => !u.startsWith('/api/version'))).toEqual(JSON.parse(fixtureFile('reads.json')))
     expect(reads.filter((u) => u.includes('/api/launch'))).toEqual([])
-    // and a later tick that paints the tab changes nothing either: no launch is read or drawn
+    // and a later tick that paints Find changes nothing either: no launch is read or drawn
     const before = reads.length
     await changedPollTick(db!)
     await settle()
-    expect(portable(document.querySelector('#chats .chats')!.innerHTML))
-      .toBe(portable(fixtureFile(withResume ? 'with-resume.html' : 'browser.html')))
+    expect(portable(captured())).toBe(fixtureFile(file))
     expect(reads.slice(before).filter((u) => u.includes('/api/launch') || u.startsWith('/api/chats'))).toEqual([])
   })
 })
@@ -531,6 +556,8 @@ describe('the launch list behind Show session (review of PR 6)', () => {
   const unread = 'Agent Inbox could not read its sessions, so Continue here… is not offered.'
   const offPair = (n: number, tool = 'copilot') => [inRow(n, '.chats-resume', tool)!, inRow(n, '.chats-copy', tool)!]
     .map((el) => [el.getAttribute('aria-disabled'), el.title])
+  // beside Show session the slot holds it, so only Copy resume is there to be off (step B)
+  const copyOff = (n: number) => [inRow(n, '.chats-copy')!].map((el) => [el.getAttribute('aria-disabled'), el.title])
 
   it('a failed read keeps the last list: Show session, Copy resume and Resume off, and focus where it was', async () => {
     launchBridge()
@@ -538,14 +565,14 @@ describe('the launch list behind Show session (review of PR 6)', () => {
     await boot(fixture(), (d) => chatLaunch(d, 1))
     await openChats()
     const off = 'This chat has a session here: use Show session, then Take over.'
-    expect(offPair(1)).toEqual([['true', off], ['true', off]])
+    expect(copyOff(1)).toEqual([['true', off]])
     inRow(1, '.chats-show')!.focus()
     const focused = document.activeElement
     control.failLaunches = true
     await changedPollTick(db!)
     await settle()
-    expect(actionsOf(1)).toEqual(['chats-resume', 'chats-copy', 'chats-show', 'chats-resume-note'])
-    expect(offPair(1)).toEqual([['true', off], ['true', off]])
+    expect(actionsOf(1)).toEqual(['chats-show', 'chats-copy', 'chats-resume-note'])
+    expect(copyOff(1)).toEqual([['true', off]])
     expect(document.activeElement).toBe(focused)
     expect((focused as HTMLElement).isConnected).toBe(true)
     // nothing is said: a list was read
@@ -570,7 +597,7 @@ describe('the launch list behind Show session (review of PR 6)', () => {
     expect(continueFor(1)).not.toBeNull()
   })
 
-  it('says once above the table when no list could be read, and stops once one is', async () => {
+  it('says once on the Chats line when no list could be read, and stops once one is', async () => {
     launchBridge()
     chatsBridge()
     control.failLaunches = true
@@ -579,7 +606,8 @@ describe('the launch list behind Show session (review of PR 6)', () => {
     const note = q('.chats-sessions')!
     expect([note.textContent, note.className, note.getAttribute('role')]).toEqual([unread, 'chats-note chats-sessions', 'status'])
     expect(panel().querySelectorAll('.chats-sessions')).toHaveLength(1)
-    expect(note.nextElementSibling).toBe(q('.chats-count'))
+    // step B: the count line is dropped on purpose, so the note sits just above the empty or loading text
+    expect(note.nextElementSibling).toBe(q('.chats-state'))
     expect(offPair(1)).toEqual([['true', checking], ['true', checking]])
     await changedPollTick(db!)
     await settle()

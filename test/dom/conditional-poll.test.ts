@@ -180,18 +180,22 @@ describe('conditional snapshot polling', () => {
     const id = insertItem(db, { ...AGENT, kind: 'note', title: 'Time-based history' })
     const reads: Read[] = []
     await bootApp(db, { interceptFetch: conditionalProxy(reads, { boot: 'stable', tags: true }) })
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    // UX pass, slice 4: Find lists a note once, fresh or aged, under Notes and All
+    click(document.querySelector('.tab[data-tab="find"]'))
     await settle()
-    expect(document.querySelector(`#notes [data-card-id="${id}"]`)).not.toBeNull()
+    click(document.querySelector('#find [data-find-chip="notes"]'))
+    await settle()
+    expect(document.querySelectorAll(`#find [data-card-id="${id}"]`)).toHaveLength(1)
+    expect(document.querySelector(`#find [data-card-id="${id}"] .find-new`)?.textContent, 'fresh: new on entry').toBe('New')
     advanceClock(8 * 24 * 60 * 60_000)
     await pollTick()
     expect(reads.slice(-3).every((entry) => entry.status === 304)).toBe(true)
-    expect(document.querySelector(`#notes [data-card-id="${id}"]`)).toBeNull()
-    click(document.querySelector('.tab[data-tab="done"]'))
+    expect(document.querySelectorAll(`#find [data-card-id="${id}"]`)).toHaveLength(1)
+    click(document.querySelector('#find [data-find-chip="all"]'))
     await settle()
-    expect(document.querySelectorAll(`#done [data-card-id="${id}"]`)).toHaveLength(1)
+    expect(document.querySelectorAll(`#find [data-card-id="${id}"]`)).toHaveLength(1)
     await pollTick()
-    expect(document.querySelectorAll(`#done [data-card-id="${id}"]`)).toHaveLength(1)
+    expect(document.querySelectorAll(`#find [data-card-id="${id}"]`)).toHaveLength(1)
   })
 
   it('integrates with real viewer ETags without a conditional-response shim', async () => {

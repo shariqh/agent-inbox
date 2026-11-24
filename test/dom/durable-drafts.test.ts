@@ -14,7 +14,8 @@ import {
 import type { BootOptions, ViewerBridge } from './harness.js'
 import {
   advanceClock, answerInput, badgeCount, bootApp, buttonLabelled, click, expectConsoleError, freshDb, pollTick,
-  repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest, reach,
+  repaint, row, rowTitles, sendButton, settle, showInbox, tabCount, type, useDomTest, reach, writeItemNote,
+  findRowFor, openOnFind,
 } from './harness.js'
 
 useDomTest()
@@ -268,15 +269,10 @@ describe('a draft comes back where it was', () => {
     db = freshDb()
     const id = insertItem(db, { ...AGENT, kind: 'note', title: 'Agent update' })
     const first = await bootApp(db)
-    click(document.querySelector('.tab[data-tab="notes"]'))
-    await settle()
-    click(document.querySelector(`#notes [data-card-id="${id}"] > summary`))
-    await settle()
-    vi.spyOn(window, 'prompt').mockReturnValue('Keep the rollback.')
+    await openOnFind(id)
     first.failPostsWith(500)
     expectConsoleError(/annotate failed: HTTP 500/)
-    click(buttonLabelled('Note', document.querySelector(`#notes [data-card-id="${id}"]`)!))
-    await settle()
+    await writeItemNote(() => findRowFor(id), 'Keep the rollback.')
     expect(recovery()?.textContent).toContain(UNCONFIRMED)
 
     const bridge = await reopen(db)
@@ -286,6 +282,62 @@ describe('a draft comes back where it was', () => {
     expect(recovery()?.textContent).toContain('Keep the rollback.')
     expect(buttonLabelled('Retry', recovery()!)?.disabled).toBe(false)
     expect(getItem(db, id)?.annotation).toBeNull()
+  })
+
+  it('brings back the text of an open Note editor in its editor, and drops one the server already holds', async () => {
+    db = freshDb()
+    const kept = insertItem(db, { ...AGENT, kind: 'note', title: 'Kept update' })
+    advanceClock()
+    const same = insertItem(db, { ...AGENT, kind: 'note', title: 'Same update' })
+    await bootApp(db)
+    for (const [id, text] of [[kept, 'Half a note.'], [same, 'Already said.']] as const) {
+      await openOnFind(id)
+      click(buttonLabelled('Note', findRowFor(id)!))
+      await settle()
+      type(findRowFor(id)!.querySelector<HTMLTextAreaElement>('.note-editor textarea'), text)
+    }
+    await saved()
+    expect(storedTexts().sort()).toEqual(['Already said.', 'Half a note.'])
+    annotateItem(db, same, 'Already said.')
+
+    const bridge = await reopen(db)
+    click(document.querySelector('.tab[data-tab="find"]'))
+    await settle()
+    // a row whose editor holds text is open on Find (UX pass, slice 4)
+    expect(findRowFor(kept)?.querySelector<HTMLTextAreaElement>('.note-editor textarea')?.value).toBe('Half a note.')
+    expect(findRowFor(same)?.querySelector('.note-editor')).toBeNull()
+    expect(recovery()).toBeNull()
+    expect(bridge.posts).toHaveLength(0)
+  })
+
+  it('leaves a Find row open with its Note button in view when Cancel or Save ends an editor restored with text', async () => {
+    db = freshDb()
+    const cancelled = insertItem(db, { ...AGENT, kind: 'note', title: 'Cancelled update' })
+    advanceClock()
+    const sent = insertItem(db, { ...AGENT, kind: 'note', title: 'Sent update' })
+    await bootApp(db)
+    for (const [id, text] of [[cancelled, 'Half a note.'], [sent, 'Another half.']] as const) {
+      await openOnFind(id)
+      click(buttonLabelled('Note', findRowFor(id)!))
+      await settle()
+      type(findRowFor(id)!.querySelector<HTMLTextAreaElement>('.note-editor textarea'), text)
+    }
+    await saved()
+    await reopen(db)
+    click(document.querySelector('.tab[data-tab="find"]'))
+    await settle()
+    // both rows are open only because their editor holds text: no choice of the person's opened them
+    expect(findRowFor(cancelled)?.querySelector<HTMLTextAreaElement>('.note-editor textarea')?.value).toBe('Half a note.')
+    click(buttonLabelled('Cancel', findRowFor(cancelled)!.querySelector('.note-editor')!))
+    await settle()
+    expect(findRowFor(cancelled)?.querySelector('.note-editor')).toBeNull()
+    expect(findRowFor(cancelled)?.querySelector(':scope > .find-row-body'), 'the row stays open').not.toBeNull()
+    expect(document.activeElement).toBe(buttonLabelled('Note', findRowFor(cancelled)!))
+
+    click(buttonLabelled('Save', findRowFor(sent)!.querySelector('.note-editor')!))
+    await settle()
+    expect(getItem(db, sent)?.annotation).toBe('Another half.')
+    expect(findRowFor(sent)?.querySelector(':scope > .find-row-body'), 'the row stays open after Save').not.toBeNull()
   })
 
   it('keeps a Note still saving at unload as unconfirmed, and drops one the server already holds', async () => {
@@ -303,15 +355,9 @@ describe('a draft comes back where it was', () => {
         return next()
       },
     })
-    click(document.querySelector('.tab[data-tab="notes"]'))
-    await settle()
-    const prompt = vi.spyOn(window, 'prompt')
     for (const [id, text] of [[held, 'Held feedback.'], [landed, 'Landed feedback.']] as const) {
-      click(document.querySelector(`#notes [data-card-id="${id}"] > summary`))
-      await settle()
-      prompt.mockReturnValue(text)
-      click(buttonLabelled('Note', document.querySelector(`#notes [data-card-id="${id}"]`)!))
-      await settle()
+      await openOnFind(id)
+      await writeItemNote(() => findRowFor(id), text)
     }
     expect(getItem(db, landed)?.annotation).toBe('Landed feedback.')
 

@@ -417,9 +417,15 @@ export function rowTitles(): string[] {
   return rows().map((el) => el.querySelector('.nrow-title')?.textContent ?? '')
 }
 
-/** The visible number beside a tab label ('' when the count badge is hidden). */
+/**
+ * The visible number beside a tab label ('' when the count badge is hidden). Throws for a
+ * tab the page does not have, so a test that pins a removed tab fails loudly instead of
+ * passing on an empty string.
+ */
 export function tabCount(tab: string): string {
-  const el = document.querySelector<HTMLElement>(`.tab[data-tab="${tab}"] .tab-count`)
+  const button = document.querySelector<HTMLElement>(`.tab[data-tab="${cssEscape(tab)}"]`)
+  if (!button) throw new Error(`tabCount(): the page has no "${tab}" tab`)
+  const el = button.querySelector<HTMLElement>('.tab-count')
   if (!el || el.hidden) return ''
   return el.textContent ?? ''
 }
@@ -449,12 +455,13 @@ export function buttonLabelled(label: string, scope: ParentNode = document): HTM
 }
 
 /**
- * Where click() enforces reachability: the Plans page. Pointed at the whole document it also
- * trips on 190-odd older clicks on Home and Settings (a hidden queue-tools drawer, a closed
- * disposition menu, a hidden Settings panel) that this slice did not touch; widen it to
- * '*' once those tests are repaired.
+ * Where click() and type() enforce reachability: the Plans page and Find (UX pass, slice 4),
+ * plus the two search fields. Pointed at the whole document it also trips on 190-odd older
+ * clicks on Home and Settings (a hidden queue-tools drawer, a closed disposition menu, a
+ * hidden Settings panel) that this slice did not touch; widen it to '*' once those tests are
+ * repaired.
  */
-const REACHABILITY_SCOPE = '#boards'
+const REACHABILITY_SCOPE = '#boards, #find, #search, #findQuery'
 
 /**
  * What stands between a person and a control: the outermost element that hides it (the
@@ -550,15 +557,118 @@ export async function collapseRow(id: string): Promise<void> {
 export function type(el: HTMLInputElement | HTMLTextAreaElement | null | undefined, value: string): void {
   if (!el) throw new Error('type(): nothing to type into — the selector matched nothing')
   if (!document.contains(el)) throw new Error('type(): stale node — re-query after every render/await')
+  const why = el.closest(REACHABILITY_SCOPE) ? unreachableReason(el) : null
+  if (why) throw new Error(`type(): ${describeNode(el)} is not reachable: ${why}`)
   el.value = value
   el.dispatchEvent(new window.Event('input', { bubbles: true }))
 }
 
-/** Type into #search and advance past initSearch()'s 120ms debounce. */
+/** The open inline Note editor's text box inside a card (UX pass, slice 4, step 0). */
+export function noteEditor(scope: ParentNode | null | undefined): HTMLTextAreaElement | null {
+  return scope?.querySelector<HTMLTextAreaElement>('.note-editor textarea') ?? null
+}
+
+/**
+ * Write a Note the way a person does: press Note on the card, type into the editor that
+ * opens in place, press Save. `locate` finds the card afresh after every press.
+ */
+export async function writeItemNote(locate: () => ParentNode | null | undefined, text: string): Promise<void> {
+  click(buttonLabelled('Note', locate() ?? document.createElement('div')))
+  await settle()
+  type(noteEditor(locate()), text)
+  click(buttonLabelled('Save', locate()?.querySelector('.note-editor') ?? document.createElement('div')))
+  await settle()
+}
+
+/**
+ * Type into the top bar's #search and advance past initSearch()'s 120ms debounce. Refuses
+ * while the top-bar search is not drawn (on Find, whose own field takes its place): use
+ * findFor() there.
+ */
 export async function searchFor(query: string): Promise<void> {
   const input = document.getElementById('search') as HTMLInputElement | null
+  const why = input ? unreachableReason(input) : null
+  if (why) throw new Error(`searchFor(): the top-bar search is not drawn here (${why}); on Find, use findFor()`)
   type(input, query)
   await vi.advanceTimersByTimeAsync(200)
+}
+
+/** An item's row on Find (UX pass, slice 4), or null when the list does not hold it. */
+export function findRowFor(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`#find .find-row[data-card-id="${cssEscape(id)}"]`)
+}
+
+/**
+ * Reach an item the way a person does on Find: open the Find tab, type `query` when given
+ * (or clear a query left in the field), and press the row's main button so it opens in
+ * place. Returns the open row; throws when the list does not hold the item or it will not
+ * open.
+ */
+export async function openOnFind(id: string, query = ''): Promise<HTMLElement> {
+  const tab = document.querySelector('.tab[data-tab="find"]')
+  if (tab?.getAttribute('aria-selected') !== 'true') {
+    click(tab)
+    await settle()
+  }
+  const field = document.getElementById('findQuery') as HTMLInputElement | null
+  if (query || field?.value) await findFor(query)
+  const row = findRowFor(id)
+  if (!row) throw new Error(`openOnFind(): Find lists no row for ${id}${query ? ` under "${query}"` : ''}`)
+  const main = row.querySelector(':scope > .find-row-main')
+  if (main?.getAttribute('aria-expanded') === 'false') {
+    click(main)
+    await settle()
+  }
+  const open = findRowFor(id)
+  if (!open?.querySelector(':scope > .find-row-body')) throw new Error(`openOnFind(): the row for ${id} does not open in place`)
+  return open
+}
+
+/** Type into Find's own field and advance past its debounce. Refuses while Find is not showing. */
+export async function findFor(query: string): Promise<void> {
+  const input = document.getElementById('findQuery') as HTMLInputElement | null
+  if (!input) throw new Error('findFor(): the page has no Find field (#findQuery)')
+  const why = unreachableReason(input)
+  if (why) throw new Error(`findFor(): Find is not showing (${why}); open it first, as a person would`)
+  type(input, query)
+  await vi.advanceTimersByTimeAsync(200)
+}
+
+/**
+ * Reach the chats the way a person does (UX pass, slice 4, step B): open the Find tab and press
+ * its Chats chip. Settles twice, so a read the entry started has landed.
+ */
+export async function openFindChats(): Promise<void> {
+  const tab = document.querySelector('.tab[data-tab="find"]')
+  if (tab?.getAttribute('aria-selected') !== 'true') {
+    click(tab)
+    await settle()
+  }
+  const chip = document.querySelector('#find [data-find-chip="chats"]')
+  if (chip?.getAttribute('aria-pressed') !== 'true') {
+    click(chip)
+    await settle()
+  }
+  await settle()
+}
+
+/** A chat's row on Find by `<tool>:<id>`, or null when the list does not hold it. */
+export function chatRowFor(key: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`#findList > .find-row[data-find-key="${cssEscape(`chat:${key}`)}"]`)
+}
+
+/** Open a chat's row in place by pressing its main button, as a person does; returns the open row. */
+export async function openChatRow(key: string): Promise<HTMLElement> {
+  const row = chatRowFor(key)
+  if (!row) throw new Error(`openChatRow(): Find lists no chat ${key}`)
+  const main = row.querySelector(':scope > .find-row-main')
+  if (main?.getAttribute('aria-expanded') === 'false') {
+    click(main)
+    await settle()
+  }
+  const open = chatRowFor(key)
+  if (!open?.querySelector(':scope > .find-row-body')) throw new Error(`openChatRow(): the row for ${key} does not open in place`)
+  return open
 }
 
 /** Force the editable frame to reconcile without coupling a test to search behavior. */

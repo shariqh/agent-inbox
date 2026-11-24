@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, listBoards, replyItem, resolveItem, upsertBoard } from '../../src/store.js'
 import {
-  bootApp, buttonLabelled, click, freshDb, row, setSystemDark, settle, useDomTest, reach,
+  bootApp, buttonLabelled, click, freshDb, row, setSystemDark, settle, useDomTest, reach, openOnFind,
 } from './harness.js'
 
 useDomTest()
@@ -307,12 +307,8 @@ describe('structured agent text on outcome, relay, and mission projections', () 
     resolveItem(d, id, 'Shipped.\n\n- Notes: https://example.com/release.\n- No rollback.')
 
     await bootApp(d)
-    click(document.querySelector('.tab[data-tab="done"]'))
-    await settle()
-    click(document.querySelector(`[data-card-id="${id}"]`))
-    await settle()
-
-    const doneCard = document.querySelector(`[data-card-id="${id}"] .card`)
+    // UX pass, slice 4: a closed ask is a row on Find, found by a query, that opens in place
+    const doneCard = (await openOnFind(id, 'Ship?')).querySelector('.card')
     expect(doneCard?.querySelectorAll('.outcome-block li')).toHaveLength(2)
     expect(doneCard?.querySelectorAll('.lifecycle-step li')).toHaveLength(0)
 

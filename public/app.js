@@ -12,7 +12,7 @@ import {
 import { DEFAULT_TAB, TAB_IDS, tabCounts } from '/tabs.js'
 import { projectColor } from '/colors.js'
 import {
-  SCROLL_IDLE_MS, pressHeld, scrollActive, shouldDeferRender,
+  PRESS_GRACE_MS, SCROLL_IDLE_MS, pressHeld, scrollActive, shouldDeferRender,
   suspendHint, pinOrder, reconcileOpenRow, pollMaySkipPaint, draftInUse, recentInput,
 } from '/poll.js'
 import { createStagedSend } from '/star.js'
@@ -24,7 +24,8 @@ import {
 import { cardSections, optionOrder, actionPresentation } from '/card.js'
 import { keyAction, rovingIndex, ariaAnswerLabel, livenessGlyph, deckEntryAt } from '/keys.js'
 import { createKeyboardUI, revealControl } from '/keyboard-ui.js'
-import { partitionNotes, unreadNoteCount, seenWatermark, markSeenIds } from '/notes.js'
+import { partitionNotes, unreadNoteCount, unreadNotes, seenWatermark, markSeenIds } from '/notes.js'
+import { FIND_CHIPS, FIND_PAGE, buildFindRows, findAge, findRow } from '/find.js'
 import { sessionBuild, sessionsSummary, activityFrameKey } from '/livebar.js'
 import { agentsAction, hooksGuidance, hooksNextStep, hostLabel, hostLine, restartGuidance } from '/agents.js'
 import { PROJECT_SCOPE_NOTE, RUNTIMES_LEAD, runtimeLines, runtimesAction, runtimesNote } from '/runtimes.js'
@@ -79,7 +80,7 @@ import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
 import { isReservedProject } from '/reserved-projects.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
-import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
+import { knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 import { DRAFTS_KEY, draftEntry, draftExpired, draftKey, mergeDrafts, readDrafts } from '/drafts.js'
 
 void paginateGroups // kept exported+tested (spec §15); the viewer no longer calls it
@@ -114,7 +115,7 @@ function nativeKeyOwner(event) {
 
 // per-section visible-card caps; `shown` grows as the user clicks "show more"
 // UX pass, slice 3: Moving pages by 12; `boards` stays the grouped list's page (and its "(continued)" heads)
-const PAGE = { needsYou: 10, notes: 5, done: 5, boards: 5, moving: 12, archived: 5 }
+const PAGE = { needsYou: 10, boards: 5, moving: 12, archived: 5, find: FIND_PAGE }
 let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
@@ -157,7 +158,6 @@ let appliedClosedGeneration = 0
 // items. Older closed history is read from /api/items/history only while some
 // surface needs it (historyWanted); these record needs no rendered state shows.
 let historyLookup = null // a deep link to an item the page omitted
-let historyTabPinned = false // History keeps an omitted target until the tab changes
 let historyRequestedFor = -1 // the applied tick an early poll was requested for
 let historyLoadScheduled = false // that early poll has not started yet
 let historyPaintRequestedFor = -1 // the applied tick a human's history read-and-paint started for
@@ -226,7 +226,7 @@ let notesSeenAt = localStorage.getItem(NOTES_SEEN_KEY) || null
 let notesSeenIds = new Set()
 try { notesSeenIds = new Set(JSON.parse(localStorage.getItem(NOTES_SEEN_IDS_KEY)) || []) } catch { /* fresh start */ }
 // Read-marking used to stamp `now()` unconditionally on every render while the
-// Notes tab was open — marking read every note behind the "Show N more" pager
+// Notes page was open (now Find's Notes chip) — marking read every note behind the "Show N more" pager
 // and every note the rail filter was hiding, none of which the human ever saw.
 // notes.js's seenWatermark advances at most to a point below everything that
 // stayed hidden, and never backwards.
@@ -334,6 +334,7 @@ function typedDrafts() {
   for (const [id, value] of Object.entries(draftReplies)) drafts[`reply:${id}`] = value
   for (const [id, value] of Object.entries(draftReplyContexts)) drafts[`context:${id}`] = value
   for (const [id, value] of Object.entries(rowDrafts)) drafts[`row:${id}`] = value
+  for (const [id, editor] of Object.entries(itemNoteEditors)) drafts[`note:${id}`] = editor.text
   // #412 step 3: a New session task while its dialog is open
   for (const [key, value] of launchUi?.drafts() ?? []) drafts[`launch:${key}`] = value
   return drafts
@@ -436,7 +437,8 @@ function showPauseHint() {
   el.hidden = !hint
 }
 
-// the poll's ONLY entry into render()
+// the poll's ONLY entry into render(); also taken by a change nobody pressed for that lands
+// outside the poll (a chats read on entering Find, UX pass slice 4 step B), so the same gate holds it
 function renderIfIdle() {
   // #563: what this paints is the poll's (reconcileDraftOwners)
   pollPaint = true
@@ -811,7 +813,7 @@ async function meshRefresh(name) {
   await reloadAndPaint()
 }
 
-// The agent tab (cards view V5 §3.3): one slot after History, shown only while an agent is
+// The agent tab (cards view V5 §3.3): one slot after Find, shown only while an agent is
 // open, replaced by the next one opened, never counted and never persisted.
 const meshAgentPage = installMeshAgentPage({
   tab: () => document.querySelector('#tabs .tab[data-tab="agent"]'),
@@ -821,10 +823,10 @@ const meshAgentPage = installMeshAgentPage({
   onClose: closeMeshAgent,
 })
 
-// The Chats tab (#586): its own read on open, Refresh and Show all, never the poll's
+// The chats (#586), Find's Chats chip since UX pass, slice 4, step B: their own read on entering
+// Find, Refresh and Show all, never the poll's. Find's frame draws them (renderFind).
 const chatsView = installChatsView({
   doc: document,
-  host: () => document.querySelector('#chats .chats'),
   fetch: (url) => fetch(url),
   now: () => Date.now(),
   // #586 PR 3: Resume in Terminal, only where the desktop app's preload exposes it
@@ -845,6 +847,16 @@ const chatsView = installChatsView({
   // Jump to session (#586): a live chat's own session card, in any window. A session that started
   // since the last poll is read once before the answer is no.
   jump: async (session) => jumpToSession(session) || (await reloadAndPaint(), jumpToSession(session)),
+  rowEl: (key) => document.querySelector(`#findList > [data-find-key="${CSS.escape(`chat:${key}`)}"]`),
+  changed: (change) => chatsChanged(change),
+  // a note for an action pressed on a collapsed row opens it, after the person's own press
+  // The row is open the next time it is listed; it is kept in place only when it is drawn now, so
+  // an answer that lands after the person moved to another chip or filter never brings it in.
+  reveal: (key) => {
+    const rowKey = `chat:${key}`
+    findOpen.add(rowKey)
+    if (findRowsByKey.has(rowKey)) findKept.add(rowKey)
+  },
 })
 // A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
 // agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
@@ -874,7 +886,7 @@ function launchesOn() {
   return launchUi?.on() === true
 }
 
-// #586 phase 2: a failed launches read is a frame input, so the Chats tab can say it could not
+// #586 phase 2: a failed launches read is a frame input, so the Chats line can say it could not
 // read them; a tick that read none (the switch off) is never one, so an idle tick stays idle
 function launchesReadFailed(read, launches) {
   return read && !Array.isArray(launches)
@@ -1373,7 +1385,7 @@ function restoreAskedTimeFocus(id) {
 
 function pagedCardFocusBookmark() {
   const active = activeFocusElement()
-  const card = active?.closest?.('#notes [data-card-id], #done [data-card-id], #boards [data-card-id]')
+  const card = active?.closest?.('#boards [data-card-id], #find [data-card-id]')
   if (!card) return null
   const rowId = active.closest('[data-row-id]')?.dataset.rowId ?? null
   if (rowId) {
@@ -1426,7 +1438,7 @@ function restorePagedCardFocus(bookmark) {
     ? targets.filter((target) => cardFocusKey(target) === bookmark.key)
     : []
   const exact = matches[bookmark.ordinal] ?? (bookmark.rowId ? targets[0] : null)
-  const fallback = card.querySelector(':scope > summary') ?? card
+  const fallback = card.querySelector(':scope > summary, :scope > .find-row-main') ?? card
   for (const target of [exact, fallback]) {
     if (!target) continue
     // a passive restore never opens a closed plan (that would record the open as
@@ -1447,9 +1459,17 @@ function restorePagedCardFocus(bookmark) {
 // Which tab holds an item — a deep link must land on the right one. An open ask
 // is on Home, in its list of asks.
 function tabForItem(it) {
-  if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'notes'
-  if (lastData.g.done.some((x) => x.id === it.id)) return 'done'
+  // UX pass, slice 4: notes and finished things are on Find
+  if (lastData.g.notes.some((gr) => gr.items.some((x) => x.id === it.id))) return 'find'
+  if (lastData.g.done.some((x) => x.id === it.id)) return 'find'
   return 'dashboard'
+}
+
+// A card by its item id, preferring the panel on screen: Find draws items Home and the
+// hidden panes may hold too.
+function cardNodeFor(id) {
+  const selector = `[data-card-id="${CSS.escape(id)}"]`
+  return document.querySelector(`main > .panel:not([hidden]) ${selector}`) ?? document.querySelector(selector)
 }
 
 // Notification click / URL hash entry point (spec §11): select the item's
@@ -1504,20 +1524,21 @@ function focusItem(id, source = null) {
     if (source.rowId) openRowCompares.add(source.rowId)
     else openCompares.add(id)
   }
+  const tab = board ? 'boards' : tabForItem(item)
   // `keepLens` (Home's "Plan" button): the filters, "Updates" and the search box stay as the person left them
-  if (!source?.keepLens) {
+  if (tab === 'find') {
+    // UX pass, slice 4: a landing on Find changes the lens only when the target is outside it
+    resetSearch()
+    if (activeTab !== 'find') selectTab('find', { paint: false })
+    prepareFindLanding(item)
+  } else if (!source?.keepLens) {
     projectFilter = target.project
     agentFilter = null
     actionFilter = 'all'
     changedOnly = false
     resetSearch()
   }
-  selectTab(board ? 'boards' : tabForItem(item), { paint: false }) // the explicit forceRender below paints the target
-  // A History target the page alone cannot place keeps the complete history
-  // loaded while History stays open (#184).
-  if (activeTab === 'done') {
-    historyTabPinned = !knownHistory(pageView().g.done, lastData.pageHistory?.before).some((entry) => entry.id === id)
-  }
+  selectTab(tab, { paint: false }) // the explicit forceRender below paints the target
   const hash = focusHashFor(id)
   if (location.hash !== hash) {
     // the hashchange this write fires runs focusItem again with no source; a
@@ -1545,7 +1566,7 @@ function focusItem(id, source = null) {
   if (queueTarget) setOpenRow(id)
   if (queueTarget) forceRender()
   requestAnimationFrame(() => {
-    const el = document.querySelector(`[data-card-id="${CSS.escape(id)}"]`)
+    const el = cardNodeFor(id)
     if (!el) return
     pendingFocusId = null
     // Open every ancestor <details> fold on the way up, not just the target —
@@ -1562,7 +1583,8 @@ function focusItem(id, source = null) {
     scrollTarget.scrollIntoView({ behavior: motion.scrollBehavior(), block: 'center' })
     const contextSummary = sourceEl?.closest('.card-context')?.querySelector(':scope > summary')
     const focusTarget = contextSummary
-      ?? (el.matches('details') ? el.querySelector(':scope > summary') : el)
+      ?? (el.matches('details') ? el.querySelector(':scope > summary')
+        : el.matches('.find-row') ? el.querySelector(':scope > .find-row-main') : el)
     if (focusTarget) {
       focusTarget.tabIndex = 0
       focusTarget.focus({ preventScroll: true })
@@ -1736,7 +1758,7 @@ function sameSearchResultOrder(previous, next) {
 }
 
 function searchJumpRoot(source) {
-  const card = document.querySelector(`[data-card-id="${CSS.escape(source.targetId)}"]`)
+  const card = cardNodeFor(source.targetId)
   if (!card) return null
   if (source.rowId) {
     if (source.field === 'label') {
@@ -1906,9 +1928,10 @@ function paletteTargets() {
 const NO_PALETTE_TARGETS = { asks: [], plans: [], sessions: [] }
 const commandShape = (query) => paletteResults(query, NO_PALETTE_TARGETS, fuzzySearch).length
 
-function runPaletteAction(action) {
+// `field`: the field a command fills (Find's own, on Find)
+function runPaletteAction(action, field = null) {
   if (action.type === 'command') {
-    const { input } = searchElements()
+    const input = field ?? searchElements().input
     input.value = action.fill
     input.dispatchEvent(new Event('input', { bubbles: true }))
     input.focus({ preventScroll: true })
@@ -2049,9 +2072,9 @@ function applyFocusHash() {
   keptLensHash = null
   // UX pass, slice 3: the landing already happened, with the lens left alone
   if (kept !== null && location.hash === kept) return
-  // #586: #chats opens the Chats tab; the viewer never writes it
+  // #586: #chats opens Find with the Chats chip (UX pass, slice 4, step B); the viewer never writes it
   if (isChatsHash(location.hash)) {
-    selectTab('chats')
+    openChatsInFind()
     return
   }
   const f = parseFocusHash(location.hash)
@@ -2062,8 +2085,8 @@ function initFocusHash() {
   window.addEventListener('hashchange', applyFocusHash)
 }
 
-// notes age into Done after NOTE_AGE_MS (spec §8) — done at the door so the
-// Notes tab and the Done tab agree
+// notes age into the finished list after NOTE_AGE_MS (spec §8) — done at the door so the
+// notes and the finished things on Find agree
 function ageNotes(g, nowMs) {
   const aged = []
   const notes = g.notes
@@ -2132,17 +2155,28 @@ function historyWanted(view = lastData) {
   // A deep link may name any omitted item, and search covers all of History.
   if (historyLookup?.view === navigationKey()) return true
   if (searchInUse()) return true
+  // UX pass, slice 4: a query on Find under a chip that lists history
+  if (findInUse() && findNeeds().history) return true
   const older = olderHistory(summary, olderLens())
   if (relayOpen && older.outcomes > 0) return true
-  if (activeTab === 'done' && older.items > 0) {
-    return historyTabPinned || shown.done > knownHistory(pageView(view).g.done, summary.before).length
-  }
+  if (activeTab === 'find' && older.items > 0 && (findHistoryPinned || findDrawsNothing(view, summary))) return true
   // Recent outcomes, and the ribbon at a range longer than the default (#392).
   if (activeTab === 'dashboard' && (older.outcomes > 0 || (older.items > 0 && ribbonReadsOlder()))) {
     const model = dashboardModel(pageView(view), summary, lensActivity(view))
     return model.recentOutcomesWait.history || ribbonRangeWait(model).history
   }
   return false
+}
+
+// UX pass, slice 4: Find with no query whose page can place no row of its chip would draw an
+// empty list under a lone "Show more". As History read what its page could not place, Find
+// reads the older history itself then, so the list is never blank. Judged on the PAGE.
+function findDrawsNothing(view, summary) {
+  if (findSettled.trim() || !findNeeds().history) return false
+  const { rows } = buildFindRows(pageView(view), {
+    chip: findChip, before: summary.before ?? null, nowMs: Date.now(), archivedWhole: false,
+  })
+  return rows.length === 0
 }
 
 // Issue #299: which surfaces need the complete archived plans the brief stands
@@ -2157,6 +2191,7 @@ function archivedWanted(view = lastData) {
   // A deep link to an archived plan, search, and Plan flow open on one.
   if (archivedLookup?.view === navigationKey()) return true
   if (searchInUse()) return true
+  if (findInUse() && findNeeds().archived) return true
   if (missionBoardId && brief.some((plan) => plan.id === missionBoardId)) return true
   const lens = pageView(view)
   const omitted = omittedOutcomes(lens.archived).outcomes
@@ -3667,10 +3702,6 @@ function paintAmbient() {
   const agents = collectAgents(projectScoped(visibleData),
     olderHistory(lastData.older, { project: projectFilter, hidden: dashboardClosedProjects() }).agents)
   if (agentFilter && !agents.includes(agentFilter)) agentFilter = null
-  // prune collapse state against ALL cards, not the filtered view (nor the
-  // closure-narrowed one), so switching tabs never drops state for cards the
-  // filter is hiding
-  liveCardIds = new Set([...allItems(lastData.g).map((i) => i.id), ...lastData.boards.map((b) => b.id), ...lastData.archived.map((b) => b.id)])
   const filtered = filterData(visibleData)
   const { g, boards, archived } = filtered
   const live = liveInLens()
@@ -3743,8 +3774,7 @@ function paintTabCounts(g, boards) {
   const counts = tabCounts({
     globalAttention: attentionCount(allItems(lastData.g), lastData.boards, Date.now(), liveSessionIds(), lastData.closed ?? []),
     unreadNotes: unreadNoteCount(g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds),
-    scoped: { boards, done: g.done },
-    olderDone: olderHistory(lastData.older, olderLens()).items,
+    scoped: { boards },
   })
   for (const id of TAB_IDS) setCount(id, counts[id])
 }
@@ -3757,15 +3787,12 @@ function paintEditableSurfaces({ agents, g, boards, archived, dashboard, paintAl
   // Keep the action/recovery queue and overlays current. Only inactive document
   // panes skip ordinary polls; boot and explicit human repaints remain complete.
   const restoreQueueView = renderNeedsYou(g, boards, Date.now())
-  if (paintAllPanes || !document.getElementById('notes').hidden) renderGroups('notes', g.notes)
-  if (paintAllPanes || !document.getElementById('done').hidden) renderDone(g.done)
-  if (paintAllPanes || !document.getElementById('chats').hidden) chatsView.paint()
+  if (paintAllPanes || !document.getElementById('find').hidden) renderFind()
   for (const board of boards) sessionActiveBoards.add(board.id)
   if (paintAllPanes || !document.getElementById('boards').hidden) renderBoards(boards, archived)
-  // renderGroups may have marked visible notes read. Recount only on a full
+  // renderFind may have marked visible notes read. Recount only on a full
   // editable frame; a draft-gated ambient frame must never mark unseen notes.
   paintTabCounts(g, boards)
-  pruneCollapsedCards()
   // The render that just happened is the authority on what remains collapsible.
   // A deep link or filter can name a board, a hidden item, or a paged-away row;
   // reconcile stale open state now so it cannot leak into a later render.
@@ -5988,8 +6015,9 @@ function selectTab(id, { paint = true, open = true } = {}) {
   // keeping loaded (#184, #299).
   historyLookup = null
   archivedLookup = null
-  if (id !== 'done') historyTabPinned = false
+  if (from === 'find' && id !== 'find') leaveFind()
   activeTab = id
+  if (id === 'find' && from !== 'find') enterFind()
   // the Review queue's hold line is in Home's list header: leaving Home ends it
   if (id !== 'dashboard') triageHeld = false
   // entering Home from another tab brings the first waiting ask forward again
@@ -5998,10 +6026,11 @@ function selectTab(id, { paint = true, open = true } = {}) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
-  // Settings covers the active tab without changing it, so "entered" is the panel showing (#586)
-  const chatsWasHidden = document.getElementById('chats').hidden
+  // Settings covers the active tab without changing it, so "entered" is the panel showing (#586):
+  // entering Find reads the chats under their 60-second rule (step B)
+  const findWasHidden = document.getElementById('find').hidden
   showPanel(id)
-  if (id === 'chats' && chatsWasHidden) chatsView.opened()
+  if (id === 'find' && findWasHidden) chatsView.opened()
   if (paint) {
     forceRender()
     requestHistoryPaint()
@@ -6015,7 +6044,13 @@ function selectTab(id, { paint = true, open = true } = {}) {
 
 function initTabs() {
   for (const t of document.querySelectorAll('#tabs .tab')) {
-    t.addEventListener('click', () => selectTab(t.dataset.tab))
+    t.addEventListener('click', () => {
+      const touch = findEntryTouch
+      findEntryTouch = false
+      selectTab(t.dataset.tab)
+      // UX pass, slice 4: Find's field takes focus on every entry but one made by touch
+      if (t.dataset.tab === 'find' && !touch) focusFindField()
+    })
   }
   selectTab(activeTab)
   wireTablist(document.getElementById('tabs'), 'vertical')
@@ -6042,9 +6077,8 @@ function filterData({ g, boards, archived }) {
 const PAGE_META = {
   dashboard: { kicker: '', title: 'Home' },
   boards: { kicker: '', title: 'Plans' },
-  notes: { kicker: 'Workspace', title: 'Notes' },
-  done: { kicker: 'Workspace', title: 'History' },
-  chats: { kicker: 'Workspace', title: 'Chats' },
+  // the heading stays for structure and is visually hidden: Find's field is what shows first
+  find: { kicker: '', title: 'Find' },
   // the title is the open agent's name
   agent: { kicker: 'Mesh agent', title: '' },
   setup: { kicker: 'Agent Inbox', title: 'Settings' },
@@ -6994,6 +7028,10 @@ function showPanel(id) {
   kicker.textContent = page.kicker
   kicker.hidden = !page.kicker
   document.getElementById('pageTitle').textContent = id === 'agent' ? meshAgentPage.current()?.name ?? '' : page.title
+  // UX pass, slice 4: on Find its own field stands in for the top bar's search and its heading
+  document.getElementById('pageTitle').classList.toggle('visually-hidden', id === 'find')
+  const topSearch = document.querySelector('#topbar .floating-search')
+  if (topSearch) topSearch.hidden = id === 'find'
   syncAskFront()
   const gear = document.getElementById('gear')
   gear.classList.toggle('active', id === 'setup')
@@ -7310,8 +7348,8 @@ function initLaunches() {
     started: (id) => { if (scopeToLaunch(id)) forceRender() },
     // #586 phase 2: a continued chat's session, once started, opens as Show session opens it
     showLaunch: (id) => openSessionFocus(`launch:${id}`),
-    // the session panel's "Continued from a Copilot chat" line
-    openChats: () => selectTab('chats'),
+    // the session panel's "Continued from a Copilot chat" line: Find with the Chats chip
+    openChats: () => openChatsInFind(),
     pending: (action) => withPendingResponse(action),
   })
   // a changed answer is drawn by the next tick, which reads the launches once on
@@ -7875,7 +7913,8 @@ function replaceNeedsYouBody(host, header) {
 function renderNeedsYouExtras(host, notes) {
   const n = unreadNoteCount(notes, notesSeenAt, Date.now(), notesSeenIds)
   if (!n) return
-  const chip = btn(`${n} new note${n > 1 ? 's' : ''}`, () => selectTab('notes'))
+  // UX pass, slice 4: Find with Notes selected and the query cleared
+  const chip = btn(`${n} new note${n > 1 ? 's' : ''}`, () => openFind({ chip: 'notes', clearQuery: true }))
   chip.className = 'notes-chip'
   host.appendChild(chip)
 }
@@ -7891,7 +7930,7 @@ function renderEmptyState(host, laterCount = 0) {
   head.textContent = laterCount ? `Nothing needs you · ${laterCount} in Later` : 'Nothing needs you'
   panel.appendChild(head)
   // One calm line and nothing else (UX pass, slice 2): the counts it used to carry (plans,
-  // milestones, answers awaiting pickup) are on the page under it or in History.
+  // milestones, answers awaiting pickup) are on the page under it or on Find.
   host.appendChild(panel)
 }
 
@@ -7980,7 +8019,7 @@ function renderNeedsYou(g, boardsInView, nowMs) {
   revealDraftIds.clear()
   if (stale.length) host.appendChild(staleFoldEl(stale, opts, nowMs))
   renderOrphanedDrafts(host)
-  // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Notes tab
+  // fix round 2 (I3): the foot chip is fed the SAME scoped notes the Find tab
   // count is computed from (render()'s `g.notes`). It used to read the GLOBAL
   // lastData.g.notes, so the chip and the badge disagreed under any rail filter.
   renderNeedsYouExtras(host, g.notes.flatMap((gr) => gr.items))
@@ -8097,7 +8136,7 @@ function renderOrphanedDrafts(host) {
       .map(([id, draft]) => ({
         id: `note:${id}`,
         draft,
-        retry: freshItem(id)?.status === 'open' ? () => editItemNote({ id, title: draft.title }) : null,
+        retry: freshItem(id)?.status === 'open' ? () => reviewItemNoteRecovery(id, draft.title) : null,
         clear: () => {
           if (itemNoteDrafts[id] !== draft || draft.pending) return false
           delete itemNoteDrafts[id]
@@ -8203,7 +8242,7 @@ function revealDetailsAncestors(target) {
     // the next frame keeps it; one already open keeps the form it was drawn in
     if (node.matches('#boards details.board')) {
       if (!wasOpen) planOpen.set(node.dataset.cardId, true)
-    } else if (node.dataset.cardId) setCardCollapsed(node.dataset.cardId, false)
+    }
     if (node.classList.contains('stalled-fold')) stalledOpen = true
     if (node.dataset.deferredFold) openDeferredFolds.add(node.dataset.deferredFold)
     else if (node.classList.contains('stale-fold')) staleFoldOpen = true
@@ -8548,6 +8587,9 @@ function rowCardBodyEl(entry, m, nowMs) {
     compose.className = 'nrow-card-compose'
     if (answer) compose.appendChild(answer)
     if (actions) compose.appendChild(actions)
+    // the Note editor opens beside the Note button, in the bar, not out of sight in the body
+    const noteEditorEl = actions ? card.querySelector(':scope > .note-editor') : null
+    if (noteEditorEl) compose.appendChild(noteEditorEl)
     body.appendChild(compose)
   }
   for (const host of body.children) {
@@ -8637,96 +8679,861 @@ function collapseRow(id, { explicit = false } = {}) {
 }
 
 // notes keep a card list, but flat: no project h3, no agent h4 (§15)
-function renderGroups(sectionId, groups) {
-  const host = document.querySelector(`#${sectionId} .groups`)
-  const items = groups.flatMap((gr) => gr.items)
-  const { visible, remaining, viewed } = paginateWithPending(items, sectionId)
-  host.innerHTML = items.length ? '' : '<p class="empty">Nothing here.</p>'
-  for (const it of visible) host.appendChild(itemEl(it))
-  if (remaining > 0) host.appendChild(moreButton(sectionId, remaining))
-  // fix round 2 (I3): mark seen only what was actually on screen. The hidden set
-  // is the GLOBAL note list minus what rendered — a note behind the "Show N
-  // more" pager and a note behind the rail's project filter were equally unseen,
-  // and there is one watermark covering every scope.
-  if (sectionId === 'notes' && !document.getElementById('notes').hidden) {
-    const shownIds = new Set(viewed.map((it) => it.id))
-    const all = lastData.g.notes.flatMap((gr) => gr.items)
-    markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
-  }
+// ── UX pass, slice 4: Find ─────────────────────────────────────────────────
+// One list in place of Notes and History; public/find.js builds its rows from the
+// data the page already holds. The field and the chips are static markup. Every
+// open, armed and typed state lives here, and the list's rows are reconciled by
+// key on each painted frame, so focus, a selection and an open card keep their
+// nodes. A passive repaint never opens a row and never records a choice.
+let findQuery = ''             // what the field holds
+let findSettled = ''           // the query the list was last built from (after the debounce)
+let findTimer = null
+let findChip = 'all'
+let findActiveKey = null       // the row Enter opens: painted only, kept by key
+const findOpen = new Set()     // rows open in place
+const findKept = new Set()     // rows the person acted on this visit: they stay where they are
+let findLandingKey = null      // the row a way in landed on this visit: it stays listed
+let findPainted = []           // keys in the order last painted on this visit
+let findNewIds = null          // unread notes on entering Find, marked New until the person leaves
+let findHistoryPinned = false  // "Show more" asked for the older history on this visit
+let findWaiting = false        // a query waits on older history or archived plans
+let findStale = false          // ...and the rows on screen are the previous list's: they do nothing
+let findRowsByKey = new Map()  // the rows (and command rows) last painted, by key
+let findRevealKey = null       // the first row "Show 20 more" reveals
+const findDomIds = new Map()   // key → the stable id of its main button, kept only while the key is drawn
+let findDomSeq = 0             // ids are never reused, so pruning the map cannot collide two rows
+let findEntryTouch = false     // the last press on the tab strip was a touch
+let findPointerIn = false      // the pointer rests on the list: a poll then keeps the painted order
+
+const FIND_ICONS = {
+  answer: '<circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.6a2.4 2.4 0 1 1 3.6 2.1c-.8.5-1.2 1-1.2 1.9"></path><path d="M12 17h.01"></path>',
+  note: '<circle cx="12" cy="12" r="9"></circle><path d="M12 11v5.5"></path><path d="M12 7.5h.01"></path>',
+  plan: '<path d="M4 7h7"></path><path d="M14 7h6"></path><path d="M4 12h4"></path><path d="M11 12h9"></path><path d="M4 17h10"></path><path d="M17 17h3"></path>',
+  finished: '<circle cx="12" cy="12" r="9"></circle><path d="M8.5 12.5l2.5 2.5 4.5-5"></path>',
+  ask: '<circle cx="12" cy="12" r="9"></circle><path d="M12 7.5v5.5"></path><path d="M12 16.5h.01"></path>',
+  action: '<path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path>',
+  // step B: the picture's chat bubble, with a prompt for Claude Code and two eyes for Copilot
+  'chat-claude': '<path d="M5 5.5h14v10.5h-8l-4 3.2V16H5z"></path><path d="M9 9.2l2 1.6-2 1.6"></path><path d="M12.6 12.4h2.6"></path>',
+  'chat-copilot': '<path d="M5 5.5h14v10.5h-8l-4 3.2V16H5z"></path><path d="M9.6 10.8h.01"></path><path d="M14.4 10.8h.01"></path>',
 }
 
-const openHistoryItems = new Set()
+// the Chats chip's empty texts are the Chats line's own (chats-view.js)
+const FIND_EMPTY = { none: 'Nothing here yet.', all: 'No answers, notes or finished work yet.', answers: 'No answers yet.', notes: 'No notes.', plans: 'No plans.', chats: '' }
 
-function historyItemEl(it) {
-  const el = document.createElement('details')
-  el.className = `history-row item ${it.kind}`
-  el.dataset.cardId = it.id
-  liveCardIds.add(it.id)
-  el.open = openHistoryItems.has(it.id) || pendingFocusId === it.id || pagedFocusId === it.id
-  el.addEventListener('toggle', () => {
-    if (el.open) openHistoryItems.add(it.id)
-    else openHistoryItems.delete(it.id)
+function windowActive() {
+  return document.visibilityState !== 'hidden' && document.hasFocus()
+}
+
+// Find reads older history and archived plans for a query only while it is the page in
+// use: the active tab, a query typed, and the window on screen. Unlike the top bar's dropdown,
+// Find's results stay on screen when the person looks at another app, so focus is not asked
+// for: letting the history go then would make the rows on screen stale.
+function findInUse() {
+  return activeTab === 'find' && !settingsOpen() && findQuery.trim() !== '' && document.visibilityState !== 'hidden'
+}
+
+// Which reads a chip needs: history for All, Answers and Notes; archived plans for All and Plans.
+// Chats need neither: they are read on their own (chats-view.js).
+const findNeeds = (chip = findChip) => ({ history: chip !== 'plans' && chip !== 'chats', archived: chip === 'all' || chip === 'plans' })
+
+const findField = () => document.getElementById('findQuery')
+
+function findLensData(query) {
+  // the lens as Notes and History had it; a query under All projects also covers closed projects
+  return query
+    ? filterData({ g: lastData.g, boards: lastData.boards, archived: lastData.archived })
+    : filterData(withoutClosed(lastData))
+}
+
+// What stays listed whatever the chip, the query or the page: rows the person acted on,
+// rows whose Note editor holds text, and the row a way in landed on.
+function findKeepKeys() {
+  const keep = new Set(findKept)
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    if (editor.text.trim()) keep.add(`item:${id}`)
+  }
+  if (findLandingKey) keep.add(findLandingKey)
+  return keep
+}
+
+const findRowHasText = (row) => Boolean(row?.entity && itemNoteEditors[row.id]?.text.trim())
+
+// Save or Cancel ends a Note editor: a Find row open only because that editor held text
+// (restored after a reload, or typed on Home) stays open, so the Note button, the saving
+// state and any refusal stay in view.
+function keepFindRowOpen(id) {
+  const key = `item:${id}`
+  if (!findRowHasText(findRowsByKey.get(key))) return
+  findOpen.add(key)
+  // the click on Save already says so; Cmd or Ctrl+Enter makes no click
+  findKept.add(key)
+}
+
+// A deliberate change of chip or settled query ends the "stays in place" window: rows the
+// person acted on and the row a way in landed on go back to their own place. Only a row
+// whose Note editor holds text stays listed (findKeepKeys).
+function endFindStay() {
+  findKept.clear()
+  findLandingKey = null
+  findPainted = []
+}
+
+// ⌘K's commands typed in Find's field: their rows lead the list, as in the top bar.
+function findCommandRows(query, rows) {
+  const actions = paletteResults(query, paletteTargets(), fuzzySearch).map((result) => ({
+    key: `action:${result.key}`, id: result.key, type: 'action', label: result.kind, action: 'run', title: result.title,
+    project: '', stamp: null, open: false, entity: null, palette: result.action,
+    extra: result.context ? { kind: 'text', text: result.context, full: result.context } : null,
+  }))
+  const suggests = actions[0]?.palette.type === 'command'
+  const openLeads = rows[0]?.open && (rows[0].type === 'ask' || rows[0].type === 'answer')
+  return suggests && openLeads ? { lead: [], tail: actions } : { lead: actions, tail: [] }
+}
+
+function findModel() {
+  const query = findSettled.trim()
+  const needs = findNeeds()
+  const waiting = Boolean(query) && ((needs.history && omitsHistory()) || (needs.archived && omitsArchived()))
+  const older = query || !needs.history ? 0 : olderHistory(lastData.older, olderLens()).items
+  const data = findLensData(query)
+  // while the pointer rests on the list, a poll keeps the painted order: a re-sort (plans move on
+  // every write) must not put another row under the press. The order catches up when it leaves.
+  const keep = findKeepKeys()
+  if (pollPaint && findPointerIn) for (const key of findPainted) keep.add(key)
+  const { rows, cut } = buildFindRows(data, {
+    chip: findChip,
+    query,
+    searchFn: fuzzySearch,
+    before: older ? lastData.older?.before ?? null : null,
+    nowMs: Date.now(),
+    archivedWhole: Boolean(lastData.archivedFull),
+    keep,
+    previous: findPainted,
+    // step B: the chats as last read; the Chats line's tool toggle applies under the Chats chip only
+    chats: chatsView.list(),
+    chatTool: chatsView.tool(),
   })
+  // a row whose Note editor holds text is never hidden by the lens (a closed project, another
+  // project on the rail): the typed text stays in sight, first in the list
+  const listedKeys = new Set(rows.map((row) => row.key))
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    if (!editor.text.trim() || listedKeys.has(`item:${id}`)) continue
+    const entity = [...(lastData.g.needsYou ?? []).flatMap((group) => group.items ?? []), ...(lastData.g.notes ?? []).flatMap((group) => group.items ?? []), ...(lastData.g.done ?? [])].find((item) => item.id === id)
+    if (entity) rows.unshift(findRow(entity, { nowMs: Date.now() }))
+  }
+  return { query, rows, cut, older, waiting, commands: query ? findCommandRows(query, rows) : { lead: [], tail: [] }, data }
+}
 
-  const summary = document.createElement('summary')
-  summary.className = 'history-summary'
-  const color = pcolor(it.project)
-  const dot = document.createElement('span')
-  dot.className = 'history-dot'
-  dot.style.background = color.dot
-  dot.setAttribute('aria-hidden', 'true')
-  const copy = document.createElement('span')
-  copy.className = 'history-copy'
-  const title = document.createElement('strong')
-  title.textContent = it.title
-  const outcome = document.createElement('span')
-  outcome.className = 'history-outcome'
-  outcome.textContent = it.outcome
-    || (it.reply ? `You answered: ${it.reply}` : '')
-    || it.detail
-    || (it.status === 'dismissed' ? 'Dismissed' : 'Completed')
-  copy.append(title, outcome)
-  const meta = document.createElement('span')
-  meta.className = 'history-meta'
-  meta.textContent = `${it.project} · ${it.agent}`
-  const stamp = it.outcome_at ?? it.resolved_at ?? it.updated_at ?? it.created_at
-  const time = document.createElement('time')
-  time.dateTime = stamp
-  time.textContent = rel(stamp)
-  meta.appendChild(time)
-  const arrow = document.createElement('span')
-  arrow.className = 'history-arrow'
-  arrow.setAttribute('aria-hidden', 'true')
-  arrow.textContent = '›'
-  summary.append(dot, copy, meta, arrow)
-  el.append(summary, itemCardEl(it, { done: it.status !== 'open', header: false }))
+function findWaitText() {
+  const needs = findNeeds()
+  const history = needs.history && omitsHistory()
+  const archived = needs.archived && omitsArchived()
+  const loading = history && archived ? 'Searching older history and archived plans…'
+    : history ? 'Searching older history…' : 'Searching archived plans…'
+  return omittedWaitText(loading, { history, archived })
+}
+
+// Whether the read a waiting query depends on has failed: its rows are then as they were.
+function findWaitFailed() {
+  const needs = findNeeds()
+  return Boolean((needs.history && omitsHistory() && lastData?.olderError) || (needs.archived && omitsArchived() && lastData?.archivedError))
+}
+
+// The rows of the previous list while a query waits, as the top bar treats its options:
+// busy, disabled, and out of the field's active descendant. Freed when the read ends.
+function markFindStale(list, stale) {
+  if ((list.dataset.updating === 'true') === stale) return
+  if (stale) list.dataset.updating = 'true'
+  else delete list.dataset.updating
+  for (const main of list.querySelectorAll(':scope > .find-row > .find-row-main')) {
+    if (stale) main.setAttribute('aria-disabled', 'true')
+    else main.removeAttribute('aria-disabled')
+  }
+  // an open row's card too: a press there would be remembered and applied when the results land;
+  // and a chat row's slot
+  for (const body of list.querySelectorAll(':scope > .find-row > .find-row-body, :scope > .find-row > .find-slot')) body.inert = stale
+  if (stale) findField()?.removeAttribute('aria-activedescendant')
+  else paintFindActive()
+}
+
+function setFindStatus(text) {
+  const status = document.getElementById('findStatus')
+  if (!status) return
+  if (status.textContent !== text) status.textContent = text
+  status.hidden = !text
+}
+
+function syncFindControls() {
+  for (const chip of document.querySelectorAll('#find [data-find-chip]')) {
+    chip.setAttribute('aria-pressed', String(chip.dataset.findChip === findChip))
+  }
+  const input = findField()
+  if (input && input.value !== findQuery && document.activeElement !== input) input.value = findQuery
+}
+
+function findDomId(key) {
+  if (!findDomIds.has(key)) findDomIds.set(key, `find-row-${++findDomSeq}`)
+  return findDomIds.get(key)
+}
+
+function findRowEl(key) {
+  const el = document.createElement('div')
+  el.className = 'find-row'
+  el.setAttribute('role', 'listitem')
+  el.dataset.findKey = key
+  const main = document.createElement('button')
+  main.type = 'button'
+  main.className = 'find-row-main'
+  main.id = findDomId(key)
+  main.addEventListener('click', () => pressFindRow(key))
+  el.appendChild(main)
   return el
 }
 
-function renderDone(items) {
-  const host = document.querySelector('#done .items')
-  // Issue #184: until the closed history the page omits has been read, only the
-  // leading entries nothing omitted can precede are in their final place.
-  const older = olderHistory(lastData.older, olderLens()).items
-  const known = older ? knownHistory(items, lastData.older.before) : items
-  const { visible } = paginateWithPending(known, 'done')
-  // A focus target the page carries outside that prefix still shows at once,
-  // after the known page, as any target beyond the page cap does.
-  const protectedId = pendingFocusId ?? pagedFocusId
-  const target = known !== items && protectedId && !visible.some((it) => it.id === protectedId)
-    ? items.find((it) => it.id === protectedId)
-    : null
-  const listed = target ? [...visible, target] : visible
-  const total = items.length + older
-  host.innerHTML = total ? '' : '<p class="empty">Nothing yet.</p>'
-  for (const it of listed) host.appendChild(historyItemEl(it))
-  if (older && (historyTabPinned || shown.done > known.length)) {
-    const loading = document.createElement('p')
-    loading.className = 'empty history-loading'
-    loading.setAttribute('role', 'status')
-    loading.textContent = olderHistoryWaitText('Loading older history…')
-    host.appendChild(loading)
-  } else if (total > listed.length) host.appendChild(moreButton('done', total - listed.length))
+function findExtraEl(extra) {
+  const span = document.createElement('span')
+  span.className = 'find-extra'
+  if (!extra) return span
+  span.dataset.extra = extra.kind
+  if (extra.kind === 'bar') {
+    span.innerHTML = planBarHtml(extra, extra.label)
+    return span
+  }
+  span.textContent = extra.text
+  // the full text, for an extra cut short here or by the narrow row's ellipsis
+  if (extra.full || extra.text) span.title = extra.full || extra.text
+  return span
+}
+
+// The row at rest: the type's icon, the title, the New mark (notes keep its space), the
+// extra, the project and the age. Spans only, so step B can put one control beside it.
+function fillFindMain(main, row, nowMs) {
+  const chat = row.type === 'chat'
+  const icon = document.createElement('span')
+  icon.className = 'find-icon'
+  icon.dataset.type = row.type
+  icon.setAttribute('role', 'img')
+  // a chat's icon tells Claude Code from Copilot, and says so
+  icon.setAttribute('aria-label', chat ? `${row.label} chat` : row.label)
+  const glyph = chat ? FIND_ICONS[row.tool === 'copilot' ? 'chat-copilot' : 'chat-claude'] : FIND_ICONS[row.type]
+  icon.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${glyph ?? FIND_ICONS.finished}</svg>`
+  const title = document.createElement('span')
+  title.className = 'find-title'
+  title.textContent = row.title
+  // chat text is untrusted: textContent and attributes only. An automatic or missing title is quiet.
+  title.title = row.titleNote ? `${row.title}\n${row.titleNote}` : row.title
+  if (row.titleQuiet) title.classList.add('chats-quiet')
+  const parts = [icon, title]
+  if (row.type === 'note') {
+    const mark = document.createElement('span')
+    mark.className = 'find-new'
+    mark.textContent = findNewIds?.has(row.id) ? 'New' : ''
+    parts.push(mark)
+  }
+  if (chat && chatsView.live(row.id)) {
+    const live = document.createElement('span')
+    live.className = 'find-live'
+    live.textContent = 'Live'
+    parts.push(live)
+  }
+  parts.push(findExtraEl(row.extra))
+  // a chat row's slot sits over this space, beside the main button: its width is reserved here,
+  // so nothing moves when the slot's label changes
+  if (chat) {
+    const space = document.createElement('span')
+    space.className = 'find-slot-space'
+    space.setAttribute('aria-hidden', 'true')
+    parts.push(space)
+  }
+  const project = document.createElement('span')
+  project.className = 'find-project'
+  if (row.project) {
+    project.title = row.project
+    const dot = document.createElement('span')
+    dot.className = 'find-dot'
+    dot.setAttribute('aria-hidden', 'true')
+    dot.style.background = pcolor(row.project).dot
+    const name = document.createElement('span')
+    name.className = 'find-project-name'
+    name.textContent = row.project
+    project.append(dot, name)
+  }
+  const age = document.createElement('span')
+  age.className = 'find-age'
+  if (row.stamp) {
+    const time = document.createElement('time')
+    time.dateTime = new Date(row.stamp).toISOString()
+    time.textContent = findAge(nowMs - row.stamp)
+    age.appendChild(time)
+  }
+  parts.push(project, age)
+  main.replaceChildren(...parts)
+}
+
+function findRowOpen(row) {
+  return row.action === 'expand' && (findOpen.has(row.key) || findRowHasText(row))
+}
+
+// A read that failed falls back to a NEW empty array each tick: two empty reads are the same read.
+const sameRead = (a, b) => a === b || (Array.isArray(a) && Array.isArray(b) && a.length === 0 && b.length === 0)
+
+function updateFindRow(el, row, nowMs) {
+  const main = el.querySelector(':scope > .find-row-main')
+  const open = findRowOpen(row)
+  const isNew = row.type === 'note' && Boolean(findNewIds?.has(row.id))
+  const signature = JSON.stringify([row.type, row.label, row.title, row.extra, row.project,
+    row.stamp ? findAge(nowMs - row.stamp) : '', isNew, row.project ? pcolor(row.project).dot : '',
+    row.type === 'chat' ? [row.tool, row.titleQuiet, row.titleNote, chatsView.live(row.id)] : null])
+  if (main.dataset.signature !== signature) {
+    fillFindMain(main, row, nowMs)
+    main.dataset.signature = signature
+  }
+  el.dataset.findType = row.type
+  if (row.entity && row.type !== 'plan') el.dataset.cardId = row.id
+  else delete el.dataset.cardId
+  // step B: a chat row's one action slot, its own tab stop right after the main button
+  let slot = el.querySelector(':scope > .find-slot')
+  if (row.type === 'chat') {
+    if (!slot) {
+      slot = document.createElement('div')
+      slot.className = 'find-slot'
+      // twenty rows hold the same button: the group says whose it is
+      slot.setAttribute('role', 'group')
+      main.after(slot)
+    }
+    if (slot.getAttribute('aria-label') !== row.title) slot.setAttribute('aria-label', row.title)
+    chatsView.paintSlot(slot, row.id)
+  } else slot?.remove()
+  let body = el.querySelector(':scope > .find-row-body')
+  if (row.action === 'expand') {
+    main.setAttribute('aria-expanded', String(open))
+    main.setAttribute('aria-controls', `${main.id}-body`)
+  } else {
+    main.removeAttribute('aria-expanded')
+    main.removeAttribute('aria-controls')
+  }
+  if (!open) {
+    body?.remove()
+    return
+  }
+  if (!body) {
+    body = document.createElement('div')
+    body.className = 'find-row-body'
+    body.id = `${main.id}-body`
+    el.appendChild(body)
+  }
+  if (row.type === 'chat') {
+    // the Chats page's facts and controls, painted in place by the chats view
+    chatsView.paintBody(body, row.id, nowMs)
+    return
+  }
+  // the card is built only while the row is open, and rebuilt only when what it shows changed
+  const it = row.entity
+  const cardSignature = JSON.stringify([it, Boolean(itemNoteEditors[it.id]), itemNoteDrafts[it.id]?.pending ?? null,
+    itemNoteDrafts[it.id]?.error ?? null, fileLinksCopy(), Boolean(linkFileActions()), hubFiles.available()])
+  if (body.dataset.signature !== cardSignature || !sameRead(body.findLinks, lastData.links) || !sameRead(body.findIssues, lastData.issues)) {
+    // agent and stream are no longer on the row: one quiet line above the card says them (agent text: textContent)
+    const from = [it.agent, it.stream].filter(Boolean).join(' · ')
+    const origin = document.createElement('p')
+    origin.className = 'find-row-origin'
+    origin.textContent = from
+    origin.hidden = !from
+    const parts = [origin, itemCardEl(it, { done: it.status !== 'open', header: false })]
+    const problem = itemNoteDrafts[it.id]?.error
+    if (problem) {
+      // the text itself is kept on Home, under the unsent responses; here the row says what happened
+      const line = document.createElement('p')
+      line.className = 'find-row-problem'
+      line.setAttribute('role', 'status')
+      line.textContent = `${problem} Your text is kept on Home, under unsent responses.`
+      parts.push(line)
+    }
+    body.replaceChildren(...parts)
+    body.dataset.signature = cardSignature
+    body.findLinks = lastData.links
+    body.findIssues = lastData.issues
+  }
+}
+
+function reconcileFindList(list, rows, nowMs) {
+  // Moving a node that holds focus blurs it, and plan and command rows have no card focus
+  // bookmark: note the focused row (by key) and whether focus was on its main button
+  const focused = document.activeElement instanceof Element ? document.activeElement.closest('#findList > .find-row[data-find-key]') : null
+  const focusKey = focused?.dataset.findKey ?? null
+  const focusOnMain = Boolean(focused) && document.activeElement === focused.querySelector(':scope > .find-row-main')
+  // a control inside a row (a chat's slot, a control in an open body) the move below would blur
+  const focusedInside = focused && !focusOnMain ? document.activeElement : null
+  const wanted = new Set(rows.map((row) => row.key))
+  const existing = new Map()
+  for (const child of [...list.children]) {
+    // the rows that left go first, so none of the placements below moves a row past them
+    if (child.dataset.findKey && wanted.has(child.dataset.findKey)) existing.set(child.dataset.findKey, child)
+    else child.remove()
+  }
+  let previous = null
+  for (const row of rows) {
+    let el = existing.get(row.key)
+    if (!el) el = findRowEl(row.key)
+    updateFindRow(el, row, nowMs)
+    const expected = previous ? previous.nextElementSibling : list.firstElementChild
+    if (el !== expected) list.insertBefore(el, expected)
+    previous = el
+  }
+  if (focusOnMain && (!document.activeElement || document.activeElement === document.body)) {
+    list.querySelector(`:scope > [data-find-key="${CSS.escape(focusKey)}"] > .find-row-main`)?.focus({ preventScroll: true })
+  } else if (focusedInside?.isConnected && (!document.activeElement || document.activeElement === document.body)) {
+    // the row kept its control nodes, so the same node takes focus back
+    focusedInside.focus({ preventScroll: true })
+  }
+}
+
+// The highlight Enter opens: the first row unless the arrows moved it. Painted only.
+function findActiveRow() {
+  const keys = [...findRowsByKey.keys()]
+  return keys.includes(findActiveKey) ? findActiveKey : keys[0] ?? null
+}
+
+function paintFindActive() {
+  const active = findActiveRow()
+  for (const el of document.querySelectorAll('#findList > .find-row')) {
+    if (el.dataset.findKey === active) el.dataset.active = 'true'
+    else delete el.dataset.active
+  }
+  const input = findField()
+  if (!input) return
+  if (active) input.setAttribute('aria-activedescendant', findDomId(active))
+  else input.removeAttribute('aria-activedescendant')
+}
+
+function moveFindActive(delta) {
+  const keys = [...findRowsByKey.keys()]
+  if (!keys.length) return
+  const at = keys.indexOf(findActiveRow())
+  findActiveKey = keys[(at + delta + keys.length) % keys.length]
+  paintFindActive()
+  document.querySelector(`#findList > [data-find-key="${CSS.escape(findActiveKey)}"]`)?.scrollIntoView?.({ block: 'nearest' })
+}
+
+function renderFind() {
+  const list = document.getElementById('findList')
+  const foot = document.getElementById('findFoot')
+  if (!list || !foot || !lastData) return
+  syncFindControls()
+  chatsView.beginPaint()
+  const model = findModel()
+  const waitFailed = model.waiting && findWaitFailed()
+  if (model.waiting && !waitFailed) {
+    // a query waits for the whole of what it searches: the rows on screen stay, busy and inert
+    findWaiting = true
+    findStale = true
+    list.setAttribute('aria-busy', 'true')
+    markFindStale(list, findStale)
+    setFindStatus(findWaitText())
+    foot.replaceChildren()
+    foot.dataset.says = ''
+    paintFindChatsLines(model)
+    return
+  }
+  // when the read failed, the query is drawn over what is loaded, under the failure line
+  findWaiting = false
+  findStale = false
+  list.removeAttribute('aria-busy')
+  markFindStale(list, false)
+  const nowMs = Date.now()
+  const { rows } = model
+  const page = rows.slice(0, shown.find)
+  // kept rows, a landing target and a focused row stay in sight after the page
+  const extra = findKeepKeys()
+  const target = pendingFocusId ?? pagedFocusId
+  if (target) extra.add(`item:${target}`)
+  // an open row stays in sight when a re-read or a poll moves it past the page
+  for (const row of rows.slice(shown.find)) if (findOpen.has(row.key)) extra.add(row.key)
+  const beyond = rows.slice(shown.find).filter((row) => extra.has(row.key))
+  const listed = [...page, ...beyond]
+  const drawn = [...model.commands.lead, ...listed, ...model.commands.tail]
+  findRowsByKey = new Map(drawn.map((row) => [row.key, row]))
+  reconcileFindList(list, drawn, nowMs)
+  for (const key of [...findDomIds.keys()]) if (!findRowsByKey.has(key)) findDomIds.delete(key)
+  findPainted = listed.map((row) => row.key)
+  paintFindActive()
+
+  const rest = rows.length - listed.length
+  const olderWaits = !model.query && findNeeds().history && (model.cut > 0 || model.older > 0)
+  paintFindChatsLines(model)
+  if (waitFailed) setFindStatus(findWaitText())
+  // under the Chats chip the Chats line says what a short or empty list means
+  else if (drawn.length || findChip === 'chats') setFindStatus('')
+  // under All with a query the chats are searched too: unread (still loading, or failed) they are
+  // not searched, so "Nothing matches" would be false; the foot's own line says why
+  else if (model.query && findChip === 'all' && chatsView.list() === null && (chatsView.loading() || chatsView.failed())) setFindStatus('')
+  else if (model.query) setFindStatus(`Nothing matches "${model.query}".`)
+  else if (olderWaits) setFindStatus('')
+  else {
+    // "Nothing here yet." only when the lens holds nothing at all, plans and chats included
+    const feed = buildFindRows(model.data, { chip: 'all', nowMs }).rows.length
+    const plans = buildFindRows(model.data, { chip: 'plans', nowMs }).rows.length
+    const chats = chatsView.list()?.filter((chat) => !chat.hidden?.length).length ?? 0
+    setFindStatus(feed + plans + chats === 0 ? FIND_EMPTY.none : FIND_EMPTY[findChip])
+  }
+  // the first row "Show 20 more" reveals; the foot is rebuilt only when its KIND changes (more,
+  // older, loading), and a changed number is written into the button in place, so a poll never
+  // takes focus off it
+  findRevealKey = rows.slice(shown.find).find((row) => !extra.has(row.key))?.key ?? null
+  // an empty list reads the history on its own (findDrawsNothing), so it says so, not "Show more"
+  const kind = rest > 0 ? 'more' : olderWaits ? (findHistoryPinned || !listed.length ? 'loading' : 'older') : ''
+  const footText = kind === 'more' ? `Show ${Math.min(FIND_PAGE, rest)} more`
+    : kind === 'loading' ? olderHistoryWaitText('Loading older history…') : kind === 'older' ? 'Show more' : ''
+  if (foot.dataset.says !== kind) {
+    foot.dataset.says = kind
+    foot.replaceChildren()
+    if (kind === 'more') {
+      const more = btn(footText, showMoreInFind)
+      more.className = 'show-more find-more'
+      foot.appendChild(more)
+    } else if (kind === 'loading') {
+      const loading = document.createElement('p')
+      loading.className = 'find-loading'
+      loading.setAttribute('role', 'status')
+      loading.textContent = footText
+      foot.appendChild(loading)
+    } else if (kind === 'older') {
+      const older = btn(footText, showOlderInFind)
+      older.className = 'show-more find-older'
+      foot.appendChild(older)
+    }
+  } else if (kind && foot.firstElementChild && foot.firstElementChild.textContent !== footText) {
+    foot.firstElementChild.textContent = footText
+  }
+  markFindNotesSeen(listed, model.query)
+}
+
+// Step B: the line under the chips while Chats is selected (the tool toggles, Show all, Refresh,
+// the notes and the empty texts), and the foot after the list: one line when the chats could not
+// be read for a query under All, and the retention note under the Chats chip.
+function paintFindChatsLines(model) {
+  const line = document.getElementById('findChats')
+  if (line) {
+    const onChats = findChip === 'chats'
+    line.hidden = !onChats
+    if (onChats) chatsView.paintBar(line, { shown: model.rows.filter((row) => row.type === 'chat').length })
+  }
+  const fail = document.getElementById('findChatsFoot')
+  if (fail) chatsView.paintFoot(fail, findChip === 'all' && Boolean(model.query), { note: findChip === 'chats' })
+}
+
+// A chats change to draw. Every Find repaint goes through the page's render: one nobody pressed
+// for (a read on entering Find, main's answer, a timer) through the poll's gate; the answer to the
+// person's own press as their press's frame. Either waits for a press that is down to end, so a
+// re-read never moves or removes the row under it (#38).
+let chatsHeld = null   // the change a press holds: whether it was passive
+let chatsHeldTimer = null
+function chatsChanged({ passive = false, reset = false } = {}) {
+  if (reset) {
+    // a deliberate change of what the Chats chip lists, as a chip press is
+    endFindStay()
+    findActiveKey = null
+    shown.find = FIND_PAGE
+  }
+  if (!lastData || document.getElementById('find').hidden) return
+  if (pressHeld(pressedAt, Date.now())) {
+    chatsHeld = chatsHeld === null ? passive : chatsHeld && passive
+    if (chatsHeldTimer === null) chatsHeldTimer = setTimeout(flushChatsHeld, PRESS_GRACE_MS)
+    return
+  }
+  if (passive) renderIfIdle()
+  else forceRender()
+}
+
+function flushChatsHeld() {
+  if (chatsHeldTimer !== null) clearTimeout(chatsHeldTimer)
+  chatsHeldTimer = null
+  if (chatsHeld === null) return
+  const passive = chatsHeld
+  chatsHeld = null
+  chatsChanged({ passive })
+}
+
+// #chats, the session panel's "Continued from a Copilot chat" line: Find with the Chats chip
+function openChatsInFind() {
+  openFind({ chip: 'chats', clearQuery: true, focus: 'field' })
+}
+
+// "Show 20 more": the first row it reveals takes focus.
+function showMoreInFind() {
+  const reveal = findRevealKey
+  shown.find += FIND_PAGE
+  forceRender()
+  if (reveal) document.querySelector(`#findList > [data-find-key="${CSS.escape(reveal)}"] > .find-row-main`)?.focus({ preventScroll: true })
+}
+
+// "Show more" past the cut: the complete history is read while the person stays on Find.
+function showOlderInFind() {
+  findHistoryPinned = true
+  forceRender()
+  document.getElementById('findList')?.focus({ preventScroll: true })
+  requestHistoryPaint()
+}
+
+// A fresh note counts as read when its row is drawn under the Notes chip with no query,
+// in a frame painted while the window is visible and focused. All does not mark notes.
+function markFindNotesSeen(listed, query) {
+  if (findChip !== 'notes' || query || document.getElementById('find').hidden || !windowActive()) return
+  const all = lastData.g.notes.flatMap((gr) => gr.items)
+  const fresh = new Set(all.map((n) => n.id))
+  const viewed = listed.filter((row) => row.type === 'note' && fresh.has(row.id)).map((row) => row.entity)
+  const shownIds = new Set(viewed.map((n) => n.id))
+  markNotesSeen(viewed, all.filter((n) => !shownIds.has(n.id)), all)
+}
+
+function pressFindRow(key, { enter = false } = {}) {
+  const row = findRowsByKey.get(key)
+  if (!row || findStale) return
+  findActiveKey = key
+  if (row.action === 'run') {
+    runPaletteAction(row.palette, findField())
+    return
+  }
+  if (row.action === 'home') {
+    focusItem(row.id, row.source ?? null)
+    return
+  }
+  if (row.action === 'plans') {
+    focusItem(row.id, { ...(row.source ?? {}), keepLens: true })
+    return
+  }
+  if (findOpen.has(key) && !enter) {
+    // unsent text in its Note editor keeps a row open: show the person where it is
+    if (findRowHasText(row)) {
+      focusItemNoteEditor(row.id, 'find')
+      return
+    }
+    findOpen.delete(key)
+  } else {
+    findOpen.add(key)
+  }
+  forceRender()
+}
+
+function setFindQueryText(text) {
+  if (findTimer) {
+    clearTimeout(findTimer)
+    findTimer = null
+  }
+  findQuery = text
+  findSettled = text
+  findActiveKey = null
+  shown.find = FIND_PAGE
+  endFindStay()
+  const input = findField()
+  if (input) input.value = text
+}
+
+function setFindChip(chip) {
+  if (!FIND_CHIPS.includes(chip) || chip === findChip) return
+  findChip = chip
+  findActiveKey = null
+  shown.find = FIND_PAGE
+  endFindStay()
+  // reaching the chats from inside Find is an entry into them: the 60-second rule and the
+  // bridges' asks run as on entering Find (the tab's own entry already did when Find was hidden)
+  if (chip === 'chats' && !document.getElementById('find').hidden) chatsView.opened()
+  forceRender()
+  requestHistoryPaint()
+}
+
+function focusFindField({ select = false } = {}) {
+  const input = findField()
+  if (!input || input.closest('[hidden]')) return
+  input.focus({ preventScroll: true })
+  if (select) input.select()
+}
+
+// Entering Find: the top bar's text moves into Find's empty field, and the unread notes are
+// snapshotted so their New marks hold until the person leaves.
+function enterFind() {
+  const top = document.getElementById('search')
+  if (top?.value.trim() && !findQuery.trim()) {
+    setFindQueryText(top.value)
+    resetSearch()
+  } else closeSearchResults()
+  endFindStay()
+  findHistoryPinned = false
+  // over every project, closed ones included, so a lens change on Find still shows the right marks
+  findNewIds = lastData
+    ? new Set(unreadNotes(lastData.g.notes.flatMap((gr) => gr.items), notesSeenAt, Date.now(), notesSeenIds)
+      .map((note) => note.id))
+    : new Set()
+}
+
+function leaveFind() {
+  if (findTimer) {
+    clearTimeout(findTimer)
+    findTimer = null
+    findSettled = findQuery
+  }
+  endFindStay()
+  findNewIds = null
+  findHistoryPinned = false
+  findPointerIn = false
+}
+
+// G F, G N, G H and Home's notes chip. `focus`: the field, the list or nothing.
+function openFind({ chip = null, clearQuery = false, focus = 'field' } = {}) {
+  const wasShowing = !document.getElementById('find').hidden
+  selectTab('find', { paint: false })
+  if (activeTab !== 'find') return
+  // a go-to destination starts at the top, as every tab's does (focusKeyboardPanel)
+  if (window.scrollY !== 0) window.scrollTo(0, 0)
+  if (clearQuery) setFindQueryText('')
+  if (chip && chip !== findChip) {
+    findChip = chip
+    findActiveKey = null
+    shown.find = FIND_PAGE
+  }
+  // G C, #chats and the "Continued from a Copilot chat" link from inside Find enter the chats
+  // too (selectTab did when Find was hidden)
+  if (wasShowing && findChip === 'chats') chatsView.opened()
+  forceRender()
+  requestHistoryPaint()
+  if (focus === 'field') focusFindField()
+  else if (focus === 'list') document.getElementById('findList')?.focus({ preventScroll: true })
+}
+
+// A way in that lands on Find (focusItem): the lens changes only when the target is outside
+// it; the query and chip stay when the target is in the list, else the query clears and the
+// narrowest chip that holds it is selected. The row opens.
+function prepareFindLanding(item) {
+  const closed = closedSet()
+  const outside = (projectFilter && item.project !== projectFilter) || (agentFilter && item.agent !== agentFilter)
+    || (!findSettled.trim() && closed.has(item.project) && projectFilter !== item.project)
+  if (outside) {
+    projectFilter = item.project
+    agentFilter = null
+  }
+  const key = `item:${item.id}`
+  const listed = buildFindRows(findLensData(findSettled.trim()), {
+    chip: findChip, query: findSettled.trim(), searchFn: fuzzySearch, nowMs: Date.now(), archivedWhole: Boolean(lastData.archivedFull),
+  }).rows.some((row) => row.key === key)
+  if (!listed) {
+    setFindQueryText('')
+    const type = findRow(item).type
+    findChip = type === 'note' ? 'notes' : type === 'answer' ? 'answers' : 'all'
+    // outside the lens is decided again now the query is gone: the no-query list hides a
+    // closed project, so it is peeked as for any landing
+    if (closed.has(item.project) && projectFilter !== item.project) {
+      projectFilter = item.project
+      agentFilter = null
+    }
+  }
+  findLandingKey = key
+  findOpen.add(key)
+  // a target only the complete history holds keeps it loaded while the person stays on Find
+  if (!allItems(lastData.page).some((other) => other.id === item.id)) findHistoryPinned = true
+}
+
+function initFind() {
+  const input = findField()
+  const list = document.getElementById('findList')
+  if (!input || !list) return
+  for (const chip of document.querySelectorAll('#find [data-find-chip]')) {
+    chip.addEventListener('click', () => setFindChip(chip.dataset.findChip))
+  }
+  input.addEventListener('input', () => {
+    findQuery = input.value
+    if (findTimer) clearTimeout(findTimer)
+    findTimer = setTimeout(() => {
+      findTimer = null
+      // a stray key undone within the debounce settles on the same query: nothing moves
+      const changed = findQuery.trim() !== findSettled.trim()
+      findSettled = findQuery
+      if (changed) {
+        findActiveKey = null
+        shown.find = FIND_PAGE
+        endFindStay()
+      }
+      forceRender()
+      // the person's own query asked for this frame: what it searches is read and painted
+      // outside the poll's gate, as an unrelated draft must not hide it (#38)
+      requestHistoryPaint()
+    }, 120)
+    // overlap reading what a query searches with the debounce, as the top bar does
+    requestHistory()
+  })
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) {
+      event.stopPropagation()
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      if (input.value) {
+        setFindQueryText('')
+        forceRender()
+      } else input.blur()
+      return
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      event.stopPropagation()
+      moveFindActive(event.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      // never while the query is settling or its results are waiting
+      if (findTimer || findWaiting || findSettled !== findQuery) return
+      const key = findActiveRow()
+      if (key) pressFindRow(key, { enter: true })
+    }
+  })
+  // Escape on a row, or inside an open one, closes it and focuses its main button; it never
+  // exits a project peek or clears a selection elsewhere
+  list.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.isComposing) return
+    const rowEl = event.target instanceof Element ? event.target.closest('.find-row[data-find-key]') : null
+    if (!rowEl) return
+    event.preventDefault()
+    event.stopPropagation()
+    const key = rowEl.dataset.findKey
+    const itemId = key.startsWith('item:') ? key.slice(5) : null
+    // an editor left empty goes with the row: it must not reappear wherever the item is drawn next
+    if (itemId && itemNoteEditors[itemId] && !itemNoteEditors[itemId].text.trim()) delete itemNoteEditors[itemId]
+    if (findOpen.has(key) && !findRowHasText(findRowsByKey.get(key))) {
+      findOpen.delete(key)
+      forceRender()
+    }
+    document.querySelector(`#findList > [data-find-key="${CSS.escape(key)}"] > .find-row-main`)?.focus({ preventScroll: true })
+  })
+  // a press inside an open row is the person acting on it: it stays where it is until they leave
+  list.addEventListener('click', (event) => {
+    const inBody = event.target instanceof Element ? event.target.closest('.find-row-body, .find-slot') : null
+    if (findStale && inBody) {
+      // the card belongs to the previous list: a press here must not be remembered for later
+      event.stopPropagation()
+      event.preventDefault()
+      return
+    }
+    // a chat row's slot is the person acting on it too
+    const control = event.target instanceof Element ? event.target.closest('.find-row-body button, .find-slot button') : null
+    const key = control?.closest('.find-row[data-find-key]')?.dataset.findKey
+    if (!key) return
+    findKept.add(key)
+  }, true)
+  // back on screen with a query: read what it searches at once, not on the next tick
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden' && activeTab === 'find' && findQuery.trim()) requestHistoryPaint()
+  })
+  // a chats change held by a press is drawn once the press ends, after its click has landed
+  const releaseChats = () => { if (chatsHeld !== null) setTimeout(flushChatsHeld, 0) }
+  window.addEventListener('pointerup', releaseChats, true)
+  window.addEventListener('pointercancel', releaseChats, true)
+  list.addEventListener('pointerenter', () => { findPointerIn = true })
+  list.addEventListener('pointerleave', () => { findPointerIn = false })
+  document.getElementById('tabs')?.addEventListener('pointerdown', (event) => {
+    findEntryTouch = event.pointerType === 'touch'
+  }, true)
 }
 
 const STATUS_LABEL = {
@@ -8764,33 +9571,6 @@ function stepMark(r, needs, archived) {
 // boards where the human clicked "show" on hidden done rows, overriding the
 // global hide-completed pill for that board only
 const showDoneBoards = new Set()
-
-// collapsed cards (items + boards) by id — same rebuild problem, but also persisted
-const CARDS_KEY = 'agent-inbox-cards-collapsed'
-let collapsedCards = {}
-try { collapsedCards = JSON.parse(localStorage.getItem(CARDS_KEY)) || {} } catch { /* fresh start */ }
-let liveCardIds = new Set() // ids seen in the current render, for pruning stale keys
-
-function setCardCollapsed(id, collapsed) {
-  if (collapsed) collapsedCards[id] = true
-  else delete collapsedCards[id]
-  localStorage.setItem(CARDS_KEY, JSON.stringify(collapsedCards))
-}
-
-function pruneCollapsedCards() {
-  let changed = false
-  for (const id of Object.keys(collapsedCards)) {
-    if (!liveCardIds.has(id)) { delete collapsedCards[id]; changed = true }
-  }
-  if (changed) localStorage.setItem(CARDS_KEY, JSON.stringify(collapsedCards))
-}
-
-function cardify(el, id) {
-  el.dataset.cardId = id
-  liveCardIds.add(id)
-  if (!collapsedCards[id]) el.open = true
-  el.addEventListener('toggle', () => setCardCollapsed(id, !el.open))
-}
 
 let showArchived = false            // session-only: the archived fold is not persisted
 const sessionActiveBoards = new Set() // board ids seen active at some point this session (§9)
@@ -9518,7 +10298,10 @@ const itemLatestIntents = {}     // item id → latest non-cancelled human inten
 const itemDraftRetryIntents = {} // item id → exact ambiguous intent while its draft generation is unchanged
 const itemDraftSubmissions = {}  // item id → in-flight free-text intents keyed by draft generation
 const staleItemDrafts = {}       // recovery key → refused/orphaned answer preserved outside the poll gate
-const itemNoteDrafts = {}        // item id → pending or unconfirmed native Note attempt
+const itemNoteDrafts = {}        // item id → pending or unconfirmed Note save
+// UX pass, slice 4, step 0: item id → { title, text } of its open Note editor. A typed
+// draft like an answer's: it holds the poll's rebuild while in use and survives a reload.
+const itemNoteEditors = {}
 const NOTE_REFUSED = 'Note was not saved — this item is closed or no longer available.'
 const NOTE_UNCONFIRMED = 'Note save was not confirmed — review the stored note before retrying.'
 const ITEM_REPLY_INTENT_SESSION_KEY = 'agent-inbox-reply-intent'
@@ -9908,6 +10691,15 @@ function reconcileDraftOwners() {
     delete rowDraftMeta[id]
     recovered = true
   }
+  // UX pass, slice 4, step 0: an open Note editor whose item closed or left keeps its text
+  // in the unsent responses, as a refused save would
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    if (freshItem(id)?.status === 'open') continue
+    delete itemNoteEditors[id]
+    if (!editor.text.trim() || itemNoteDrafts[id]?.pending) continue
+    itemNoteDrafts[id] = { title: editor.title, text: editor.text, pending: false, error: NOTE_REFUSED }
+    recovered = true
+  }
   if (recovered && pollPaint) {
     recoveryNavPending = true
     scheduleDraftSave()
@@ -10079,6 +10871,9 @@ function collectDrafts() {
   }
   for (const [id, draft] of Object.entries(itemNoteDrafts)) {
     add({ type: 'note', itemId: id, title: draft.title, text: draft.text, error: draft.error ?? '', pending: Boolean(draft.pending) })
+  }
+  for (const [id, editor] of Object.entries(itemNoteEditors)) {
+    add({ type: 'note-edit', itemId: id, title: editor.title ?? '', text: editor.text })
   }
   // #411: one per session, in its composer or in the unsent responses
   for (const [session, draft] of [...messageRecoveries, ...messageDrafts]) {
@@ -10462,6 +11257,14 @@ function placeRestoredDraft(key, draft) {
         // a save still in flight when the page went away was never confirmed
         error: draft.pending || !draft.error ? NOTE_UNCONFIRMED : draft.error,
       }
+      return null
+    }
+    case 'note-edit': {
+      // back in its editor; one the server already holds is done (reconcileDraftOwners
+      // moves one whose item closed to the unsent responses)
+      const item = freshItem(draft.itemId)
+      if (item && (item.annotation ?? '') === draft.text) return null
+      itemNoteEditors[draft.itemId] = { title: draft.title, text: draft.text }
       return null
     }
     default:
@@ -11060,29 +11863,107 @@ function answerEl(it, { surface = null } = {}) {
   return wrap
 }
 
+// UX pass, slice 4, step 0: Note opens an editor in place, on the press only. The
+// native prompt() it used throws in the desktop app's own window, and dialogs are off
+// in another Mac's Inbox, so it never worked there.
 function itemNoteAction(it) {
   const pending = Boolean(itemNoteDrafts[it.id]?.pending)
-  const action = btn(pending ? 'Saving note…' : 'Note', () => editItemNote(it))
+  const action = btn(pending ? 'Saving note…' : 'Note', (event) => openItemNoteEditor(it, event.currentTarget))
   action.dataset.noteItem = it.id
   action.disabled = pending
   action.title = 'Add or edit feedback for agents; leave it blank to clear.'
+  action.setAttribute('aria-expanded', String(Boolean(itemNoteEditors[it.id])))
   return action
 }
 
-function editItemNote(it) {
+// `from`: the control pressed, whose container is where the rebuilt editor takes focus.
+function openItemNoteEditor(it, from = null) {
   if (itemNoteDrafts[it.id]?.pending) return
+  if (!itemNoteEditors[it.id]) {
+    const current = freshItem(it.id) ?? it
+    // a kept, unsent attempt comes back for review before anything is sent again
+    itemNoteEditors[it.id] = { title: current.title, text: itemNoteDrafts[it.id]?.text ?? current.annotation ?? '' }
+  }
+  const scopeId = from?.closest?.('[id]')?.id ?? null
+  forceRender()
+  focusItemNoteEditor(it.id, scopeId)
+}
+
+function focusItemNoteEditor(id, scopeId = null) {
+  const key = CSS.escape(`note:${id}`)
+  const scopes = [scopeId && document.getElementById(scopeId), document.querySelector('main > .panel:not([hidden])'), document]
+  for (const scope of scopes) {
+    const input = scope?.querySelector?.(`[data-draft-focus-key="${key}"]`)
+    if (!input) continue
+    input.focus({ preventScroll: true })
+    input.setSelectionRange(input.value.length, input.value.length)
+    if (document.activeElement === input) return true
+  }
+  return false
+}
+
+// Retry on a kept Note attempt: the item's own editor holds the text for review, and
+// nothing is sent until Save.
+function reviewItemNoteRecovery(id, title) {
+  openItemNoteEditor({ id, title })
+  focusItem(id)
+  requestAnimationFrame(() => focusItemNoteEditor(id))
+}
+
+function itemNoteEditorEl(it) {
+  const editor = itemNoteEditors[it.id]
+  const wrap = document.createElement('div')
+  wrap.className = 'note-editor'
+  const input = document.createElement('textarea')
+  input.className = 'reply-input note-editor-input'
+  input.rows = 2
+  input.value = editor.text
+  input.dataset.draftFocusKey = `note:${it.id}`
+  input.setAttribute('aria-label', 'Your note for agents; leave it blank to clear')
+  input.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
+  input.placeholder = 'your note for agents…'
+  input.addEventListener('input', () => {
+    if (itemNoteEditors[it.id]) itemNoteEditors[it.id].text = input.value
+    resizeReplyEditor(input)
+    resumeRender()
+  })
+  const actions = document.createElement('div')
+  actions.className = 'note-editor-actions'
+  const save = () => saveItemNote(it)
+  bindReplyEditor(input, save)
+  actions.appendChild(btn('Save', save))
+  actions.appendChild(btn('Cancel', (event) => {
+    // the surface the press was made in (Home, Find, the Review queue), found again after the rebuild
+    const scopeId = event.currentTarget?.closest?.('[id]')?.id ?? null
+    keepFindRowOpen(it.id)
+    delete itemNoteEditors[it.id]
+    forceRender()
+    const sel = `[data-note-item="${CSS.escape(it.id)}"]`
+    const scopes = [scopeId && document.getElementById(scopeId), document.querySelector('main > .panel:not([hidden])')]
+    for (const scope of scopes) {
+      const note = scope?.querySelector?.(sel)
+      if (!note) continue
+      note.focus({ preventScroll: true })
+      if (document.activeElement === note) break
+    }
+  }))
+  wrap.append(input, actions)
+  return wrap
+}
+
+function saveItemNote(it) {
+  if (itemNoteDrafts[it.id]?.pending) return
+  const editor = itemNoteEditors[it.id]
+  if (!editor) return
+  keepFindRowOpen(it.id)
+  delete itemNoteEditors[it.id]
   return withPendingResponse(async () => {
     const prior = itemNoteDrafts[it.id]
     const current = freshItem(it.id) ?? it
-    const text = prompt('Your note (leave blank to clear):', prior?.text ?? current.annotation ?? '')
-    if (text == null) return
-    const draft = { title: current.title, text, pending: true, error: prior?.error ?? '' }
+    const text = editor.text
+    const draft = { title: current.title ?? editor.title, text, pending: true, error: prior?.error ?? '' }
     itemNoteDrafts[it.id] = draft
-    for (const button of document.querySelectorAll(`[data-note-item="${CSS.escape(it.id)}"]`)) {
-      button.disabled = true
-      button.textContent = 'Saving note…'
-    }
-    if (draft.error) forceRender()
+    forceRender()
     const result = await postJSON(`/api/items/${it.id}/annotate`, { text })
     if (itemNoteDrafts[it.id] !== draft) return
     if (result?.ok === true) {
@@ -11161,6 +12042,7 @@ function itemCardEl(it, {
     }
     actions.appendChild(itemNoteAction(it))
     el.appendChild(actions)
+    if (itemNoteEditors[it.id]) el.appendChild(itemNoteEditorEl(it))
   }
   return el
 }
@@ -11214,22 +12096,6 @@ async function changeAnswer(it, msgEl) {
   //     unconditionally, outside the gate.
   setOpenRow(it.id)
   await reloadAndPaint()
-}
-
-// notes / done keep a collapsible card; the body is the same component
-function itemEl(it, done = false) {
-  const el = document.createElement('details')
-  const answered = it.kind === 'question' && it.status === 'open' && it.reply
-  el.className = `item ${it.kind}${answered ? ' answered' : ''}`
-  const stream = it.stream ? ` · ${esc(it.stream)}` : ''
-  el.innerHTML = `
-    <summary class="card-summary">
-      <div class="meta"><span class="caret"></span>${esc(it.agent)}${stream}</div>
-      <div class="title">${esc(it.title)}</div>
-    </summary>`
-  cardify(el, it.id)
-  el.appendChild(itemCardEl(it, { done, header: false }))
-  return el
 }
 
 // ── keyboard (spec §13) ─────────────────────────────────────────────────────
@@ -11404,6 +12270,11 @@ function runIntent(intent) {
 }
 
 function focusSearch(selectText = false) {
+  // on Find the top bar's search is not drawn: ⌘K and / focus Find's own field
+  if (activeTab === 'find' && !settingsOpen()) {
+    focusFindField({ select: selectText })
+    return
+  }
   const search = document.getElementById('search')
   search.focus()
   if (selectText) search.select()
@@ -11425,7 +12296,7 @@ function keyboardActionScope() {
   const scope = keyboardScope()
   if (scope !== document) return scope
   const focused = document.activeElement?.closest?.(
-    '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item, #dashFocus [data-panel-ask]',
+    '#needsYouList .nrow[data-card-id], .row-panel-row, .board-row, details.item, #find .find-row, #dashFocus [data-panel-ask]',
   )
   if (focused && !focused.closest('[hidden]')) return focused
   // in the lanes the scope is the focused panel ask above or nothing: never the list's row
@@ -11461,6 +12332,15 @@ function navigateKeyboard(destination) {
     // G I: the asks on Home, no longer a tab of their own
     selectTab('dashboard')
     if (activeTab === 'dashboard') focusKeyboardPanel('needsYou')
+  } else if (destination === 'find') {
+    openFind({ focus: 'field' })
+  } else if (destination === 'findNotes') {
+    openFind({ chip: 'notes', clearQuery: true, focus: 'list' })
+  } else if (destination === 'findAll') {
+    openFind({ chip: 'all', clearQuery: true, focus: 'list' })
+  } else if (destination === 'findChats') {
+    // G C (step B): Find: Chats, the field focused as Find's own way in does
+    openFind({ chip: 'chats', clearQuery: true, focus: 'field' })
   } else if (TAB_IDS.includes(destination)) {
     selectTab(destination)
     // selectTab refuses an empty agent tab; focus stays where it was
@@ -11554,6 +12434,11 @@ function initKeys() {
     // only Home has rows to move through and an ask to close: elsewhere the arrows scroll the page
     // and Escape is left alone
     if ((intent.type === 'move' || intent.type === 'collapse') && activeTab !== 'dashboard') return
+    // UX pass, slice 4: printable shortcuts that act elsewhere (Home's, the Review queue's) do
+    // nothing on Find, and Escape inside Find leaves the peek and the selection alone
+    if (activeTab === 'find' && !triageDeck && keyboardScope() === document && intent.type !== 'search' && intent.type !== 'blur') {
+      if (!['exitPeek', 'clearSelection'].includes(intent.type) || document.activeElement?.closest?.('#find')) return
+    }
     e.preventDefault()
     runIntent(intent)
   })
@@ -13045,6 +13930,7 @@ initTriage()
 initRelay()
 initMission()
 initSearch()
+initFind()
 initResponsive()
 initSidebarCollapse()
 initPaneResizers()

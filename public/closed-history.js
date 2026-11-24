@@ -50,21 +50,6 @@ export function olderHistory(summary, { project = null, agent = null, hidden = [
   }
 }
 
-// The leading History entries no omitted item can precede. An item is never
-// touched before it is created, so every omitted item sorts after anything the
-// page carries that was created after `before`. Aged notes always follow closed
-// history, so the first one ends the run.
-export function knownHistory(done, before) {
-  if (before == null) return done
-  const known = []
-  for (const item of done) {
-    if (item.status === 'open' && item.kind !== 'done') break
-    if (!(item.created_at > before)) break
-    known.push(item)
-  }
-  return known
-}
-
 // The leading recorded outcomes (newest first) no omitted item can outrank:
 // `latest` is the newest stamp any omitted outcome in the lens carries.
 export function knownOutcomes(outcomes, latest) {

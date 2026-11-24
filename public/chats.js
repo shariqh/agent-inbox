@@ -1,9 +1,9 @@
 // public/chats.js
-// The Chats tab's pure model (#586 PR 2): reading the /api/chats body, the sort,
-// search and filters, the home folder shown as ~, the labels, the fetch rule and
-// the resume command, (PR 3) the Resume in Terminal control and its outcome, and
+// The chats' pure model (#586 PR 2; Find's Chats chip since UX pass, slice 4, step B): reading the
+// /api/chats body, the sort, the search and the tool filter, the home folder shown as ~, the labels,
+// the fetch rule and the resume command, (PR 3) the Resume in Terminal control and its outcome, and
 // (#586 phase 2) Continue here…'s eligibility and a chat's link to a launch of this app.
-// No DOM, clock or fetch; public/chats-view.js paints it.
+// No DOM, clock or fetch; public/chats-view.js paints it, public/find.js lists it.
 // Every chat string here is untrusted text: the view sets it as textContent only.
 
 import { terminalName } from './launches.js'
@@ -28,6 +28,10 @@ const RESUME_REFRESH = new Set(['live', 'folder', 'missing', 'opened'])
 
 export const RESUME_LABEL = 'Resume'
 export const RESUME_BUSY_LABEL = 'Opening…'
+// UX pass, slice 4, step B: a chat row's one slot holds Resume wherever the desktop app's bridge
+// exists, drawn off until main says whether this window can resume, and with main's reason after a no
+export const RESUME_CHECKING = 'Checking…'
+export const RESUME_UNAVAILABLE = 'Resume in Terminal works only in Agent Inbox’s own window on macOS.'
 
 // #586 phase 2 (design §3.1, §3.5): Continue here… on a Copilot row, and Show session for a chat
 // one of this app's launches holds
@@ -57,7 +61,7 @@ export const JUMP_LABEL = 'Jump to session'
 const JUMP_TITLE = 'Open this chat’s session on Home'
 export const JUMP_GONE_TEXT = 'This chat’s session is no longer listed.'
 
-/** Whether a location hash is the Chats tab's deep link. */
+/** Whether a location hash is the chats' deep link (Find with the Chats chip). */
 export function isChatsHash(hash) {
   return hash === CHATS_HASH || hash === 'chats'
 }
@@ -152,7 +156,7 @@ export function displayFolder(cwd, home) {
   return cwd
 }
 
-/** The chats that match the search (title, project, branch, folder) and both filters. */
+/** The chats that match the search (title, project, branch, folder) and the filters (Find passes no project). */
 export function filterChats(chats, filter, home) {
   const query = String(filter.query ?? '').trim().toLowerCase()
   return chats.filter((chat) => {
@@ -162,11 +166,6 @@ export function filterChats(chats, filter, home) {
     return [chat.title, chat.project, chat.branch, chat.cwd, displayFolder(chat.cwd, home)]
       .some((field) => typeof field === 'string' && field.toLowerCase().includes(query))
   })
-}
-
-/** The projects present in the list, once each, sorted. */
-export function projectOptions(chats) {
-  return [...new Set(chats.map((chat) => chat.project))].sort((a, b) => a.localeCompare(b))
 }
 
 /**
@@ -328,12 +327,6 @@ export function lastActiveView(iso, nowMs) {
 }
 
 const number = (n) => n.toLocaleString('en-US')
-const chatsWord = (n) => `${number(n)} chat${n === 1 ? '' : 's'}`
-
-/** The shown-rows line under the header. */
-export function shownText(shown, loaded) {
-  return shown === loaded ? chatsWord(loaded) : `Showing ${number(shown)} of ${chatsWord(loaded)}`
-}
 
 /** The Show all switch's label, with how many chats the default list leaves out. */
 export function allSwitchText(counts) {
@@ -355,7 +348,7 @@ export function retentionText(claudeDays) {
 
 export const TRUNCATED_TEXT = 'This list is incomplete: the chat index stopped at a scan limit.'
 
-/** Opening the tab reads the list when none is loaded, or the last one is over a minute old. */
+/** Entering Find reads the list when none is loaded, or the last one is over a minute old. */
 export function shouldFetchOnOpen({ loadedAt, loading, nowMs }) {
   return !loading && (loadedAt === null || nowMs - loadedAt > STALE_MS)
 }

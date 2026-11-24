@@ -272,25 +272,29 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   newest touch of any omitted item) and per project/agent counts of what it
   omitted with `latest`, the newest Dashboard stamp among their outcomes. A touch
   is never earlier than creation, so page entries created after `before` are a
-  complete, correctly ordered History prefix; outcomes stamped after the lens's
+  complete, correctly ordered prefix by creation; outcomes stamped after the lens's
   `latest` are a correct recent-outcome prefix (`public/closed-history.js`).
-  Counts (History tab, Dashboard outcomes/projects, rail projects, agent picker)
+  Counts (Dashboard outcomes/projects, rail projects, agent picker)
   add the summary, so they never depend on the omitted bodies.
   `/api/items/history` returns exactly the unpaged `done` list, and ONLY `load()`
   reads it: as an extra read when the previous frame needs older history
   (`historyWanted`: a search in use — open results, a pending query or one
   focused in an active window, not text left in a closed box, even one a
   background window still reports as focused (#233) — the Handoffs overlay,
-  History paged past what the page proves, a History deep link, a pending deep
-  link to an omitted item,
+  Find's Show more past its cut or a Find query under a chip that lists history (UX
+  pass, slice 4: Find cuts a closed item by its OWN stamp against `before`, never by
+  creation order), a Find landing on an item only the complete history holds, a pending
+  deep link to an omitted item,
   Dashboard recent outcomes the page cannot prove, or (#392) the Today ribbon at
   a range longer than 24 hours that starts before the page's `before`; at 24
   hours the ribbon keeps its cut-off note and reads nothing), or, within the same tick and
   under the same boot-marker and generation rules, when the tick's own new page
-  needs it, so a sweep never paints a blank History frame. Decide on a PAGE
+  needs it, so a sweep never paints a blank frame (that includes Find with no query whose
+  page can place no row of its chip: it reads the history itself rather than draw nothing
+  under a lone "Show more"). Decide on a PAGE
   (`lastData.page`, or the tick's new one), never on merged data, or loading
-  history would end the need for it. Explicit human entry points (tab select, the
-  History pager, rail project/agent picks, opening Handoffs, a deep link that
+  history would end the need for it. Explicit human entry points (tab select,
+  Find's Show more, its query and chips, rail project/agent picks, opening Handoffs, a deep link that
   found its target, the ribbon's range menu (#392), which is not saved, so boot
   always starts at 24 hours) call `requestHistoryPaint()`, which ends in `reloadAndPaint()`
   so an unrelated draft or a focused Dashboard control cannot hide the frame the
@@ -305,7 +309,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   on older history say "Older history is unavailable right now." The page stays
   authoritative for every item it carries when the two are merged. Surfaces still
   waiting show known entries and a loading state, never an incomplete list as if
-  complete: search stays busy, History and Handoffs say older items are loading.
+  complete: search stays busy, Find and Handoffs say older items are loading.
   A deep link waiting on older history lands only if the human has not navigated
   since (`navigationKey`) and no pointer is held; otherwise it waits or is dropped.
 - **Archived plans are paged out of the poll like closed history (issue #299).**

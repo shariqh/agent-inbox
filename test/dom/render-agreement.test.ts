@@ -168,11 +168,14 @@ describe('I3 · the notes watermark never advances past a note that stayed hidde
     await bootApp(d)
     click(document.querySelector('#rail button.rail-tab[data-project="alpha"]'))
     await settle()
-    click(document.querySelector('.tab[data-tab="notes"]'))
-    // selectTab only routes; read-marking happens on the next render() the poll drives
+    // UX pass, slice 4: Find's Notes chip, with no query, is where notes are read
+    click(document.querySelector('.tab[data-tab="find"]'))
+    await settle()
+    click(document.querySelector('#find [data-find-chip="notes"]'))
+    // read-marking happens on the next render() the poll drives
     await pollTick()
 
-    expect(document.querySelectorAll('#notes .item').length, 'both alpha notes rendered').toBe(2)
+    expect(document.querySelectorAll('#findList > .find-row').length, 'both alpha notes rendered').toBe(2)
     expect(
       localStorage.getItem('agent-inbox-notes-seen'),
       'the watermark must stop below the newer note the rail filter hid',
@@ -187,6 +190,6 @@ describe('I3 · the notes watermark never advances past a note that stayed hidde
     const seenIds = JSON.parse(localStorage.getItem('agent-inbox-notes-seen-ids') ?? '[]') as string[]
     expect([...seenIds].sort(), 'only what was on screen may be marked read').toEqual([oldest, newest].sort())
     expect(seenIds, 'the rail-hidden note must stay unread').not.toContain(hidden)
-    expect(tabCount('notes'), 'both alpha notes were read, and alpha is the scope in view').toBe('')
+    expect(tabCount('find'), 'both alpha notes were read, and alpha is the scope in view').toBe('')
   })
 })

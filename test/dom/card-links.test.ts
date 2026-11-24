@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import { insertItem, resolveItem, upsertBoard, upsertSourceLink } from '../../src/store.js'
 import {
-  advanceClock, badgeCount, bootApp, click, freshDb, pollTick, row, settle, showInbox, tabCount, useDomTest, reach,
+  advanceClock, badgeCount, bootApp, click, freshDb, pollTick, row, settle, showInbox, tabCount, useDomTest, reach, openOnFind,
 } from './harness.js'
 
 useDomTest()
@@ -140,7 +140,7 @@ describe('the Links strip (issue #300)', () => {
     expect(card.querySelector('.card-origin a[href="https://github.com/shariqh/agent-inbox/pull/284"]')).not.toBeNull()
   })
 
-  it('appears on every card surface: Review queue, Notes, History and the Plans row panel', async () => {
+  it('appears on every card surface: Review queue, Find\'s notes and finished things, and the Plans row panel', async () => {
     db = freshDb()
     seed(db)
     advanceClock()
@@ -160,13 +160,11 @@ describe('the Links strip (issue #300)', () => {
     click(document.querySelector('#lightbox .lb-close'))
     await settle()
 
-    click(document.querySelector('.tab[data-tab="notes"]'))
-    await settle()
-    expect(chips(document.querySelector(`#notes [data-card-id="${note}"]`))).toEqual(['File today.md'])
+    // UX pass, slice 4: Notes and History are rows on Find that open in place
+    expect(chips(await openOnFind(note))).toEqual(['File today.md'])
 
-    click(document.querySelector('.tab[data-tab="done"]'))
-    await settle()
-    expect(chips(document.querySelector(`#done [data-card-id="${done}"]`))).toEqual(['Web example.com/changelog'])
+    // an ask closed without a reply is listed on Find when a query finds it
+    expect(chips(await openOnFind(done, 'Ship?'))).toEqual(['Web example.com/changelog'])
 
     click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
@@ -426,7 +424,7 @@ describe('links are never attention (issue #300)', () => {
     })
     await bootApp(db)
     await showInbox()
-    expect([badgeCount(), tabCount('dashboard'), tabCount('notes'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
+    expect([badgeCount(), tabCount('dashboard'), tabCount('find'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
       .toEqual([2, '2', '1', 2])
   })
 
@@ -605,7 +603,7 @@ describe('repo-relative paths (issue #324)', () => {
     })
     await bootApp(db)
     await showInbox()
-    expect([badgeCount(), tabCount('dashboard'), tabCount('notes'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
+    expect([badgeCount(), tabCount('dashboard'), tabCount('find'), document.querySelectorAll('#needsYouList .nrow[data-card-id]').length])
       .toEqual([2, '2', '1', 2])
   })
 })

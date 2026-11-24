@@ -34,7 +34,7 @@ async function attentionSurfaces() {
   return {
     title: document.title,
     badge: badgeCount(),
-    tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount),
+    tabs: ['dashboard', 'find', 'boards'].map(tabCount),
     needsYou: rows().map((el) => [el.dataset.cardId, el.querySelector('.nrow-owner')?.textContent]),
     dock: { etag: dock.headers.get('etag'), body: await dock.text() },
   }

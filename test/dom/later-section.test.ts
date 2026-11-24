@@ -955,9 +955,10 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     expect(answerInput(id)?.value).toBe(text)
   }
 
+  // UX pass, slice 4: Find replaced Notes and History
   it.each([
-    ['Notes', 'notes'],
-    ['History', 'done'],
+    ['Find', 'find'],
+    ['Plans', 'boards'],
   ])('switches to Home from %s, without moving focus, once the write succeeds', async (_label, tab) => {
     const d = open()
     const id = question(d)
@@ -990,7 +991,7 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     const d = open()
     const id = question(d)
     await bootApp(d)
-    const notesTab = document.querySelector<HTMLElement>('.tab[data-tab="notes"]')!
+    const notesTab = document.querySelector<HTMLElement>('.tab[data-tab="boards"]')!
     click(notesTab)
     await settle()
     notesTab.focus()
@@ -1015,13 +1016,13 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
     const d = open()
     const id = question(d)
     await bootApp(d)
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     await openReviewQueue()
     click(buttonLabelled('Pin for later', lightbox()))
     await settle()
     expect(getItem(d, id)!.pinned_at).not.toBeNull()
-    expect(document.getElementById('notes')?.hidden).toBe(false)
+    expect(document.getElementById('boards')?.hidden).toBe(false)
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('false')
   })
 
@@ -1033,14 +1034,14 @@ describe('a drafted ask deferred from the Review queue lands in view (#247)', ()
         ? new Response(JSON.stringify({ ok: false, reason: 'not_pinnable' }), { headers: { 'content-type': 'application/json' } })
         : await next()),
     })
-    click(document.querySelector('.tab[data-tab="notes"]'))
+    click(document.querySelector('.tab[data-tab="boards"]'))
     await settle()
     await openReviewQueue()
     type(deckInput(), 'Half an answer')
     click(buttonLabelled('Pin for later', lightbox()))
     await settle()
     expect(getItem(d, id)!.pinned_at).toBeNull()
-    expect(document.getElementById('notes')?.hidden).toBe(false)
+    expect(document.getElementById('boards')?.hidden).toBe(false)
     expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('false')
     expect(deckInput()?.value).toBe('Half an answer')
   })

@@ -47,7 +47,7 @@ async function surfaces() {
   return {
     title: document.title,
     badge: badgeCount(),
-    tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount),
+    tabs: ['dashboard', 'find', 'boards'].map(tabCount),
     needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
   }
 }
@@ -61,7 +61,7 @@ const BOOT_REQUESTS = ['/api/version', '/api/setup', ...POLL, ...POLL]
 const SURFACES = {
   title: '(3) Agent Inbox',
   badge: 3,
-  tabs: ['3', '1', '1', ''],
+  tabs: ['3', '1', '1'], // Home, Find (unread notes), Plans: History's total went with its page
   needsYou: ['Approve it.', 'Ship the search ranking?', 'Retry 4xx?'],
 }
 

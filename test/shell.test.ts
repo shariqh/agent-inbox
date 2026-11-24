@@ -44,10 +44,11 @@ describe('shell markup', () => {
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
-  it('has a project rail and the five content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
+  it('has a project rail and the three content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
-    expect(tabs).toEqual(['dashboard', 'boards', 'notes', 'done', 'chats', 'agent'])
+    // UX pass, slice 4: Find in place of Notes and History, and (step B) of Chats
+    expect(tabs).toEqual(['dashboard', 'boards', 'find', 'agent'])
     expect(html).not.toContain('data-tab="live"')
     // cards view V5 §3.3: hidden until an agent is open, with no count, and CSS that lets it hide
     const agent = /<button class="tab"[^>]*data-tab="agent"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? ''
@@ -58,16 +59,18 @@ describe('shell markup', () => {
   })
 
   it('gives every counted tab a count slot', () => {
-    for (const t of ['dashboard', 'boards', 'notes', 'done']) {
+    for (const t of ['dashboard', 'boards', 'find']) {
       expect(html, t).toMatch(new RegExp(`data-tab="${t}"[\\s\\S]*?<span class="tab-name">[^<]+</span><span class="tab-count"`))
     }
   })
 
   it('keeps every render host the viewer writes into', () => {
     for (const host of [
-      'id="dashboard"', 'id="needsYou"', 'id="boards"', 'id="notes"', 'id="done"', 'id="chats"', 'id="setup"',
-      'id="needsYouList"', 'class="rows"', 'class="groups"',
-      'class="boards"', 'class="items"', 'class="chats"', 'class="setup-body"',
+      'id="dashboard"', 'id="needsYou"', 'id="boards"', 'id="find"', 'id="setup"',
+      'id="needsYouList"', 'class="rows"', 'id="findQuery"', 'id="findList"', 'id="findStatus"', 'id="findFoot"',
+      // step B: the Chats line under the chips and the chats' failure line at the list's foot
+      'id="findChats"', 'id="findChatsFoot"',
+      'class="boards"', 'class="setup-body"',
     ]) expect(html, host).toContain(host)
   })
 
@@ -503,7 +506,7 @@ describe('#38 · the poll keeps its gate, the human bypasses it', () => {
 
     const editable = sourceFn('function paintEditableSurfaces(', '\nfunction render(')
     expect(editable).not.toContain('renderDashboardAmbient(')
-    for (const call of ['renderNeedsYou(', 'renderGroups(', 'renderDone(', 'renderBoards(']) {
+    for (const call of ['renderNeedsYou(', 'renderFind(', 'renderBoards(']) {
       expect(editable, `${call} must stay protected by the draft gate`).toContain(call)
     }
   })

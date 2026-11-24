@@ -44,11 +44,13 @@ describe('deep link to omitted closed history (issue #184)', () => {
     navigateToHash(`#item/${archive[0]}`)
     await settle()
     expect(reads).toEqual([200])
-    expect(document.getElementById('done')?.hidden).toBe(false)
-    expect(document.querySelector('#rail button.rail-tab[data-project="archive"]')?.getAttribute('aria-selected')).toBe('true')
-    const card = () => document.querySelector<HTMLDetailsElement>(`#done [data-card-id="${archive[0]}"]`)
-    expect(card()?.open).toBe(true)
-    expect(document.activeElement).toBe(card()?.querySelector(':scope > summary'))
+    expect(document.getElementById('find')?.hidden).toBe(false)
+    // UX pass, slice 4: a landing on Find changes the lens only when the target is outside it;
+    // All projects holds it, so the rail stays where the person left it
+    expect(document.querySelector('#rail button.rail-tab[data-project="archive"]')?.getAttribute('aria-selected')).not.toBe('true')
+    const card = () => document.querySelector<HTMLElement>(`#find .find-row[data-card-id="${archive[0]}"]`)
+    expect(card()?.querySelector(':scope > .find-row-body')).not.toBeNull()
+    expect(document.activeElement).toBe(card()?.querySelector(':scope > .find-row-main'))
 
     await pollTick()
     expect(card()).not.toBeNull()

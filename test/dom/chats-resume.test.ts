@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
-// Resume in Terminal in the Chats tab (#586 PR 3). The control exists only where
-// the desktop app's preload exposes window.agentInboxChats and main says this
-// window can resume; here a fake bridge stands in for main. The real route runs
-// over a fake chat index. Every fixture is synthetic, and nothing opens.
+// Resume in Terminal (#586 PR 3), in a chat row's one slot on Find's Chats chip since UX pass,
+// slice 4, step B. The control exists only where the desktop app's preload exposes
+// window.agentInboxChats; it acts only once main says this window can resume. Here a fake bridge
+// stands in for main. The real route runs over a fake chat index. Every fixture is synthetic, and
+// nothing opens.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
 import type { ChatEntry, ChatIndex } from '../../src/chat-index.js'
-import { RESUME_BUSY_LABEL, RESUME_LABEL } from '../../public/chats.js'
-import { bootApp, click, freshDb, repaint, settle, T0, type, useDomTest } from './harness.js'
+import { RESUME_BUSY_LABEL, RESUME_LABEL, RESUME_UNAVAILABLE } from '../../public/chats.js'
+import { bootApp, chatRowFor, click, findFor, freshDb, openChatRow, openFindChats, repaint, settle, T0, useDomTest } from './harness.js'
 
 useDomTest()
 
@@ -76,20 +77,25 @@ async function boot(chats = fixture()) {
   return { reads, index }
 }
 
-const panel = () => document.getElementById('chats') as HTMLElement
-const q = <T extends Element = HTMLElement>(sel: string) => panel().querySelector<T>(sel)
-const rowFor = (n: number, tool = 'claude') => q(`tr[data-chat-key="${tool}:${uuid(n)}"]`)
+const panel = () => document.getElementById('find') as HTMLElement
+const q = <T extends Element = HTMLElement>(sel: string) => document.getElementById('findChats')!.querySelector<T>(sel)
+const rowFor = (n: number, tool = 'claude') => chatRowFor(`${tool}:${uuid(n)}`)
 const resumeFor = (n: number, tool = 'claude') => rowFor(n, tool)?.querySelector<HTMLButtonElement>('.chats-resume') ?? null
 const noteFor = (n: number, tool = 'claude') => rowFor(n, tool)?.querySelector<HTMLElement>('.chats-resume-note') ?? null
+const openRow = (n: number, tool = 'claude') => openChatRow(`${tool}:${uuid(n)}`)
+// the row's controls in order: its one slot beside the main button, then the open body's
+const controlsOf = (n: number, tool = 'claude') => [
+  ...rowFor(n, tool)!.querySelector(':scope > .find-slot')!.children,
+  ...(rowFor(n, tool)!.querySelector('.find-row-body .chats-actions')?.children ?? []),
+].map((el) => el.className)
 
 async function openChats() {
-  click(document.querySelector('.tab[data-tab="chats"]'))
-  await settle()
+  await openFindChats()
   await settle()
 }
 
 async function leaveAndReturn() {
-  click(document.querySelector('.tab[data-tab="done"]'))
+  click(document.querySelector('.tab[data-tab="dashboard"]'))
   await settle()
   await openChats()
 }
@@ -98,26 +104,33 @@ describe('Resume in Terminal (#586 PR 3)', () => {
   it('draws no Resume without the bridge, and leaves Copy resume as it was', async () => {
     await boot()
     await openChats()
+    await openRow(1)
     expect(panel().querySelectorAll('.chats-resume, .chats-resume-note')).toHaveLength(0)
-    const actions = rowFor(1)!.querySelector('.chats-actions')!
-    expect([...actions.children].map((el) => el.className)).toEqual(['chats-copy'])
+    // Copy resume holds the row's one slot
+    expect(controlsOf(1)).toEqual(['chats-copy'])
   })
 
-  it('draws no Resume when main says this window cannot resume', async () => {
+  it('draws Resume off, with main’s reason, when main says this window cannot resume', async () => {
     const bridge = installBridge({ available: false, terminal: 'terminal' })
     await boot()
     await openChats()
+    await openRow(1)
     expect(bridge.resumeAvailable).toHaveBeenCalled()
-    expect(panel().querySelectorAll('.chats-resume')).toHaveLength(0)
+    // step B: the slot is chosen by the bridge, never by main's answer, so it never swaps under a press
+    expect([resumeFor(1)!.getAttribute('aria-disabled'), resumeFor(1)!.title]).toEqual(['true', RESUME_UNAVAILABLE])
+    expect(controlsOf(1)).toEqual(['chats-resume', 'chats-copy', 'chats-resume-note'])
+    click(resumeFor(1))
+    await settle()
+    expect(bridge.resume).not.toHaveBeenCalled()
   })
 
   it('draws Resume before Copy resume, titled with the app', async () => {
     installBridge()
     await boot()
     await openChats()
+    await openRow(1)
     const control = resumeFor(1)!
-    expect([...rowFor(1)!.querySelector('.chats-actions')!.children].map((el) => el.className))
-      .toEqual(['chats-resume', 'chats-copy', 'chats-resume-note'])
+    expect(controlsOf(1)).toEqual(['chats-resume', 'chats-copy', 'chats-resume-note'])
     expect([control.textContent, control.title, control.hasAttribute('aria-label'), control.hasAttribute('aria-disabled')])
       .toEqual([RESUME_LABEL, 'Resume in Terminal', false, false])
     expect(noteFor(1)!.getAttribute('role')).toBe('status')
@@ -134,16 +147,18 @@ describe('Resume in Terminal (#586 PR 3)', () => {
     expect([resumeFor(1)!.title, resumeFor(1)!.hasAttribute('aria-label')]).toEqual(['Resume in Terminal', false])
     bridge.state.available = { available: false, terminal: 'terminal' }
     await leaveAndReturn()
-    expect(resumeFor(1)).toBeNull()
-    expect(noteFor(1)).toBeNull()
-    expect(bridge.resumeAvailable).toHaveBeenCalledTimes(3)
+    // step B: drawn off with main's reason, in the same slot
+    expect([resumeFor(1)!.getAttribute('aria-disabled'), resumeFor(1)!.title]).toEqual(['true', RESUME_UNAVAILABLE])
+    // asked on entering Find and again when the Chats chip is pressed there (the first visit), then
+    // once on each return (the chip stays selected)
+    expect(bridge.resumeAvailable).toHaveBeenCalledTimes(4)
   })
 
   it('is off, with the reason as its title, for a live chat or a folder that is gone or missing', async () => {
     const bridge = installBridge()
     await boot()
     await openChats()
-    q<HTMLInputElement>('.chats-all input')!.click()
+    click(q<HTMLInputElement>('.chats-all input'))
     await settle()
     const cases: Array<[HTMLButtonElement, string]> = [
       [resumeFor(2, 'copilot')!, 'This chat is live in another process, so it is not resumed a second time.'],
@@ -168,10 +183,8 @@ describe('Resume in Terminal (#586 PR 3)', () => {
     await settle()
     expect([resumeFor(1)!.textContent, resumeFor(1)!.getAttribute('aria-disabled')]).toEqual([RESUME_BUSY_LABEL, 'true'])
     click(resumeFor(1))
-    type(q<HTMLInputElement>('.chats-search'), 'parser')
-    await settle()
-    type(q<HTMLInputElement>('.chats-search'), '')
-    await settle()
+    await findFor('parser')
+    await findFor('')
     await repaint()
     expect(resumeFor(1)!.textContent).toBe(RESUME_BUSY_LABEL)
     expect(bridge.resume).toHaveBeenCalledTimes(1)
@@ -185,6 +198,7 @@ describe('Resume in Terminal (#586 PR 3)', () => {
     bridge.state.next = { ok: true, terminal: 'iterm2' }
     const { reads } = await boot()
     await openChats()
+    await openRow(5, 'copilot')
     const before = reads.length
     click(resumeFor(5, 'copilot'))
     await settle()

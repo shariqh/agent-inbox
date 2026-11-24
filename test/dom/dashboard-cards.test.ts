@@ -425,7 +425,7 @@ describe('attention parity with the cards present (#304, #454)', () => {
     return {
       title: document.title,
       badge: badgeCount(),
-      tabs: ['dashboard', 'notes', 'boards', 'done'].map(tabCount),
+      tabs: ['dashboard', 'find', 'boards'].map(tabCount),
       waiting: chip('needs'),
       lane: laneIds(),
       dock: [await dock.text(), await plans.text()],

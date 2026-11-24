@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { knownHistory, knownOutcomes, mergeClosedHistory, olderHistory } from '../public/closed-history.js'
+import { knownOutcomes, mergeClosedHistory, olderHistory } from '../public/closed-history.js'
 
 const at = (minute: number): string => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString()
 
@@ -92,25 +92,6 @@ describe('olderHistory', () => {
     const none = { items: 0, outcomes: 0, latest: null, projects: [], agents: [] }
     expect(olderHistory(null)).toEqual(none)
     expect(olderHistory({ total: 2, loaded: 2, before: null, older: [] })).toEqual(none)
-  })
-})
-
-describe('knownHistory', () => {
-  it('keeps only the leading entries no omitted item can precede', () => {
-    const done = [
-      item('a', 50),
-      item('milestone', 40, { kind: 'done', status: 'open' }),
-      item('b', 31),
-      item('touched-recently', 30),
-      item('c', 45),
-    ]
-    expect(knownHistory(done, at(30)).map((entry) => entry.id)).toEqual(['a', 'milestone', 'b'])
-    expect(knownHistory(done, null)).toBe(done)
-  })
-
-  it('ends at aged notes, which always follow every closed item', () => {
-    const done = [item('a', 50), item('aged-note', 45, { kind: 'note', status: 'open' })]
-    expect(knownHistory(done, at(30)).map((entry) => entry.id)).toEqual(['a'])
   })
 })
 

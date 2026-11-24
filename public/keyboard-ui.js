@@ -320,7 +320,7 @@ export function createKeyboardUI({ getScope, getActionScope, navigate }) {
       consume(event)
       goPrefix = true
       root.setAttribute('data-go-prefix', 'true')
-      announce('Go to: D Home, I Needs you, P Plans, N Notes, H History, S Settings, O Projects, A Agents, L Live. Esc cancels.')
+      announce('Go to: D Home, I Needs you, P Plans, F Find, N Find: Notes, H Find: All, C Find: Chats, S Settings, O Projects, A Agents, L Sessions. Esc cancels.')
       return
     }
     if (/^[1-4]$/.test(lower)) {

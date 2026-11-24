@@ -155,12 +155,12 @@ describe('31.1 · changeAnswer paints the surface it just staged a draft into', 
     expect(topLevelFn('function forceRender()')).not.toMatch(/requestHistory/)
     for (const decl of [
       'async function load()', 'function renderIfIdle()', 'function render()', 'function paintAmbient()',
-      'function paintEditableSurfaces(', 'function renderSearchResults()', 'function renderDone(',
+      'function paintEditableSurfaces(', 'function renderSearchResults()', 'function renderFind(',
       'function renderRelay()', 'function renderTriage(', 'function renderMission(',
     ]) {
       expect(topLevelFn(decl), decl).not.toMatch(/requestHistoryPaint|reloadAndPaint/)
     }
-    for (const entry of ['function selectTab(', 'function moreButton(', 'function openRelay()', 'function focusItem(']) {
+    for (const entry of ['function selectTab(', 'function moreButton(', 'function showOlderInFind()', 'function openRelay()', 'function focusItem(']) {
       expect(topLevelFn(entry), entry).toContain('requestHistoryPaint()')
     }
   })
@@ -226,10 +226,10 @@ describe('31.2 · read-marking records ids as well as a watermark', () => {
     expect(mark).toMatch(/localStorage\.setItem\(NOTES_SEEN_KEY/)
   })
 
-  it('renderGroups prunes against the GLOBAL note list, never the rail-filtered one', () => {
+  it('Find\'s read-marking prunes against the GLOBAL note list, never the rail-filtered one', () => {
     // Prune against a filtered list and every note behind the rail filter is
-    // resurrected as unread on the next render.
-    const body = topLevelFn('function renderGroups(')
+    // resurrected as unread on the next render. (UX pass, slice 4: Notes' renderGroups became Find's)
+    const body = topLevelFn('function markFindNotesSeen(')
     expect(body).toMatch(/const all = lastData\.g\.notes\.flatMap/)
     expect(body).toMatch(/markNotesSeen\(viewed,[\s\S]*?,\s*all\)/)
   })

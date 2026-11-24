@@ -109,7 +109,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   href; a local file is a control carrying its path in an escaped `data-link-path`, NEVER an
   href (inline: a `role="button"` anchor with no href, so it still reads and selects as text;
   in the strip: a `<button>`). `public/link-strip.js` builds the Links strip under each card's
-  TL;DR (Inbox inspector, Review queue, Notes, History, Plans row panel: they all call
+  TL;DR (Inbox inspector, Review queue, Find's open rows, Plans row panel: they all call
   `cardLinksHtml` right after `actionBlocksHtml`; the PR and issue chips sit in the card's
   origin line, `cardOriginHtml`, and who acts and a row's waits chip in its Details,
   `cardSourcesHtml`) by COLLECTING what `renderStructuredText` renders for each agent field, so

@@ -81,8 +81,9 @@ async function readInput(io: UnslopIo, file: string | undefined): Promise<Buffer
   return Buffer.concat(chunks)
 }
 
+// getCard and startAgent are shared with unslop-code's client (src/unslop-code-client.ts, #652)
 type Card = { kind: 'none' } | { kind: 'bad' } | { kind: 'unproven' } | { kind: 'ok'; card: Json }
-async function getCard(link: MeshLink): Promise<Card> {
+export async function getCard(link: MeshLink): Promise<Card> {
   const reply = await link.card(3000)
   if (reply === 'refused') return { kind: 'none' }
   if (reply === 'unproven') return { kind: 'unproven' }
@@ -94,20 +95,20 @@ async function getCard(link: MeshLink): Promise<Card> {
   }
 }
 
-/** Starts the profile's `start` argv, detached and without a shell; a string says why not. */
-function startAgent(dir: string, io: UnslopIo): { exited: () => boolean; log: string } | string {
-  const profile = join(dir, 'mesh', 'wrappers', 'unslop.json')
+/** Starts the agent's profile's `start` argv, detached and without a shell; a string says why not. */
+export function startAgent(dir: string, io: Pick<UnslopIo, 'env' | 'spawn'>, agent: 'unslop' | 'unslop-code' = 'unslop'): { exited: () => boolean; log: string } | string {
+  const profile = join(dir, 'mesh', 'wrappers', `${agent}.json`)
   let start: unknown
   try {
     start = obj(JSON.parse(readPrivate(profile))).start
   } catch {
-    return `${profile} must be a JSON file owned by you with mode 0600: run meshctl enable --unslop`
+    return `${profile} must be a JSON file owned by you with mode 0600: run meshctl enable --${agent}`
   }
   if (!Array.isArray(start) || !start.length || !start.every((a) => typeof a === 'string' && !/[\x00-\x1f\x7f]/.test(a)) || !isAbsolute(start[0])) {
-    return `the profile's "start" must be a list of arguments, the first an absolute path: run meshctl enable --unslop`
+    return `the profile's "start" must be a list of arguments, the first an absolute path: run meshctl enable --${agent}`
   }
   const logs = join(dir, 'mesh', 'logs')
-  const log = join(logs, 'unslop-agent.log')
+  const log = join(logs, `${agent}-agent.log`)
   let fd: number
   try {
     mkdirSync(logs, { recursive: true, mode: 0o700 })

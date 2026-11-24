@@ -134,6 +134,7 @@ describe('meshctl', () => {
       'The Agents view is always on; mesh.json no longer controls it.',
       `Mesh: off. No ${meshFile(dir)}.`,
       `Unslop: off. Profile ${dir}/mesh/wrappers/unslop.json: missing; token: missing; shim ${dir}/bin/unslop: missing.`,
+      `Unslop-code: off. Profile ${dir}/mesh/wrappers/unslop-code.json: missing; token: missing; shim ${dir}/bin/unslop-code: missing.`,
       `Request-post: off. Token: missing; shim ${dir}/bin/request-post: missing.`, '',
     ].join('\n'))
     writeFileSync(meshFile(dir), '{"schema":1,"agentsView":true}\n')
@@ -331,6 +332,234 @@ describe('meshctl enable/disable --unslop (#483, unslop design §4.2-§4.5)', ()
       writeFileSync(profile, JSON.stringify({ ...JSON.parse(readFileSync(profile, 'utf8')), ...fill }))
       const r = wrap()
       expect([r.status, r.stderr]).toEqual([1, `agent-inbox-wrap: the ${words.startsWith('needs') ? 'profile ' : words.startsWith('base') ? 'backend ' : ''}${words}\n`])
+    }
+  }, 60_000)
+})
+
+describe('meshctl enable/disable --unslop-code (#652, step 3b)', () => {
+  const unbacked = (t: Record<string, string>) => Object.fromEntries(Object.entries(t).filter(([key]) => !key.startsWith('mesh.json.bak-')))
+  function setup(meshJson?: string) {
+    const dir = scratchDir('code-mesh-')
+    const checkout = scratchDir('code-checkout-')
+    mkdirSync(join(checkout, 'packages', 'mesh', 'dist'), { recursive: true })
+    writeFileSync(join(checkout, 'packages', 'mesh', 'package.json'), '{}')
+    writeFileSync(join(checkout, 'packages', 'mesh', 'dist', 'wrap.js'), '')
+    const script = join(scratchDir('code-bin-'), 'meshctl.js')
+    writeFileSync(script, 'console.log(JSON.stringify([process.env.AGENT_INBOX_MESH_DIR, ...process.argv.slice(2)]))\n')
+    if (meshJson !== undefined) writeFileSync(meshFile(dir), meshJson)
+    const run = (...argv: string[]) => ctl(argv, dir, undefined, { node: process.execPath, script })
+    const on = (agent: 'unslop' | 'unslop-code', ...more: string[]) => run('enable', `--${agent}`, '--checkout', checkout, ...more)
+    return { dir, checkout, script, run, enable: (...more: string[]) => on('unslop-code', ...more), on }
+  }
+  const unslopProfile = (dir: string, profile: Record<string, unknown>, fileMode = 0o600): void => {
+    mkdirSync(join(dir, 'mesh', 'wrappers'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(dir, 'mesh', 'wrappers', 'unslop.json'), JSON.stringify(profile))
+    chmodSync(join(dir, 'mesh', 'wrappers', 'unslop.json'), fileMode)
+  }
+
+  it('enable is a dry run that writes nothing and prints the endpoint, the template and the shim', () => {
+    const t = setup()
+    const r = t.enable()
+    expect(r.code, r.err).toBe(0)
+    expect(r.out).toContain('"unslop-code": {\n      "endpoint": "http://127.0.0.1:4421",\n      "profile": "unslop-code"')
+    expect(r.out).toContain('"baseUrl": "FILL IN:')
+    expect(r.out).toContain('"model": "coder-next"')
+    expect(r.out).toContain(`exec "$node" "$meshctl" unslop-code "$@"`)
+    expect(r.out).toContain(`Would write the unslop-code routing skill ${t.dir}/skills/unslop-code/SKILL.md (fixed text)`)
+    expect(r.out).toContain('Nothing changed. Re-run with --apply.')
+    expect(readdirSync(t.dir)).toEqual([])
+    expect(t.run('disable', '--unslop-code', '--purge').out).toContain('Unslop-code is already off and purged')
+  })
+
+  it('enable --apply then disable --apply leaves the other keys and the tree as before, but backups and the profile', () => {
+    for (const before of ['{"schema":1,"console":{"relay":false},"agents":{"other":{"endpoint":"x"}}}\n', undefined]) {
+      const t = setup(before)
+      const start = tree(t.dir)
+      const on = t.enable('--apply')
+      expect(on.code, on.err).toBe(0)
+      const p = (rel: string) => join(t.dir, rel)
+      expect(json(t.dir)).toEqual({ ...(before ? JSON.parse(before) : { schema: 1 }), agents: { ...(before ? { other: { endpoint: 'x' } } : {}), 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } } })
+      for (const d of ['mesh', 'mesh/wrappers', 'mesh/tokens', 'bin']) expect(mode(p(d)), d).toBe('700')
+      expect([mode(p('mesh/wrappers/unslop-code.json')), mode(p('mesh/tokens/unslop-code')), mode(p('bin/unslop-code'))]).toEqual(['600', '600', '755'])
+      expect(readFileSync(p('mesh/tokens/unslop-code'), 'utf8')).toMatch(/^[\x21-\x7E]{32,}\n$/)
+      const profile = JSON.parse(readFileSync(p('mesh/wrappers/unslop-code.json'), 'utf8'))
+      expect(profile.start).toEqual([process.execPath, join(t.checkout, 'packages/mesh/dist/wrap.js'), '--agent', 'openai-compatible', '--profile', 'unslop-code'])
+      expect(profile).toMatchObject({ model: 'coder-next', sampling: { temperature: 0, top_p: 0.9, presence_penalty: 0 } })
+      expect(profile).not.toHaveProperty('skill')
+      expect(readFileSync(p('skills/unslop-code/SKILL.md'), 'utf8')).toContain('name: unslop-code')
+      const status = t.run('status').out
+      expect(status).toContain('turns on unslop-code.')
+      expect(status).toContain('Unslop-code: on at http://127.0.0.1:4421. Profile')
+      expect(status).toContain('Unslop: off.')
+      // the shim pins its mesh dir and execs meshctl.js unslop-code with the caller's arguments
+      for (const env of [[], ['AGENT_INBOX_MESH_DIR=/elsewhere']]) {
+        const shim = spawnSync('/usr/bin/env', ['-i', ...env, '/bin/sh', p('bin/unslop-code'), '--apply', '--', 'a b.ts'], { input: '', encoding: 'utf8' })
+        expect(shim.stdout, env.join(' ')).toBe(`${JSON.stringify([t.dir, 'unslop-code', '--apply', '--', 'a b.ts'])}\n`)
+      }
+
+      const off = t.run('disable', '--unslop-code', '--apply')
+      expect(off.code, off.err).toBe(0)
+      const after = unbacked(tree(t.dir))
+      expect(Object.keys(after).filter((key) => key.startsWith('mesh')).sort())
+        .toEqual([...(before ? ['mesh.json'] : []), 'mesh', 'mesh/wrappers', 'mesh/wrappers/unslop-code.json'].sort())
+      for (const key of ['mesh', 'mesh/wrappers', 'mesh/wrappers/unslop-code.json']) delete after[key]
+      if (before) {
+        expect(json(t.dir)).toEqual(JSON.parse(before))
+        delete after['mesh.json']
+        delete start['mesh.json']
+      }
+      expect(after).toEqual(start)
+      expect(t.run('status').out).toContain('Unslop-code: off. Profile')
+    }
+  })
+
+  it('the profile takes unslop\'s backend when that profile is readable, printing neither value; otherwise placeholders', () => {
+    const t = setup()
+    unslopProfile(t.dir, { skill: '/rules', baseUrl: 'https://box.example/llm', apiKey: { file: '/keys/backend-key' }, model: 'chat-long' })
+    const dry = t.enable()
+    expect(dry.out).toContain('taking baseUrl and the apiKey source from')
+    expect(dry.out).toContain('(taken from the unslop profile; not printed)')
+    expect(dry.out).not.toMatch(/box\.example|backend-key/)
+    const on = t.enable('--apply')
+    expect(on.code, on.err).toBe(0)
+    expect(on.out).not.toMatch(/box\.example|backend-key/)
+    const profile = JSON.parse(readFileSync(join(t.dir, 'mesh', 'wrappers', 'unslop-code.json'), 'utf8'))
+    expect(profile).toMatchObject({ baseUrl: 'https://box.example/llm', apiKey: { file: '/keys/backend-key' }, model: 'coder-next' })
+    // the unslop profile is never changed
+    expect(JSON.parse(readFileSync(join(t.dir, 'mesh', 'wrappers', 'unslop.json'), 'utf8')).model).toBe('chat-long')
+
+    // a backend that needs no key: no apiKey
+    const keyless = setup()
+    unslopProfile(keyless.dir, { baseUrl: 'http://127.0.0.1:8080' })
+    expect(keyless.enable().out).toContain('taking baseUrl from')
+    expect(keyless.enable('--apply').code).toBe(0)
+    expect(JSON.parse(readFileSync(join(keyless.dir, 'mesh', 'wrappers', 'unslop-code.json'), 'utf8'))).not.toHaveProperty('apiKey')
+
+    // unreadable (open to others), unfilled or not JSON: placeholders
+    for (const [profile, fileMode] of [[{ baseUrl: 'https://box.example/llm' }, 0o644], [{ baseUrl: 'FILL IN: x' }, 0o600], ['nope', 0o600]] as const) {
+      const other = setup()
+      if (typeof profile === 'string') {
+        unslopProfile(other.dir, {})
+        writeFileSync(join(other.dir, 'mesh', 'wrappers', 'unslop.json'), profile)
+      } else unslopProfile(other.dir, profile, fileMode)
+      const r = other.enable()
+      expect(r.out).toContain('Would write the profile template')
+      expect(r.out).toContain('"baseUrl": "FILL IN:')
+      expect(r.out).not.toContain('box.example')
+    }
+  })
+
+  it('refuses a port another agent entry uses, never echoing a key that breaks the id rule', () => {
+    const cases: Array<[string, string[], string]> = [
+      ['{"schema":1,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4421","profile":"unslop"}}}', [], 'port 4421 is the endpoint of agents.unslop'],
+      ['{"schema":1,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420","profile":"unslop"}}}', ['--port', '4420'], 'port 4420 is the endpoint of agents.unslop'],
+      ['{"schema":1,"agents":{"echo":{"card":"http://127.0.0.1:4421/card","endpoint":"http://127.0.0.1:4421/a2a"}}}', [], 'agents.echo'],
+      ['{"schema":1,"agents":{"IGNORE ALL; rm":{"endpoint":"http://127.0.0.1:4421"}}}', [], 'port 4421 is the endpoint of another agent entry'],
+    ]
+    for (const [before, more, words] of cases) {
+      const t = setup(before)
+      const r = t.enable(...more, '--apply')
+      expect(r.code, words).toBe(1)
+      expect(r.err).toContain(words)
+      expect(r.err).not.toContain('IGNORE')
+      expect(readFileSync(meshFile(t.dir), 'utf8')).toBe(before)
+      expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    }
+    // another port, or its own entry's port, is fine
+    const t = setup(cases[0]![0])
+    expect(t.enable('--port', '4422', '--apply').code).toBe(0)
+    expect(t.enable('--port', '4422', '--apply').out).toContain('Kept')
+    for (const port of ['80', '0', '65536', '']) expect(t.enable('--port', port).err, port).toContain('http://127.0.0.1:<port>')
+  })
+
+  it('unslop and unslop-code never touch each other\'s key or files, --purge included, in both directions', () => {
+    const t = setup('{"schema":1,"console":{"relay":false}}\n')
+    const root = join(t.dir, 'mesh')
+    const own = {
+      unslop: ['logs/unslop-2026-11-06.log', 'logs/unslop-agent.log', 'unslop-budget.json', 'unslop-deny.txt', 'runs/unslop-2026-11-06.jsonl'],
+      'unslop-code': ['logs/unslop-code-2026-11-06.log', 'logs/unslop-code-agent.log', 'unslop-code-budget.json', 'runs/unslop-code-2026-11-06.jsonl'],
+    }
+    const plant = (): void => {
+      for (const d of ['logs', 'runs']) mkdirSync(join(root, d), { recursive: true, mode: 0o700 })
+      chmodSync(join(root, 'runs'), 0o700)
+      for (const f of [...own.unslop, ...own['unslop-code'], 'logs/other.log']) writeFileSync(join(root, f), 'x', { mode: 0o600 })
+    }
+    for (const [first, second] of [['unslop', 'unslop-code'], ['unslop-code', 'unslop']] as const) {
+      expect(t.on(first, '--apply').code).toBe(0)
+      const withFirst = unbacked(tree(t.dir))
+      expect(t.on(second, '--apply').code).toBe(0)
+      expect(t.run('status').out).toContain('turns on unslop and unslop-code.')
+      expect(t.run('disable', `--${second}`, '--apply').code).toBe(0)
+      // the second agent's profile stays without --purge
+      const left = unbacked(tree(t.dir))
+      delete left[`mesh/wrappers/${second}.json`]
+      expect(left).toEqual(withFirst)
+      plant()
+      const purge = t.run('disable', `--${second}`, '--purge', '--apply')
+      expect(purge.code, purge.err).toBe(0)
+      for (const f of own[second]) expect(existsSync(join(root, f)), f).toBe(false)
+      for (const f of [...own[first], 'logs/other.log']) expect(existsSync(join(root, f)), f).toBe(true)
+      expect(existsSync(join(root, 'wrappers', `${first}.json`))).toBe(true)
+      expect(existsSync(join(root, 'wrappers', `${second}.json`))).toBe(false)
+      expect(Object.keys(json(t.dir).agents)).toEqual([first])
+      expect(existsSync(join(t.dir, 'skills', first, 'SKILL.md'))).toBe(true)
+      expect(existsSync(join(t.dir, 'skills', second))).toBe(false)
+      expect(t.run('disable', `--${first}`, '--purge', '--apply').code).toBe(0)
+      for (const f of own[first]) expect(existsSync(join(root, f)), f).toBe(false)
+      expect(json(t.dir)).toEqual({ schema: 1, console: { relay: false } })
+    }
+  })
+
+  it('forget-runs --unslop-code deletes its records only; bad combinations are usage errors', () => {
+    const t = setup()
+    const runs = join(t.dir, 'mesh', 'runs')
+    mkdirSync(runs, { recursive: true, mode: 0o700 })
+    chmodSync(runs, 0o700)
+    const today = new Date()
+    const day = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    for (const agent of ['unslop', 'unslop-code']) writeFileSync(join(runs, `${agent}-${day}.jsonl`), '{}\n', { mode: 0o600 })
+    expect(ctl(['forget-runs', '--unslop-code', '--apply'], t.dir, today).out).toBe('Deleted 1 run file (1 run) for unslop-code.\n')
+    expect(readdirSync(runs)).toEqual([`unslop-${day}.jsonl`])
+    for (const argv of [['enable', '--unslop', '--unslop-code'], ['enable', '--unslop-code', '--request-post'], ['disable', '--unslop-code', '--unslop'], ['status', '--unslop-code'],
+      ['enable', '--unslop-code', '--endpoint', 'http://127.0.0.1:1'], ['disable', '--unslop-code', '--port', '4421'], ['forget-runs', '--unslop-code', '--unslop'], ['skills', 'link', '--unslop-code']]) {
+      expect(t.run(...argv).code, argv.join(' ')).toBe(2)
+    }
+    expect(t.run('unslop-code').code).toBe(4)
+  })
+
+  it('a stale shim exits 18 at once and never reads its stdin', async () => {
+    const t = setup()
+    const node = join(scratchDir('code-node-'), 'node')
+    writeFileSync(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 })
+    expect(ctl(['enable', '--unslop-code', '--checkout', t.checkout, '--apply'], t.dir, undefined, { node, script: t.script }).code).toBe(0)
+    expect(readFileSync(join(t.dir, 'bin', 'unslop-code'), 'utf8')).not.toContain('cat > /dev/null')
+    unlinkSync(node)
+    // stdin is a pipe this test never closes
+    const child = spawn('/bin/sh', [join(t.dir, 'bin', 'unslop-code'), '--apply'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', (c: Buffer) => { stderr += c.toString() })
+    try {
+      const code = await new Promise<number | null>((done, fail) => {
+        const timer = setTimeout(() => fail(new Error('the stale shim is still running after 3 s')), 3000)
+        child.on('close', (status) => { clearTimeout(timer); done(status) })
+      })
+      expect(code).toBe(18)
+      expect(stderr).toContain('run meshctl enable --unslop-code again')
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it('the agent refuses the profile template until it is filled in', () => {
+    const t = setup()
+    expect(t.enable('--apply').code).toBe(0)
+    const profile = join(t.dir, 'mesh', 'wrappers', 'unslop-code.json')
+    const wrap = () => spawnSync(join(REPO, 'node_modules', '.bin', 'tsx'), [join(REPO, 'packages', 'mesh', 'src', 'wrap.ts'), '--agent', 'openai-compatible', '--profile', 'unslop-code'],
+      { env: { PATH: process.env['PATH'], HOME: t.dir, AGENT_INBOX_MESH_DIR: t.dir }, encoding: 'utf8', timeout: 30_000 })
+    for (const [fill, words] of [[{}, 'backend base URL is not a URL'], [{ baseUrl: 'https://box.example' }, 'API key source is empty']] as const) {
+      writeFileSync(profile, JSON.stringify({ ...JSON.parse(readFileSync(profile, 'utf8')), ...fill }))
+      const r = wrap()
+      expect([r.status, r.stderr]).toEqual([1, `agent-inbox-wrap: the ${words}\n`])
     }
   }, 60_000)
 })
@@ -1174,7 +1403,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/public-address.ts', 'src/unslop-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'src/mesh-entry.ts', 'public/agents-home.js', 'public/mesh-section.js', 'public/mesh-agent-page.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/public-address.ts', 'src/unslop-client.ts', 'src/unslop-code-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'src/mesh-entry.ts', 'public/agents-home.js', 'public/mesh-section.js', 'public/mesh-agent-page.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -1189,9 +1418,11 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-entry.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './public-address.js', './version.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-entry.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './unslop-code-client.js', './public-address.js', './version.js'])
     // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
+    // unslop-code's client (#652): git and the agent start through child_process, never the network but the proven link
+    expect([...code('src/unslop-code-client.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:child_process', 'node:child_process', 'node:crypto', 'node:fs', 'node:path', './agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js', './unslop-client.js'])
     // the identity proof (#492) and the https link (#530): Node core only
     expect([...code('src/mesh-identity.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net'])
     // meshctl call (#530): the card rule, the frame, add's rules, the config reader and the link; never a child process
@@ -1199,7 +1430,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     // meshctl check (#538): the card rules, add's rules and fetch, the token reader and the links; never a child process
     expect([...code('src/mesh-check.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', './agent-card.js', './card-signature.js', './mesh-add.js', './mesh-add.js', './mesh-entry.js', './mesh-entry.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './public-address.js'])
     expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-runs.js'])
-    for (const file of ['src/unslop-client.ts', 'src/request-post-client.ts', 'src/mesh-call.ts']) expect(code(file), file).toContain(`import type { RunCollector } from './mesh-runs.js'`)
+    for (const file of ['src/unslop-client.ts', 'src/unslop-code-client.ts', 'src/request-post-client.ts', 'src/mesh-call.ts']) expect(code(file), file).toContain(`import type { RunCollector } from './mesh-runs.js'`)
     expect(local('src/mesh-config.ts')).toEqual([])
     // meshctl add's rules and card fetch (#529): HTTP, a hash, the card rule and the tailnet test (#557), never a child process
     expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net', './agent-card.js', './card-signature.js', './card-signature.js', './mesh-config.js', './mesh-entry.js', './mesh-entry.js', './public-address.js'])
@@ -1252,7 +1483,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
       ...readdirSync(join(REPO, 'electron')).filter((f) => /\.c?js$/.test(f)).map((f) => `electron/${f}`),
     ]
     expect(files.length).toBeGreaterThan(10)
-    for (const file of files) expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(/unslop-client|request-post-client|mesh-call|mesh-check|mesh-skills|mesh-keys|card-signature|meshctl/)
+    for (const file of files) expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(/unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-skills|mesh-keys|card-signature|meshctl/)
   })
 
   // The app's whole dependency set, pinned by name: package.json's dependencies and

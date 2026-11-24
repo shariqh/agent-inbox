@@ -26,6 +26,8 @@
 //   meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl disable --unslop [--purge] [--apply]
+//   meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--apply]
+//   meshctl disable --unslop-code [--purge] [--apply]
 //   meshctl disable --request-post [--purge] [--apply]
 //   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
 //                                            add an A2A agent this repo doesn't ship (#529)
@@ -39,17 +41,20 @@
 //   meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
 //                                            a conformance check anyone can run (src/mesh-check.ts, #538)
 //   meshctl check <id> […]                   the same for an added agent's card URL; keeps its card copy
-//   meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
+//   meshctl forget-runs (--unslop | --unslop-code | --request-post | --web-search | --id <id> | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl --version                        this build's version
 //   meshctl skills link|unlink [--target claude|agents|all] [--apply]
 //                                            link the routing skills into the harnesses' skill folders
 //   meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
 //                                            the shim's command (src/unslop-client.ts)
+//   meshctl unslop-code [--base <ref>] [--apply] [--no-suggest] [--report <file>] [--timeout <s>] [-- <path>…]
+//                                            its shim's command (src/unslop-code-client.ts, #652)
 //   meshctl request-post file|status|wait …  its shim's command (src/request-post-client.ts)
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
-// `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, and
+// `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, `unslop-code` its own
+// (0, 11-14, 4), listed in src/unslop-code-client.ts, and
 // `request-post` its own (0, 11-16, 124, 4), listed in src/request-post-client.ts, and
 // both shims exit 18 when they are stale (#584; 14 stays the agent being off), and
 // `call` one table for every added agent (0, 11-16, 4), in docs/mesh-call.md, and `check`
@@ -62,7 +67,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { LookupFunction } from 'node:net'
 import { fileURLToPath } from 'node:url'
-import { MESH_SCHEMA, cardCopyFile, inTailnet, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readTokenFile, removeCardCopy, requestPostEndpoint, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
+import { MESH_SCHEMA, cardCopyFile, inTailnet, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readPrivate, readTokenFile, removeCardCopy, requestPostEndpoint, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
 import { addSummary, cardEndpoint, cardSha256, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine } from './mesh-add.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
@@ -78,10 +83,12 @@ import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 import type { UnslopIo } from './unslop-client.js'
+import { UNSLOP_CODE_USAGE, runUnslopCode } from './unslop-code-client.js'
 import { publicLookup } from './public-address.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 
 const UNSLOP_PORT = 4420
+const UNSLOP_CODE_PORT = 4421
 const ENDPOINT_RULE = 'https://<name>.<tailnet>.ts.net[:<port>] or, for the SSH fallback only, http://127.0.0.1:<port>'
 
 const USAGE = `usage: agent-inbox-meshctl status
@@ -90,6 +97,8 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl enable --agents-view [--apply]
        agent-inbox-meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
        agent-inbox-meshctl disable --unslop [--purge] [--apply]
+       agent-inbox-meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--apply]
+       agent-inbox-meshctl disable --unslop-code [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
        agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
@@ -98,9 +107,10 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl key create|show|rotate|retire <agent> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
-       agent-inbox-meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
+       agent-inbox-meshctl forget-runs (--unslop | --unslop-code | --request-post | --web-search | --id <id> | --all) [--apply]
        agent-inbox-meshctl skills link|unlink [--target claude|agents|all] [--apply]
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
+       agent-inbox-meshctl unslop-code [--base <ref>] [--apply] [--no-suggest] [--report <file>] [--timeout <s>] [-- <path>…]
        agent-inbox-meshctl request-post file|status|wait …
 
 Without --apply, enable, disable, add, remove, forget-runs, skills and key are dry runs: they print what they would do.
@@ -109,6 +119,12 @@ enable --unslop needs packages/mesh built in the checkout (npm ci && npm run bui
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
 profile, logs, deny list and run records unless --purge. unslop is what <mesh dir>/bin/unslop runs:
 it sends one public draft to the agent (docs/unslop.md).
+enable --unslop-code turns on the second local agent, which removes the comments a coding agent
+added that a maintainer would not write (default port ${UNSLOP_CODE_PORT}; a port another agent
+entry uses is refused). Its profile takes baseUrl and apiKey from the unslop profile when that
+one is readable. unslop-code is what <mesh dir>/bin/unslop-code runs inside a git repository: it
+sends the JavaScript and TypeScript files a change touched and prints the patch (docs/unslop-code.md).
+disable --unslop-code keeps its profile, logs, budget and run records unless --purge.
 enable --request-post copies the per-device bearer token from --token-file (never printed);
 the endpoint is ${ENDPOINT_RULE}; a tailnet name must be on this Mac's tailnet (read from
 tailscale status), never another tailnet or a Funnel host (docs/request-post.md).
@@ -146,7 +162,7 @@ Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 
 forget-runs deletes an agent's records now (--id <id> an added agent's, --all every agent's);
 remove deletes an added agent's with its entry. Every enable and disable deletes expired ones.
 Every enable and disable writes <mesh dir>/skills/<agent>/SKILL.md, the fixed routing skill, for
-each agent that is on and has one (unslop), and removes the folders and links of agents that are off.
+each agent that is on and has one (unslop, unslop-code), and removes the folders and links of agents that are off.
 skills link makes ~/.claude/skills/<agent> (Claude Code) and ~/.agents/skills/<agent> (Codex,
 Copilot CLI) links to those folders; skills unlink removes only links that point into
 <mesh dir>/skills/. Neither replaces a folder or link it did not make: a skill of the same name
@@ -228,6 +244,55 @@ function unslopPaths(dir: string) {
   }
 }
 
+// ── unslop-code (#652) ──────────────────────────────────────────────────────
+// Its own names beside unslop's: every file match below is exact, so neither switch touches the
+// other's files.
+
+function unslopCodePaths(dir: string) {
+  const root = join(dir, 'mesh')
+  return {
+    root, wrappers: join(root, 'wrappers'), profile: join(root, 'wrappers', 'unslop-code.json'),
+    tokens: join(root, 'tokens'), token: join(root, 'tokens', 'unslop-code'), logs: join(root, 'logs'),
+    budget: join(root, 'unslop-code-budget.json'), bin: join(dir, 'bin'), shim: join(dir, 'bin', 'unslop-code'),
+  }
+}
+
+// the log files each agent's purge deletes: the agent's day logs and the client's start log
+const UNSLOP_LOG = /^unslop-(?:\d{4}-\d{2}-\d{2}|agent)\.log$/
+const UNSLOP_CODE_LOG = /^unslop-code-(?:\d{4}-\d{2}-\d{2}|agent)\.log$/
+
+type Backend = { baseUrl: string; apiKey?: unknown }
+
+// The agent refuses the placeholders (baseUrl is not a URL, the env name holds no key) and ignores
+// `_about` and `start`. With unslop's backend the two values are that profile's, copied as written:
+// `apiKey` is a key source (a file, a command or an env name), never a key.
+function codeProfileTemplate(start: string[], backend: Backend | undefined): string {
+  return `${JSON.stringify({
+    _about: backend
+      ? 'The unslop-code agent\'s profile (agent-inbox #652). baseUrl and apiKey were taken from the unslop profile; change them here if this agent needs another backend. start is what meshctl runs.'
+      : 'The unslop-code agent\'s profile (agent-inbox #652). Fill in baseUrl and apiKey (or remove apiKey when the backend needs no key); the agent refuses to start until you do. start is what meshctl runs.',
+    baseUrl: backend ? backend.baseUrl : 'FILL IN: the https:// base URL of the OpenAI-compatible backend (http:// only on a loopback address)',
+    ...(backend ? (Object.hasOwn(backend, 'apiKey') ? { apiKey: backend.apiKey } : {}) : {
+      apiKey: { env: 'FILL IN: the name of the environment variable holding the key, or use { "file": "/absolute/path" } (0600) or { "command": ["/absolute/path", "arg"] }' },
+    }),
+    model: 'coder-next',
+    sampling: { temperature: 0, top_p: 0.9, presence_penalty: 0 },
+    start,
+  }, null, 2)}\n`
+}
+
+/** unslop's backend (its profile's baseUrl and apiKey source) when that profile is readable and filled in. */
+function unslopBackend(profile: string): Backend | undefined {
+  try {
+    const p = objectOf(JSON.parse(readPrivate(profile)))
+    const baseUrl = p?.['baseUrl']
+    if (typeof baseUrl !== 'string' || !baseUrl || baseUrl.startsWith('FILL IN')) return undefined
+    return { baseUrl, ...(Object.hasOwn(p!, 'apiKey') ? { apiKey: p!['apiKey'] } : {}) }
+  } catch {
+    return undefined
+  }
+}
+
 const exists = (path: string): boolean => { try { lstatSync(path); return true } catch { return false } }
 const isFile = (path: string): boolean => { try { return statSync(path).isFile() } catch { return false } }
 const removeIfEmpty = (dir: string): void => { try { rmdirSync(dir) } catch { /* not empty, or not ours */ } }
@@ -278,16 +343,17 @@ const shQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`
 // 18, not 14: 14 is the agent being off, and a caller must tell a broken install from a switch (#584).
 // It pins the mesh dir it was written for, so the caller's environment (no
 // AGENT_INBOX_MESH_DIR, or an AGENT_INBOX_DB) cannot point it at another one.
-function shimText(agent: string, issue: number, node: string, script: string, dir: string): string {
+// unslop-code's command never reads stdin, so its stale shim drains nothing (`drains` false).
+function shimText(agent: string, issue: number, node: string, script: string, dir: string, drains = true): string {
   return `#!/bin/sh
 # agent-inbox ${agent} shim (#${issue}), written by meshctl enable --${agent}. Do not edit.
 AGENT_INBOX_MESH_DIR=${shQuote(dir)}; export AGENT_INBOX_MESH_DIR
 node=${shQuote(node)}
 meshctl=${shQuote(script)}
 if [ ! -x "$node" ] || [ ! -f "$meshctl" ]; then
-  drain=1; for a in "$@"; do case "$a" in --in|--in=*) drain=0;; esac; done
+${drains ? `  drain=1; for a in "$@"; do case "$a" in --in|--in=*) drain=0;; esac; done
   [ "$drain" = 0 ] || [ -t 0 ] || cat > /dev/null
-  echo 'agent-inbox ${agent}: this shim is stale: run meshctl enable --${agent} again' >&2
+` : ''}  echo 'agent-inbox ${agent}: this shim is stale: run meshctl enable --${agent} again' >&2
   exit 18
 fi
 exec "$node" "$meshctl" ${agent} "$@"
@@ -355,6 +421,11 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     err(UNSLOP_USAGE)
     return 4
   }
+  if (command === 'unslop-code') {
+    // async: the entry below runs it (runUnslopCode in src/unslop-code-client.ts)
+    err(UNSLOP_CODE_USAGE)
+    return 4
+  }
   if (command === 'request-post') {
     // async: the entry below runs it (runRequestPost in src/request-post-client.ts)
     err(REQUEST_POST_USAGE)
@@ -393,14 +464,16 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   const apply = flags.delete('--apply')
   const unslop = flags.delete('--unslop')
   const requestPost = flags.delete('--request-post')
+  const unslopCode = flags.delete('--unslop-code')
   if (command === 'forget-runs') {
     const all = flags.delete('--all')
     const id = values.get('--id')
-    const picked: string[] = [...(unslop ? ['unslop'] : []), ...(requestPost ? ['request-post'] : []), ...(flags.delete('--web-search') ? ['web-search'] : []), ...(id === undefined ? [] : [id])]
+    const picked: string[] = [...(unslop ? ['unslop'] : []), ...(unslopCode ? ['unslop-code'] : []), ...(requestPost ? ['request-post'] : []), ...(flags.delete('--web-search') ? ['web-search'] : []), ...(id === undefined ? [] : [id])]
     if (flags.size || [...values.keys()].some((key) => key !== '--id') || (all ? picked.length : picked.length !== 1) || (id !== undefined && idRefusal(id))) return usage()
     return forgetRuns(resolve(meshDir(env, home)), all ? 'all' : picked, apply, now().getTime(), out, err)
   }
-  if (unslop && requestPost) return usage()
+  // one agent flag per command
+  if (Number(unslop) + Number(requestPost) + Number(unslopCode) > 1) return usage()
   const only = (...names: string[]): boolean => [...values.keys()].every((key) => names.includes(key))
 
   const dir = resolve(meshDir(env, home))
@@ -466,7 +539,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
 
   if (command === 'skills') {
     const sub = rest[0]
-    if ((sub !== 'link' && sub !== 'unlink') || !flags.delete(sub) || flags.size || !only('--target') || unslop || requestPost) return usage()
+    if ((sub !== 'link' && sub !== 'unlink') || !flags.delete(sub) || flags.size || !only('--target') || unslop || requestPost || unslopCode) return usage()
     const target = values.get('--target') ?? 'all'
     if (target !== 'all' && !SKILL_TARGETS.includes(target as SkillTarget)) return usage()
     const targets = target === 'all' ? SKILL_TARGETS : [target as SkillTarget]
@@ -483,12 +556,14 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   }
 
   if (command === 'status') {
-    if (flags.size || values.size || apply || unslop || requestPost) return usage()
+    if (flags.size || values.size || apply || unslop || requestPost || unslopCode) return usage()
     out(`${ALWAYS_ON}\n`)
     const existing = readMesh(file)
     const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
     const entry = agents?.['unslop']
     const port = entry === undefined ? undefined : loopbackPort(objectOf(entry)?.['endpoint'])
+    const codeEntry = agents?.['unslop-code']
+    const codePort = codeEntry === undefined ? undefined : loopbackPort(objectOf(codeEntry)?.['endpoint'])
     const rpEntry = agents?.['request-post']
     const rpEndpoint = rpEntry === undefined ? undefined : requestPostEndpoint(objectOf(rpEntry)?.['endpoint'])
     const added = Object.entries(agents ?? {}).flatMap(([id, value]) => {
@@ -496,13 +571,16 @@ function meshctl(argv: string[], io: MeshctlIo): number {
       return read === undefined ? [] : [{ id, read }]
     })
     const valid = added.filter((a) => a.read !== 'invalid').length
-    const pieces = [...(port ? ['unslop'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
+    const pieces = [...(port ? ['unslop'] : []), ...(codePort ? ['unslop-code'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
     if (existing.kind === 'missing') out(`Mesh: off. No ${name}.\n`)
     else if (existing.kind === 'refused') out(`Mesh: off. ${name} ${existing.reason}, so it is read as off.\n`)
     else out(pieces ? `Mesh: on. ${name} turns on ${pieces}.\n` : `Mesh: off. ${name} turns on no piece this build reads.\n`)
     const has = (path: string): string => (exists(path) ? 'present' : 'missing')
     const state = port ? `on at http://127.0.0.1:${port}` : entry === undefined ? 'off' : 'off (agents.unslop.endpoint is not http://127.0.0.1:<port>)'
     out(`Unslop: ${state}. Profile ${show(paths.profile)}: ${has(paths.profile)}; token: ${has(paths.token)}; shim ${show(paths.shim)}: ${has(paths.shim)}.\n`)
+    const code = unslopCodePaths(dir)
+    const codeState = codePort ? `on at http://127.0.0.1:${codePort}` : codeEntry === undefined ? 'off' : 'off (agents.unslop-code.endpoint is not http://127.0.0.1:<port>)'
+    out(`Unslop-code: ${codeState}. Profile ${show(code.profile)}: ${has(code.profile)}; token: ${has(code.token)}; shim ${show(code.shim)}: ${has(code.shim)}.\n`)
     // the endpoint is printed only when it passed the rule, so it can hold no token
     const rp = requestPostPaths(dir)
     const rpState = rpEndpoint ? `on at ${rpEndpoint}` : rpEntry === undefined ? 'off' : `off (agents.request-post.endpoint is not ${ENDPOINT_RULE})`
@@ -561,7 +639,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
   }
 
-  if (command === 'enable' && !unslop && !requestPost) {
+  if (command === 'enable' && !unslop && !requestPost && !unslopCode) {
     if (!flags.delete('--agents-view') || flags.size || values.size) return usage()
     out(`${ALWAYS_ON} Nothing written.\n`)
     return 0
@@ -635,6 +713,118 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     const steps = withSkills(head, withoutAgent(existing, 'request-post'))
     if (!steps.length) {
       out(`Request-post is already off${purge ? ' and purged' : ''}. Nothing to do.\n`)
+      return 0
+    }
+    return run(steps, 'Steps before it are done; nothing after it ran.')
+  }
+
+  if (command === 'enable' && unslopCode) {
+    if (flags.size || !only('--port', '--checkout')) return usage()
+    const portText = values.get('--port') ?? String(UNSLOP_CODE_PORT)
+    const port = /^\d{1,5}$/.test(portText) ? loopbackPort(`http://127.0.0.1:${portText}`) : undefined
+    if (!port) return refuse('the port must be a number from 1 to 65535 other than 80; the endpoint is always http://127.0.0.1:<port>')
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const doc: MeshDocument = existing.kind === 'present' ? existing.doc : { schema: MESH_SCHEMA }
+    const agents = doc['agents'] === undefined ? {} : objectOf(doc['agents'])
+    if (!agents) return refuse(`${name} has an "agents" value that is not an object`)
+    // two agents on one port: whichever started first would answer the other's calls
+    const portOf = (value: unknown): number | undefined => {
+      const endpoint = objectOf(value)?.['endpoint']
+      return typeof endpoint === 'string' ? Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})(?:\/|$)/.exec(endpoint)?.[1]) || undefined : undefined
+    }
+    const clash = Object.entries(agents).find(([key, value]) => key !== 'unslop-code' && portOf(value) === port)?.[0]
+    // a key that breaks the id rule is a hand edit, never echoed
+    if (clash !== undefined) return refuse(`port ${port} is the endpoint of ${BUILT_IN_AGENTS.includes(clash) || !idRefusal(clash) ? `agents.${clash}` : 'another agent entry'} in ${name}: pass --port <another>`)
+    const wanted = { endpoint: `http://127.0.0.1:${port}`, profile: 'unslop-code' }
+    const next: MeshDocument = { ...doc, agents: { ...agents, 'unslop-code': wanted } }
+    const current = existing.kind === 'present' && JSON.stringify(agents['unslop-code']) === JSON.stringify(wanted)
+
+    const checkout = resolve(values.get('--checkout') ?? repo)
+    const wrap = join(checkout, 'packages', 'mesh', 'dist', 'wrap.js')
+    if (!isFile(wrap)) {
+      return refuse(isFile(join(checkout, 'packages', 'mesh', 'package.json'))
+        ? `${show(wrap)} is missing: run npm ci && npm run build in ${show(join(checkout, 'packages', 'mesh'))} (Node 24)`
+        : `${show(checkout)} is not an agent-inbox checkout: pass --checkout <path of one>`)
+    }
+    if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
+    if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
+    const code = unslopCodePaths(dir)
+    const start = [node, wrap, '--agent', 'openai-compatible', '--profile', 'unslop-code']
+    const backend = unslopBackend(paths.profile)
+    const template = codeProfileTemplate(start, backend)
+    // the dry run shows where the backend comes from, never the URL or the key source
+    const hidden = '(taken from the unslop profile; not printed)'
+    const shownTemplate = backend ? codeProfileTemplate(start, { baseUrl: hidden, ...(Object.hasOwn(backend, 'apiKey') ? { apiKey: hidden } : {}) }) : template
+    const shim = shimText('unslop-code', 652, node, script, dir, false)
+    const json = `${JSON.stringify(next, null, 2)}\n`
+    const dirs = (): void => {
+      for (const d of [code.wrappers, code.tokens, code.bin]) mkdirSync(d, { recursive: true, mode: 0o700 })
+    }
+
+    const steps: Step[] = [
+      exists(code.token)
+        ? { dry: `Would keep the caller token ${show(code.token)} (present).`, run: () => `Kept ${show(code.token)}.` }
+        : {
+            dry: `Would write a new random caller token to ${show(code.token)} (0600).`,
+            run: () => { dirs(); writeNew(code.token, `${randomBytes(32).toString('base64url')}\n`, 0o600, true); return `Wrote ${show(code.token)}.` },
+          },
+      exists(code.profile)
+        ? {
+            dry: `Would keep the profile ${show(code.profile)} (present; never overwritten).`,
+            run: () => `Kept ${show(code.profile)}. If Node or the checkout moved, set its "start" by hand to ${JSON.stringify(start)}.`,
+          }
+        : {
+            dry: backend
+              ? `Would write the profile ${show(code.profile)} (0600), taking baseUrl${Object.hasOwn(backend, 'apiKey') ? ' and the apiKey source' : ''} from ${show(paths.profile)} (not printed):\n${shownTemplate}`
+              : `Would write the profile template ${show(code.profile)} (0600):\n${template}`,
+            run: () => {
+              dirs()
+              writeNew(code.profile, template, 0o600, true)
+              return backend ? `Wrote ${show(code.profile)} with the unslop profile's backend.` : `Wrote ${show(code.profile)}: fill in baseUrl and apiKey.`
+            },
+          },
+      {
+        dry: `Would write the shim ${show(code.shim)} (0755):\n${shim}`,
+        run: () => { dirs(); writeAtomic(code.shim, shim, 0o755); return `Wrote ${show(code.shim)}.` },
+      },
+      current ? { dry: `Would keep ${name} (unslop-code is on at ${wanted.endpoint}).`, run: () => `Kept ${name}: unslop-code is on at ${wanted.endpoint}.` } : {
+        dry: `Would ${existing.kind === 'present' ? 'replace' : 'create'} ${name}${existing.kind === 'present' ? ' (keeping a backup beside it)' : ''}:\n${json}`,
+        run: () => `Wrote ${name}${writeMesh(next, existing.kind === 'present')}: unslop-code is on at http://127.0.0.1:${port}.`,
+      },
+    ]
+    // the routing skill goes before the switch, which stays the last thing written
+    const last = steps.pop()!
+    return run([...withSkills(steps, next), last], `Steps before it are done; ${name} was not changed.`)
+  }
+
+  if (command === 'disable' && unslopCode) {
+    const purge = flags.delete('--purge')
+    if (flags.size || values.size) return usage()
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const code = unslopCodePaths(dir)
+    const drop = dropAgent(existing, 'unslop-code')
+    const steps: Step[] = drop ? [drop] : []
+    const remove = (path: string, parent?: string): void => {
+      if (exists(path)) steps.push({ dry: `Would delete ${show(path)}.`, run: () => { unlinkSync(path); if (parent) removeIfEmpty(parent); return `Deleted ${show(path)}.` } })
+    }
+    remove(code.shim, code.bin)
+    remove(code.token, code.tokens)
+    if (purge) {
+      remove(code.profile, code.wrappers)
+      remove(code.budget)
+      let logs: string[] = []
+      try {
+        if (lstatSync(code.logs).isDirectory()) logs = readdirSync(code.logs).filter((entry) => UNSLOP_CODE_LOG.test(entry)).sort()
+      } catch { /* no logs */ }
+      for (const log of logs) remove(join(code.logs, log), code.logs)
+      for (const run of runFiles(dir, 'unslop-code')) remove(run.path, join(code.root, 'runs'))
+      if (steps.length) steps.push({ dry: `Would remove ${show(code.root)} if it is then empty.`, run: () => { removeIfEmpty(code.root); return `Tidied ${show(code.root)}.` } })
+    }
+    steps.push(...withSkills([], withoutAgent(existing, 'unslop-code')))
+    if (!steps.length) {
+      out(`Unslop-code is already off${purge ? ' and purged' : ' (its profile, logs, budget and run records stay; --purge removes them)'}. Nothing to do.\n`)
       return 0
     }
     return run(steps, 'Steps before it are done; nothing after it ran.')
@@ -719,7 +909,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
       remove(paths.budget)
       let logs: string[] = []
       try {
-        if (lstatSync(paths.logs).isDirectory()) logs = readdirSync(paths.logs).filter((entry) => /^unslop-/.test(entry)).sort()
+        if (lstatSync(paths.logs).isDirectory()) logs = readdirSync(paths.logs).filter((entry) => UNSLOP_LOG.test(entry)).sort()
       } catch { /* no logs */ }
       for (const log of logs) remove(join(paths.logs, log), paths.logs)
       for (const run of runFiles(dir, 'unslop')) remove(run.path, join(paths.root, 'runs'))
@@ -1107,7 +1297,7 @@ const SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const
  * added agent's id, once its entry passed the rule (#530). `call` and `request-post` get this
  * Mac's tailnet suffix reader for their §8.8 re-check (#557).
  */
-export async function runClient(command: 'unslop' | 'request-post' | 'call', args: string[], io: ClientIo & { tailnet?: () => string | undefined }): Promise<number> {
+export async function runClient(command: 'unslop' | 'unslop-code' | 'request-post' | 'call', args: string[], io: ClientIo & { tailnet?: () => string | undefined; cwd?: string }): Promise<number> {
   const dir = resolve(meshDir(io.env, io.home))
   const run: RunCollector = {}
   const agent = command === 'call' ? args[0] ?? '' : command
@@ -1120,9 +1310,11 @@ export async function runClient(command: 'unslop' | 'request-post' | 'call', arg
   try {
     const code = command === 'unslop'
       ? await runUnslop(args, { ...io, run }).catch(() => { run.internal = true; io.err('unslop: failed (internal error). Edit it in-session.\n'); return 13 })
-      : command === 'call'
-        ? await runCall(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('meshctl call: failed (internal error).\n'); return 13 })
-        : await runRequestPost(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
+      : command === 'unslop-code'
+        ? await runUnslopCode(args, { ...io, cwd: io.cwd ?? process.cwd(), run }).catch(() => { run.internal = true; io.err('unslop-code: failed (internal error); nothing was applied.\n'); return 13 })
+        : command === 'call'
+          ? await runCall(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('meshctl call: failed (internal error).\n'); return 13 })
+          : await runRequestPost(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
     appendRun(dir, agent, run, { exit: code })
     return code
   } finally {
@@ -1137,7 +1329,7 @@ try {
 } catch { /* not run directly */ }
 if (isMain) {
   const [command, ...rest] = process.argv.slice(2)
-  process.exitCode = command === 'unslop' || command === 'request-post' || command === 'call'
+  process.exitCode = command === 'unslop' || command === 'unslop-code' || command === 'request-post' || command === 'call'
     ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
     : command === 'add' ? await runAdd(rest)
       : command === 'check' ? await runCheckCommand(rest, { tailnet: magicDnsSuffix })

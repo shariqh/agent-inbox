@@ -1,7 +1,7 @@
 // The mesh's routing skills (#513; mesh design §6.7, D15). A harness finds a mesh agent through a
 // routing SKILL.md that points at the agent's shim, `<mesh dir>/bin/<agent>`. meshctl writes one
 // folder per agent, `<mesh dir>/skills/<agent>/SKILL.md`, for each agent that mesh.json turns on
-// and whose template ships here (unslop today), and removes the folders of agents that are off.
+// and whose template ships here (unslop and unslop-code), and removes the folders of agents that are off.
 // `meshctl skills link` makes `~/.claude/skills/<agent>` (Claude Code) and `~/.agents/skills/<agent>`
 // (Codex and Copilot CLI) symlinks to them; `unlink`, and turning the agent off, remove only links
 // that point into `<mesh dir>/skills/`.
@@ -65,7 +65,30 @@ Never change an approved revision in place. Before the draft goes for approval, 
 - nothing was added that the original did not say.
 `
 
-const TEMPLATES: Readonly<Record<string, string>> = { unslop: UNSLOP_SKILL }
+// docs/unslop-code.md quotes this text, and test/mesh-skills.test.ts fails when the two differ (#652).
+const UNSLOP_CODE_SKILL = `---
+name: unslop-code
+description: Remove the comments an AI coding agent adds that a maintainer would not write, from the JavaScript and TypeScript files a change touched. Use after writing or editing code in a git repository and before committing it.
+---
+
+# unslop-code
+
+Run this once after you have written or edited code in a git repository, before you commit:
+
+    <mesh dir>/bin/unslop-code --apply --report <report file>
+
+Give the command a shell timeout of at least 300 seconds. Run it from inside the repository. Do not check that the file exists first, and add no redirection.
+
+- It looks at the lines your change added in JavaScript and TypeScript files, removes whole-line comments that only restate the code or narrate steps, and changes nothing else. It never rewrites code.
+- Exit 0: it ran. Read the report. \`suggestions\` lists other things it noticed, each with a file, a line and a kind. They are suggestions: look at each line and decide yourself; never apply one without reading the code.
+- Any other exit, or no answer within the timeout: carry on without it. Do not retry. Tell the person in one line that unslop-code was not used, with the exit code or "timeout" and the last line it printed.
+- Exit 18: the same, and also tell the person to run \`meshctl enable --unslop-code --apply\` again.
+- If \`<mesh dir>/bin/unslop-code\` does not exist, the agent is off: say so in one line and carry on.
+
+Never send it files that hold secrets or customer material; it skips a file in which it sees a key or a token, but do not rely on that.
+`
+
+const TEMPLATES: Readonly<Record<string, string>> = { unslop: UNSLOP_SKILL, 'unslop-code': UNSLOP_CODE_SKILL }
 
 /** The mesh dir as a skill's text names it: `~/…` inside the home folder, else the absolute path (#584). */
 export function shownDir(dir: string, home: string): string {
@@ -86,13 +109,15 @@ const objectOf = (value: unknown): Record<string, unknown> | undefined =>
 
 /**
  * Pure: the routing skills a mesh.json turns on, agent → SKILL.md text. An agent is on by the rule
- * its client reads (unslop: an `http://127.0.0.1:<port>` endpoint). Nothing else in the document
+ * its client reads (unslop and unslop-code: an `http://127.0.0.1:<port>` endpoint). Nothing else in the document
  * reaches the text.
  */
 export function routingSkills(doc: MeshDocument | undefined, dir: string, home: string): Map<string, string> {
   const agents = objectOf(doc?.['agents'])
   const on = new Map<string, string>()
-  if (loopbackPort(objectOf(agents?.['unslop'])?.['endpoint']) !== undefined) on.set('unslop', routingSkill('unslop', dir, home)!)
+  for (const agent of ['unslop', 'unslop-code']) {
+    if (loopbackPort(objectOf(agents?.[agent])?.['endpoint']) !== undefined) on.set(agent, routingSkill(agent, dir, home)!)
+  }
   return on
 }
 

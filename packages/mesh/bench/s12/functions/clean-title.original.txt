@@ -1,0 +1,9 @@
+/** One line, no control characters, at most 200 characters; null when nothing is left. */
+export function cleanTitle(s: unknown): string | null {
+  if (typeof s !== 'string') return null
+  // whitespace controls become one space; every other control is dropped
+  const one = s.slice(0, MAX_TITLE * 10).replace(/[\t\n\r\u{2028}\u{2029}]+/gu, ' ').replace(CONTROLS, '').replace(/ {2,}/g, ' ').trim()
+  if (!one) return null
+  const chars = Array.from(one)
+  return chars.length > MAX_TITLE ? chars.slice(0, MAX_TITLE).join('') : one
+}

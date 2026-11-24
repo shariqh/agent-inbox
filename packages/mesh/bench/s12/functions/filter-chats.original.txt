@@ -1,0 +1,11 @@
+/** The chats that match the search (title, project, branch, folder) and the filters (Find passes no project). */
+export function filterChats(chats, filter, home) {
+  const query = String(filter.query ?? '').trim().toLowerCase()
+  return chats.filter((chat) => {
+    if (filter.tool !== 'all' && chat.tool !== filter.tool) return false
+    if (filter.project !== null && chat.project !== filter.project) return false
+    if (!query) return true
+    return [chat.title, chat.project, chat.branch, chat.cwd, displayFolder(chat.cwd, home)]
+      .some((field) => typeof field === 'string' && field.toLowerCase().includes(query))
+  })
+}

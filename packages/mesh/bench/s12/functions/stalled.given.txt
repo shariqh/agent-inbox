@@ -1,0 +1,12 @@
+function stalled(plan, { nowMs, liveSessions, workingPlanIds }) {
+  const updated = Date.parse(plan.updated_at ?? '')
+  if (!Number.isFinite(updated) || !(nowMs - updated > STALL_MS)) return false
+  for (const row of plan.rows ?? []) {
+    // a blocked step not yet answered still asks, or waits where the person set it aside
+    if (row.status === 'blocked' && !humanActedOnRow(row)) return false
+    // a note, a choice or "I've done my part" an agent has not picked up yet
+    if (humanActedOnRow(row) && !rowPickup(row).pickedUp) return false
+  }
+  if (plan.session && liveSessions.has(plan.session)) return false
+  return !workingPlanIds.has(plan.id)
+}

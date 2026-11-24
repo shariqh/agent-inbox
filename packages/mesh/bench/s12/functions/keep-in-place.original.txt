@@ -1,0 +1,25 @@
+// Rows the person acted on, or whose editor holds text, stay where they were painted:
+// each goes back after the row that preceded it last time (the first row when none
+// did). A kept row the list already holds, with no earlier place (a landing target), keeps
+// its sorted place; one the list does not hold goes first, so it is in sight.
+function keepInPlace(rows, keptRows, previous) {
+  const inList = new Set(rows.map((row) => row.key))
+  const moving = new Map([...keptRows].filter(([key]) => previous.includes(key) || !inList.has(key)))
+  const list = rows.filter((row) => !moving.has(row.key))
+  const placed = new Set(list.map((row) => row.key))
+  const lead = []
+  for (const [key, row] of moving) {
+    const at = previous.indexOf(key)
+    if (at < 0) {
+      lead.push(row)
+      continue
+    }
+    let anchor = -1
+    for (let i = at - 1; i >= 0 && anchor < 0; i--) {
+      if (placed.has(previous[i])) anchor = list.findIndex((other) => other.key === previous[i])
+    }
+    list.splice(anchor + 1, 0, row)
+    placed.add(key)
+  }
+  return [...lead, ...list]
+}

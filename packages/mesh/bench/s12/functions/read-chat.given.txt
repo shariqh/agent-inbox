@@ -1,0 +1,20 @@
+function readChat(entry) {
+  if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || typeof entry.tool !== 'string') return null
+  const chat = {
+    id: entry.id,
+    tool: entry.tool,
+    title: str(entry.title),
+    titleAuto: entry.titleAuto === true,
+    project: str(entry.project) ?? '',
+    cwd: str(entry.cwd),
+    branch: branchOf(entry.branch),
+    createdAt: str(entry.createdAt),
+    lastActiveAt: str(entry.lastActiveAt),
+    live: entry.live === true,
+    pr: readPr(entry.pr),
+    hidden: Array.isArray(entry.hidden) ? entry.hidden.filter((r) => typeof r === 'string') : [],
+  }
+  // Jump to session: only a live chat has one, and a chat without one carries no key
+  if (chat.live && typeof entry.session === 'string' && entry.session) chat.session = entry.session
+  return chat
+}

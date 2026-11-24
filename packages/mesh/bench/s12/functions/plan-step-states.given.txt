@@ -1,0 +1,20 @@
+// UX pass, slice 3: a plan's steps in their own order, as the segmented bar
+// draws them. One vocabulary everywhere: done, in progress, needs you, to do.
+// `na` steps do not count; a blocked step needs you only while the attention
+// predicate says so and the plan is not archived (an answered, snoozed or
+// pinned step, and any blocked step of an archived plan, is to do).
+export function planStepStates(plan, nowMs) {
+  const archived = plan?.status === 'archived'
+  const states = []
+  const counts = { done: 0, progress: 0, needs: 0, todo: 0 }
+  for (const row of plan?.rows ?? []) {
+    if (row.status === 'na') continue
+    const state = row.status === 'done' ? 'done'
+      : row.status === 'partial' ? 'progress'
+        : !archived && isBlockedRowAttention(row, nowMs) ? 'needs'
+          : 'todo'
+    states.push(state)
+    counts[state] += 1
+  }
+  return { states, counts }
+}

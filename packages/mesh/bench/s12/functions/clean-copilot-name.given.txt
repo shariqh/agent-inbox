@@ -1,0 +1,18 @@
+/**
+ * Copilot's chat name as a title: its first non-empty line, whitespace collapsed, control, bidi and
+ * zero-width characters removed, at most 120 characters with a trailing ellipsis when cut. Null when
+ * nothing is left. Only this line of a name is ever kept (docs/architecture/chats.md).
+ */
+export function cleanCopilotName(s: unknown): string | null {
+  if (typeof s !== 'string') return null
+  // a name can run to the size of workspace.yaml; the opening is all that is read
+  let head = s.slice(0, 10_000)
+  if (/[\ud800-\udbff]$/.test(head)) head = head.slice(0, -1) // the slice must not leave half a surrogate pair
+  for (const raw of head.split(/\r\n|[\n\r\u{2028}\u{2029}]/u)) {
+    const line = raw.replace(ZERO_WIDTH, '').replace(/\s+/gu, ' ').replace(CONTROLS, '').replace(/ {2,}/g, ' ').trim()
+    if (!line) continue
+    const chars = Array.from(line)
+    return chars.length > MAX_COPILOT_TITLE ? `${chars.slice(0, MAX_COPILOT_TITLE - 1).join('').trimEnd()}\u2026` : line
+  }
+  return null
+}

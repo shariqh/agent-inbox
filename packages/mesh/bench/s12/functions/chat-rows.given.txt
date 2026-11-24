@@ -1,0 +1,16 @@
+// The chats a chip lists, newest active first. Under the Chats chip: the list as read (Show all's
+// hidden chats included) through the tool toggle. Under All, where neither the toggle nor Show all
+// is drawn: the default list, every tool.
+function chatRows(chats, { query, tool, all }) {
+  // Initialize the result array
+  let result = []
+  if (Array.isArray(chats)) {
+    if (chats.length > 0) {
+      // Get the home directory
+      const home = inferHome(chats)
+      const pool = all ? chats.filter((chat) => !chat.hidden?.length) : chats
+      result = filterChats(sortChats(pool), { query, tool: all ? 'all' : tool, project: null }, home).map(chatFindRow)
+    }
+  }
+  return result
+}

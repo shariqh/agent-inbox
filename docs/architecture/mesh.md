@@ -680,6 +680,32 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   second agent in its own mesh dir with the box's default sampling in its profile, not a
   switch in the agent. How to run it and read `summary.md`: [`docs/unslop.md`](../unslop.md).
   Tests: `packages/mesh/test/bench-s11.test.ts` (recorded runs, no network).
+- **unslop-code's guards (step 1 of 4).** `src/code-slop.ts` is a pure module (Node core
+  only, no I/O, no model) for a planned second skill that removes the comments an AI
+  coding agent adds and a maintainer would not write. Its rule: the model never returns
+  code. It answers with line numbers (`{"remove":[…]}`, and separately `{"keep":[…]}`),
+  and code decides and edits. A line is removed only when the model listed it, the
+  change added it, it holds one whole-line `//` comment and nothing else, it is not part
+  of a comment run directly above a declaration (a module-level `function`, `class`,
+  `const`, `let`, `var`, `type`, `interface` or `enum`, a nested function, a function or
+  class assigned to a name or a property, a top-level CommonJS export, or a class or
+  object member), and the keep answer did not claim it; every other listed line is
+  reported with its reason. Block comments and comments after code are never removed.
+  `sameProgram` checks the tokens, and the line breaks between them, are unchanged, and
+  `patchFor` writes a deletions-only patch `git apply` accepts. The scanner is the
+  module's own and conservative: a `/` or `<` it cannot read with certainty (a `<` that
+  starts an expression, unless the caller passes `jsx: false` for a `.ts`, `.mts` or
+  `.cts` source), an unclosed token or a lone CR makes the whole file `unsure`, and
+  nothing in it is removed. `test/code-slop-differential.test.ts` holds it against the
+  TypeScript compiler's parser on every JavaScript and TypeScript file under `src/`,
+  `public/`, `electron/` and `packages/mesh/src/` (the same whole-line comment lines,
+  at most 2 percent unsure) and applies random removals with `git apply`. **Bench S12**
+  (`bench/s12/`) is the bar every later version must pass: fifteen functions of this
+  repository, ten with slop added on purpose, and the local model's recorded answers;
+  `test/bench-s12.test.ts` requires no good comment removed, at least 20 of the 22 slop
+  comments removed, the five clean functions byte-identical and `sameProgram` for all
+  fifteen, plus three scope fixtures whose guarded comment must stay. Nothing calls the
+  module yet.
 
 ## request-post conformance fixtures (M2b R1, #500)
 

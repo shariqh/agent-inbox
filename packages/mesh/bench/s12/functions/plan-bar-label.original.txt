@@ -1,0 +1,11 @@
+// What the bar says in words: "3 of 7 steps done, 1 needs you, 1 in progress",
+// leaving out a part that is zero.
+export function planBarLabel(counts) {
+  const total = counts.done + counts.progress + counts.needs + counts.todo
+  if (!total) return 'No steps to count'
+  return [
+    `${counts.done} of ${total} steps done`,
+    counts.needs ? `${counts.needs} ${counts.needs === 1 ? 'needs' : 'need'} you` : '',
+    counts.progress ? `${counts.progress} in progress` : '',
+  ].filter(Boolean).join(', ')
+}

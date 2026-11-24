@@ -126,6 +126,11 @@ describe('commentLines', () => {
     expect(doc(src)).toEqual([1, 5, 10, 12, 15, 16, 21, 24])
   })
 
+  it('finds a class body after a heading that holds a type literal', () => {
+    const src = lines('export class A<T extends { a: number }> extends B<{ b: string }> {', '  // why run exists', '  run(): void {}', '}')
+    expect(doc(src, false)).toEqual([2])
+  })
+
   it('reports a source it cannot read with certainty as unsure, with nothing in it', () => {
     const jsx = lines('const a = (', '  <p>', '    // JSX text, not a comment', "    Don't", '  </p>', ')')
     expect(commentLines(jsx)).toEqual({ whole: new Set(), doc: new Set(), unsure: true })

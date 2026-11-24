@@ -204,7 +204,9 @@ function tokenize(src: string, jsx: boolean): Token[] {
   const expressionStarts = (): 'yes' | 'no' | 'unsure' => (!prev ? 'yes' : prev.ends === true ? 'no' : prev.ends === 'unsure' ? 'unsure' : 'yes')
 
   const braceKind = (): BraceKind => {
-    if (pending && pending.depth === stack.length && (prev?.kind === 'name' || prev?.kind === 'str' || isPunct(prev, '>', ')'))) {
+    // the body follows the heading's last name, string, `>` or `)`; after `extends` a brace is a type or an object
+    const heading = (prev?.kind === 'name' && !['extends', 'implements'].includes(text(prev))) || prev?.kind === 'str' || isPunct(prev, '>', ')')
+    if (pending && pending.depth === stack.length && heading) {
       const kind = pending.kind
       pending = undefined
       return kind

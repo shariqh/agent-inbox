@@ -9,7 +9,7 @@
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.
 // A missing key or file means off. A newer schema is never read as on: this
 // build cannot know what it would turn on.
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs'
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -31,7 +31,7 @@ export function meshDir(env: NodeJS.ProcessEnv = process.env, home: string = hom
 
 export const meshFile = (dir: string): string => join(dir, 'mesh.json')
 
-const { O_RDONLY, O_WRONLY, O_CREAT, O_NOFOLLOW, O_NONBLOCK } = constants
+const { O_RDONLY, O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW, O_NONBLOCK } = constants
 
 /** A private file meshctl's clients read (a token, a profile): regular (never a symlink), this user's, no group or other bits, at most 64 KiB. */
 export function readPrivate(path: string): string {
@@ -77,6 +77,88 @@ export function openPrivate(path: string, flags: number): number {
   }
   fchmodSync(fd, 0o600)
   return fd
+}
+
+// ── the card copies of added agents (Agent cards step 1, D6) ─────────────────
+// `meshctl add --apply` (and `--move`) keeps the card it accepted as `<mesh dir>/mesh/cards/<id>.json`
+// (0600 in a 0700 folder), so the viewer can show an added agent's card without ever contacting
+// it. Both sides use one rule: a folder that is no symlink and is this user's, a regular file read
+// and written through O_NOFOLLOW that no one else can read, at most the card fetch's 64 KiB.
+
+/** A card copy's cap: the card fetch's own. */
+export const CARD_COPY_MAX = 64 * 1024
+export const cardCopyFile = (dir: string, id: string): string => join(dir, 'mesh', 'cards', `${id}.json`)
+const mine = (s: { uid: number }): boolean => !process.getuid || s.uid === process.getuid()
+const cardsFolder = (dir: string): string | undefined => {
+  const cards = join(dir, 'mesh', 'cards')
+  try {
+    const s = lstatSync(cards)
+    return s.isDirectory() && mine(s) && !(s.mode & 0o077) ? cards : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** An added agent's card copy: the card, `missing` with no file, or `refused` when a rule above fails. */
+export function readCardCopy(dir: string, id: string): { card: Record<string, unknown> } | 'missing' | 'refused' {
+  if (!cardsFolder(dir)) return lstatOk(join(dir, 'mesh', 'cards')) ? 'refused' : 'missing'
+  let fd: number
+  try {
+    fd = openSync(cardCopyFile(dir, id), O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'refused'
+  }
+  try {
+    const s = fstatSync(fd)
+    if (!s.isFile() || !mine(s) || s.mode & 0o077 || s.size > CARD_COPY_MAX) return 'refused'
+    // one bounded read from the checked descriptor, so a file that grows after fstat is still refused
+    const buf = Buffer.alloc(CARD_COPY_MAX + 1)
+    const size = readSync(fd, buf, 0, buf.length, 0)
+    if (size > CARD_COPY_MAX) return 'refused'
+    const card: unknown = JSON.parse(buf.toString('utf8', 0, size))
+    return card && typeof card === 'object' && !Array.isArray(card) ? { card: card as Record<string, unknown> } : 'refused'
+  } catch {
+    return 'refused'
+  } finally {
+    closeSync(fd)
+  }
+}
+const lstatOk = (path: string): boolean => { try { lstatSync(path); return true } catch { return false } }
+/** True when `<mesh dir>/mesh/cards` exists but breaks the folder rule (a symlink, another user's or open to others). */
+export const cardsFolderRefused = (dir: string): boolean => !cardsFolder(dir) && lstatOk(join(dir, 'mesh', 'cards'))
+
+/**
+ * Writes an added agent's card copy as received, through a temporary file and a rename; refuses
+ * (throws) a card over the cap and a cards folder that is a symlink, another user's or open to others.
+ */
+export function writeCardCopy(dir: string, id: string, card: unknown): void {
+  const text = JSON.stringify(card)
+  if (Buffer.byteLength(text) > CARD_COPY_MAX) throw new Error('card copy too large')
+  mkdirSync(join(dir, 'mesh', 'cards'), { recursive: true, mode: 0o700 })
+  if (!cardsFolder(dir)) throw new Error('cards folder refused')
+  const path = cardCopyFile(dir, id)
+  const temp = `${path}.tmp-${process.pid}`
+  const fd = openSync(temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+  try {
+    try {
+      fchmodSync(fd, 0o600)
+      writeSync(fd, text)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(temp, path)
+  } catch (error) {
+    // the temporary file is ours (O_EXCL): none stays behind when the write, the sync or the rename fails
+    try { unlinkSync(temp) } catch { /* already gone */ }
+    throw error
+  }
+}
+
+/** Deletes an added agent's card copy, then the cards folder when that leaves it empty. */
+export function removeCardCopy(dir: string, id: string): void {
+  try { unlinkSync(cardCopyFile(dir, id)) } catch { /* none */ }
+  try { rmdirSync(join(dir, 'mesh', 'cards')) } catch { /* not empty, or not there */ }
 }
 
 export type MeshDocument = { schema: number; [key: string]: unknown }

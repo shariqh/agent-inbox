@@ -47,6 +47,7 @@ import { createLaunchUi } from '/launch-ui.js'
 import { installAgentsHome, moveKeepingFocus } from '/agents-home.js'
 import { installPlansLane } from '/plans-lane.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
+import { installMeshAgents } from '/mesh-section.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
 // #617 PR 2d: Settings → Other devices, sharing this Inbox with the owner's other Macs
@@ -759,15 +760,17 @@ async function messagesBody(read) {
   }
 }
 
-// The Mesh agents section (agent cards view design §4.5): `/api/mesh/agents` is
-// read only while the last /api/version carried `mesh`, the Dashboard or an open
-// agent tab (cards view V5 §3.4) shows and the window is visible. A failed read keeps the last body, marked stale, and is
-// never a failed tick; an `on: false` body hides the section and stops the read
-// until /api/version carries `mesh` again.
+// The Agent cards tab (Agent cards step 1; agent cards view design §4.5, amended):
+// `/api/mesh/agents` is read only while the last /api/version carried `mesh`, the Agent cards
+// is the current tab and the window is visible. A failed read keeps the last body, marked stale,
+// and is never a failed tick; an `on: false` body hides the tab once the person leaves it and
+// stops the read until /api/version carries `mesh` again.
 let meshOff = false
 const meshWanted = () => Boolean(liveVersion?.mesh) && !meshOff
-const meshReadable = () => meshWanted() && (activeTab === 'dashboard' || (activeTab === 'agent' && Boolean(meshAgentPage.current())))
-  && document.visibilityState !== 'hidden'
+// the tab shows while the mesh is on, and stays while it is the current tab, so a passive read
+// that turns the mesh off never takes the page from under the person
+const agentCardsShown = () => meshWanted() || activeTab === 'cards'
+const meshReadable = () => meshWanted() && activeTab === 'cards' && document.visibilityState !== 'hidden'
 async function meshBody(read) {
   try {
     return await settledValue(read).json()
@@ -780,13 +783,14 @@ function meshNext(previous, fresh) {
   if (fresh.on === false) meshOff = true
   return fresh === previous.body && !previous.stale ? previous : { body: fresh, stale: false }
 }
-// Run history (cards view V5 §5.7): the open agent's runs, read only while the agent tab is
-// active, its Run history shows, the document is visible and the last body still names the
-// agent. The same fallback: a failed read keeps the last body marked stale, a skipped read
-// keeps it as it was, and a body read for another agent is never shown under this one.
+// Run history (cards view V5 §5.7): the open agent's runs, read only while the Agent cards tab
+// is active with that agent's page open, its Run history shows, the document is visible and the
+// last body still names the agent. The same fallback: a failed read keeps the last body marked
+// stale, a skipped read keeps it as it was, and a body read for another agent is never shown
+// under this one.
 function meshRunsUrl() {
   const agent = meshAgentPage.current()
-  if (!agent || activeTab !== 'agent' || !meshAgentPage.runsShowing() || !meshReadable()) return null
+  if (!agent || !meshAgentPage.runsShowing() || !meshReadable()) return null
   const body = lastData?.mesh?.body
   if (body?.on !== true || !body.agents?.some((a) => String(a.key) === agent.key)) return null
   return `/api/mesh/agents/runs?name=${encodeURIComponent(agent.name)}`
@@ -799,11 +803,11 @@ function meshRunsNext(previous, fresh, key) {
 const postMesh = (trigger, name) => fetch('/api/mesh/agents/refresh', {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(name === undefined ? { trigger } : { trigger, name }),
 })
-// The open trigger: only boot on the Dashboard, showAgentsHome() and selectTab('dashboard')
-// from another tab call it, and selectTab('agent') from another tab for that agent only
-// (cards view V5 §3.4). Its checks' result paints through the next poll tick.
-function meshOpen(name) {
-  if (meshWanted()) postMesh('open', name).catch(() => {})
+// The open trigger (Agent cards step 1, D5): only entering the Agent cards tab from another tab
+// calls it; never boot, Home, a poll or a card's press. Its checks' result paints through the
+// next poll tick.
+function meshOpen() {
+  if (meshWanted()) postMesh('open').catch(() => {})
 }
 // Refresh, the human's press (the section's, or the agent page's for its agent): the result
 // paints through the human path.
@@ -813,14 +817,18 @@ async function meshRefresh(name) {
   await reloadAndPaint()
 }
 
-// The agent tab (cards view V5 §3.3): one slot after Find, shown only while an agent is
-// open, replaced by the next one opened, never counted and never persisted.
+// "Yours" (Agent cards step 1, D2) and an agent's page in the same tab (D3): one
+// slot, replaced by the next agent opened, never counted and never persisted. Which agent is
+// open is the page module's state, by key; a passive repaint never opens or closes it.
+const meshAgents = installMeshAgents({
+  onRefresh: () => { meshRefresh() },
+  onOpen: (key, name) => openMeshAgent(key, name, { focus: true }),
+})
 const meshAgentPage = installMeshAgentPage({
-  tab: () => document.querySelector('#tabs .tab[data-tab="agent"]'),
   page: () => document.getElementById('agentPage'),
   wireTablist,
   onRefresh: (name) => { meshRefresh(name) },
-  onClose: closeMeshAgent,
+  onBack: () => closeMeshAgent(),
 })
 
 // The chats (#586), Find's Chats chip since UX pass, slice 4, step B: their own read on entering
@@ -858,26 +866,77 @@ const chatsView = installChatsView({
     if (findRowsByKey.has(rowKey)) findKept.add(rowKey)
   },
 })
-// A card's press: the page paints at once from the last bodies (selectTab), selectTab posts the
-// agent's open, and one reloadAndPaint() brings what the page reads without waiting for a tick.
-function openMeshAgent(key, name) {
-  meshAgentPage.open(key, name)
+// The Agent cards tab's two views: the grid, or one agent's page in its place (D3).
+function paintAgentCards() {
+  const tab = document.querySelector('#tabs .tab[data-tab="cards"]')
+  if (tab) setHidden(tab, !agentCardsShown())
+  const home = document.getElementById('agentCardsHome')
+  const page = document.getElementById('agentPage')
+  if (!home || !page) return
+  const open = Boolean(meshAgentPage.current())
+  setHidden(home, open)
+  setHidden(page, !open)
+  const input = meshWanted() && lastData?.mesh?.body?.on === true ? lastData.mesh : null
+  meshAgents.paint(home, input, Date.now(), meshAgentPage.current()?.key ?? null)
+  setHidden(document.getElementById('agentCardsOff'), meshWanted())
+  // the page, from the same body, whether or not mesh is still on (it then says the agent left)
   meshAgentPage.paint(lastData?.mesh ?? null, Date.now(), lastData?.runs ?? null)
-  selectTab('agent')
+  if (activeTab === 'cards' && !document.getElementById('cards').hidden) paintPageHeading('cards')
+}
+// A card's press, a deep link: the agent's page in the Agent cards tab, painted at once from the
+// last bodies; one reloadAndPaint() brings what the page reads without waiting for a tick. It
+// posts no check (D5): entering the tab did. A press moves focus to the way back, so focus never
+// stays on a card the page now covers.
+function openMeshAgent(key, name, { focus = false } = {}) {
+  if (!agentCardsShown()) return
+  meshAgentPage.open(key, name)
+  if (activeTab !== 'cards') selectTab('cards')
+  paintAgentCards()
+  if (focus) document.querySelector('#agentPage .map-back')?.focus({ preventScroll: true })
   reloadAndPaint()
 }
-// Close: the Dashboard (an open for every agent, from another tab); focus, if it was in the
-// page, goes to the agent's card, else the Quiet lane's heading (the section sits in that
-// lane), only in a focused window.
+// "← Agent cards" and Escape: back to the grid; focus, if it was in the page, goes to the
+// agent's card, else the tab's heading, only in a focused window.
 function closeMeshAgent() {
   const key = meshAgentPage.current()?.key
+  if (!key) return
   const hadFocus = document.hasFocus() && Boolean(activeFocusElement()?.closest?.('#agentPage'))
   meshAgentPage.close()
-  meshAgentPage.paint(null, Date.now())
-  if (activeTab === 'agent') selectTab('dashboard')
+  paintAgentCards()
   if (!hadFocus) return
-  const row = [...document.querySelectorAll('#dashboard .mesh-agents [data-mesh-key]')].find((el) => el.dataset.meshKey === key)
-  ;(row?.querySelector('[data-mesh-open]') ?? document.getElementById('quietLaneTitle'))?.focus({ preventScroll: true })
+  // the card, or (an agent that left mesh.json, a mesh turned off) the tab's heading, which
+  // takes focus only when it may: an h1 holds none without a tabindex
+  const heading = document.getElementById('pageTitle')
+  if (heading) heading.tabIndex = -1
+  ;(meshAgents.cardFor(key) ?? heading)?.focus({ preventScroll: true })
+}
+// #cards opens the tab, #cards/<key> an agent's page in it (the viewer never writes either).
+// A link that lands before /api/version has said whether the mesh is on waits for that read.
+// It never outlives the first version read, whether that worked or failed, and choosing a tab
+// (selectTab) drops it: a link still waiting must not pull the person off the tab they chose.
+let agentCardsLink = null
+let versionSettled = false
+function applyAgentCardsLink() {
+  if (!agentCardsLink) return
+  if (!liveVersion) {
+    if (versionSettled) agentCardsLink = null
+    return
+  }
+  const link = agentCardsLink
+  agentCardsLink = null
+  if (!meshWanted()) return
+  if (link.key) {
+    const key = agentCardsKeyFor(link.key)
+    openMeshAgent(key, key.slice(key.indexOf(':') + 1))
+  } else selectTab('cards')
+}
+// A typed link may name the agent without the source prefix (`#cards/unslop`): the one
+// configured agent of that name, by the last body read; with no body yet, mesh.json's.
+function agentCardsKeyFor(text) {
+  if (text.includes(':')) return text
+  const agents = lastData?.mesh?.body?.on === true ? lastData.mesh.body.agents : null
+  const named = Array.isArray(agents) ? agents.filter((a) => String(a.name) === text) : []
+  return named.length === 1 ? String(named[0].key) : named.length > 1 ? text : `mesh.json:${text}`
 }
 
 // #412 step 3 (§9 b): the launches are read only in the viewer the app owns,
@@ -951,7 +1010,7 @@ async function load() {
       // Driven sessions (#412 step 3): read only in the viewer the app owns, with
       // its switch on (§9 b). Off, the tick makes exactly the reads it always made.
       wantLaunches ? readSnapshot('/api/launches').then(marked) : null,
-      // The Mesh agents section: only while it can show (meshReadable), with
+      // The Agent cards tab's cards: only while it can show (meshReadable), with
       // the messages fallback. Off, the tick makes exactly the reads it made.
       wantMesh ? readSnapshot('/api/mesh/agents').then(marked) : null,
       // Run history: only while it shows (meshRunsUrl), with the same fallback.
@@ -1087,7 +1146,7 @@ async function load() {
       launches: Array.isArray(launches) ? launches : null,
       // #586 phase 2: whether this tick read the launches and could not (never with the switch off)
       launchesFailed: launchesReadFailed(wantLaunches, launches),
-      // the Mesh agents section's last body and whether the last read of it failed
+      // the Agent cards tab's last body and whether the last read of it failed
       mesh,
       // Run history's last body, the agent it was read for, and whether the last read failed
       runs,
@@ -2077,6 +2136,15 @@ function applyFocusHash() {
     openChatsInFind()
     return
   }
+  // Agent cards step 1 (D3): #cards, or #cards/<agent key>, opens the tab, on that agent's page
+  const linked = /^#cards(?:\/(.+))?$/.exec(location.hash)
+  if (linked) {
+    let key = linked[1] ?? null
+    try { key = key === null ? null : decodeURIComponent(key) } catch { /* taken literally */ }
+    agentCardsLink = { key }
+    applyAgentCardsLink()
+    return
+  }
   const f = parseFocusHash(location.hash)
   if (f) focusItem(f.id)
 }
@@ -2407,10 +2475,6 @@ function renderDashboardAmbient(model, { forced = false } = {}) {
     launches: launchesOn() ? launchesInLens() : null,
     outside: launchesOn() ? launchesOutsideLens() : 0,
     nowMs: Date.now(), forced, selected: focusSession,
-    // global: the lens never narrows it; nothing it draws reaches attention
-    mesh: meshWanted() && lastData.mesh?.body?.on === true ? lastData.mesh : null,
-    // the agent the agent tab holds: its card carries aria-current (cards view V5 §2.2)
-    meshOpen: meshAgentPage.current()?.key ?? null,
   })
   // §3.5: the lens's plans with open steps, each naming its project only under All projects
   plansLane.paint({ plans: model.plansInProgress, showProject: !projectFilter, nowMs: Date.now() })
@@ -2497,10 +2561,8 @@ const agentsHome = installAgentsHome({
   scrollBehavior: () => motion.scrollBehavior(),
   pulse: (el) => { if (dashboardMotion()) playOnce(el, 'pulse', 'dash-lane-pulse') },
   paintUndelivered,
-  // its own repaints (folds, the mesh section) can remove the list the panel sits in (#463 review)
+  // its own repaints (the folds) can remove the list the panel sits in (#463 review)
   afterRepaint: () => placeFocusPanel(),
-  refreshMesh: () => { meshRefresh() },
-  openMeshAgent,
   // "N sessions outside this filter · Show all": the lens cleared, as the rail's All does
   showAll: () => {
     projectFilter = null
@@ -3711,8 +3773,9 @@ function paintAmbient() {
   // goes to the unsent responses. Then the Dashboard, whose panel holds a composer.
   reconcileMessageDrafts()
   renderDashboardAmbient(dashboard, { forced: forcedAmbient })
-  // the agent tab, from the same body, whether or not mesh is still on (it then says the agent left)
-  meshAgentPage.paint(lastData.mesh ?? null, Date.now(), lastData.runs ?? null)
+  // the Agent cards tab: its grid, or the open agent's page (global: no lens narrows it, and
+  // nothing it draws reaches attention)
+  paintAgentCards()
   paintTabCounts(g, boards)
   paintQueueCount(g, boards)
   paintLaterSectionHint()
@@ -6007,14 +6070,15 @@ let activeTab = DEFAULT_TAB
 // single routing entry point: state + DOM together, so no caller can set one
 // without the other
 function selectTab(id, { paint = true, open = true } = {}) {
-  // the agent tab is never an empty page: with no agent open, a key, link or stale caller does nothing
-  if (!TAB_IDS.includes(id) || (id === 'agent' && !meshAgentPage.current())) return
+  // the Agent cards tab exists only while the mesh is on: a key, link or stale caller does nothing
+  if (!TAB_IDS.includes(id) || (id === 'cards' && !agentCardsShown())) return
   const from = activeTab
   // Choosing a tab supersedes a deep link still waiting on older history or
   // archived plans, and leaving History releases the omitted target it was
   // keeping loaded (#184, #299).
   historyLookup = null
   archivedLookup = null
+  agentCardsLink = null
   if (from === 'find' && id !== 'find') leaveFind()
   activeTab = id
   if (id === 'find' && from !== 'find') enterFind()
@@ -6026,6 +6090,9 @@ function selectTab(id, { paint = true, open = true } = {}) {
     t.setAttribute('aria-selected', String(t.dataset.tab === id))
     t.tabIndex = t.dataset.tab === id ? 0 : -1 // roving tabindex (spec §13)
   }
+  // the narrow tab row scrolls sideways when its tabs do not fit: the chosen tab is brought into
+  // it (only on a choice, never on a repaint)
+  document.querySelector(`#tabs .tab[data-tab="${id}"]`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
   // Settings covers the active tab without changing it, so "entered" is the panel showing (#586):
   // entering Find reads the chats under their 60-second rule (step B)
   const findWasHidden = document.getElementById('find').hidden
@@ -6036,10 +6103,13 @@ function selectTab(id, { paint = true, open = true } = {}) {
     requestHistoryPaint()
   }
   if (id === 'dashboard') restoreRowSelection(false)
-  // An open, from the last known /api/version (agent cards view §4.5); never re-selecting the
-  // Dashboard, and never from a session panel's own navigation (`open: false`), which posts none.
-  if (open && id === 'dashboard' && from !== 'dashboard') meshOpen()
-  if (open && id === 'agent' && from !== 'agent') meshOpen(meshAgentPage.current().name)
+  // An open, from the last known /api/version (Agent cards step 1, D5): entering the Agent cards
+  // from another tab, never re-selecting it. The first entry, with nothing read yet, reads now
+  // instead of waiting for the next tick.
+  if (open && id === 'cards' && from !== 'cards') {
+    meshOpen()
+    if (!lastData?.mesh?.body) reloadAndPaint()
+  }
 }
 
 function initTabs() {
@@ -6079,8 +6149,8 @@ const PAGE_META = {
   boards: { kicker: '', title: 'Plans' },
   // the heading stays for structure and is visually hidden: Find's field is what shows first
   find: { kicker: '', title: 'Find' },
-  // the title is the open agent's name
-  agent: { kicker: 'Mesh agent', title: '' },
+  // with an agent's page open, the kicker is the tab and the title the agent's name
+  cards: { kicker: '', title: 'Agent cards' },
   setup: { kicker: 'Agent Inbox', title: 'Settings' },
 }
 
@@ -7010,6 +7080,16 @@ function initAgentSelect() {
   })
 }
 
+// The top bar's kicker and title for the panel showing; the Agent cards names an open agent.
+function paintPageHeading(id) {
+  const page = PAGE_META[id] ?? PAGE_META.dashboard
+  const agent = id === 'cards' ? meshAgentPage.current() : null
+  const kicker = document.getElementById('pageKicker')
+  setText(kicker, agent ? page.title : page.kicker)
+  setHidden(kicker, !kicker.textContent)
+  setText(document.getElementById('pageTitle'), agent ? agent.name : page.title)
+}
+
 // which content panel is visible; the tab strip drives this in Task 8
 function showPanel(id) {
   if (id !== 'setup') {
@@ -7017,17 +7097,13 @@ function showPanel(id) {
     settingsFocusWhenUncovered = null
   }
   const openingSettings = id === 'setup' && document.getElementById('setup').hidden
-  const panel = id === 'agent' ? 'agentPage' : id
+  const panel = id
   // Home is two panels, the list of asks and then the lanes, shown and hidden together
   const shows = (p) => p.id === panel || (panel === 'dashboard' && p.id === 'needsYou')
   for (const p of document.querySelectorAll('main > .panel')) p.hidden = !shows(p)
   for (const t of document.querySelectorAll('#tabs .tab')) t.setAttribute('aria-selected', String(t.dataset.tab === id))
   document.body.classList.toggle('settings-open', id === 'setup')
-  const page = PAGE_META[id] ?? PAGE_META.dashboard
-  const kicker = document.getElementById('pageKicker')
-  kicker.textContent = page.kicker
-  kicker.hidden = !page.kicker
-  document.getElementById('pageTitle').textContent = id === 'agent' ? meshAgentPage.current()?.name ?? '' : page.title
+  paintPageHeading(id)
   // UX pass, slice 4: on Find its own field stands in for the top bar's search and its heading
   document.getElementById('pageTitle').classList.toggle('visually-hidden', id === 'find')
   const topSearch = document.querySelector('#topbar .floating-search')
@@ -7143,6 +7219,12 @@ function refreshLiveVersion() {
       if (liveVersion?.mesh) meshOff = false
     })
     .catch(() => {})
+    // the Agent cards tab follows the read at once; a deep link that waited on it lands now
+    .then(() => {
+      versionSettled = true
+      paintAgentCards()
+      applyAgentCardsLink()
+    })
 }
 
 // ── messages to a running session (#411, design §5) ─────────────────────────
@@ -7617,9 +7699,8 @@ function renderSessionsIndicator(activity) {
 // The indicator and G L: Home, its Working lane's heading focused.
 // Each re-reads the build state (#197), as opening the Live drawer did; the next tick paints it.
 function showAgentsHome() {
-  // one navigation, one open: after the read, never a second from selectTab
-  refreshLiveVersion().then(() => { if (activeTab === 'dashboard') meshOpen() })
-  if (activeTab !== 'dashboard') selectTab('dashboard', { open: false })
+  refreshLiveVersion()
+  if (activeTab !== 'dashboard') selectTab('dashboard')
   const title = document.getElementById('workingLaneTitle')
   title?.scrollIntoView?.({ block: 'nearest' })
   title?.focus({ preventScroll: true })
@@ -7629,8 +7710,8 @@ function initSessionsIndicator() {
   document.getElementById('sessionsIndicator')?.addEventListener('click', showAgentsHome)
   // #197: read outside the poll; the next paint shows the build hints. A failed
   // or older viewer leaves the build state unknown, which hides every hint.
-  // Booting on the Dashboard is an open (agent cards view §4.5); on another tab, none.
-  refreshLiveVersion().then(() => { if (activeTab === 'dashboard') meshOpen() })
+  // Booting is never an open (Agent cards step 1, D5): only entering the Agent cards is.
+  refreshLiveVersion()
 }
 
 // dismissing noise must not cost an expansion: staged 5s, undoable, flushed on blur
@@ -12343,8 +12424,8 @@ function navigateKeyboard(destination) {
     openFind({ chip: 'chats', clearQuery: true, focus: 'field' })
   } else if (TAB_IDS.includes(destination)) {
     selectTab(destination)
-    // selectTab refuses an empty agent tab; focus stays where it was
-    if (activeTab === destination) focusKeyboardPanel(destination === 'agent' ? 'agentPage' : destination)
+    // selectTab refuses the Agent cards while the mesh is off (G M); focus stays where it was
+    if (activeTab === destination) focusKeyboardPanel(destination)
   }
 }
 
@@ -12418,6 +12499,12 @@ function initKeys() {
       e.stopImmediatePropagation()
       return
     }
+    // Agent cards step 1 (D3): Escape on an agent's page goes back to the grid, unless focus is in a field
+    if (e.key === 'Escape' && !typing && !triageDeck && activeTab === 'cards' && meshAgentPage.current() && activeScope === document) {
+      e.preventDefault()
+      closeMeshAgent()
+      return
+    }
     // optionCount must come from the SAME target runIntent will answer — the
     // deck entry while it's open, the list selection otherwise — or a keyboard
     // '1'-'4' can validate against one item and answer another (see
@@ -12457,7 +12544,7 @@ function wireTablist(host, orientation) {
     // issue #32: the rail's closed fold holds `[role="tab"]` rows that are
     // display:none while the <details> is shut. Arrow-keying into one sends
     // focus to an invisible element and it simply vanishes for the user.
-    // The agent tab (cards view V5 §3.3) is `hidden` while no agent is open: skipped the same way.
+    // The Agent cards tab (Agent cards step 1) is `hidden` while the mesh is off: skipped the same way.
     const tabs = [...host.querySelectorAll('[role="tab"]')].filter((t) => !t.hidden && !t.closest('details:not([open])'))
     const i = tabs.indexOf(document.activeElement)
     if (i < 0) return

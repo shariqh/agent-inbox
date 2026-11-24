@@ -53,6 +53,14 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `forceRender` for the answer to a press), waiting out a press that is down; the
   read is never in `load()`. Their state joins `frameInputs()` through
   `chatsView.state()`; see `chats.md`.
+- The Agent cards tab (Agent cards step 1; `viewer-dashboard-and-shell.md` has its rules) reads
+  `/api/mesh/agents` in `load()` only while it is the current tab, and paints its grid or the
+  open agent's page from `paintAmbient()`, so from the two render entries. Which agent is open is
+  `public/mesh-agent-page.js`'s state, by `key`, in `frameInputs()` through
+  `meshAgentPage.state()`; only a press, `← Agent cards`, Escape or `#cards/<key>` changes it.
+  A passive repaint (a poll, a check's result) never opens or closes a page, never moves focus
+  off the control the person is on, and never reorders cards under a press (cards are keyed and
+  updated in place; a held press defers the paint as for any lane).
 - A text selection is captured before and restored after each rebuild by both
   render entries (`public/selection.js`, #223). It never defers or suspends a
   frame, never focuses or scrolls, and is dropped when its text changed.

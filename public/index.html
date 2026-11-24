@@ -44,9 +44,10 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
           <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"></circle><path d="m10.5 10.5 3 3"></path></svg>
           <span class="tab-name">Find</span><span class="tab-count" hidden></span>
         </button>
-        <button class="tab" type="button" role="tab" data-tab="agent" aria-selected="false" aria-controls="agentPage" tabindex="-1" hidden>
-          <span class="ma-dot" aria-hidden="true"></span>
-          <span class="tab-name"></span>
+        <!-- Agent cards step 1: shown only while the mesh is on; never a count -->
+        <button class="tab" type="button" role="tab" data-tab="cards" aria-selected="false" aria-controls="cards" aria-label="Agent cards" title="Agent cards" tabindex="-1" hidden>
+          <svg class="tab-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.7 6l1.1-2.7h8.4L13.3 6M2.7 6h10.6M3.7 6v6.7h8.6V6M6.7 12.7v-3.4h2.6v3.4"></path></svg>
+          <span class="tab-name">Agent cards</span>
         </button>
       </div>
       <div class="sidebar-section-label">Projects</div>
@@ -147,7 +148,14 @@ FORM: Dark-first Live Operations Desk with a complete light counterpart and stru
             <div id="findChatsFoot" class="find-foot find-chats-foot" hidden></div>
           </div>
         </section>
-        <section class="panel" id="agentPage" role="tabpanel" aria-label="Mesh agent" hidden></section>
+        <!-- Agent cards step 1: "Yours", or one agent's page in its place (app.js paintAgentCards) -->
+        <section class="panel" id="cards" role="tabpanel" aria-labelledby="pageTitle" hidden>
+          <div class="agent-cards">
+            <p id="agentCardsOff" class="agent-cards-off" hidden>The mesh is off on this Mac.</p>
+            <div id="agentCardsHome" class="agent-cards-home"></div>
+            <div id="agentPage" class="agent-cards-agent" hidden></div>
+          </div>
+        </section>
         <section class="panel" id="setup" role="tabpanel" hidden><div class="setup-body"></div></section>
       </main>
     </div>

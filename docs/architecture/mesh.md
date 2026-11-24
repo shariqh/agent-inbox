@@ -3,6 +3,7 @@ paths:
   - "src/mesh-config.ts"
   - "src/meshctl.ts"
   - "src/mesh-add.ts"
+  - "src/mesh-entry.ts"
   - "src/unslop-client.ts"
   - "src/mesh-identity.ts"
   - "src/request-post-client.ts"
@@ -17,7 +18,7 @@ paths:
   - "public/mesh-agent-page.js"
   - "public/mesh-runs-tab.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/mesh-check.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,src/mesh-skills.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/mesh-entry.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/mesh-check.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,src/mesh-skills.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -49,8 +50,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the Sessions | Agents lens with the lanes): one card per session from `public/sessions.js`.
   It reads `liveInLens()`, this app's launches (switch on only), the plans the working
   sessions link and the frame's attention entries; it never feeds attention, a badge, count,
-  tab, rail or the dock, and reads `/api/mesh/agents` only for its Mesh agents section, and only
-  when `/api/version` carries `mesh`. No mesh module enters the stdio MCP graph, the hub
+  tab, rail or the dock, and reads nothing of the mesh: since Agent cards step 1 the agent cards
+  live in their own **Agent cards** tab, shown only while `/api/version` carries `mesh`, which
+  reads `/api/mesh/agents` only while it is the current tab. No mesh module enters the stdio MCP graph, the hub
   schema is untouched, and `test/fixtures/app-dependencies.txt` pins the dependency
   set. Since #540 the agent installer puts meshctl on PATH through `~/.agent-inbox/bin/meshctl`
   (a Setup runtime's, or a checkout's; `setup-and-installers.md` has the rule), and the docs
@@ -102,12 +104,12 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `createViewer` as `opts.mesh`. It `lstat`s `mesh.json` only when a page reads `/api/version` or
   `/api/mesh/agents`, at most once every 5 s, and re-reads the file by `readMesh()`'s rule only when
   its identity, size or times changed; no timer and no `fs.watch`. `/api/version` carries
-  `mesh: { agents: n }` only when the file reads present and names an agent this build knows;
-  otherwise its bytes are unchanged. It fetches each agent's card from the configured endpoint only
+  `mesh: { agents: n }` only when the file reads present and names an agent this build knows or a
+  valid entry `meshctl add` wrote; otherwise its bytes are unchanged. It fetches each agent's card from the configured endpoint only
   (never a URL from a card), with no token, no redirect, no proxy, a 64 KiB cap and one total
   deadline (3 s for unslop, 5 s for every request-post check), only on
-  `POST /api/mesh/agents/refresh` with the open trigger (boot on the Dashboard,
-  `showAgentsHome()`, `selectTab('dashboard')` from another tab: `meshOpen()` in `public/app.js`)
+  `POST /api/mesh/agents/refresh` with the open trigger (entering the Agent cards tab from another
+  tab: `meshOpen()` in `public/app.js`; never boot, Home or a card's press, Agent cards step 1 D5)
   or a Refresh press; reading
   `/api/mesh/agents` never starts a check, and one check per agent runs at a time. An `open`
   skips an agent checked in the last 60 s, a `refresh` one checked in the last 5 s. Records live
@@ -119,18 +121,39 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   design §4.6), only when a check of unslop runs: opened `O_NOFOLLOW`, a regular file the user
   owns, at most 4 KiB, exactly `date`, `tasks` and `modelMs`; unslop's record then carries
   `usage`, with another day's counts read as zero for today, and no `usage` key when the file is
-  missing or refused. `test/mesh.test.ts` pins its imports to `node:fs`, `node:http`, `node:https`,
-  `node:net` (types), `node:path`, `./agent-card.js`, `./mesh-config.js` and `./mesh-runs.js`, so no `child_process`. Its
+  missing or refused. `test/mesh.test.ts` pins its imports to `node:crypto`, `node:fs`, `node:http`,
+  `node:https`, `node:net` (types), `node:path`, `./agent-card.js`, `./mesh-config.js`,
+  `./mesh-entry.js` and `./mesh-runs.js`, so no `child_process`; an import-graph test walks
+  `src/viewer-server.ts`'s imports and pins that the viewer never reaches `src/public-address.ts`,
+  `src/mesh-add.ts` or a client. Its
   user-facing `reason` and `fix` words live in `src/mesh-agents.ts`, so the text guard on
   `src/viewer*.ts`, `public/*.js` and `electron/*` stays as it is. `src/agent-card.ts` holds the
   one card rule both clients and the view use, and the view's `summarizeCard` (caps, "+N more",
   control, bidirectional and separator characters replaced) and `cardJson` (the raw card with
   those characters escaped). The view never reaches attention.
-  The page side (slice V3) is `public/mesh-section.js` (named apart from `src/mesh-agents.ts`,
-  since `test/dead-exports.test.ts` needs unique module basenames), mounted by
-  `public/agents-home.js`; `viewer-dashboard-and-shell.md` has its rules. The agent tab's Run
-  history (slice V5d) is `public/mesh-runs-tab.js`; it shows the route's `forget` text as data,
-  so no `public/` file names the command.
+  **Added agents (Agent cards step 1, D6).** An entry `meshctl add` wrote is shown without the
+  viewer ever contacting it: no check, no fetch, state `added` ("Added", neutral). Its card comes
+  from the copy meshctl keeps, `<mesh dir>/mesh/cards/<id>.json`, read by
+  `src/mesh-config.ts`'s `readCardCopy()` (a cards folder that is no symlink, this user's and
+  closed to others; the file opened `O_NOFOLLOW`, regular, this user's, no group or other bits,
+  at most 64 KiB, a JSON object), at most once per 5 s per agent, and shown only when its pin by
+  `canonicalCard` equals the entry's `cardSha256`. A missing or refused copy shows the id, where it
+  runs ("Local", "Remote · tailnet", "Remote · public") and the line "Run meshctl check <id> to
+  show its card"; a copy that does not match says "Its card copy does not match; run meshctl
+  check <id>". Whether an entry is valid is `src/mesh-entry.ts`'s `addedEntry()`, the rule meshctl
+  uses, moved out of `src/mesh-add.ts` so the viewer never imports add's fetch or
+  `src/public-address.ts`. `others` counts only entries that are neither built in nor a valid
+  added entry, and the body's `othersFix` says what to run. An added agent's row also carries
+  `checkNote` ("The app does not check added agents. meshctl check <id> does.") and `fixQuiet`
+  (true for a missing copy, whose line is not a problem state), and a built-in's row `blurb`, a
+  one-line description the page uses only while no card text is known. An added agent's run records are read
+  like a built-in's (the run reader takes any id), with `forget-runs --id <id>` as its forget text.
+  The page side is `public/mesh-section.js` ("Yours", the grid; named apart from
+  `src/mesh-agents.ts`, since `test/dead-exports.test.ts` needs unique module basenames) and
+  `public/mesh-agent-page.js` (an agent's page), both in the Agent cards tab that `public/app.js`
+  paints; `viewer-dashboard-and-shell.md` has their rules. An agent page's Run history (slice
+  V5d) is `public/mesh-runs-tab.js`; it shows the route's `forget` text as data, so no `public/`
+  file names the command.
   Run history (cards view V5, design
   `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §5; slice V5a): the meshctl
   entry that runs a client (`runClient()` in `src/meshctl.ts`, for `unslop` and `request-post`;
@@ -200,9 +223,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`public/sessions.js`), grouped by project, with "last call" from `last_call_at` (never
   `updated_at`) and asks READ from the frame's `waitingEntries` by session or linked
   plan; `viewer-dashboard-and-shell.md` has the detail. Nothing it draws reaches
-  `public/attention.js`, a badge, count, tab or the dock; it fetches nothing but the
-  Mesh agents section's `/api/mesh/agents` (only while `/api/version` carries `mesh`),
-  runs no timer, and rebuilds a card's part only when what it shows changed. Its state
+  `public/attention.js`, a badge, count, tab or the dock; it fetches nothing (the agent cards
+  moved to the Agent cards tab in Agent cards step 1), runs no timer, and rebuilds a card's part only when what it shows changed. Its state
   is in `frameInputs()`, so a filter, grouping or fold change is never reused across
   frames. `test/mesh.test.ts` and `test/dom/agents-home.test.ts` hold it, including the
   boot's unchanged requests and identical attention surfaces with the Agents home drawn.
@@ -752,9 +774,25 @@ This repository ships its client (R2 and R3 below) and the contract both sides t
 
 Design: the mesh design's §6.7 and D13–D17 (#511), §8.8 for the endpoint rule. `meshctl add`
 is the only writer of a card-driven `agents.<id>` entry; `meshctl remove` the only one that
-deletes it. Rules live in `src/mesh-add.ts` (Node core, `./agent-card.js`), the card rule in
-`src/agent-card.ts`; meshctl's async entry runs `runAdd` (`runMeshctl` alone answers `add` with
-the usage and 4).
+deletes it. Rules live in `src/mesh-add.ts` (Node core, `./agent-card.js`) and, for the id,
+endpoint and entry rules the viewer reads too, `src/mesh-entry.ts` (pure: `./agent-card.js` and
+`./card-signature.js`'s thumbprint only); the card rule in `src/agent-card.ts`; meshctl's async
+entry runs `runAdd` (`runMeshctl` alone answers `add` with the usage and 4).
+
+- **The card copy (Agent cards step 1, D6).** `add --apply` (and `--move`) keeps the card it
+  accepted as `<mesh dir>/mesh/cards/<id>.json` (0600, in a 0700 folder, through a temporary file
+  and a rename; `src/mesh-config.ts`'s `writeCardCopy()` refuses a card over 64 KiB and a cards
+  folder that is a symlink, another user's or open to others). The app shows the agent from it
+  and never contacts the agent. Keeping it is best effort: when the write is refused (a cards
+  folder that breaks the folder rule), `add --apply` says so in one line, still writes
+  `mesh.json`, and `meshctl check <id>` keeps the copy later; `check <id>` names the folder, not
+  the copy, when the folder is what fails. `remove --apply` deletes it (and the folder when then empty).
+  Agents added before the copy existed get it where meshctl already checks the card against its
+  pin: `meshctl check <id>` (the entry's card URL checked as `check <card-url>` does, then the
+  copy written when the card still matches the pin and the copy is missing or differs; a refused
+  copy is left alone and named) and each `meshctl call` whose card matches (only a missing copy;
+  the call never fails over it). `test/mesh.test.ts` and `test/mesh-call.test.ts` hold the write,
+  move, backfill and remove.
 
 - **The entry** (`mesh.json` schema 1, under `agents`):
   `{ "card": <card URL>, "endpoint": <url>, "tokenFile": "<mesh dir>/mesh/tokens/<id>", "cardSha256": <hex>, "agentId": <stable id> }`.

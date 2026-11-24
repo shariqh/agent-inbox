@@ -1,7 +1,6 @@
 import type { AttentionEntry } from './attention.js'
 import type { LaneActivity, LaneBoard } from './lanes.js'
 import type { SessionCard } from './sessions.js'
-import type { MeshAgentsInput } from './mesh-section.js'
 
 export interface AgentsHomeInput {
   activity: LaneActivity[] | null | undefined
@@ -18,10 +17,6 @@ export interface AgentsHomeInput {
   selected?: string | null
   /** launches the project and agent lens hides that are not ended (#454) */
   outside?: number
-  /** the Mesh agents section's last `/api/mesh/agents` body, or null to draw none (agent cards view V3) */
-  mesh?: MeshAgentsInput | null
-  /** the agent the agent tab holds: its card carries aria-current (cards view V5 §2.2) */
-  meshOpen?: string | null
 }
 
 export interface AgentsHomeLaunches {
@@ -54,11 +49,7 @@ export interface AgentsHomeDeps {
   paintUndelivered?: (slot: Element) => void
   /** clears the project and agent lens ("N sessions outside this filter · Show all") */
   showAll?: () => void
-  /** the Mesh agents section's Refresh: posts `refresh`, then repaints through reloadAndPaint() */
-  refreshMesh?: () => void
-  /** a Mesh agents card's press: the agent tab (cards view V5) */
-  openMeshAgent?: (key: string, name: string) => void
-  /** after the lanes' own repaints (folds, the mesh section): the session panel finds its place again */
+  /** after the lanes' own repaints (the folds): the session panel finds its place again */
   afterRepaint?: () => void
   /** the scroll behavior a chip's jump uses (motion.scrollBehavior) */
   scrollBehavior?: () => ScrollBehavior
@@ -91,7 +82,7 @@ export function installAgentsHome(deps: AgentsHomeDeps): {
   focusFirst(kind: 'working' | 'quiet'): void
   /** the heading of the lane a panel key's card is in: Quiet for a row or a fold's card, else Working */
   laneTitle(key?: string | null): HTMLElement | null
-  /** the window-local view state (the open folds, the mesh section), for frameInputs() */
+  /** the window-local view state (the open folds), for frameInputs() */
   state(): string
   /** the card a session panel key names: a card id, a live session, or a session a launch remembers */
   cardFor(key: string | null | undefined): SessionCard | null

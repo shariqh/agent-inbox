@@ -461,7 +461,7 @@ export function buttonLabelled(label: string, scope: ParentNode = document): HTM
  * hidden Settings panel) that this slice did not touch; widen it to '*' once those tests are
  * repaired.
  */
-const REACHABILITY_SCOPE = '#boards, #find, #search, #findQuery'
+const REACHABILITY_SCOPE = '#boards, #find, #search, #findQuery, #cards'
 
 /**
  * What stands between a person and a control: the outermost element that hides it (the

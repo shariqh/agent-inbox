@@ -22,6 +22,8 @@ export const KEYBOARD_COMMANDS = [
   { id: 'findAll', key: 'h', prefix: 'g', display: 'G H', label: 'Find: All', group: 'Go to' },
   // step B: the Chats page folded into Find; G C opens Find with the Chats chip and focuses the field
   { id: 'findChats', key: 'c', prefix: 'g', display: 'G C', label: 'Find: Chats', group: 'Go to' },
+  // Agent cards step 1: the tab exists only while the mesh is on; with it off, G M does nothing
+  { id: 'cards', key: 'm', prefix: 'g', display: 'G M', label: 'Agent cards', group: 'Go to', selector: '#tabs [data-tab="cards"]' },
   { id: 'setup', key: 's', prefix: 'g', display: 'G S', label: 'Settings', group: 'Go to', selector: '#gear' },
   { id: 'agents', key: 'a', prefix: 'g', display: 'G A', label: 'Agent filter', group: 'Go to', selector: '.agent-pick .tab-label' },
   { id: 'projects', key: 'o', prefix: 'g', display: 'G O', label: 'Project picker', group: 'Go to', selector: '#projectDisclosureToggle, .sidebar-section-label' },

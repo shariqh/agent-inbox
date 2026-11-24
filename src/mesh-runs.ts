@@ -270,7 +270,7 @@ export interface RunsRead { runs: Json[]; skipped: number; truncated: boolean; k
  * one else can write, else undefined. At most 320 KiB in one bounded read from the checked
  * descriptor; complete lines only, each through the writer's validator for this agent.
  */
-function readDay(path: string, agent: RunAgent, cache: RunsCache): Day | undefined {
+function readDay(path: string, agent: string, cache: RunsCache): Day | undefined {
   let fd: number
   try {
     fd = openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
@@ -306,14 +306,14 @@ function readDay(path: string, agent: RunAgent, cache: RunsCache): Day | undefin
 }
 
 /**
- * One agent's runs in the kept period (§5.7), for the viewer: only from a checked runs folder,
+ * One agent's runs in the kept period (§5.7), for the viewer, a built-in or an added one (Agent cards step 1): only from a checked runs folder,
  * only day files named for this agent and dated within the 30 local dates ending today, merged
  * and sorted by `at` (the end) newest first, `id` breaking ties. Every record is the validator's
  * output, so unknown fields never pass. A file refused by its checks or a line that does not
  * validate counts in `skipped`; a file past 320 KiB is read to the bound and sets `truncated`.
  * Reads only: never writes, deletes or prunes.
  */
-export function readRuns(dir: string, agent: RunAgent, now: number, cache: RunsCache = new Map()): RunsRead {
+export function readRuns(dir: string, agent: string, now: number, cache: RunsCache = new Map()): RunsRead {
   const read: RunsRead = { runs: [], skipped: 0, truncated: false, keptDays: KEPT_DAYS }
   const runs = checkedRuns(dir)
   let names: string[] = []

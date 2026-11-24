@@ -14,14 +14,13 @@
 // rail or the dock. It fetches nothing and runs no timer; a working card pulses
 // once on a new call, through the page's one-shot (#304). Agent text reaches
 // the DOM only through textContent. Painted from app.js's
-// renderDashboardAmbient, so from both render entries. The Mesh agents section
-// (public/mesh-section.js) sits in Quiet after its rows, outside every lens.
+// renderDashboardAmbient, so from both render entries. (The mesh's agent cards
+// moved to the Agent cards tab in Agent cards step 1: public/mesh-section.js.)
 import { groupCards, laneCounts, laneOf, messageHint, sessionCards, splitLanes } from './sessions.js'
 import { forgettable } from './launches.js'
 import { pinLaneOrder, tracePath } from './lanes.js'
 import { placeLine } from './place.js'
 import { deskSession } from './desk-open.js'
-import { installMeshAgents } from './mesh-section.js'
 
 const SVG = 'http://www.w3.org/2000/svg'
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -74,8 +73,6 @@ export function installAgentsHome(deps) {
   const groupEls = new Map()
   const calls = new Map() // card id → the last call a paint has seen, for the one-shot pulse
   const byId = new Map() // card id → the card its buttons act on
-  // global: no lens narrows it, and it shows in Quiet with no session at all
-  const mesh = installMeshAgents({ doc, onRefresh: () => deps.refreshMesh?.(), onChange: () => repaint(), onOpen: (key, name) => deps.openMeshAgent?.(key, name) })
 
   const make = (tag, className, text) => {
     const el = doc.createElement(tag)
@@ -206,7 +203,7 @@ export function installAgentsHome(deps) {
         columns.setAttribute('aria-hidden', 'true')
         columns.append(...COLUMNS.map((text) => make('span', '', text)))
         rows.append(columns)
-        section.append(head, rows, none, make('div', 'ah-mesh'), foldsEl())
+        section.append(head, rows, none, foldsEl())
       }
       // a card or row under the pointer keeps its place in its lane (§2 anti-goals, §3.3 Order)
       section.addEventListener('pointerenter', () => { hovered[kind] = true })
@@ -628,7 +625,6 @@ export function installAgentsHome(deps) {
     byId.clear()
     for (const card of cards) byId.set(card.id, card)
     home.classList.toggle('reading', reading)
-    mesh.paint(quietLane.querySelector('.ah-mesh'), input.mesh ?? null, input.nowMs, input.meshOpen ?? null)
     const workingNone = workingLane.querySelector('.ah-lane-empty')
     const quietNone = quietLane.querySelector('.ah-lane-empty')
     if (reading) {
@@ -843,6 +839,6 @@ export function installAgentsHome(deps) {
       return card ? panelKey(card) : null
     },
     /** The window-local view state, for frameInputs(). */
-    state: () => [[...folds].sort().join(','), mesh.state()].join('|'),
+    state: () => [...folds].sort().join(','),
   }
 }

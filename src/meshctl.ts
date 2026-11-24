@@ -38,6 +38,7 @@
 //                                            call an added agent (src/mesh-call.ts)
 //   meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
 //                                            a conformance check anyone can run (src/mesh-check.ts, #538)
+//   meshctl check <id> […]                   the same for an added agent's card URL; keeps its card copy
 //   meshctl forget-runs (--unslop | --request-post | --web-search | --id <id> | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
 //   meshctl --version                        this build's version
@@ -61,9 +62,10 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { LookupFunction } from 'node:net'
 import { fileURLToPath } from 'node:url'
-import { MESH_SCHEMA, inTailnet, loopbackPort, meshDir, meshFile, readMesh, readTokenFile, requestPostEndpoint } from './mesh-config.js'
+import { MESH_SCHEMA, cardCopyFile, inTailnet, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readTokenFile, removeCardCopy, requestPostEndpoint, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
 import type { MeshDocument, MeshRead } from './mesh-config.js'
-import { BUILT_IN_AGENTS, addSummary, addedEntry, addedPlace, cardEndpoint, cardSha256, fetchAddedCard, idFromName, idRefusal, placeRefusal, reachOf, signatureRefusal, signedLine } from './mesh-add.js'
+import { addSummary, cardEndpoint, cardSha256, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine } from './mesh-add.js'
+import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
@@ -117,7 +119,9 @@ on a DNS name. A <name>.<tailnet>.ts.net on this Mac's tailnet (read from tailsc
 local; any other name is public (#534): every address it resolves to must be public, the card must
 be signed and publishable, and what you send it leaves this Mac. A loopback agent needs
 --token-file (a 0600 file you own; meshctl copies it and never prints it). add never replaces an
-entry or takes a built-in name; remove deletes only an entry add wrote, and its token copy.
+entry or takes a built-in name; remove deletes only an entry add wrote, its token copy and card copy.
+add --apply keeps the card it accepted as <mesh dir>/mesh/cards/<id>.json (0600), which the app
+shows; the app never contacts an added agent.
 When the card declares a stable id (its profile extension), add records it as agentId.
 add verifies the card's signatures (ES256, ES384 or EdDSA by a key the card's profile lists): one that fails
 refuses the card; an unsigned card is allowed on loopback and this Mac's tailnet only. The keys
@@ -134,7 +138,8 @@ identity before it sends the token or any text, and prints the result framed as 
 (docs/mesh-call.md).
 check runs the conformance tests on an A2A agent's card and writes nothing: exit 0 conforms, 17 a
 test failed, 15 the card could not be fetched, 4 usage. Live tests need --token-file and create no
-work unless --send <file> is given (docs/mesh-call.md).
+work unless --send <file> is given (docs/mesh-call.md). check <id> checks an added agent's card
+URL and, when the card still matches its pin, writes its card copy if it is missing or differs.
 request-post is what <mesh dir>/bin/request-post runs: it files a content request with the
 service, reads its status or waits for it (docs/request-post.md).
 Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 days;
@@ -539,6 +544,14 @@ function meshctl(argv: string[], io: MeshctlIo): number {
       steps.push({
         dry: `Would delete the token copy ${show(token)}.`,
         run: () => { unlinkSync(token); removeIfEmpty(tokens); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(token)}.` },
+      })
+    }
+    // the card copy the app shows (Agent cards step 1, D6) goes with its entry
+    const cardCopy = cardCopyFile(dir, id)
+    if (exists(cardCopy)) {
+      steps.push({
+        dry: `Would delete the card copy ${show(cardCopy)}.`,
+        run: () => { removeCardCopy(dir, id); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(cardCopy)}.` },
       })
     }
     if (!steps.length) {
@@ -998,6 +1011,20 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
       run: () => { mkdirSync(tokens, { recursive: true, mode: 0o700 }); writeAtomic(copy, `${token}\n`, 0o600); return `Copied the token to ${show(copy)}.` },
     })
   }
+  // the card as accepted, which the app shows without contacting the agent (Agent cards step 1, D6)
+  const cardCopy = cardCopyFile(dir, agentId)
+  steps.push({
+    dry: `Would keep the card as ${show(cardCopy)} (0600) for the app to show.`,
+    // best effort: the add worked before the copy existed, so a copy that cannot be kept is said, not fatal
+    run: () => {
+      try {
+        writeCardCopy(dir, agentId, card)
+        return `Kept the card as ${show(cardCopy)}.`
+      } catch (error) {
+        return `Could not keep the card copy (${error instanceof Error ? error.message : String(error)}); meshctl check ${agentId} keeps it later.`
+      }
+    },
+  })
   steps.push({
     dry: `Would ${present ? 'replace' : 'create'} ${name}${present ? ' (keeping a backup beside it)' : ''}:\n${json}`,
     run: () => {
@@ -1012,6 +1039,59 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
     out(moved
       ? `${agentId} keeps its card pin and run records. meshctl call ${agentId} < request calls it at the new endpoint.\n`
       : `This --apply is your approval for ${agentId} (D14). meshctl call ${agentId} < request calls it; meshctl remove ${agentId} --apply takes it out.\n`)
+  }
+  return code
+}
+
+/**
+ * `check` (#538), and `check <id>` (Agent cards step 1, D6): an added agent's id stands for its
+ * entry's card URL. When the card fetched there still matches the entry's pin, its card copy is
+ * written if it is missing or differs, so agents added before the copy existed show their card in
+ * the app. A copy that breaks the file rule (a symlink, another user's) is left alone and named.
+ */
+export async function runCheckCommand(args: string[], io: MeshctlIo & { cardMs?: number } = {}): Promise<number> {
+  const out = io.out ?? ((text: string) => { process.stdout.write(text) })
+  const err = io.err ?? ((text: string) => { process.stderr.write(text) })
+  const checkIo = { tailnet: io.tailnet, lookup: io.lookup, ca: io.ca, isPublic: io.isPublic, cardMs: io.cardMs, out, err }
+  const id = args[0]
+  if (id === undefined || id.startsWith('-') || id.includes(':')) return runCheck(args, checkIo)
+  const home = io.home ?? homedir()
+  const dir = resolve(meshDir(io.env ?? process.env, home))
+  const mesh = readMesh(meshFile(dir))
+  const agents = mesh.kind === 'present' ? objectOf(mesh.doc['agents']) ?? {} : {}
+  const entry = idRefusal(id) || !Object.hasOwn(agents, id) ? undefined : addedEntry(id, agents[id])
+  if (entry === undefined || entry === 'invalid') {
+    err(`meshctl check: ${idRefusal(id) ? 'that is neither a card URL nor an added agent\'s id' : entry === 'invalid' ? `the entry for ${id} breaks meshctl add's rules: remove it and add it again` : `${id} is not an agent meshctl add wrote`}\n${CHECK_USAGE}`)
+    return 4
+  }
+  let fetched: Record<string, unknown> | undefined
+  const code = await runCheck([entry.card, ...args.slice(1)], { ...checkIo, card: (card) => { fetched = card } })
+  const say = (text: string): void => { if (!args.includes('--json')) out(`Card copy  ${text}\n`) }
+  const copy = shown(cardCopyFile(dir, id), home)
+  if (!fetched) return code
+  let pin: string | undefined
+  try { pin = cardSha256(fetched) } catch { /* nested too deeply */ }
+  if (pin !== entry.cardSha256) {
+    say(`not kept: the card is not the one you added (pin ${entry.cardSha256.slice(0, 12)}, now ${pin?.slice(0, 12) ?? 'none'})`)
+    return code
+  }
+  const kept = readCardCopy(dir, id)
+  if (kept === 'refused') {
+    if (cardsFolderRefused(dir)) say(`${shown(join(dir, 'mesh', 'cards'), home)} breaks the folder rule (a symlink, another user's or open to others): fix or delete the folder, then run check again`)
+    else say(`${copy} breaks the file rule (a symlink, another user's or open to others): delete it, then run check again`)
+    return code
+  }
+  let same = false
+  try { same = kept !== 'missing' && cardSha256(kept.card) === pin } catch { /* rewritten below */ }
+  if (same) {
+    say(`${copy} matches the card`)
+    return code
+  }
+  try {
+    writeCardCopy(dir, id, fetched)
+    say(`kept the card as ${copy} for the app to show`)
+  } catch {
+    say(`could not write ${copy}`)
   }
   return code
 }
@@ -1060,6 +1140,6 @@ if (isMain) {
   process.exitCode = command === 'unslop' || command === 'request-post' || command === 'call'
     ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
     : command === 'add' ? await runAdd(rest)
-      : command === 'check' ? await runCheck(rest, { tailnet: magicDnsSuffix, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
+      : command === 'check' ? await runCheckCommand(rest, { tailnet: magicDnsSuffix })
         : runMeshctl(process.argv.slice(2))
 }

@@ -15,9 +15,10 @@ import type { LookupFunction } from 'node:net'
 import { resolve } from 'node:path'
 import { checkAddedCard, summarizeCard } from './agent-card.js'
 import { frameResult } from './agent-result.js'
-import { addedEntry, addedPlace, cardSha256, tailnetRefusal } from './mesh-add.js'
-import type { Place } from './mesh-add.js'
-import { meshDir, meshFile, openPrivate, readMesh, readPrivate } from './mesh-config.js'
+import { cardSha256, tailnetRefusal } from './mesh-add.js'
+import { addedEntry, addedPlace } from './mesh-entry.js'
+import type { Place } from './mesh-entry.js'
+import { meshDir, meshFile, openPrivate, readCardCopy, readMesh, readPrivate, writeCardCopy } from './mesh-config.js'
 import { meshLink, tlsLink } from './mesh-identity.js'
 import type { Exchange, MeshLink } from './mesh-identity.js'
 import { publicLookup } from './public-address.js'
@@ -231,6 +232,11 @@ async function call(id: string, skill: string | undefined, timeoutMs: number, io
     return { code: 16, reason: 'card-changed' }
   }
   pinned(pin)
+  // the card matches its pin: an agent added before the card copy existed gets one now, for the
+  // app to show (Agent cards step 1, D6); a copy that is there, or refused, is left alone
+  if (readCardCopy(dir, id) === 'missing') {
+    try { writeCardCopy(dir, id, fetched) } catch { /* the call does not depend on it */ }
+  }
   if (checkAddedCard(fetched)) return unavailable('the card no longer passes meshctl add\'s card rule')
   if (skill !== undefined && !list(fetched['skills']).some((s) => s['id'] === skill)) {
     say(`refused: ${id}'s card has no skill with that id; its skills: ${summarizeCard(fetched).skills.items.map((s) => s.id).join(', ')}`)

@@ -19,9 +19,9 @@ describe('tab model', () => {
   it('boots to Home and keeps Live as a footer strip rather than a tab', () => {
     expect(DEFAULT_TAB).toBe('dashboard')
     // Home (`dashboard`) holds the asks: there is no separate Inbox tab.
-    // `agent` (cards view V5 §3.3): the mesh agent tab, last, shown only while an agent is open
     // UX pass, slice 4: Find in place of Notes and History, after Plans, and (step B) of Chats
-    expect(TAB_IDS).toEqual(['dashboard', 'boards', 'find', 'agent'])
+    // `cards` (Agent cards step 1): last, shown only while the mesh is on
+    expect(TAB_IDS).toEqual(['dashboard', 'boards', 'find', 'cards'])
     expect(TAB_IDS[0]).toBe(DEFAULT_TAB)
   })
 
@@ -41,8 +41,9 @@ describe('tab model', () => {
     expect(c).toEqual({ dashboard: 7, boards: 1, find: 2 })
   })
 
-  it('never counts the agent tab (cards view V5 §3.3)', () => {
+  it('never counts the Agent cards tab (Agent cards step 1, D1)', () => {
     const c = tabCounts({ globalAttention: 7, unreadNotes: 2, scoped: { boards: [{ id: 'b1' }] } })
+    expect('cards' in c).toBe(false)
     expect('agent' in c).toBe(false)
   })
 

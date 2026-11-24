@@ -780,8 +780,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     log fields, or a code 11 refusal reason), `run`, and `outcome` (a result's report,
     plus the artifact's first part when the task completes). `src/skills.ts` defines
     both skills. unslop's is the agent described above, byte for byte: the same card,
-    proof, refusals, artifacts and log lines. No module-level state is shared, so two
-    processes of the program do not interfere.
+    proof, refusals, artifacts and log lines. `startServer` still takes unslop's earlier
+    options, `{ rules, run }` in place of `skill` (the app's tests start unslop's server
+    that way), as `skill: unslopSkill({ rules, run })`. No module-level state is shared,
+    so two processes of the program do not interfere.
   - **Identity.** Card name and skill id `unslop-code`, input mode `application/json`,
     output modes `text/x-diff` and `application/json`; the extension
     `urn:agent-inbox:ext:unslop-code:v1` with params `{ "api": 1, "skillId":

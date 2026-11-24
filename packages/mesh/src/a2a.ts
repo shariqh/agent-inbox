@@ -16,6 +16,7 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { ConfigError } from './files.js'
+import { unslopSkill } from './skills.js'
 import { TASK_MS } from './unslop.js'
 
 export const DEFAULT_TIMEOUT_MS = 280_000
@@ -51,12 +52,13 @@ export type Skill<I = unknown, R extends SkillResult = SkillResult> = {
   outcome: (result: R) => { content?: Json; data: Json }
 }
 export type Refusal = { taskId: string; code: number; status: string; reason: string; ms: { queued: number }; [field: string]: unknown }
-export type ServerOptions<I = unknown, R extends SkillResult = SkillResult> = {
+/** unslop's options from before the skill seam, kept for the callers that start unslop's server so: `skill: unslopSkill({ rules, run })` */
+type UnslopOptions = Parameters<typeof unslopSkill>[0]
+export type ServerOptions<I = unknown, R extends SkillResult = SkillResult> = ({ skill: Skill<I, R> } | UnslopOptions) & {
   host: string
   port: number
   tokens: string[]
   version: string
-  skill: Skill<I, R>
   budget?: { take(): boolean; spend(modelMs: number): void }
   /** tasks refused or cancelled before the pipeline; the pipeline logs its own */
   log?: (entry: Refusal) => void
@@ -74,7 +76,7 @@ const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(
 
 export async function startServer<I, R extends SkillResult>(o: ServerOptions<I, R>): Promise<A2AServer> {
   if (o.host !== '127.0.0.1') throw new ConfigError('the agent binds 127.0.0.1 only')
-  const skill = o.skill
+  const skill = ('skill' in o ? o.skill : unslopSkill({ rules: o.rules, run: o.run })) as Skill<I, R>
   const now = o.now ?? Date.now
   const keys = o.tokens.map((t) => Buffer.from(t))
   const tasks = new Map<string, Task>()

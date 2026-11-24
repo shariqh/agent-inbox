@@ -1,6 +1,6 @@
-// The unslop agent process (#483, unslop design §4.2-§4.5, §7.2): reads its
-// private files, refuses to start unless mesh.json's `agents.unslop` names a
-// loopback endpoint, serves A2A there, and exits within one minute of that key
+// The unslop and unslop-code agent process (#483, unslop design §4.2-§4.5, §7.2),
+// one agent per process, chosen by `--profile`: reads its private files, refuses to
+// start unless mesh.json's `agents.<profile>` names a loopback endpoint, serves A2A there, and exits within one minute of that key
 // going or the caller token changing (a disable and enable writes a new one, which
 // this process would otherwise refuse until it stopped), or after 30 idle minutes. Every path derives from the mesh dir. The
 // log gets one JSON line per task with sizes, timings and classes: never text,
@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { startServer } from './a2a.js'
+import type { Skill } from './a2a.js'
 import { checkBaseUrl } from './backend.js'
 import type { Post, Sampling } from './backend.js'
 import { ConfigError, appendPrivate, localDate, readPrivate, writePrivate } from './files.js'
@@ -15,17 +16,17 @@ import { fixed, home, readApiKey, strings } from './key-source.js'
 import type { KeySource } from './key-source.js'
 import { meshDir, meshFile, readMesh } from './mesh-config.js'
 import { createRulesLoader } from './rules.js'
+import { codeSkill, unslopSkill } from './skills.js'
 import { runUnslop } from './unslop.js'
+import { runCodeSlop } from './unslop-code.js'
 
 export const GATE_MS = 60_000
 export const IDLE_MS = 30 * 60_000
 const DAILY_TASKS = 200
 const DAILY_MODEL_MS = 180 * 60_000
 
-type Profile = {
-  skill: string; baseUrl: string; apiKey?: KeySource; model?: string; sampling?: Partial<Sampling>
-  terms?: string[]; allowEmails?: string[]; customerPaths?: string[]
-}
+type BackendProfile = { baseUrl: string; apiKey?: KeySource; model?: string; sampling?: Partial<Sampling> }
+type Profile = BackendProfile & { skill: string; terms?: string[]; allowEmails?: string[]; customerPaths?: string[] }
 export type StopReason = 'mesh.json' | 'token' | 'idle' | 'signal'
 export type AgentOptions = {
   meshDir: string
@@ -37,28 +38,36 @@ export type AgentOptions = {
 }
 export type Agent = { port: number; exited: Promise<StopReason>; stop(reason: StopReason): Promise<void> }
 
-/** The port of `agents.unslop.endpoint`, which must be http://127.0.0.1:<port>. */
-export function endpointPort(dir: string): number {
+/** The port of `agents.<name>.endpoint`, which must be http://127.0.0.1:<port>. */
+export function endpointPort(dir: string, name: AgentName = 'unslop'): number {
   const read = readMesh(meshFile(dir))
-  if (read.kind !== 'present') throw new ConfigError('mesh.json is missing or unreadable: run meshctl enable --unslop')
-  const endpoint = (read.doc as { agents?: { unslop?: { endpoint?: unknown } } }).agents?.unslop?.endpoint
-  if (endpoint === undefined) throw new ConfigError('mesh.json has no agents.unslop: run meshctl enable --unslop')
+  if (read.kind !== 'present') throw new ConfigError(`mesh.json is missing or unreadable: run meshctl enable --${name}`)
+  const agents = (read.doc as { agents?: Record<string, { endpoint?: unknown } | undefined> }).agents
+  const endpoint = agents && Object.hasOwn(agents, name) ? agents[name]?.endpoint : undefined
+  if (endpoint === undefined) throw new ConfigError(`mesh.json has no agents.${name}: run meshctl enable --${name}`)
   const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(String(endpoint))?.[1])
   // port 80 is out: clients drop `:80` from Host, and the Host check is exact
-  if (!(port >= 1 && port <= 65535) || port === 80) throw new ConfigError('agents.unslop.endpoint must be http://127.0.0.1:<port>')
+  if (!(port >= 1 && port <= 65535) || port === 80) throw new ConfigError(`agents.${name}.endpoint must be http://127.0.0.1:<port>`)
   return port
 }
 
-function parseProfile(text: string): Profile {
-  let p: Profile
+function parseJson<T>(text: string): T {
   try {
-    p = JSON.parse(text) as Profile
+    return JSON.parse(text) as T
   } catch {
     throw new ConfigError('the profile is not valid JSON')
   }
-  if (!p || typeof p !== 'object' || typeof p.skill !== 'string' || !isAbsolute(home(p.skill))) throw new ConfigError('the profile needs an absolute `skill` folder')
+}
+
+function checkBackend(p: BackendProfile): void {
   if (typeof p.baseUrl !== 'string') throw new ConfigError('the profile needs a `baseUrl`')
   fixed(() => checkBaseUrl(p.baseUrl))
+}
+
+function parseProfile(text: string): Profile {
+  const p = parseJson<Profile>(text)
+  if (!p || typeof p !== 'object' || typeof p.skill !== 'string' || !isAbsolute(home(p.skill))) throw new ConfigError('the profile needs an absolute `skill` folder')
+  checkBackend(p)
   for (const key of ['terms', 'allowEmails', 'customerPaths'] as const) if (p[key] !== undefined && !strings(p[key])) throw new ConfigError(`the profile's \`${key}\` must be a list of strings`)
   return { ...p, skill: home(p.skill) }
 }
@@ -91,57 +100,85 @@ function createBudget(file: string, now: () => number): { take(): boolean; spend
   }
 }
 
+/** What a profile's agent needs once its profile, port and token are read. */
+type Context = { root: string; env: NodeJS.ProcessEnv; now: () => number; post?: Post; log: (entry: object) => void }
+/** Per agent: parse its profile (first, so a bad profile is reported before the token), then build its skill. */
+type AgentDef = (profileText: string) => (c: Context) => Skill<any, any>
+
+const AGENTS = {
+  unslop: (text) => {
+    const profile = parseProfile(text)
+    return ({ root, env, now, post, log }) => {
+      const denyFile = join(root, 'unslop-deny.txt')
+      readPrivate(denyFile, true)
+      const apiKey = readApiKey(profile.apiKey, env)
+      const loadRules = createRulesLoader(profile.skill)
+      let rules = fixed(loadRules)
+      let loadedAt = new Date(now()).toISOString()
+      const currentRules = (): ReturnType<typeof loadRules> => {
+        const next = loadRules()
+        if (next.sha256 !== rules.sha256) loadedAt = new Date(now()).toISOString()
+        rules = next
+        return next
+      }
+      return unslopSkill({
+        rules: () => {
+          const r = currentRules()
+          return { rulesSha256: r.sha256, bytes: Buffer.byteLength(r.text), loadedAt }
+        },
+        run: async (task, onState) => {
+          const r = currentRules()
+          const deny = readPrivate(denyFile, true) ?? ''
+          const result = await runUnslop(task, {
+            profile: {
+              baseUrl: profile.baseUrl, apiKey, model: profile.model, sampling: profile.sampling, terms: profile.terms,
+              screen: { deny, allowEmails: profile.allowEmails, customerPaths: profile.customerPaths },
+            },
+            rules: r, post, now, log, onState,
+          })
+          return r.stale ? { ...result, skillStale: true } : result
+        },
+      })
+    }
+  },
+  // no skill folder, no deny list and no rules: its questions are built in (src/code-prompt.ts)
+  'unslop-code': (text) => {
+    const p = parseJson<BackendProfile>(text)
+    if (!p || typeof p !== 'object') throw new ConfigError('the profile needs a `baseUrl`')
+    checkBackend(p)
+    return ({ env, now, post, log }) => {
+      const apiKey = readApiKey(p.apiKey, env)
+      const profile = { baseUrl: p.baseUrl, apiKey, model: p.model, sampling: p.sampling }
+      return codeSkill({ run: (task, onState) => runCodeSlop(task, { profile, post, now, log, onState }) })
+    }
+  },
+} satisfies Record<string, AgentDef>
+export type AgentName = keyof typeof AGENTS
+export const isAgentName = (name: string): name is AgentName => Object.hasOwn(AGENTS, name)
+
 export async function startAgent(o: AgentOptions): Promise<Agent> {
-  if (o.profile !== 'unslop') throw new ConfigError('the only profile is unslop')
+  const name = o.profile
+  if (!isAgentName(name)) throw new ConfigError('the profiles are unslop and unslop-code')
   const now = o.now ?? Date.now
   const env = o.env ?? process.env
-  const port = endpointPort(o.meshDir)
+  const port = endpointPort(o.meshDir, name)
   const root = join(o.meshDir, 'mesh')
-  const profile = parseProfile(readPrivate(join(root, 'wrappers', 'unslop.json')))
-  const tokenFile = join(root, 'tokens', 'unslop')
+  const build: ReturnType<AgentDef> = AGENTS[name](readPrivate(join(root, 'wrappers', `${name}.json`)))
+  const tokenFile = join(root, 'tokens', name)
   const token = readPrivate(tokenFile).trim()
   if (!/^[\x21-\x7E]{32,}$/.test(token)) throw new ConfigError('the token must be at least 32 printable characters')
-  const denyFile = join(root, 'unslop-deny.txt')
-  readPrivate(denyFile, true)
-  const apiKey = readApiKey(profile.apiKey, env)
-  const loadRules = createRulesLoader(profile.skill)
-  let rules = fixed(loadRules)
-  let loadedAt = new Date(now()).toISOString()
-  const currentRules = (): ReturnType<typeof loadRules> => {
-    const next = loadRules()
-    if (next.sha256 !== rules.sha256) loadedAt = new Date(now()).toISOString()
-    rules = next
-    return next
-  }
-  const budget = createBudget(join(root, 'unslop-budget.json'), now)
   const log = (entry: object): void => {
     try {
-      appendPrivate(join(root, 'logs', `unslop-${localDate(now())}.log`), JSON.stringify({ at: new Date(now()).toISOString(), ...entry }))
+      appendPrivate(join(root, 'logs', `${name}-${localDate(now())}.log`), JSON.stringify({ at: new Date(now()).toISOString(), ...entry }))
     } catch {
       process.stderr.write('agent-inbox-wrap: could not write the task log\n')
     }
   }
+  const skill = build({ root, env, now, post: o.post, log })
+  const budget = createBudget(join(root, `${name}-budget.json`), now)
   const version = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
 
-  const server = await startServer({
-    host: '127.0.0.1', port, tokens: [token], version, budget, log, now,
-    rules: () => {
-      const r = currentRules()
-      return { rulesSha256: r.sha256, bytes: Buffer.byteLength(r.text), loadedAt }
-    },
-    run: async (task, onState) => {
-      const r = currentRules()
-      const deny = readPrivate(denyFile, true) ?? ''
-      const result = await runUnslop(task, {
-        profile: {
-          baseUrl: profile.baseUrl, apiKey, model: profile.model, sampling: profile.sampling, terms: profile.terms,
-          screen: { deny, allowEmails: profile.allowEmails, customerPaths: profile.customerPaths },
-        },
-        rules: r, post: o.post, now, log, onState,
-      })
-      return r.stale ? { ...result, skillStale: true } : result
-    },
-  })
+  const server = await startServer({ host: '127.0.0.1', port, tokens: [token], version, skill, budget, log, now })
 
   let finished: (reason: StopReason) => void = () => {}
   const exited = new Promise<StopReason>((resolve) => { finished = resolve })
@@ -162,7 +199,7 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
     let on = false
     let sameToken = false
     try {
-      on = endpointPort(o.meshDir) === port
+      on = endpointPort(o.meshDir, name) === port
     } catch {}
     try {
       sameToken = readPrivate(tokenFile).trim() === token
@@ -181,8 +218,8 @@ export async function main(args: string[], env: NodeJS.ProcessEnv, write: (text:
     return i >= 0 ? args[i + 1] : undefined
   }
   const profile = flag('--profile')
-  if (args.length !== 4 || flag('--agent') !== 'openai-compatible' || !profile) {
-    write('usage: agent-inbox-wrap --agent openai-compatible --profile unslop\n')
+  if (args.length !== 4 || flag('--agent') !== 'openai-compatible' || !profile || !isAgentName(profile)) {
+    write('usage: agent-inbox-wrap --agent openai-compatible --profile unslop|unslop-code\n')
     return 4
   }
   let agent: Agent
@@ -192,7 +229,7 @@ export async function main(args: string[], env: NodeJS.ProcessEnv, write: (text:
     write(`agent-inbox-wrap: ${error instanceof ConfigError ? error.message : 'internal error'}\n`)
     return 1
   }
-  write(`agent-inbox-wrap: unslop listening on http://127.0.0.1:${agent.port}\n`)
+  write(`agent-inbox-wrap: ${profile} listening on http://127.0.0.1:${agent.port}\n`)
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => void agent.stop('signal'))
   write(`agent-inbox-wrap: stopped (${await agent.exited})\n`)
   return 0

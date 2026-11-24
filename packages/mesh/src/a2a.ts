@@ -1,5 +1,7 @@
-// The unslop agent's A2A server (#483, unslop design §7.2-§7.3, §8.3): a minimal,
-// hand-rolled JSON-RPC subset of A2A 1.0 on node:http. 127.0.0.1 only. Every
+// The A2A server of unslop and unslop-code (#483, unslop design §7.2-§7.3, §8.3): a minimal,
+// hand-rolled JSON-RPC subset of A2A 1.0 on node:http. What one agent does is its
+// Skill (src/skills.ts): the card's identity, the extension, the proof label, how a
+// message becomes a task, the run and the artifact; the protocol here is shared. 127.0.0.1 only. Every
 // request with an Origin header, or a Host other than 127.0.0.1:<port>, is
 // refused; every request but the card needs a bearer token. SendMessage,
 // SendStreamingMessage (status updates only: the edited text arrives once, with
@@ -7,38 +9,56 @@
 // waits; a task the queue cannot finish within the caller's timeout is refused
 // up front as busy. A task belongs to the token that created it. A card request that
 // carries an `A2A-Mesh-Challenge` nonce is answered with `A2A-Mesh-Proof` =
-// HMAC-SHA256(token, "unslop/v1\n" + nonce) (#492), so the client sends the token and
+// HMAC-SHA256(token, "<proof label>\n" + nonce) (#492), so the client sends the token and
 // the draft only to the process that holds the token; the card itself stays public.
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { maxTokens } from './backend.js'
 import { ConfigError } from './files.js'
-import { parseKind } from './screen.js'
-import type { Kind } from './screen.js'
+import { unslopSkill } from './skills.js'
 import { TASK_MS } from './unslop.js'
-import type { Outcome, UnslopResult, UnslopTask } from './unslop.js'
 
-export const EXTENSION = 'urn:agent-inbox:ext:unslop:v1'
 export const DEFAULT_TIMEOUT_MS = 280_000
-const BODY_MAX = 64 * 1024
-const TOKENS_PER_S = 44
 const RETRY_AFTER_MS = 60_000
 const KEEP = 64
 const S = { submitted: 'TASK_STATE_SUBMITTED', working: 'TASK_STATE_WORKING', completed: 'TASK_STATE_COMPLETED', rejected: 'TASK_STATE_REJECTED', failed: 'TASK_STATE_FAILED', canceled: 'TASK_STATE_CANCELED' } as const
 type State = (typeof S)[keyof typeof S]
 const TERMINAL = new Set<State>([S.completed, S.rejected, S.failed, S.canceled])
 
-export type RunResult = UnslopResult & { skillStale?: boolean }
-export type Refusal = { taskId: string; kind?: Kind; bytesIn: number; code: Outcome; status: string; reason: string; ms: { queued: number } }
-export type ServerOptions = {
+type Json = Record<string, unknown>
+/** What every skill's run returns: the server reads the code, the status line and the model time. */
+export type SkillResult = { code: number; status: string; reason?: string; ms: { load: number; model: number } }
+export type RunContext = { taskId: string; queuedMs: number; budgetMs: number; signal: AbortSignal }
+/** A message the skill takes: its input, its queue estimate and its log fields (sizes and classes only). */
+export type Accepted<I> = { input: I; estimateMs: number; log: Json }
+/** Everything one agent's server does that the protocol does not. */
+export type Skill<I = unknown, R extends SkillResult = SkillResult> = {
+  /** the card's name, the skill id and the artifact's name */
+  name: string
+  description: string
+  entry: { description: string; tags: string[] }
+  modes: { input: string[]; output: string[] }
+  extension: { uri: string; description: string; params: () => Json }
+  /** the identity proof's label, e.g. `unslop/v1` */
+  proofLabel: string
+  bodyMax: number
+  /** the JSON-RPC -32602 message for a message this skill cannot read */
+  malformed: string
+  /** the one part of a user message and its extension metadata: a task, a code 11 refusal reason, or undefined for `malformed` */
+  accept: (part: Json, meta: Json) => Accepted<I> | { refuse: string; log: Json } | undefined
+  run: (input: I, context: RunContext, onState: (state: string) => void) => Promise<R>
+  /** a result's report; `content`, the artifact's first part, only when the task completes */
+  outcome: (result: R) => { content?: Json; data: Json }
+}
+export type Refusal = { taskId: string; code: number; status: string; reason: string; ms: { queued: number }; [field: string]: unknown }
+/** unslop's options from before the skill seam, kept for the callers that start unslop's server so: `skill: unslopSkill({ rules, run })` */
+type UnslopOptions = Parameters<typeof unslopSkill>[0]
+export type ServerOptions<I = unknown, R extends SkillResult = SkillResult> = ({ skill: Skill<I, R> } | UnslopOptions) & {
   host: string
   port: number
   tokens: string[]
   version: string
-  rules: () => { rulesSha256: string; bytes: number; loadedAt: string }
-  run: (task: UnslopTask, onState: (state: string) => void) => Promise<RunResult>
   budget?: { take(): boolean; spend(modelMs: number): void }
   /** tasks refused or cancelled before the pipeline; the pipeline logs its own */
   log?: (entry: Refusal) => void
@@ -46,18 +66,17 @@ export type ServerOptions = {
 }
 export type A2AServer = { port: number; idleMs(): number; close(): Promise<void> }
 
-type Json = Record<string, unknown>
 type Task = {
-  id: string; contextId: string; owner: number; text: string; kind: unknown; timeoutMs: number; estimateMs: number
+  id: string; contextId: string; owner: number; input: unknown; log: Json; timeoutMs: number; estimateMs: number
   submittedAt: number; startedAt: number; status: Json & { state: State }; artifact?: Json
   abort: AbortController; listeners: Set<(events: Json[], end: boolean) => void>; done: Promise<void>; settle: () => void
 }
 
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})
-const estimateMs = (text: string): number => (maxTokens(text) / TOKENS_PER_S) * 1000
 
-export async function startServer(o: ServerOptions): Promise<A2AServer> {
+export async function startServer<I, R extends SkillResult>(o: ServerOptions<I, R>): Promise<A2AServer> {
   if (o.host !== '127.0.0.1') throw new ConfigError('the agent binds 127.0.0.1 only')
+  const skill = ('skill' in o ? o.skill : unslopSkill({ rules: o.rules, run: o.run })) as Skill<I, R>
   const now = o.now ?? Date.now
   const keys = o.tokens.map((t) => Buffer.from(t))
   const tasks = new Map<string, Task>()
@@ -68,17 +87,17 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
   let url = ''
 
   const card = (): Json => ({
-    name: 'unslop', description: 'Copy-edits public text (PR descriptions, issues, release notes, public docs, blog posts) by the unslop rules, with a fidelity check.',
+    name: skill.name, description: skill.description,
     version: o.version,
     supportedInterfaces: [{ url, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
     capabilities: {
       streaming: true, pushNotifications: false,
-      extensions: [{ uri: EXTENSION, description: 'unslop task parameters and result', required: false, params: { api: 1, skillId: 'unslop', ...o.rules() } }],
+      extensions: [{ uri: skill.extension.uri, description: skill.extension.description, required: false, params: skill.extension.params() }],
     },
     securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } },
     securityRequirements: [{ schemes: { bearer: { list: [] } } }],
-    defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain', 'application/json'],
-    skills: [{ id: 'unslop', name: 'unslop', description: 'Edit one public text; the result carries the check report.', tags: ['editing'] }],
+    defaultInputModes: skill.modes.input, defaultOutputModes: skill.modes.output,
+    skills: [{ id: skill.name, name: skill.name, ...skill.entry }],
   })
 
   const view = (t: Task): Json => ({ id: t.id, contextId: t.contextId, status: t.status, ...(t.artifact ? { artifacts: [t.artifact] } : {}) })
@@ -99,8 +118,8 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     for (const [id, old] of tasks) if (tasks.size > KEEP && TERMINAL.has(old.status.state)) tasks.delete(id)
   }
 
-  const note = (t: Task, code: Outcome, status: string, reason: string): void =>
-    o.log?.({ taskId: t.id, kind: parseKind(t.kind), bytesIn: Buffer.byteLength(t.text), code, status, reason, ms: { queued: (t.startedAt || now()) - t.submittedAt } })
+  const note = (t: Task, code: number, status: string, reason: string): void =>
+    o.log?.({ taskId: t.id, ...t.log, code, status, reason, ms: { queued: (t.startedAt || now()) - t.submittedAt } })
 
   function refuse(t: Task, code: 11 | 12, reason: string): void {
     const status = code === 12 ? 'busy' : 'rejected'
@@ -108,7 +127,7 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     setState(t, S.rejected, `${status}: ${reason}`, { code, status, reason, ...(code === 12 ? { retryAfterMs: RETRY_AFTER_MS } : {}) })
   }
 
-  function finish(t: Task, result: RunResult | undefined): void {
+  function finish(t: Task, result: R | undefined): void {
     if (running === t) running = undefined
     lastActivity = now()
     if (!TERMINAL.has(t.status.state)) {
@@ -116,9 +135,9 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
         note(t, 13, 'failed', 'internal')
         setState(t, S.failed, 'failed: internal', { code: 13, status: 'failed', reason: 'internal' })
       } else {
-        const { text, ...data } = result
-        if (result.code === 0 || result.code === 10) {
-          t.artifact = { artifactId: randomUUID(), name: 'unslop', parts: [{ text, mediaType: 'text/plain' }, { data, mediaType: 'application/json' }] }
+        const { content, data } = skill.outcome(result)
+        if (content) {
+          t.artifact = { artifactId: randomUUID(), name: skill.name, parts: [content, { data, mediaType: 'application/json' }] }
           setState(t, S.completed)
         } else {
           const extra = result.code === 12 ? { retryAfterMs: RETRY_AFTER_MS } : {}
@@ -151,8 +170,8 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     running = t
     t.startedAt = now()
     const queuedMs = t.startedAt - t.submittedAt
-    const task: UnslopTask = { text: t.text, kind: t.kind, taskId: t.id, queuedMs, budgetMs: Math.min(TASK_MS, t.timeoutMs - queuedMs), signal: t.abort.signal }
-    o.run(task, (state) => { if (!TERMINAL.has(t.status.state)) setState(t, S.working, state) }).then((r) => finish(t, r), () => finish(t, undefined)).catch(() => fail(t))
+    const context: RunContext = { taskId: t.id, queuedMs, budgetMs: Math.min(TASK_MS, t.timeoutMs - queuedMs), signal: t.abort.signal }
+    skill.run(t.input as I, context, (state) => { if (!TERMINAL.has(t.status.state)) setState(t, S.working, state) }).then((r) => finish(t, r), () => finish(t, undefined)).catch(() => fail(t))
   }
 
   function admit(t: Task): void {
@@ -190,7 +209,7 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
       let size = 0
       req.on('data', (chunk: Buffer) => {
         size += chunk.length
-        if (size > BODY_MAX) resolve(undefined)
+        if (size > skill.bodyMax) resolve(undefined)
         else chunks.push(chunk)
       })
       req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
@@ -204,21 +223,23 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     if (config.taskPushNotificationConfig !== undefined || config.pushNotificationConfig !== undefined) return rpcError(res, id, -32003, 'Push notifications are not supported')
     if (message.taskId !== undefined) return rpcError(res, id, -32004, 'One call is one task: a message cannot continue a task')
     const parts = Array.isArray(message.parts) ? message.parts : []
-    const text = obj(parts[0]).text
-    if (message.role !== 'ROLE_USER' || parts.length !== 1 || typeof text !== 'string') return rpcError(res, id, -32602, 'Expected one text part from ROLE_USER')
-    const meta = obj(obj(message.metadata)[EXTENSION])
+    const meta = obj(obj(message.metadata)[skill.extension.uri])
+    const accepted = message.role === 'ROLE_USER' && parts.length === 1 ? skill.accept(obj(parts[0]), meta) : undefined
+    if (!accepted) return rpcError(res, id, -32602, skill.malformed)
     const timeoutMs = meta.timeoutMs ?? DEFAULT_TIMEOUT_MS
     if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1000 || (timeoutMs as number) > 600_000) return rpcError(res, id, -32602, 'timeoutMs must be an integer from 1000 to 600000')
     let settle = (): void => {}
     const done = new Promise<void>((resolve) => { settle = resolve })
     const t: Task = {
       id: randomUUID(), contextId: typeof message.contextId === 'string' && message.contextId.length <= 128 ? message.contextId : randomUUID(),
-      owner, text, kind: meta.kind, timeoutMs: timeoutMs as number, estimateMs: estimateMs(text), submittedAt: now(), startedAt: 0,
+      owner, input: 'input' in accepted ? accepted.input : undefined, log: accepted.log, timeoutMs: timeoutMs as number,
+      estimateMs: 'input' in accepted ? accepted.estimateMs : 0, submittedAt: now(), startedAt: 0,
       status: { state: S.submitted }, abort: new AbortController(), listeners: new Set(), done, settle,
     }
     tasks.set(t.id, t)
     setState(t, S.submitted, 'waiting')
-    admit(t)
+    if ('refuse' in accepted) refuse(t, 11, accepted.refuse)
+    else admit(t)
     if (!stream) {
       if (config.returnImmediately !== true) await t.done
       return rpc(res, id, { task: view(t) })
@@ -239,17 +260,17 @@ export async function startServer(o: ServerOptions): Promise<A2AServer> {
     if (req.headers.origin !== undefined) return reply(res, 403, { error: 'origin' })
     if (req.headers.host !== host) return reply(res, 403, { error: 'host' })
     if (req.method === 'GET' && req.url === '/.well-known/agent-card.json') {
-      // the same exchange as web search's front door, under unslop's own label (#492)
+      // the same exchange as web search's front door, under this skill's own label (#492)
       const nonce = req.headers['a2a-mesh-challenge']
       const proof: Record<string, string> = typeof nonce === 'string' && /^[\w-]{43}$/.test(nonce) && o.tokens[0]
-        ? { 'a2a-mesh-proof': createHmac('sha256', o.tokens[0]).update(`unslop/v1\n${nonce}`).digest('base64url') } : {}
+        ? { 'a2a-mesh-proof': createHmac('sha256', o.tokens[0]).update(`${skill.proofLabel}\n${nonce}`).digest('base64url') } : {}
       return reply(res, 200, card(), proof)
     }
     if (req.method !== 'POST' || req.url !== '/') return reply(res, 404, { error: 'not found' })
     const owner = authorize(req.headers.authorization)
     if (owner < 0) return reply(res, 401, { error: 'token' }, { 'www-authenticate': 'Bearer' })
     lastActivity = now()
-    if (Number(req.headers['content-length'] ?? 0) > BODY_MAX) return reply(res, 413, { error: 'too large' }, { connection: 'close' })
+    if (Number(req.headers['content-length'] ?? 0) > skill.bodyMax) return reply(res, 413, { error: 'too large' }, { connection: 'close' })
     const body = await readBody(req)
     if (body === undefined) return reply(res, 413, { error: 'too large' }, { connection: 'close' })
     let msg: Json

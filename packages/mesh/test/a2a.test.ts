@@ -9,12 +9,14 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { EXTENSION, startServer } from '../src/a2a.js'
-import type { A2AServer, RunResult, ServerOptions } from '../src/a2a.js'
+import { startServer } from '../src/a2a.js'
+import type { A2AServer, ServerOptions } from '../src/a2a.js'
 import { GATE_MS, IDLE_MS, main, startAgent } from '../src/agent.js'
 import type { Agent, AgentOptions } from '../src/agent.js'
 import { maxTokens } from '../src/backend.js'
 import { localDate } from '../src/files.js'
+import { EXTENSION, unslopSkill } from '../src/skills.js'
+import type { RunResult } from '../src/skills.js'
 
 const TOKEN = 'a1'.repeat(32)
 const API_KEY = 'test-api-key-Zx9'
@@ -153,11 +155,12 @@ const logLines = (dir: string): string => {
 }
 
 const result = (): RunResult => ({ code: 0, status: 'rewritten', text: 'edited', rulesSha256: '', model: 'm', attempts: 1, hard: {}, warnings: [], ms: { queued: 0, load: 0, model: 5, check: 0 } })
-async function server(extra: Partial<ServerOptions>): Promise<A2AServer> {
-  const s = await startServer({
-    host: '127.0.0.1', port: 0, tokens: [TOKEN], version: '0', rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }),
-    run: (_task, onState) => { onState('editing'); return new Promise(() => {}) }, ...extra,
-  })
+type UnslopRun = Parameters<typeof unslopSkill>[0]['run']
+const hang: UnslopRun = (_task, onState) => { onState('editing'); return new Promise(() => {}) }
+const skill = (run: UnslopRun = hang): ReturnType<typeof unslopSkill> => unslopSkill({ rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }), run })
+async function server(extra: Partial<Omit<ServerOptions, 'skill'>> & { run?: UnslopRun }): Promise<A2AServer> {
+  const { run, ...rest } = extra
+  const s = await startServer({ host: '127.0.0.1', port: 0, tokens: [TOKEN], version: '0', skill: skill(run), ...rest })
   stops.push(() => s.close())
   return s
 }
@@ -293,8 +296,7 @@ describe('tasks', () => {
 
     const other = 'c3'.repeat(32)
     const server: A2AServer = await startServer({
-      host: '127.0.0.1', port: 0, tokens: [TOKEN, other], version: '0', rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }),
-      run: (_task, onState) => { onState('editing'); return new Promise(() => {}) },
+      host: '127.0.0.1', port: 0, tokens: [TOKEN, other], version: '0', skill: skill(),
     })
     stops.push(() => server.close())
     const mine = await rpc(server.port, 'SendMessage', message(INPUT, {}, immediate))
@@ -377,7 +379,7 @@ describe('failures inside the server', () => {
 
 describe('start, the mesh.json gate and idle exit', () => {
   it('refuses to bind anything but 127.0.0.1, and a non-loopback endpoint', async () => {
-    await expect(startServer({ host: '0.0.0.0', port: 0, tokens: [TOKEN], version: '0', rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }), run: () => new Promise(() => {}) }))
+    await expect(startServer({ host: '0.0.0.0', port: 0, tokens: [TOKEN], version: '0', skill: skill(() => new Promise(() => {})) }))
       .rejects.toThrow(/127\.0\.0\.1 only/)
     const { dir, port } = await meshHome()
     for (const endpoint of ['http://127.0.0.1:80', `http://0.0.0.0:${port}`, `http://localhost:${port}`, `https://127.0.0.1:${port}`, `http://127.0.0.1:${port}/x`]) {

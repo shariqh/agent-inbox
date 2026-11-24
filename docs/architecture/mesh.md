@@ -766,6 +766,62 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     against a fake backend on 127.0.0.1 that answers with the recorded answers and the
     change fixtures' hand-written ones (what a correct model would answer: they prove the
     plumbing, not a model). Nothing outside the package calls the task yet.
+- **unslop-code as an agent (step 3a).** The same program runs a second agent, as its own
+  process on its own port: `node packages/mesh/dist/wrap.js --agent openai-compatible
+  --profile unslop-code`. Nothing enables or starts it yet: no `meshctl` switch, client,
+  routing skill or card in the app (later steps).
+  - **The skill seam.** `src/a2a.ts` keeps one implementation of the protocol (the
+    JSON-RPC methods, streaming, the queue, auth, the task table, cancel, timeouts, the
+    budget and the refusal log) and takes everything agent-specific from one `Skill`
+    value in its options: the card's name, description, skill entry, input and output
+    modes and extension (URI, description, params), the proof label, the request body
+    limit, the -32602 message for a message it cannot read, `accept` (the message's one
+    part and its extension metadata become the task's input, its queue estimate and its
+    log fields, or a code 11 refusal reason), `run`, and `outcome` (a result's report,
+    plus the artifact's first part when the task completes). `src/skills.ts` defines
+    both skills. unslop's is the agent described above, byte for byte: the same card,
+    proof, refusals, artifacts and log lines. `startServer` still takes unslop's earlier
+    options, `{ rules, run }` in place of `skill` (the app's tests start unslop's server
+    that way), as `skill: unslopSkill({ rules, run })`. No module-level state is shared,
+    so two processes of the program do not interfere.
+  - **Identity.** Card name and skill id `unslop-code`, input mode `application/json`,
+    output modes `text/x-diff` and `application/json`; the extension
+    `urn:agent-inbox:ext:unslop-code:v1` with params `{ "api": 1, "skillId":
+    "unslop-code" }` (no rules: the questions are built in); the identity proof is
+    HMAC-SHA256(token, `"unslop-code/v1\n" + nonce`), so a client proving unslop cannot
+    be answered by this agent, nor the other way round.
+  - **Request.** One `ROLE_USER` message with exactly one data part, `{ "files": [{
+    "path", "text", "added" }], "suggest"? }` (the task of step 2), and
+    `metadata["urn:agent-inbox:ext:unslop-code:v1"] = { "timeoutMs" }` (1000-600000,
+    default 280000). A message of another form (a text part, two parts, another role, a
+    bad `timeoutMs`) is a JSON-RPC -32602 error, as for unslop. A data part of the wrong
+    shape (`files` not a list, a file that is not an object, `path` or `text` not a
+    string, `added` not a list of safe integers, `suggest` not a boolean) is a task
+    `REJECTED` with code 11, reason `malformed`, before the budget and with nothing sent
+    to the backend; only the known fields reach the task function. The body limit is
+    4 MiB (unslop's stays 64 KiB); `runCodeSlop` applies its own limits per file and on
+    the number of files. The queue estimates twelve seconds a file, at most the 270 s
+    task limit.
+  - **Result.** On code 0 the task completes with an artifact named `unslop-code`: a
+    text part holding the patch (`text/x-diff`; empty when nothing was removed) and a
+    data part with the rest of the result (code, status, reason, files, model, calls,
+    timings). Codes 11, 12 (with `retryAfterMs`) and 13 end the task `REJECTED` or
+    `FAILED` with that report in the status message and no patch, as unslop's non-zero
+    codes do. Streaming status names the question being asked (`remove`, `keep`,
+    `suggest`).
+  - **Files,** under `<mesh dir>/mesh/` with the same rules as unslop's: it needs
+    `mesh.json`'s `agents.unslop-code.endpoint` (`http://127.0.0.1:<port>`), the profile
+    `wrappers/unslop-code.json` (`baseUrl`, optional `apiKey`, `model`, `sampling`; other
+    keys such as `_about` and `start` are ignored; no skill folder, deny list or rules)
+    and the token `tokens/unslop-code`. It writes `unslop-code-budget.json` (the same
+    200 tasks and 180 model-minutes a day, counted apart from unslop's) and
+    `logs/unslop-code-YYYY-MM-DD.log` (one line per task: sizes, counts, timings and
+    class names; never a path, a line of code, the token or the key). It never reads or
+    writes unslop's files. The gate, token check, idle exit and signals are unslop's,
+    on its own key and token; its refusals name `agents.unslop-code` and
+    `enable --unslop-code`. An unknown `--profile` is a usage error (exit 4). Tests:
+    `test/unslop-code-agent.test.ts` (a fake backend on 127.0.0.1 and scratch mesh and
+    home folders).
 
 ## request-post conformance fixtures (M2b R1, #500)
 

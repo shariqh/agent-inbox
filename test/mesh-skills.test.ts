@@ -72,7 +72,7 @@ function setup(meshJson?: string, inHome = false) {
     mkdirSync(join(dir, 'mesh', 'wrappers'), { recursive: true })
     writeFileSync(profile, JSON.stringify({ skill }))
   }
-  return { dir, home, skill, links, show, run, profile, rulesFolder, writeProfile, enable: (...more: string[]) => run('enable', '--unslop', '--checkout', checkout, ...more) }
+  return { dir, home, checkout, skill, links, show, run, profile, rulesFolder, writeProfile, enable: (...more: string[]) => run('enable', '--unslop', '--checkout', checkout, ...more) }
 }
 
 describe('generation is pure: entries in, fixed text out', () => {
@@ -105,6 +105,34 @@ describe('generation is pure: entries in, fixed text out', () => {
     }
     expect(routingSkill('request-post', '/m', '/h')).toBeUndefined()
     expect(routingSkill('toString', '/m', '/h')).toBeUndefined()
+  })
+
+  it('writes unslop-code\'s template beside unslop\'s, with the mesh dir only, and no rules link (#652)', async () => {
+    const doc = {
+      schema: 1,
+      agents: {
+        unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' },
+        'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code', description: HOSTILE },
+      },
+    }
+    const skills = routingSkills(doc, '/Users/someone/.agent-inbox', '/Users/someone')
+    expect([...skills.keys()]).toEqual(['unslop', 'unslop-code'])
+    const text = skills.get('unslop-code')!
+    expect(text).toContain('\n    ~/.agent-inbox/bin/unslop-code --apply --report <report file>\n')
+    expect(text).toContain('If `~/.agent-inbox/bin/unslop-code` does not exist')
+    expect(text).not.toMatch(/IGNORE|<mesh dir>|\/Users\/someone|rules\.md/)
+    await expect(text).toMatchFileSnapshot('./fixtures/routing-skills/unslop-code.SKILL.md')
+    // on by its own key's rule only
+    for (const entry of [{ endpoint: 'http://0.0.0.0:4421' }, 'on', { endpoint: 'https://127.0.0.1:4421' }]) {
+      expect([...routingSkills({ schema: 1, agents: { 'unslop-code': entry } }, '/m', '/h').keys()]).toEqual([])
+    }
+  })
+
+  it('docs/unslop-code.md quotes its template exactly', () => {
+    const doc = readFileSync(join(REPO, 'docs', 'unslop-code.md'), 'utf8')
+    const section = doc.slice(doc.indexOf('## The routing skill'))
+    const block = /```markdown\n([\s\S]*?)```\n/.exec(section)?.[1]
+    expect(block).toBe(routingSkill('unslop-code', '<mesh dir>', '/home/x'))
   })
 
   it('docs/unslop.md quotes the template exactly', () => {
@@ -190,6 +218,35 @@ describe('enable and disable keep <mesh dir>/skills in line with mesh.json', () 
       expect(existsSync(join(t.dir, 'skills'))).toBe(false)
       expect(tree(t.home)).toEqual({ ...homeBefore, '.agent-inbox': 'dir', '.agent-inbox/install-agents.lock': '', '.agents': 'dir', '.agents/skills': 'dir' })
     }
+  })
+})
+
+describe('unslop-code\'s routing skill (#652)', () => {
+  it('enable --unslop-code writes it, skills link links it, and disable --unslop-code removes only its folder and links', () => {
+    const t = setup()
+    t.writeProfile(t.rulesFolder())
+    expect(t.enable('--apply').code).toBe(0)
+    const folder = join(t.dir, 'skills', 'unslop-code')
+    const dry = t.run('enable', '--unslop-code', '--checkout', t.checkout)
+    expect(dry.out).toContain(`Would write the unslop-code routing skill ${folder}/SKILL.md (fixed text)`)
+    expect(existsSync(folder)).toBe(false)
+    const on = t.run('enable', '--unslop-code', '--checkout', t.checkout, '--apply')
+    expect(on.code, on.err).toBe(0)
+    expect(readFileSync(join(folder, 'SKILL.md'), 'utf8')).toBe(routingSkill('unslop-code', t.dir, t.home))
+    // unslop's rules.md link is unslop's alone
+    expect(readdirSync(folder)).toEqual(['SKILL.md'])
+    expect(readdirSync(t.skill)).toEqual(['SKILL.md', 'rules.md'])
+    const linked = t.run('skills', 'link', '--apply')
+    expect(linked.code, linked.err).toBe(0)
+    expect(readlinkSync(join(t.home, '.claude', 'skills', 'unslop-code'))).toBe(folder)
+    expect(readlinkSync(join(t.home, '.agents', 'skills', 'unslop-code'))).toBe(folder)
+    const off = t.run('disable', '--unslop-code', '--apply')
+    expect(off.code, off.err).toBe(0)
+    expect(existsSync(folder)).toBe(false)
+    expect(existsSync(join(t.home, '.claude', 'skills', 'unslop-code'))).toBe(false)
+    expect(existsSync(join(t.home, '.agents', 'skills', 'unslop-code'))).toBe(false)
+    expect(readlinkSync(t.links.claude)).toBe(t.skill)
+    expect(readFileSync(join(t.skill, 'SKILL.md'), 'utf8')).toBe(routingSkill('unslop', t.dir, t.home))
   })
 })
 

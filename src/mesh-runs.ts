@@ -11,7 +11,7 @@ import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 
-export type RunAgent = 'unslop' | 'request-post' | 'web-search'
+export type RunAgent = 'unslop' | 'unslop-code' | 'request-post' | 'web-search'
 /** What decides a record's fields: a built-in agent, or `added` for any id `meshctl add` wrote. */
 type Kind = RunAgent | 'added'
 type Json = Record<string, unknown>
@@ -25,6 +25,10 @@ export interface RunCollector {
   data?: Json
   task?: string
   bytesIn?: number
+  /** unslop-code: the files sent, and the comment lines removed and suggestions in its result */
+  files?: number
+  removed?: number
+  suggestions?: number
   /** request-post: the last phase a `wait` saw, and the caller's own arguments */
   phase?: string
   throughGo?: boolean
@@ -49,16 +53,18 @@ const { O_RDONLY, O_WRONLY, O_APPEND, O_CREAT, O_NOFOLLOW, O_NONBLOCK } = consta
 
 const OUTCOMES: Record<Kind, Record<number, string>> = {
   unslop: { 0: 'ok', 10: 'kept-original', 11: 'refused', 12: 'busy', 13: 'failed', 14: 'unavailable' },
+  'unslop-code': { 0: 'ok', 11: 'refused', 12: 'busy', 13: 'failed', 14: 'unavailable' },
   'request-post': { 0: 'ok', 11: 'refused', 12: 'busy', 13: 'unknown', 14: 'unavailable', 15: 'unavailable', 16: 'conflict', 124: 'timed-out' },
   'web-search': { 0: 'ok', 10: 'sources-only', 11: 'refused', 12: 'busy', 13: 'failed', 14: 'unavailable' },
   added: { 0: 'ok', 11: 'refused', 12: 'busy', 13: 'failed', 14: 'unavailable', 15: 'unavailable', 16: 'card-changed' },
 }
 const OPS: Record<Kind, string[]> = {
-  unslop: ['pr', 'issue', 'release-notes', 'docs', 'blog'], 'request-post': ['file', 'status', 'wait'], 'web-search': ['answer', 'sources'], added: ['call'],
+  unslop: ['pr', 'issue', 'release-notes', 'docs', 'blog'], 'unslop-code': ['clean'], 'request-post': ['file', 'status', 'wait'], 'web-search': ['answer', 'sources'], added: ['call'],
 }
 const COMMON = ['v', 'id', 'agent', 'op', 'at', 'ms', 'exit', 'signal', 'outcome', 'reason', 'classes', 'task']
 const FIELDS: Record<Kind, string[]> = {
   unslop: [...COMMON, 'status', 'bytesIn', 'attempts', 'model', 'rules', 'timing', 'warnings'],
+  'unslop-code': [...COMMON, 'status', 'files', 'bytesIn', 'removed', 'suggestions', 'model', 'timing'],
   'request-post': [...COMMON, 'phase', 'created', 'throughGo', 'channels', 'brand', 'fields'],
   'web-search': COMMON,
   added: COMMON,
@@ -71,7 +77,12 @@ const int = (v: unknown, max = Number.MAX_SAFE_INTEGER): boolean => Number.isSaf
 const names = (v: unknown, max: number, ok: (s: string) => boolean): boolean =>
   Array.isArray(v) && v.length <= max && v.every((s) => typeof s === 'string' && ok(s))
 const test = (re: RegExp) => (v: unknown): boolean => typeof v === 'string' && re.test(v)
-const BUILT_IN = ['unslop', 'request-post', 'web-search']
+const BUILT_IN = ['unslop', 'unslop-code', 'request-post', 'web-search']
+// each agent's status words and timing keys (unslop-code's result has no check time)
+const STATUS: Partial<Record<Kind, string[]>> = {
+  unslop: ['rewritten', 'unchanged', 'kept-original', 'rejected', 'busy', 'failed'], 'unslop-code': ['cleaned', 'unchanged', 'rejected', 'busy', 'failed'],
+}
+const TIMING: Partial<Record<Kind, string>> = { unslop: 'queued,load,model,check', 'unslop-code': 'queued,load,model' }
 const kindOf = (agent: unknown): Kind | undefined =>
   typeof agent !== 'string' ? undefined : BUILT_IN.includes(agent) ? agent as RunAgent : ADDED_ID.test(agent) ? 'added' : undefined
 
@@ -90,12 +101,15 @@ const RULES: Record<string, (v: unknown, r: Json) => boolean> = {
   reason: test(/^[a-z][a-z0-9-]{0,39}$/),
   classes: (v) => names(v, 8, (s) => CLASS.test(s)),
   task: test(/^[A-Za-z0-9-]{1,64}$/),
-  status: (v) => ['rewritten', 'unchanged', 'kept-original', 'rejected', 'busy', 'failed'].includes(v as string),
+  status: (v, r) => STATUS[kindOf(r['agent'])!]?.includes(v as string) ?? false,
   bytesIn: (v) => int(v),
+  files: (v) => int(v, 40),
+  removed: (v) => int(v),
+  suggestions: (v) => int(v),
   attempts: (v) => int(v, 9),
   model: test(/^[A-Za-z0-9._:/-]{1,64}$/),
   rules: test(/^[0-9a-f]{12}$/),
-  timing: (v) => !!v && typeof v === 'object' && Object.keys(v).join() === 'queued,load,model,check' && Object.values(v).every((n) => int(n)),
+  timing: (v, r) => !!v && typeof v === 'object' && Object.keys(v).join() === TIMING[kindOf(r['agent'])!] && Object.values(v).every((n) => int(n)),
   warnings: (v) => names(v, 8, (s) => CLASS.test(s)),
   phase: test(/^[a-z][a-z-]{0,23}$/),
   created: (v, r) => typeof v === 'boolean' && r['op'] === 'file',
@@ -122,6 +136,8 @@ function validRun(value: unknown): Json | undefined {
   return out
 }
 
+const whole = (v: unknown): unknown => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : v)
+
 const list = (v: unknown, max: number): string[] | undefined => {
   const kept = (Array.isArray(v) ? v : []).filter((s): s is string => typeof s === 'string' && CLASS.test(s)).slice(0, max)
   return kept.length ? kept : undefined
@@ -146,12 +162,18 @@ function buildLine(agent: string, c: RunCollector, end: RunEnd, now: number): st
         timing: { queued: ms['queued'], load: ms['load'], model: ms['model'], check: ms['check'] },
         warnings: list((Array.isArray(d['warnings']) ? d['warnings'] : []).map((w) => (w && typeof w === 'object' ? (w as Json)['class'] : undefined)), 8),
       }
-    : kind === 'request-post'
+    : kind === 'unslop-code'
       ? {
-          classes: list(d['classes'], 8), phase: d['phase'] ?? c.phase, created: d['created'], throughGo: c.throughGo,
-          channels: c.channels, brand: c.brand, fields: Array.isArray(d['fields']) ? d['fields'].filter((f) => ARGUMENTS.includes(f as string)).slice(0, 8) : undefined,
+          task: c.task, status: d['status'], files: c.files, bytesIn: c.bytesIn, removed: c.removed, suggestions: c.suggestions, model: d['model'],
+          // its agent measures with performance.now(), so the timings come with fractions
+          timing: { queued: whole(ms['queued']), load: whole(ms['load']), model: whole(ms['model']) },
         }
-      : { task: c.task }
+      : kind === 'request-post'
+        ? {
+            classes: list(d['classes'], 8), phase: d['phase'] ?? c.phase, created: d['created'], throughGo: c.throughGo,
+            channels: c.channels, brand: c.brand, fields: Array.isArray(d['fields']) ? d['fields'].filter((f) => ARGUMENTS.includes(f as string)).slice(0, 8) : undefined,
+          }
+        : { task: c.task }
   for (const [key, value] of Object.entries(candidates)) if (value !== undefined && RULES[key]!(value, r)) r[key] = value
   if (r['reason'] !== undefined && !RULES['reason']!(r['reason'], r)) delete r['reason']
   // the builder's last cap (§5.4): shorten the lists, then drop optional fields, until the line fits

@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import type { A2AServer } from '../packages/mesh/src/a2a.js'
+import { codeSkill } from '../packages/mesh/src/skills.js'
 import { cardHash as meshCardHash } from '../packages/mesh/src/a2a-client.js'
 import { agentIdRefusal, canonicalCard, cardExtension, cardJson, checkAddedCard, checkCard, checkProfile, claim, summarizeCard } from '../src/agent-card.js'
 import { cardSha256 } from '../src/mesh-add.js'
@@ -25,7 +26,9 @@ const REQUEST_POST_EXT = 'urn:agent-inbox:ext:request-post:v1'
 const REQUEST_POST_PAGES = 'https://shariqh.github.io/agent-inbox/ext/request-post/v1'
 
 let agent: A2AServer
+let codeAgent: A2AServer
 let UNSLOP: Json
+let UNSLOP_CODE: Json
 beforeAll(async () => {
   agent = await startServer({
     host: '127.0.0.1', port: 0, tokens: ['a1'.repeat(32)], version: '0.0.0-test',
@@ -33,8 +36,11 @@ beforeAll(async () => {
   })
   const res = await fetch(`http://127.0.0.1:${agent.port}/.well-known/agent-card.json`)
   UNSLOP = await res.json() as Json
+  // unslop-code's card as its agent serves it (#652)
+  codeAgent = await startServer({ host: '127.0.0.1', port: 0, tokens: ['a1'.repeat(32)], version: '0.0.0-test', skill: codeSkill({ run: () => new Promise(() => {}) }) })
+  UNSLOP_CODE = await (await fetch(`http://127.0.0.1:${codeAgent.port}/.well-known/agent-card.json`)).json() as Json
 })
-afterAll(() => agent?.close())
+afterAll(async () => { await agent?.close(); await codeAgent?.close() })
 
 const change = (card: Json, edit: (c: Json) => void): Json => {
   const copy = structuredClone(card)
@@ -83,6 +89,23 @@ describe('checkCard (agent cards view design §4.4)', () => {
       ['no unslop skill', (c) => { c.skills = []; c.supportedInterfaces = [] }],
     ]
     for (const [reason, edit] of cases) expect(checkCard(change(UNSLOP, edit), 'unslop'), reason).toBe(reason)
+  })
+
+  it('unslop-code: its own card passes, each rule fails with its fixed reason, and the two local agents never pass for each other (#652)', () => {
+    const CODE_EXT = 'urn:agent-inbox:ext:unslop-code:v1'
+    expect(checkCard(UNSLOP_CODE, 'unslop-code')).toBeUndefined()
+    expect(cardExtension(UNSLOP_CODE, 'unslop-code')).toBe(CODE_EXT)
+    expect(checkCard(UNSLOP_CODE, 'unslop')).toBe('no unslop skill')
+    expect(checkCard(UNSLOP, 'unslop-code')).toBe("not the unslop-code agent's card")
+    const cases: Array<[string, (c: Json) => void]> = [
+      ["not the unslop-code agent's card", (c) => { c.name = 'unslop' }],
+      ["not the unslop-code agent's card", (c) => { delete c.name }],
+      ['no unslop-code skill', (c) => { c.skills = [{ id: 'unslop' }] }],
+      ['no A2A 1.0 JSON-RPC interface', (c) => { c.supportedInterfaces[0].protocolVersion = '0.3' }],
+      [`no ${CODE_EXT} extension`, (c) => { c.capabilities.extensions[0].uri = UNSLOP_EXT }],
+      ['unslop-code api is not 1', (c) => { c.capabilities.extensions[0].params.api = 2 }],
+    ]
+    for (const [reason, edit] of cases) expect(checkCard(change(UNSLOP_CODE, edit), 'unslop-code'), reason).toBe(reason)
   })
 
   it('request-post: each rule fails with its fixed reason, in order', () => {

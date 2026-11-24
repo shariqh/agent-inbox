@@ -7,7 +7,7 @@ import { agentIdRefusal } from './agent-card.js'
 import { THUMBPRINT } from './card-signature.js'
 
 /** The agents that ship here, each with its own `mesh.json` shape: `add` never takes their names. */
-export const BUILT_IN_AGENTS: readonly string[] = ['unslop', 'request-post', 'web-search']
+export const BUILT_IN_AGENTS: readonly string[] = ['unslop', 'unslop-code', 'request-post', 'web-search']
 
 type Json = Record<string, unknown>
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Json) : {})

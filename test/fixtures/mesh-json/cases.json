@@ -9,6 +9,7 @@
   "files": [
     { "name": "schema 1", "file": "schema-1.json", "verdict": "present" },
     { "name": "agents.unslop and unknown keys", "file": "agents-unslop.json", "verdict": "present" },
+    { "name": "agents.unslop and agents.unslop-code", "file": "agents-unslop-code.json", "verdict": "present" },
     { "name": "a newer schema is off", "file": "newer-schema.json", "verdict": "newer-schema" },
     { "name": "malformed JSON is off", "file": "malformed.json", "verdict": "not-json" },
     { "name": "an empty file is off", "file": "empty.json", "verdict": "not-json" },

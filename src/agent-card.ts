@@ -14,8 +14,10 @@ const list = (v: unknown): Json[] => (Array.isArray(v) ? v.map(obj) : [])
 // Each agent's extension URIs, preferred first. request-post's (C6) and web search's (C7) move to
 // the Pages URI (publishable-agent design §6): the client accepts either, and a card that declares
 // both is read under the Pages one. C10 drops the old URNs.
-const EXPECT = {
+// unslop-code (#652) runs the same program as unslop, so its card also names the agent.
+const EXPECT: Record<'unslop' | 'unslop-code' | 'request-post' | 'web-search', { name?: string; skills: string[]; extensions: string[] }> = {
   unslop: { skills: ['unslop'], extensions: ['urn:agent-inbox:ext:unslop:v1'] },
+  'unslop-code': { name: 'unslop-code', skills: ['unslop-code'], extensions: ['urn:agent-inbox:ext:unslop-code:v1'] },
   'request-post': {
     skills: ['request-post', 'request-post-status'],
     extensions: ['https://shariqh.github.io/agent-inbox/ext/request-post/v1', 'urn:agent-inbox:ext:request-post:v1'],
@@ -42,13 +44,14 @@ export function cardExtension(card: unknown, agent: keyof typeof EXPECT): string
 }
 
 /**
- * Why `agent`'s client cannot use `card`, or undefined when it can: every expected skill,
+ * Why `agent`'s client cannot use `card`, or undefined when it can: its name (unslop-code only), every expected skill,
  * an A2A 1.0 JSON-RPC interface, and the agent's extension (under its preferred declared URI)
  * with `api: 1`, checked in that order. The reason is fixed words, never text from the card.
  */
 export function checkCard(card: unknown, agent: keyof typeof EXPECT): string | undefined {
   const c = obj(card)
   const want = EXPECT[agent]
+  if (want.name !== undefined && c.name !== want.name) return `not the ${want.name} agent's card`
   const skills = list(c.skills).map((s) => s.id)
   for (const skill of want.skills) if (!skills.includes(skill)) return `no ${skill} skill`
   if (!list(c.supportedInterfaces).some((i) => i.protocolVersion === '1.0' && i.protocolBinding === 'JSONRPC')) return 'no A2A 1.0 JSON-RPC interface'

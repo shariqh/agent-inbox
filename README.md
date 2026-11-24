@@ -751,7 +751,9 @@ It began as the first phase of the
 switched on by `mesh.json`; since #454 it is always on. `mesh.json` now turns on only
 the experimental unslop agent (`npm run meshctl -- enable --unslop`, #483; see
 [`docs/unslop.md`](docs/unslop.md) to set it up and call it, and
-[`docs/architecture/mesh.md`](docs/architecture/mesh.md)) and the request-post client
+[`docs/architecture/mesh.md`](docs/architecture/mesh.md)), the experimental unslop-code agent,
+which removes the comments a coding agent added to a change (`npm run meshctl -- enable --unslop-code`,
+#652; see [`docs/unslop-code.md`](docs/unslop-code.md)), and the request-post client
 (`npm run meshctl -- enable --request-post`, #500; see
 [`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- add <card-url>`
 adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--apply` (#529), and

@@ -768,8 +768,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     plumbing, not a model). Nothing outside the package calls the task yet.
 - **unslop-code as an agent (step 3a).** The same program runs a second agent, as its own
   process on its own port: `node packages/mesh/dist/wrap.js --agent openai-compatible
-  --profile unslop-code`. Nothing enables or starts it yet: no `meshctl` switch, client,
-  routing skill or card in the app (later steps).
+  --profile unslop-code`. Step 3b (below) adds the `meshctl` switch, the client and the
+  routing skill; the card in the app is a later step.
   - **The skill seam.** `src/a2a.ts` keeps one implementation of the protocol (the
     JSON-RPC methods, streaming, the queue, auth, the task table, cancel, timeouts, the
     budget and the refusal log) and takes everything agent-specific from one `Skill`
@@ -822,6 +822,63 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `enable --unslop-code`. An unknown `--profile` is a usage error (exit 4). Tests:
     `test/unslop-code-agent.test.ts` (a fake backend on 127.0.0.1 and scratch mesh and
     home folders).
+- **unslop-code's switch and client (step 3b).** The root `src/` side, mirroring unslop's;
+  how to use it: [`docs/unslop-code.md`](../unslop-code.md). unslop's behaviour is unchanged,
+  but for one thing: `disable --unslop --purge` deletes unslop's logs by their exact names
+  (`unslop-<date>.log`, `unslop-agent.log`) where it took any `unslop-*` file before, so it can
+  never delete an `unslop-code-…` file.
+  - **Names.** Agent id `unslop-code` (in `BUILT_IN_AGENTS`, so `add` refuses it and the
+    viewer skips its entry, as web search's, until the app draws it), default port 4421, token
+    `mesh/tokens/unslop-code`, profile `mesh/wrappers/unslop-code.json`, shim
+    `<mesh dir>/bin/unslop-code`, start log `mesh/logs/unslop-code-agent.log`, run records
+    `mesh/runs/unslop-code-<date>.jsonl`. Every purge and the run files match these names
+    exactly, so neither agent's switch touches the other's files.
+  - **`meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--apply]`** writes, in
+    unslop's order, the caller token (kept if present), the profile (never overwritten), the
+    shim, the routing skill and last `agents.unslop-code = { endpoint, profile: "unslop-code" }`.
+    The profile holds `baseUrl`, `apiKey`, `model` (`coder-next`), `sampling` (temperature 0) and
+    `start` (`[node, wrap, "--agent", "openai-compatible", "--profile", "unslop-code"]`). When
+    unslop's profile is a private file of this user's with a filled-in `baseUrl`, the new
+    profile copies its `baseUrl` and `apiKey` source as written; the dry run says so and prints
+    neither. Otherwise it holds placeholders the agent refuses. A port that another entry's
+    `http://127.0.0.1:<port>` endpoint uses is refused (an entry key that breaks the id rule is
+    never echoed). The shim never drains stdin: the command does not read it.
+    **`disable --unslop-code [--purge]`** removes the key, shim, token and routing skill; `--purge`
+    also the profile, the budget, its two log names and its run records. `status`,
+    `forget-runs --unslop-code` and the usage text name it; one agent flag per command.
+  - **The client** (`src/unslop-code-client.ts`, Node core; it shares `getCard` and
+    `startAgent` with `src/unslop-client.ts`, the latter now taking the agent's name). It
+    collects the change first: `git rev-parse --show-toplevel`, the base (`HEAD`, the empty
+    tree in a repository with no commit, or the merge base of `--base <ref>` and `HEAD`), then
+    `git diff --numstat -z` against the base and `git ls-files -z --others --exclude-standard`,
+    with `--literal-pathspecs`, `core.quotePath=false`, `--no-ext-diff --no-textconv
+    --no-renames --no-color --no-relative`, `GIT_OPTIONAL_LOCKS=0` and no shell. Each tracked
+    file's added lines come from the hunk headers of its own `-U0 --inter-hunk-context=0` diff;
+    an untracked file is wholly added. Its text is the working tree's bytes, decoded as UTF-8
+    with the BOM kept. Left out: other extensions and deleted files (silently), symlinks,
+    submodules, binary files (git's numstat, or a NUL in the first 8000 bytes), files over
+    256 KiB, files that are not UTF-8, paths outside the repository and files that do not fit
+    under the 4 MiB request limit (named on stderr). More than 40 candidate files is exit 11.
+    Then unslop's gate, token, identity proof (label `unslop-code`) and card rule
+    (`checkCard(card, 'unslop-code')`, which also requires the card's name), the on-demand
+    start, `SendStreamingMessage` with one data part `{ files, suggest? }` and
+    `metadata["urn:agent-inbox:ext:unslop-code:v1"] = { timeoutMs }`, the GetTask fallback and
+    CancelTask at the deadline. The agent's patch must be deletions-only and name only files
+    that were sent (`patchFiles`), else exit 13 with nothing printed. `--apply` re-reads every
+    patched file and compares its bytes with what was sent, runs `git apply --check` and then
+    `git apply` at the repository's top (the working tree only); a changed file or a refused
+    check prints the patch and exits 13. Exit codes 0, 11, 12, 13, 14 and 4, as unslop's.
+  - **The run record** (`src/mesh-runs.ts`): op `clean`; outcomes 0 `ok`, 11 `refused`, 12
+    `busy`, 13 `failed`, 14 `unavailable`; fields `status` (`cleaned`, `unchanged`, `rejected`,
+    `busy`, `failed`), `files`, `bytesIn`, `removed`, `suggestions`, `model` and `timing`
+    (`queued`, `load`, `model`, rounded to whole milliseconds) beside the common ones. Never a
+    path or text.
+  - Tests: `test/unslop-code-client.test.ts` (scratch git repositories; the client against
+    `startServer` with `codeSkill` and a fake run; one on-demand start of the real agent with a
+    fake backend), `test/mesh.test.ts` (enable, disable and purge in both directions, the
+    profile, the port clash, the stale shim), `test/mesh-skills.test.ts`,
+    `test/mesh-runs.test.ts`, `test/agent-card.test.ts`, `test/mesh-agents.test.ts` and the
+    `mesh.json` parity fixture `agents-unslop-code.json`.
 
 ## request-post conformance fixtures (M2b R1, #500)
 
@@ -1401,7 +1458,8 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   as the absolute path otherwise: Copilot CLI's path check denies an absolute shim path in a
   non-interactive run, and the `~/…` form is also what the hosts' allow rules name (#584).
   `routingSkills(doc, dir, home)` is pure, and no card field, other `mesh.json` value or agent output
-  reaches a skill. `docs/unslop.md` quotes unslop's template; `test/mesh-skills.test.ts` fails
+  reaches a skill. `docs/unslop.md` quotes unslop's template and `docs/unslop-code.md`
+  unslop-code's (#652, which has no `rules.md` link); `test/mesh-skills.test.ts` fails
   when they differ and pins the text in `test/fixtures/routing-skills/`. unslop's skill says
   the rules are in `rules.md` beside it, and meshctl makes that a symlink (below) rather than
   have the skill name the profile, which Copilot CLI could not read (#584). request-post has no template: its routing text is part of the private

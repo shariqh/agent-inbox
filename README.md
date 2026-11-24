@@ -318,7 +318,7 @@ counts notes you have not seen; they count as seen when shown under the Notes ch
 
 **Agent cards** (`G M`) is a tab only while the mesh is on (`mesh.json` names an agent). Its
 **Yours** section shows one card for every A2A agent set up on this Mac: the
-built-in ones and the ones you added with `meshctl add`, each with its state, one line of what
+built-in ones (unslop, unslop-code and request-post) and the ones you added with `meshctl add`, each with its state, one line of what
 its card says it does, where it runs, its version and a **Built in** or **Added by you** tag.
 **Refresh** checks the built-in agents' cards now; entering the tab checks them too, and
 nothing else does. An agent you added is never contacted by the app: its card comes from the
@@ -758,7 +758,7 @@ which removes the comments a coding agent added to a change (`npm run meshctl --
 [`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- add <card-url>`
 adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--apply` (#529), and
 `npm run meshctl -- call <id>` calls it (#530; see [`docs/mesh-call.md`](docs/mesh-call.md)).
-The app's **Agent cards** tab shows the agents `mesh.json` turns on, built in and added.
+The app's **Agent cards** tab shows the agents `mesh.json` turns on: the three built-in ones (unslop, unslop-code and request-post) and the ones you added.
 To write such an agent on `@a2a-js/sdk`, start from the agent kit and its example
 ([`docs/agent-kit.md`](docs/agent-kit.md), #539).
 `npm run meshctl -- status`

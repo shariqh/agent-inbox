@@ -107,7 +107,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `mesh: { agents: n }` only when the file reads present and names an agent this build knows or a
   valid entry `meshctl add` wrote; otherwise its bytes are unchanged. It fetches each agent's card from the configured endpoint only
   (never a URL from a card), with no token, no redirect, no proxy, a 64 KiB cap and one total
-  deadline (3 s for unslop, 5 s for every request-post check), only on
+  deadline (3 s for unslop and unslop-code, 5 s for every request-post check), only on
   `POST /api/mesh/agents/refresh` with the open trigger (entering the Agent cards tab from another
   tab: `meshOpen()` in `public/app.js`; never boot, Home or a card's press, Agent cards step 1 D5)
   or a Refresh press; reading
@@ -117,9 +117,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   record); a failure after a good card reports the failure, with the good card as `lastSeen`,
   never as `card`. `GET /api/mesh/agents` is built fresh per read with an ETag over its bytes
   (not a retained snapshot). It never starts an agent and never opens `mesh/tokens` or
-  `mesh/wrappers`. Besides the run records (below), the one other file it reads is unslop's `mesh/unslop-budget.json` (slice V4,
-  design §4.6), only when a check of unslop runs: opened `O_NOFOLLOW`, a regular file the user
-  owns, at most 4 KiB, exactly `date`, `tasks` and `modelMs`; unslop's record then carries
+  `mesh/wrappers`. Besides the run records (below), the one other file it reads is a local agent's budget, `mesh/unslop-budget.json` or `mesh/unslop-code-budget.json` (slice V4,
+  design §4.6), only when a check of that agent runs: opened `O_NOFOLLOW`, a regular file the user
+  owns, at most 4 KiB, exactly `date`, `tasks` and `modelMs`; that agent's record then carries
   `usage`, with another day's counts read as zero for today, and no `usage` key when the file is
   missing or refused. `test/mesh.test.ts` pins its imports to `node:crypto`, `node:fs`, `node:http`,
   `node:https`, `node:net` (types), `node:path`, `./agent-card.js`, `./mesh-config.js`,
@@ -828,7 +828,7 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   (`unslop-<date>.log`, `unslop-agent.log`) where it took any `unslop-*` file before, so it can
   never delete an `unslop-code-…` file.
   - **Names.** Agent id `unslop-code` (in `BUILT_IN_AGENTS`, so `add` refuses it and the
-    viewer skips its entry, as web search's, until the app draws it), default port 4421, token
+    viewer skips web search's entry but draws this one, step 3c below), default port 4421, token
     `mesh/tokens/unslop-code`, profile `mesh/wrappers/unslop-code.json`, shim
     `<mesh dir>/bin/unslop-code`, start log `mesh/logs/unslop-code-agent.log`, run records
     `mesh/runs/unslop-code-<date>.jsonl`. Every purge and the run files match these names
@@ -879,6 +879,17 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     profile, the port clash, the stale shim), `test/mesh-skills.test.ts`,
     `test/mesh-runs.test.ts`, `test/agent-card.test.ts`, `test/mesh-agents.test.ts` and the
     `mesh.json` parity fixture `agents-unslop-code.json`.
+- **unslop-code in the app (step 3c).** The viewer draws it as a third built-in agent, from the
+  same code as unslop and with no per-name condition: `src/mesh-agents.ts`'s tables hold what
+  differs (deadline 3 s, fix words `rebuild packages/mesh`, its blurb, its budget file
+  `mesh/unslop-code-budget.json`, its run files). `where` is `local` for both local agents and the
+  pages read it from the server, so no page guesses it from a name. Its card is held to
+  `checkCard(card, 'unslop-code')`; another agent's card on its port is a mismatch, and anything
+  that is not a card says something other than the unslop-code agent answers. Run history rows say
+  `cleaned` or `nothing to remove` where unslop's say `rewritten` or `unchanged`, and their details
+  hold the files, the lines removed, the suggestions, the kilobytes sent, the model and the
+  timings (`public/mesh-runs-tab.js`). No new control and no new style. Tests:
+  `test/mesh-agents.test.ts` (the server's list, usage and runs) and `test/dom/mesh-agents.test.ts`.
 
 ## request-post conformance fixtures (M2b R1, #500)
 

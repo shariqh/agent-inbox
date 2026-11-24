@@ -687,7 +687,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   and code decides and edits. A line is removed only when the model listed it, the
   change added it, it holds one whole-line `//` comment and nothing else, it is not part
   of a comment run directly above a declaration (a module-level `function`, `class`,
-  `const`, `let`, `var`, `type`, `interface` or `enum`, a nested function, or a class or
+  `const`, `let`, `var`, `type`, `interface` or `enum`, a nested function, a function or
+  class assigned to a name or a property, a top-level CommonJS export, or a class or
   object member), and the keep answer did not claim it; every other listed line is
   reported with its reason. Block comments and comments after code are never removed.
   `sameProgram` checks the tokens, and the line breaks between them, are unchanged, and

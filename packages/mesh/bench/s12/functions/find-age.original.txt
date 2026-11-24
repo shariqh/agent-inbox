@@ -1,0 +1,11 @@
+// An age in the row's narrow column: now, 5m, 3h, 2d, 3w.
+export function findAge(ageMs) {
+  const m = Math.floor(Math.max(0, ageMs) / 60000)
+  if (m < 1) return 'now'
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  if (d < 7) return `${d}d`
+  return `${Math.floor(d / 7)}w`
+}

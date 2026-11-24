@@ -1,0 +1,24 @@
+/** One row for an item or a plan. `archived`: the plan is archived; `fromCounts`: its steps are not loaded. */
+export function findRow(entity, { nowMs = Date.now(), archived = false, fromCounts = false } = {}) {
+  const base = { id: entity.id, title: clean(entity.title), project: entity.project ?? '' }
+  if (Array.isArray(entity.rows) || archived) {
+    return {
+      ...base, key: `board:${entity.id}`, type: 'plan', label: 'Plan', action: 'plans', open: !archived,
+      cuttable: false, stamp: ms(entity.updated_at), extra: planExtra(entity, { nowMs, fromCounts }), entity,
+    }
+  }
+  const open = entity.status === 'open'
+  const row = { ...base, key: `item:${entity.id}`, open, cuttable: !open, entity }
+  if (answered(entity)) {
+    return { ...row, type: 'answer', label: 'Answer', action: open ? 'home' : 'expand',
+      stamp: open ? ms(entity.replied_at ?? entity.updated_at ?? entity.created_at) : closedStamp(entity), extra: answerChip(entity) }
+  }
+  if (entity.kind === 'note') {
+    return { ...row, type: 'note', label: 'Note', action: 'expand', stamp: ms(entity.created_at), extra: noteExtra(entity) }
+  }
+  if (open && (entity.kind === 'question' || isHandoff(entity))) {
+    // an open ask Home owns: a query finds it, and a press goes there
+    return { ...row, type: 'ask', label: isHandoff(entity) ? 'Hand-off' : 'Ask', action: 'home', stamp: ms(entity.created_at), extra: null }
+  }
+  return { ...row, type: 'finished', label: 'Finished', action: 'expand', stamp: closedStamp(entity), extra: finishedExtra(entity) }
+}

@@ -1,0 +1,22 @@
+/** Whether `address` is a public unicast IP address; anything that is not an IP address is not. */
+export function isPublicAddress(address: string): boolean {
+  // Make sure the address is a valid string
+  if (!address || typeof address !== 'string') {
+    return false
+  }
+  const family = isIP(address)
+  if (family === 4) {
+    return !v4Blocked.check(address, 'ipv4')
+  } else {
+    if (family === 6 && !address.includes('%')) {
+      const v4 = embeddedV4(address)
+      if (v4 !== undefined) {
+        return isPublicAddress(v4)
+      } else {
+        return v6Global.check(address, 'ipv6') && !v6Special.check(address, 'ipv6')
+      }
+    } else {
+      return false
+    }
+  }
+}

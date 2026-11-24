@@ -1,0 +1,11 @@
+/**
+ * Card text for one terminal line, as a quoted claim (publishable-agent design §4): tabs and
+ * newlines as spaces, every other invisible character as U+FFFD, at most `cap` characters (a cut
+ * value ends in `…`), `\` and `"` escaped, inside `"…"`. Undefined when the value is not a string.
+ */
+export function claim(v: unknown, cap: number): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const chars = [...v.replace(/[\t\n]/g, ' ').replace(HIDDEN, '\uFFFD')]
+  const cut = chars.length > cap ? `${chars.slice(0, cap).join('')}…` : chars.join('')
+  return `"${cut.replace(/[\\"]/g, (ch) => `\\${ch}`)}"`
+}

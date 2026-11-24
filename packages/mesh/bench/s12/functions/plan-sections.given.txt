@@ -1,0 +1,27 @@
+export function planSections(plans, { nowMs, liveSessions, workingPlanIds, held } = {}) {
+  const opts = { nowMs, liveSessions: asSet(liveSessions), workingPlanIds: asSet(workingPlanIds) }
+  const out = { needs: [], moving: [], stalled: [] }
+  // Iterate over all the plans
+  for (const plan of plans ?? []) {
+    // Check if the plan has any rows that need attention
+    const asks = (plan.rows ?? []).some((row) => isBlockedRowAttention(row, nowMs))
+    const hold = held?.get(plan.id)
+    // Determine which section the plan belongs to
+    let section
+    if (asks) {
+      section = 'needs'
+    } else {
+      if (PLAN_SECTIONS.includes(hold)) {
+        section = hold
+      } else {
+        if (stalled(plan, opts)) {
+          section = 'stalled'
+        } else {
+          section = 'moving'
+        }
+      }
+    }
+    out[section].push(plan)
+  }
+  return out
+}

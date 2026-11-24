@@ -15,7 +15,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "bench": "tsc -p tsconfig.bench.json && node dist/bench/bench/s11/run.js"
+    "bench": "tsc -p tsconfig.bench.json && node dist/bench/bench/s11/run.js",
+    "bench:s12": "tsc -p tsconfig.bench.json && cp -R bench/s12/functions bench/s12/changes dist/bench/bench/s12/ && node dist/bench/bench/s12/run.js"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

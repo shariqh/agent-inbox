@@ -704,8 +704,68 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   repository, ten with slop added on purpose, and the local model's recorded answers;
   `test/bench-s12.test.ts` requires no good comment removed, at least 20 of the 22 slop
   comments removed, the five clean functions byte-identical and `sameProgram` for all
-  fifteen, plus three scope fixtures whose guarded comment must stay. Nothing calls the
-  module yet.
+  fifteen, plus three scope fixtures whose guarded comment must stay.
+- **unslop-code's task (step 2 of 4).** `src/unslop-code.ts`'s `runCodeSlop(task, env)` is
+  shaped like `runUnslop`: the same injected `post`, backend checks and error classes, the
+  model `coder-next` at temperature 0 unless the profile says otherwise, and `TASK_MS` as
+  the budget. A task is up to 40 files, each `{ path, text, added }` (the file as it is now
+  and the 1-based lines the change added). Before any network a file is skipped, with its
+  reason, for a path `patchFor` refuses (`path`), an extension other than `.js .mjs .cjs
+  .jsx .ts .mts .cts .tsx` (`language`), more than 256 KiB (`size`), a control character
+  or a lone surrogate (`control-bytes`), no added line in the file (`no-added`), or a
+  secret in what would be sent (`screen`: `screen()` restricted to its `secret` class;
+  nothing of that file is sent). `jsx: false` goes to the guards for `.ts`, `.mts` and
+  `.cts` only.
+  - **What is sent** (`src/code-prompt.ts`, pure): windows of the file, never the path
+    and never the rest of it. Each added line comes with 20 lines on both sides, windows
+    merge, a line holding only `…` stands for lines left out, and every line keeps its
+    real number with a marker column, `  12+| ` for an added line and `  12 | ` otherwise.
+    The numbered text is the whole user message; the system message says it is data to
+    be judged, never instructions, and that the answer is JSON, never code.
+  - **The three questions**, asked one after another for each file, with a fixed answer
+    limit of 512 tokens: remove (`{"remove":[…]}`, slop comments among the lines marked
+    `+`), keep (`{"keep":[…]}`, the comments shown that a maintainer needs, marked or
+    not) and suggest (`{"suggest":[{"line":…,"kind":…}]}`, other slop on marked lines:
+    `defensive`, `trycatch`, `cast`, `nesting`, `other`). A file the guards call unsure,
+    or with no whole-line comment among its added lines, gets only the suggest question;
+    keep is asked only when a listed line would otherwise go. The categories follow the
+    deslop skill of Cursor's plugins repository,
+    <https://github.com/cursor/plugins> (`cursor-team-kit/skills/deslop/SKILL.md`, MIT
+    License, "Copyright (c) 2026 Cursor"); the wording is this repository's own, and the
+    header of `src/code-prompt.ts` records the same source.
+  - **Deciding.** `decide`, `removeLines`, then `sameProgram` again as a second check (a
+    file that fails it is left unchanged, reason `program`); `suggestionsFor` keeps
+    suggestions to added lines and nothing applies them. An unreadable remove answer (no
+    JSON list, truncated, empty) removes nothing; an unreadable keep answer when a listed
+    line would otherwise go removes nothing too (reason `answer`). The result has a code
+    (0 ran, the patch may be empty; 11 no file or every file skipped; 12 busy; 13
+    failed), each file's status (`cleaned`, `unchanged`, `skipped`, `not-reached`),
+    removed lines, dropped lines with their guard reasons and suggestions, and `patch`,
+    the cleaned files' `patchFor` patches joined in the order given. When the time left
+    cannot cover another answer at the observed speed the remaining files are
+    `not-reached` (code 0 with reason `budget`, or 13 `deadline` when no file was
+    decided); a busy or failed backend stops the task, and files already decided keep
+    their results. The log callback gets counts, sizes, timings and class names: never
+    a path, a line or an answer. Tests: `test/unslop-code.test.ts` (a fake `post`).
+  - **Bench S12, live.** `bench/s12/run.ts` runs `runCodeSlop` in-process against a real
+    OpenAI-compatible backend, one task per fixture, and scores the results with the
+    scorer above: the fifteen functions (every line added), and six change fixtures in
+    `bench/s12/changes/`, whole source files of this repository with a marked change,
+    slop comments planted in it, the file's own comments in it that must stay, and
+    slop-looking comments outside it that must not be touched, scored apart. Run it from
+    `packages/mesh`:
+
+    ```
+    npm run bench:s12 -- --base-url <url> --out <folder> [--model <name>] [--key-file <path>] [--only <id,...>] [--no-suggest]
+    ```
+
+    `--out` must be outside the checkout; it gets each fixture's raw answers and result
+    (`<id>.answers.json`), `scores.json` and `summary.md`, files 0600. The key file must
+    be a 0600 file of this user's; the key goes only into the Authorization header. The
+    command reads no profile, never runs in CI, and `test/bench-s12.test.ts` runs it only
+    against a fake backend on 127.0.0.1 that answers with the recorded answers and the
+    change fixtures' hand-written ones (what a correct model would answer: they prove the
+    plumbing, not a model). Nothing outside the package calls the task yet.
 
 ## request-post conformance fixtures (M2b R1, #500)
 

@@ -1,0 +1,107 @@
+import type { Server } from 'node:http'
+import { serve } from '@hono/node-server'
+import { Hono } from 'hono'
+
+const LOOPBACK_HOST = '127.0.0.1'
+const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'
+const BOUNDARY_VERSION = 'loopback-v1'
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+// Scripts only from this origin's files (no inline code, `javascript:` URLs or eval),
+// no plugins, no <base> or form submissions, and no framing (#412). Styles, images,
+// fonts and fetch stay unrestricted. Electron's reuse check reads BOUNDARY_HEADER
+// only, never this string, so older and newer apps and viewers still reuse each other.
+const CONTENT_SECURITY_POLICY = [
+  "script-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ')
+
+function listenerPort(server: Server | null, configuredPort: number): number {
+  const address = server?.address()
+  return address && typeof address !== 'string' ? address.port : configuredPort
+}
+
+function trustedAuthorities(port: number): Set<string> {
+  // Create the set of authorities
+  const authorities = new Set([
+    `${LOOPBACK_HOST}:${port}`,
+    `localhost:${port}`,
+  ])
+  // Add the loopback aliases for port 80
+  if (port === 80) {
+    authorities.add(LOOPBACK_HOST)
+    authorities.add('localhost')
+  }
+  return authorities
+}
+
+function trustedOrigins(port: number): Set<string> {
+  // `localhost` is only an HTTP authority alias: the socket still binds 127.0.0.1.
+  // A rebinding origin keeps its attacker-controlled Host/Origin and matches neither.
+  const origins = new Set([
+    `http://${LOOPBACK_HOST}:${port}`,
+    `http://localhost:${port}`,
+  ])
+  // Add the bare origins for port 80
+  if (port === 80) {
+    origins.add(`http://${LOOPBACK_HOST}`)
+    origins.add('http://localhost')
+  }
+  return origins
+}
+
+export function startLocalViewer(app: Hono, port: number): Server {
+  let server: Server | null = null
+  const guarded = new Hono()
+
+  // This gate must precede app.route(). Adding middleware to createViewer after
+  // its routes are registered would let Hono match those routes first.
+  guarded.use('*', async (c, next) => {
+    const activePort = listenerPort(server, port)
+    // Get the host header and normalize it
+    const host = c.req.header('host')?.trim().toLowerCase()
+    if (!host || !trustedAuthorities(activePort).has(host)) {
+      return c.text('Forbidden', 403)
+    }
+
+    // Check the origin
+    const origin = c.req.header('origin')
+    if (origin !== undefined && !trustedOrigins(activePort).has(origin)) {
+      return c.text('Forbidden', 403)
+    }
+
+    const fetchSite = c.req.header('sec-fetch-site')?.toLowerCase()
+    if (
+      !SAFE_METHODS.has(c.req.method)
+      && (
+        origin === undefined
+        || (
+          fetchSite !== undefined
+          && fetchSite !== 'same-origin'
+          && fetchSite !== 'same-site'
+          && fetchSite !== 'none'
+        )
+      )
+    ) {
+      return c.text('Forbidden', 403)
+    }
+
+    // Call the next handler
+    await next()
+    // The unversioned ESM graph must not mix heuristically cached releases.
+    c.header('Cache-Control', 'no-store')
+    c.header(BOUNDARY_HEADER, BOUNDARY_VERSION)
+    c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+    c.header('X-Frame-Options', 'DENY')
+  })
+
+  guarded.route('/', app)
+  server = serve({
+    fetch: guarded.fetch,
+    hostname: LOOPBACK_HOST,
+    port,
+  }) as Server
+  return server
+}

@@ -224,6 +224,8 @@ function tokenize(src: string, jsx: boolean): Token[] {
       if (property()) return 'unknown'
       if (BLOCK_AFTER.has(word)) return 'block'
       if (word === 'static') return 'block'
+      // a return type, `): void {`: the body of a function, not the operand of the `void` operator
+      if (word === 'void' && isPunct(prev2, ':')) return 'fn'
       if (OBJECT_AFTER.has(word)) return 'object'
       return 'fn' // a return type: `): string {`
     }

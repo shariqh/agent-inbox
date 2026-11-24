@@ -681,15 +681,19 @@ describe('added agents (Agent cards step 1, D6)', () => {
   })
 
   it('an invalid entry is not shown: it counts in others; one that is not an added entry, or a built-in name, too', async () => {
-    const s = setup({ schema: 1, agents: { unslop: { endpoint: 'http://127.0.0.1:4420' }, echo: entry(), bad: entry({ cardSha256: 'nope' }), later: {}, 'web-search': { endpoint: 'http://127.0.0.1:4430' } } })
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: 'http://127.0.0.1:4420' }, echo: entry(), bad: entry({ cardSha256: 'nope' }), later: {}, 'web-search': { endpoint: 'http://127.0.0.1:4430' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } } })
     expect((await (await s.app.request('/api/version')).json()).mesh).toEqual({ agents: 2 })
     const body = await s.agents()
     expect(body.agents.map((a: Json) => a.name)).toEqual(['echo', 'unslop'])
-    // neither built in nor a valid added entry: bad and later; web-search is built in
+    // neither built in nor a valid added entry: bad and later; web-search and unslop-code (#652) are built in, not drawn yet
     expect(body.others).toBe(2)
     // the page's line says what to run; the words naming the command come from here (design §3.4)
     expect(body.othersFix).toBe('run meshctl status')
     expect(JSON.stringify(body)).not.toMatch(/"bad"|later/)
+    // unslop-code alone is a built-in this view does not draw yet, as web-search: off, and no runs route
+    const code = setup({ schema: 1, agents: { 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } } })
+    expect(await (await code.app.request('/api/version')).text()).toBe(await (await code.plain.request('/api/version')).text())
+    expect(await code.agents()).toEqual({ on: false, agents: [] })
     // only invalid entries: off, byte-identical
     const off = setup({ schema: 1, agents: { bad: entry({ cardSha256: 'nope' }) } })
     expect(await (await off.app.request('/api/version')).text()).toBe(await (await off.plain.request('/api/version')).text())

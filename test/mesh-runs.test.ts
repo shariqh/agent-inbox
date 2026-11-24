@@ -196,6 +196,53 @@ describe('unslop: one record per exit (§5.3, §5.4)', () => {
   })
 })
 
+describe('unslop-code: counts and classes only, never a path or text (#652)', () => {
+  // what the agent's data part holds: paths, line numbers, suggestion kinds, fractional timings
+  const DATA = {
+    code: 0, status: 'cleaned', model: 'coder-next', calls: 3, ms: { queued: 4.4, load: 0, model: 812.6 },
+    files: [{ path: 'src/canary-path-q10.ts', status: 'cleaned', removed: [3, 4], dropped: [], suggestions: [{ line: 9, kind: 'cast' }] }],
+  }
+  const armed = (more: RunCollector = {}): RunCollector => ({ armed: Date.now() - 50, op: 'clean', task: 'task-9', data: DATA, files: 1, bytesIn: 2048, removed: 2, suggestions: 1, ...more })
+
+  it('records the op, the counts, the status, the model and whole-millisecond timings', () => {
+    const dir = scratchDir('runs-code-')
+    mkdirSync(join(dir, 'mesh'), { mode: 0o700 })
+    appendRun(dir, 'unslop-code', armed(), { exit: 0 })
+    const [r] = records(dir)
+    expect(Object.keys(r!).sort()).toEqual([...COMMON, 'task', 'status', 'files', 'bytesIn', 'removed', 'suggestions', 'model', 'timing'].sort())
+    expect(r).toMatchObject({ agent: 'unslop-code', op: 'clean', exit: 0, outcome: 'ok', status: 'cleaned', files: 1, bytesIn: 2048, removed: 2, suggestions: 1, model: 'coder-next', timing: { queued: 4, load: 0, model: 813 } })
+    expect(readdirSync(runsDir(dir))).toEqual([`unslop-code-${localDate(Date.now())}.jsonl`])
+    expect(runBytes(dir)).not.toMatch(/canary|\.ts|cast/)
+    // the reader takes it back under its own name only
+    expect(readRuns(dir, 'unslop-code', Date.now()).runs).toHaveLength(1)
+    expect(readRuns(dir, 'unslop', Date.now()).runs).toHaveLength(0)
+  })
+
+  it('each exit has its outcome; a status or op of the other agent is dropped or refused', () => {
+    const dir = scratchDir('runs-code-')
+    mkdirSync(join(dir, 'mesh'), { mode: 0o700 })
+    for (const [exit, outcome] of [[11, 'refused'], [12, 'busy'], [13, 'failed'], [14, 'unavailable']] as const) {
+      appendRun(dir, 'unslop-code', armed({ data: { ...DATA, status: 'rejected' } }), { exit })
+      expect(records(dir).at(-1)).toMatchObject({ exit, outcome })
+    }
+    // exit 10 is unslop's word only: no record
+    appendRun(dir, 'unslop-code', armed(), { exit: 10 })
+    expect(records(dir)).toHaveLength(4)
+    // unslop's status word and a kind as the op are not unslop-code's
+    appendRun(dir, 'unslop-code', armed({ data: { ...DATA, status: 'rewritten', ms: { queued: 1, load: 2, model: 3, check: 4 } } }), { exit: 0 })
+    expect(records(dir).at(-1)).not.toHaveProperty('status')
+    expect(records(dir).at(-1)!.timing).toEqual({ queued: 1, load: 2, model: 3 })
+    appendRun(dir, 'unslop-code', armed({ op: 'pr' }), { exit: 0 })
+    expect(records(dir)).toHaveLength(5)
+    // and unslop keeps its own: cleaned is not one of its words
+    appendRun(dir, 'unslop', { armed: Date.now(), op: 'pr', data: { status: 'cleaned' } }, { exit: 0 })
+    const unslop = records(dir).filter((r) => r.agent === 'unslop')
+    expect(unslop).toHaveLength(1)
+    expect(unslop[0]).toMatchObject({ outcome: 'ok' })
+    expect(unslop[0]).not.toHaveProperty('status')
+  })
+})
+
 describe('request-post: one record per exit, and never a key, title or URL (§5.4, §5.5)', () => {
   const FILE = ['file', '--brand', 'example-brand', '--channels', 'x-standalone,blog', '--title', C.title, '--slug', 'canary-slug-q10', '--source-url', C.url]
   const fixtureData = (rel: string): Json => { const t = fixture(rel).response.result.task; return (t.artifacts?.[0] ?? t.status.message).parts.find((p: Json) => p.data).data }
@@ -518,7 +565,7 @@ describe('retention, purge and forget-runs (§5.6, §5.9)', () => {
     expect(s.list()).toEqual(sorted([`request-post-${daysAgo(29)}.jsonl`, `unslop-${daysAgo(41)}.jsonl`, `unslop-${s.old}.txt`, `web-search-${daysAgo(29)}.jsonl`]))
     const link = join(s.runs, `unslop-${daysAgo(41)}.jsonl`)
     expect([lstatSync(link).isSymbolicLink(), readFileSync(link, 'utf8')]).toEqual([true, 'keep'])
-    expect(ctl(s.dir, 'forget-runs', '--all', '--apply').out).toBe('No run records for unslop.\nDeleted 1 run file (2 runs) for request-post.\nDeleted 1 run file (2 runs) for web-search.\n')
+    expect(ctl(s.dir, 'forget-runs', '--all', '--apply').out).toBe('No run records for unslop.\nNo run records for unslop-code.\nDeleted 1 run file (2 runs) for request-post.\nDeleted 1 run file (2 runs) for web-search.\n')
   })
 })
 
@@ -543,12 +590,12 @@ describe('forgetting an added agent\'s runs (#530 review)', () => {
     expect(list()).toEqual(before)
     expect(ctl(dir, 'forget-runs', '--id', 'search-copy', '--apply').code).toBe(0)
     expect(list()).toEqual([`other-agent-${daysAgo(1)}.jsonl`, `unslop-${daysAgo(1)}.jsonl`])
-    expect(ctl(dir, 'forget-runs', '--all')).toEqual({ code: 0, out: 'Would delete 1 run file (1 run) for unslop.\nNo run records for request-post.\nNo run records for web-search.\nWould delete 1 run file (1 run) for other-agent.\nNothing changed. Re-run with --apply.\n' })
+    expect(ctl(dir, 'forget-runs', '--all')).toEqual({ code: 0, out: 'Would delete 1 run file (1 run) for unslop.\nNo run records for unslop-code.\nNo run records for request-post.\nNo run records for web-search.\nWould delete 1 run file (1 run) for other-agent.\nNothing changed. Re-run with --apply.\n' })
     expect(list()).toHaveLength(2)
     expect(ctl(dir, 'forget-runs', '--all', '--apply').code).toBe(0)
     expect(existsSync(runs)).toBe(false)
     // a built-in name or a bad id is not an --id, and --id takes one value alone
-    for (const argv of [['--id', 'unslop'], ['--id', 'Bad!'], ['--id'], ['--id', 'a', '--unslop'], ['--id', 'a', '--all'], ['--id', 'a', '--id', 'b']]) {
+    for (const argv of [['--id', 'unslop'], ['--id', 'unslop-code'], ['--id', 'Bad!'], ['--id'], ['--id', 'a', '--unslop'], ['--id', 'a', '--all'], ['--id', 'a', '--id', 'b']]) {
       expect(ctl(dir, 'forget-runs', ...argv).code, argv.join(' ')).toBe(2)
     }
   })

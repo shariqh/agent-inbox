@@ -83,7 +83,7 @@ export interface MeshLink {
  * A loopback agent's link: the card request carries the challenge, and the proof is
  * base64url(HMAC-SHA256(token, `${label}/v1\n` + nonce)).
  */
-export function meshLink(port: number, token: string, label: 'unslop' | 'a2a-mesh', cardPath = CARD_PATH): MeshLink {
+export function meshLink(port: number, token: string, label: 'unslop' | 'unslop-code' | 'a2a-mesh', cardPath = CARD_PATH): MeshLink {
   // one connection at a time, so a request waits for the proven one rather than opening another
   const pool = new Agent({ keepAlive: true, maxSockets: 1 })
   const target = { origin: new URL(`http://127.0.0.1:${port}`) }

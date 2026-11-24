@@ -287,7 +287,9 @@ function unslopBackend(profile: string): Backend | undefined {
     const p = objectOf(JSON.parse(readPrivate(profile)))
     const baseUrl = p?.['baseUrl']
     if (typeof baseUrl !== 'string' || !baseUrl || baseUrl.startsWith('FILL IN')) return undefined
-    return { baseUrl, ...(Object.hasOwn(p!, 'apiKey') ? { apiKey: p!['apiKey'] } : {}) }
+    if (!Object.hasOwn(p!, 'apiKey')) return { baseUrl }
+    // only a key source (file, command or env) is taken: anything else, such as a pasted key, is never copied
+    return objectOf(p!['apiKey']) ? { baseUrl, apiKey: p!['apiKey'] } : undefined
   } catch {
     return undefined
   }

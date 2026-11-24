@@ -435,6 +435,16 @@ describe('meshctl enable/disable --unslop-code (#652, step 3b)', () => {
     expect(keyless.enable('--apply').code).toBe(0)
     expect(JSON.parse(readFileSync(join(keyless.dir, 'mesh', 'wrappers', 'unslop-code.json'), 'utf8'))).not.toHaveProperty('apiKey')
 
+    // an apiKey that is not a key source (a raw string someone pasted) is never copied: placeholders
+    const raw = setup()
+    unslopProfile(raw.dir, { baseUrl: 'https://box.example/llm', apiKey: 'sk-rawkeyvalue1234567890' })
+    const pasted = raw.enable('--apply')
+    expect(pasted.code, pasted.err).toBe(0)
+    expect(pasted.out).not.toMatch(/rawkeyvalue|box\.example/)
+    const written = readFileSync(join(raw.dir, 'mesh', 'wrappers', 'unslop-code.json'), 'utf8')
+    expect(written).not.toContain('rawkeyvalue')
+    expect(written).toContain('"baseUrl": "FILL IN:')
+
     // unreadable (open to others), unfilled or not JSON: placeholders
     for (const [profile, fileMode] of [[{ baseUrl: 'https://box.example/llm' }, 0o644], [{ baseUrl: 'FILL IN: x' }, 0o600], ['nope', 0o600]] as const) {
       const other = setup()

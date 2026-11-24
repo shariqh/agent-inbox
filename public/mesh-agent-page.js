@@ -218,7 +218,7 @@ export function installMeshAgentPage(deps) {
     setHidden(page.querySelector('.map-refresh'), row.added)
     setText(page.querySelector('.map-note'), row.note)
     setHidden(page.querySelector('.map-note'), !row.note)
-    // the fix, unslop's usage and the last run, each in full and only when there is one
+    // the fix, a local agent's usage and the last run, each in full and only when there is one
     for (const [selector, text] of [['.ma-fix', row.fix], ['.map-usage', row.usage], ['.map-lastrun', row.lastrun]]) {
       const el = page.querySelector(selector)
       setText(el, text)

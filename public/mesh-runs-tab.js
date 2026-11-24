@@ -62,10 +62,12 @@ export function lastRunText(lastRun, nowMs) {
   return ['Last run', [ended(lastRun.at, nowMs, false), outcomeWord(lastRun.outcome)].filter(Boolean).join(' · ')].join(' ')
 }
 
-// the Outcome cell: unslop's status or request-post's final phase on a clean end, else the outcome's words
+// the Outcome cell: unslop's or unslop-code's status or request-post's final phase on a clean end, else the outcome's words
 function outcomeText(run) {
   if (run.outcome === 'ok') {
     if (run.agent === 'unslop' && (run.status === 'rewritten' || run.status === 'unchanged')) return run.status
+    if (run.agent === 'unslop-code' && run.status === 'cleaned') return 'cleaned'
+    if (run.agent === 'unslop-code' && run.status === 'unchanged') return 'nothing to remove'
     if (run.agent === 'request-post' && run.op === 'file') return run.created === false ? 'already filed' : 'filed'
     if (run.agent === 'request-post' && run.phase) return run.phase
   }
@@ -83,6 +85,16 @@ function detailsText(run, outcome) {
     if (Number.isFinite(run.attempts)) facts.push(plural(run.attempts, 'attempt'))
     if (run.rules) facts.push(`rules ${run.rules}`)
     if (Number.isFinite(run.bytesIn)) facts.push(`${(run.bytesIn / 1000).toFixed(1)} KB`)
+  }
+  if (run.agent === 'unslop-code') {
+    // what the record holds, in the order unslop's facts take: counts, size, the model, then the timings that are long enough to read
+    if (Number.isFinite(run.files)) facts.push(plural(run.files, 'file'))
+    if (Number.isFinite(run.removed)) facts.push(`${plural(run.removed, 'line')} removed`)
+    if (Number.isFinite(run.suggestions)) facts.push(plural(run.suggestions, 'suggestion'))
+    if (Number.isFinite(run.bytesIn)) facts.push(`${(run.bytesIn / 1000).toFixed(1)} KB`)
+    if (typeof run.model === 'string' && run.model) facts.push(run.model)
+    if (Number.isFinite(run.timing?.model)) facts.push(`model ${took(run.timing.model)}`)
+    for (const key of ['load', 'queued']) if (run.timing?.[key] >= 1000) facts.push(`${key} ${took(run.timing[key])}`)
   }
   if (run.agent === 'request-post') {
     if (run.phase && run.phase !== outcome) facts.push(run.phase)

@@ -32,10 +32,11 @@ function whereText(agent) {
   if (agent.where === 'tailnet') return 'Remote · tailnet'
   if (agent.where === 'ssh-tunnel') return 'Remote · SSH tunnel'
   if (agent.where === 'public') return 'Remote · public'
-  return agent.name === 'unslop' ? 'Local' : 'Remote'
+  // the server's `where` says where an agent runs; none (an endpoint not accepted) is not said to be local
+  return 'Remote'
 }
 
-// §2.2's usage line, unslop's counts only; no usage key (no file, or a refused one) is no line.
+// §2.2's usage line, a local agent's counts only (unslop, unslop-code); no usage key (no file, or a refused one) is no line.
 function usageText(usage) {
   if (!usage || typeof usage !== 'object' || !Number.isFinite(usage.tasks) || !Number.isFinite(usage.modelMs)) return ''
   return `Today: ${plural(usage.tasks, 'task')} · ${plural(Math.round(usage.modelMs / 60_000), 'model-minute')}`

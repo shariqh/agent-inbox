@@ -22,3 +22,16 @@ export const RECORDED: Record<string, Answer> = {
   'clean-copilot-name': { remove: '{"remove":[]}\n', keep: '{\n  "keep": [2,3,4,5,8,10]\n}\n' },
   stalled: { remove: '{"remove":[]}\n', keep: '{"keep": [5, 7]}\n' },
 }
+
+// HAND-WRITTEN, not a model's: what a correct model would answer for the change
+// fixtures (remove: the planted slop; keep: the comments the change added that
+// were already in the file). They prove the plumbing of the task and the bench,
+// not a model; the live bench (run.ts) gives a model's numbers.
+export const CHANGE_ANSWERS: Record<string, Answer> = {
+  'viewer-network': { remove: '{"remove":[47,63,69,91]}', keep: '{"keep":[41,42,59,60,93]}' },
+  reuse: { remove: '{"remove":[65,70,75,78,85]}', keep: '{"keep":[44,45,46,47,48,49,50,51,52,53,54,55,56,57]}' },
+  star: { remove: '{"remove":[22,25,30,46]}', keep: '{"keep":[15,16,17]}' },
+  files: { remove: '{"remove":[41,43,47,58]}', keep: '{"keep":[55]}' },
+  place: { remove: '{"remove":[41,43,53]}', keep: '{"keep":[39,47,48,49,50]}' },
+  rules: { remove: '{"remove":[61,64,69,71]}', keep: '{"keep":[]}' },
+}

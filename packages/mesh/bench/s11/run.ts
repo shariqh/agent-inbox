@@ -79,7 +79,7 @@ export function addDenyEntry(file: string): () => void {
   }
 }
 
-function checkoutRoot(): string {
+export function checkoutRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url))
   while (dir !== dirname(dir)) {
     const pkg = join(dir, 'package.json')

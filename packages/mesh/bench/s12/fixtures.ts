@@ -9,6 +9,13 @@
 //
 // The three scope fixtures are written here: only some of their lines are added,
 // and their recorded answer also lists a comment the guards must keep.
+//
+// The six change fixtures (step 2) are whole source files of this repository at
+// commit e19c73d, frozen in changes/<id>.given.txt, each with a marked range of
+// lines counted as added by a change. Slop comments were planted by hand in the
+// added lines (`slop`), and slop-looking comments outside them (`old`), which must
+// not be touched; the comments the file already had in the added lines (`good`)
+// must stay. Remove the `slop` and `old` lines and the file is as it was.
 import { readFileSync } from 'node:fs'
 import type { DropReason } from '../../src/code-slop.js'
 
@@ -16,6 +23,7 @@ export type Category = 'comment' | 'defensive' | 'trycatch' | 'nesting' | 'any' 
 export type Instance = { cat: Category; gone: string }
 export type CodeFixture = { id: string; from: string; ext: '.js' | '.ts'; seeded: boolean; given: string; original: string; instances: Instance[] }
 export type Answer = { remove: string; keep: string }
+export type ChangeFixture = { id: string; from: string; ext: '.js' | '.cjs' | '.ts'; given: string; added: number[]; slop: number[]; old: number[]; good: number[] }
 export type ScopeFixture = {
   id: string
   ext: '.js' | '.ts'
@@ -111,3 +119,20 @@ export const SCOPE: ScopeFixture[] = [
     expect: { remove: [2], dropped: [{ line: 4, why: 'claimed-kept' }] },
   },
 ]
+
+const range = (from: number, to: number): number[] => Array.from({ length: to - from + 1 }, (_, i) => from + i)
+const CHANGE_LIST: Array<Omit<ChangeFixture, 'given' | 'good'>> = [
+  { id: 'viewer-network', from: 'src/viewer-network.ts', ext: '.ts', added: range(40, 98), slop: [47, 63, 69, 91], old: [27, 32] },
+  { id: 'reuse', from: 'electron/reuse.cjs', ext: '.cjs', added: range(44, 87), slop: [65, 70, 75, 78, 85], old: [22, 99] },
+  { id: 'star', from: 'public/star.js', ext: '.js', added: range(15, 57), slop: [22, 25, 30, 46], old: [10, 62] },
+  { id: 'files', from: 'packages/mesh/src/files.ts', ext: '.ts', added: range(40, 63), slop: [41, 43, 47, 58], old: [27, 33] },
+  { id: 'place', from: 'public/place.js', ext: '.js', added: range(39, 55), slop: [41, 43, 53], old: [31, 34] },
+  { id: 'rules', from: 'packages/mesh/src/rules.ts', ext: '.ts', added: range(58, 76), slop: [61, 64, 69, 71], old: [23, 42] },
+]
+export const CHANGES: ChangeFixture[] = CHANGE_LIST.map((f) => {
+  const given = readFileSync(new URL(`./changes/${f.id}.given.txt`, import.meta.url), 'utf8')
+  const all = given.split('\n')
+  // the comment lines the change added that were not planted: a line comment, or a line of a block comment
+  const good = f.added.filter((n) => !f.slop.includes(n) && /^\s*(?:\/\/|\/\*|\*)/.test(all[n - 1]!))
+  return { ...f, given, good }
+})

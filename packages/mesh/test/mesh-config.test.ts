@@ -50,4 +50,13 @@ describe('mesh.json reader parity (#483)', () => {
     const read = readMesh(meshFile(dir))
     expect(read.kind === 'present' && read.doc['agents']).toEqual({ unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' } })
   })
+
+  it('reads both local agents\' keys, as meshctl enable --unslop and --unslop-code write them (#652)', () => {
+    const dir = scratch()
+    copyFileSync(join(FIXTURES, 'agents-unslop-code.json'), meshFile(dir))
+    const read = readMesh(meshFile(dir))
+    expect(read.kind === 'present' && read.doc['agents']).toEqual({
+      unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' },
+    })
+  })
 })

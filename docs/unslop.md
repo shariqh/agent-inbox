@@ -6,6 +6,9 @@ agent edits the draft with a local model by the same `rules.md` the skill uses
 in-session. Code, not the model, checks that facts, links, numbers, negations and
 conditions survived the edit. If the check fails twice, you get the original back.
 
+A second local agent, `unslop-code`, removes the comments a coding agent added to a change in
+JavaScript and TypeScript files: see [`docs/unslop-code.md`](unslop-code.md).
+
 It is opt-in and off by default. The design is
 [`docs/superpowers/specs/2026-11-06-unslop-a2a-agent-design.md`](superpowers/specs/2026-11-06-unslop-a2a-agent-design.md);
 the implementation notes are in [`docs/architecture/mesh.md`](architecture/mesh.md).

@@ -11,6 +11,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, rename
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
+import { codeSkill } from '../packages/mesh/src/skills.js'
 import { meshAgents } from '../src/mesh-agents.js'
 import { canonicalCard, cardJson, summarizeCard } from '../src/agent-card.js'
 import { loopbackPort, requestPostEndpoint, writeCardCopy } from '../src/mesh-config.js'
@@ -24,6 +25,7 @@ type Json = Record<string, any>
 const REPO = new URL('..', import.meta.url).pathname
 const REQUEST_POST: Json = JSON.parse(readFileSync(join(REPO, 'test', 'fixtures', 'a2a-request-post', 'card.json'), 'utf8'))
 let UNSLOP: Json
+let UNSLOP_CODE: Json
 beforeAll(async () => {
   const agent = await startServer({
     host: '127.0.0.1', port: 0, tokens: ['a1'.repeat(32)], version: '0.3.1-test',
@@ -31,6 +33,9 @@ beforeAll(async () => {
   })
   UNSLOP = await (await fetch(`http://127.0.0.1:${agent.port}/.well-known/agent-card.json`)).json() as Json
   agent.close()
+  const code = await startServer({ host: '127.0.0.1', port: 0, tokens: ['b2'.repeat(32)], version: '0.3.1-test', skill: codeSkill({ run: () => new Promise(() => {}) }) })
+  UNSLOP_CODE = await (await fetch(`http://127.0.0.1:${code.port}/.well-known/agent-card.json`)).json() as Json
+  code.close()
 })
 
 const servers: Array<Server | NetServer> = []
@@ -682,18 +687,18 @@ describe('added agents (Agent cards step 1, D6)', () => {
 
   it('an invalid entry is not shown: it counts in others; one that is not an added entry, or a built-in name, too', async () => {
     const s = setup({ schema: 1, agents: { unslop: { endpoint: 'http://127.0.0.1:4420' }, echo: entry(), bad: entry({ cardSha256: 'nope' }), later: {}, 'web-search': { endpoint: 'http://127.0.0.1:4430' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } } })
-    expect((await (await s.app.request('/api/version')).json()).mesh).toEqual({ agents: 2 })
+    expect((await (await s.app.request('/api/version')).json()).mesh).toEqual({ agents: 3 })
     const body = await s.agents()
-    expect(body.agents.map((a: Json) => a.name)).toEqual(['echo', 'unslop'])
-    // neither built in nor a valid added entry: bad and later; web-search and unslop-code (#652) are built in, not drawn yet
+    expect(body.agents.map((a: Json) => a.name)).toEqual(['echo', 'unslop', 'unslop-code'])
+    // neither built in nor a valid added entry: bad and later; web-search is built in, not drawn yet
     expect(body.others).toBe(2)
     // the page's line says what to run; the words naming the command come from here (design §3.4)
     expect(body.othersFix).toBe('run meshctl status')
     expect(JSON.stringify(body)).not.toMatch(/"bad"|later/)
-    // unslop-code alone is a built-in this view does not draw yet, as web-search: off, and no runs route
-    const code = setup({ schema: 1, agents: { 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } } })
-    expect(await (await code.app.request('/api/version')).text()).toBe(await (await code.plain.request('/api/version')).text())
-    expect(await code.agents()).toEqual({ on: false, agents: [] })
+    // web-search alone is a built-in this view does not draw yet: off, and no runs route
+    const search = setup({ schema: 1, agents: { 'web-search': { endpoint: 'http://127.0.0.1:4430' } } })
+    expect(await (await search.app.request('/api/version')).text()).toBe(await (await search.plain.request('/api/version')).text())
+    expect(await search.agents()).toEqual({ on: false, agents: [] })
     // only invalid entries: off, byte-identical
     const off = setup({ schema: 1, agents: { bad: entry({ cardSha256: 'nope' }) } })
     expect(await (await off.app.request('/api/version')).text()).toBe(await (await off.plain.request('/api/version')).text())
@@ -712,5 +717,170 @@ describe('added agents (Agent cards step 1, D6)', () => {
     expect([runs.on, runs.runs.length, runs.forget]).toEqual([true, 1, 'npm run meshctl -- forget-runs --id echo'])
     // an id mesh.json does not hold is still a 400
     expect((await s.app.request('/api/mesh/agents/runs?name=other')).status).toBe(400)
+  })
+})
+
+// unslop-code (#652, step 3c) is drawn as unslop is: a local agent that starts on its first call, with
+// its own card rule, budget file and run records. Everything comes from its own files, never unslop's.
+describe('unslop-code, the second local agent', () => {
+  const ymd = (ms: number) => {
+    const d = new Date(ms)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+  const codeAt = (port: number, extra: Json = {}) => ({ schema: 1, agents: { 'unslop-code': { endpoint: `http://127.0.0.1:${port}`, profile: 'unslop-code' }, ...extra } })
+  const row = (body: Json, name = 'unslop-code') => body.agents.find((a: Json) => a.name === name)
+
+  it('is up when its card answers: local, its profile, its own blurb, no token sent, and a viewer starts unchecked', async () => {
+    const agent = await serve(UNSLOP_CODE)
+    const s = setup(codeAt(agent.port))
+    expect((await (await s.app.request('/api/version')).json()).mesh).toEqual({ agents: 1 })
+    expect(row(await s.agents())).toMatchObject({ key: 'mesh.json:unslop-code', kind: 'built-in', state: 'unchecked', blurb: 'Removes the comments an AI coding agent adds to code.', where: 'local' })
+    expect(agent.connections).toBe(0)
+    expect(await (await s.post({ trigger: 'open' })).json()).toEqual({ ok: true })
+    const code = row(await s.agents())
+    expect(code).toMatchObject({ where: 'local', endpoint: `http://127.0.0.1:${agent.port}`, profile: 'unslop-code', state: 'up', reason: null, fix: null, lastSeen: null })
+    expect(code.card).toMatchObject({ name: 'unslop-code', version: '0.3.1-test' })
+    expect(JSON.parse(code.cardJson)).toEqual(UNSLOP_CODE)
+    expect(agent.requests).toHaveLength(1)
+    for (const name of ['authorization', 'origin', 'cookie', 'a2a-version']) expect(agent.requests[0]![name], name).toBeUndefined()
+    expect(code).not.toHaveProperty('usage')
+  })
+
+  it('is listed beside unslop and request-post, each with its own line', async () => {
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' }, 'request-post': { endpoint: 'https://svc.tailnet-example.ts.net' } } })
+    expect((await (await s.app.request('/api/version')).json()).mesh).toEqual({ agents: 3 })
+    expect((await s.agents()).agents.map((a: Json) => [a.name, a.where, a.profile, a.blurb])).toEqual([
+      ['request-post', 'tailnet', null, 'Files a post request with your publishing service.'],
+      ['unslop', 'local', 'unslop', 'Copy-edits public text by the unslop rules.'],
+      ['unslop-code', 'local', 'unslop-code', 'Removes the comments an AI coding agent adds to code.'],
+    ])
+  })
+
+  it('not running says it starts on its first call; a good card then a failure shows lastSeen, never up', async () => {
+    const agent = await serve(UNSLOP_CODE)
+    const s = setup(codeAt(agent.port))
+    await s.post({ trigger: 'refresh' })
+    const seenAt = new Date(s.clock.t).toISOString()
+    servers.splice(0).forEach((server) => { (server as Server).closeAllConnections(); server.close() })
+    s.clock.t += 5_000
+    await s.post({ trigger: 'refresh' })
+    const code = row(await s.agents())
+    expect(code).toMatchObject({ state: 'not-running', reason: 'starts on its first call', card: null, cardJson: null })
+    expect(code.lastSeen).toMatchObject({ at: seenAt, card: { name: 'unslop-code' } })
+    // never started and never seen: the same words, no last-seen card
+    const fresh = setup(codeAt(await freePort()))
+    await fresh.post({ trigger: 'open' })
+    expect(row(await fresh.agents())).toMatchObject({ state: 'not-running', reason: 'starts on its first call', lastSeen: null })
+  })
+
+  it('a squatter on its port is not its agent: not a card, and another agent\'s card, with its own words', async () => {
+    const junk = await fake((res) => res.writeHead(200, { 'content-type': 'text/html' }).end('<html>hello</html>'))
+    const s = setup(codeAt(junk.port))
+    await s.post({ trigger: 'open' })
+    expect(row(await s.agents())).toMatchObject({ state: 'not-a-card', reason: 'something other than the unslop-code agent answers (not JSON)', card: null })
+    const refused = await fake((res) => res.writeHead(404).end('no'))
+    const other = setup(codeAt(refused.port))
+    await other.post({ trigger: 'open' })
+    expect(row(await other.agents())).toMatchObject({ state: 'not-a-card', reason: 'something other than the unslop-code agent answers (HTTP 404)' })
+    // unslop's own card answering on unslop-code's port is a card that is not its own
+    const unslopHere = await serve(UNSLOP)
+    const third = setup(codeAt(unslopHere.port))
+    await third.post({ trigger: 'open' })
+    expect(row(await third.agents())).toMatchObject({ state: 'mismatch', reason: 'not the unslop-code agent\'s card', fix: 'rebuild packages/mesh', card: { name: 'unslop' } })
+    // and unslop-code's card on unslop's port fails unslop's rule, not its own
+    const codeHere = await serve(UNSLOP_CODE)
+    const fourth = setup(unslopAt(codeHere.port))
+    await fourth.post({ trigger: 'open' })
+    expect(row(await fourth.agents(), 'unslop')).toMatchObject({ state: 'mismatch', reason: 'no unslop skill', fix: 'rebuild packages/mesh' })
+  })
+
+  it('a card of its name that its client cannot use is a mismatch that names the check', async () => {
+    const card = structuredClone(UNSLOP_CODE)
+    card.capabilities.extensions[0].params.api = 2
+    const s = setup(codeAt((await serve(card)).port))
+    await s.post({ trigger: 'open' })
+    expect(row(await s.agents())).toMatchObject({ state: 'mismatch', reason: 'unslop-code api is not 1', fix: 'rebuild packages/mesh', card: { name: 'unslop-code' } })
+    const noExt = structuredClone(UNSLOP_CODE)
+    noExt.capabilities.extensions = []
+    const t = setup(codeAt((await serve(noExt)).port))
+    await t.post({ trigger: 'open' })
+    expect(row(await t.agents())).toMatchObject({ state: 'mismatch', reason: 'no urn:agent-inbox:ext:unslop-code:v1 extension' })
+  })
+
+  it('an endpoint that is not loopback http is invalid and never fetched, and a bad profile name is not shown', async () => {
+    const counter = await serve(UNSLOP_CODE)
+    const s = setup({ schema: 1, agents: { 'unslop-code': { endpoint: `http://localhost:${counter.port}` } } })
+    await s.post({ trigger: 'refresh' })
+    expect(row(await s.agents())).toMatchObject({ state: 'invalid', endpoint: null, where: 'local', profile: null, fix: 'run npm run meshctl -- status' })
+    expect(counter.connections).toBe(0)
+    // a profile name that fails its rule is not shown
+    const odd = setup({ schema: 1, agents: { 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: '../x' } } })
+    expect(row(await odd.agents()).profile).toBeNull()
+  })
+
+  it('its usage line comes from mesh/unslop-code-budget.json only, and unslop\'s from its own file', async () => {
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: `http://127.0.0.1:${await freePort()}`, profile: 'unslop' }, 'unslop-code': { endpoint: `http://127.0.0.1:${await freePort()}`, profile: 'unslop-code' } } })
+    mkdirSync(join(s.dir, 'mesh'))
+    writeFileSync(join(s.dir, 'mesh', 'unslop-code-budget.json'), JSON.stringify({ date: ymd(s.clock.t), tasks: 7, modelMs: 360000 }), { mode: 0o600 })
+    await s.post({ trigger: 'refresh' })
+    let body = await s.agents()
+    expect(row(body, 'unslop-code').usage).toEqual({ date: ymd(s.clock.t), tasks: 7, modelMs: 360000 })
+    expect(row(body, 'unslop')).not.toHaveProperty('usage')
+    writeFileSync(join(s.dir, 'mesh', 'unslop-budget.json'), JSON.stringify({ date: ymd(s.clock.t), tasks: 2, modelMs: 60000 }), { mode: 0o600 })
+    writeFileSync(join(s.dir, 'mesh', 'unslop-code-budget.json'), JSON.stringify({ date: ymd(s.clock.t - 24 * 3600_000), tasks: 9, modelMs: 1 }), { mode: 0o600 })
+    s.clock.t += 5_000
+    await s.post({ trigger: 'refresh' })
+    body = await s.agents()
+    expect(row(body, 'unslop').usage).toEqual({ date: ymd(s.clock.t), tasks: 2, modelMs: 60000 })
+    // yesterday's counts read as zero for today
+    expect(row(body, 'unslop-code').usage).toEqual({ date: ymd(s.clock.t), tasks: 0, modelMs: 0 })
+    // a refused file (here a symlink) sends no usage
+    renameSync(join(s.dir, 'mesh', 'unslop-code-budget.json'), join(s.dir, 'mesh', 'real.json'))
+    symlinkSync(join(s.dir, 'mesh', 'real.json'), join(s.dir, 'mesh', 'unslop-code-budget.json'))
+    s.clock.t += 5_000
+    await s.post({ trigger: 'refresh' })
+    expect(row(await s.agents(), 'unslop-code')).not.toHaveProperty('usage')
+  })
+
+  it('its runs come from its own day files: lastRun, the list, the forget command, and unslop\'s runs stay apart', async () => {
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } } })
+    const dir = join(s.dir, 'mesh', 'runs')
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    chmodSync(dir, 0o700)
+    const day = ymd(s.clock.t)
+    const record = (agent: string, id: string, at: number, extra: Json) => {
+      const file = join(dir, `${agent}-${day}.jsonl`)
+      appendFileSync(file, `${JSON.stringify({ v: 1, id, agent, at: new Date(at).toISOString(), ms: 900, exit: 0, outcome: 'ok', ...extra })}\n`, { mode: 0o600 })
+      chmodSync(file, 0o600)
+    }
+    record('unslop-code', 'abcdefghij', s.clock.t - 120_000, { op: 'clean', status: 'cleaned', files: 3, bytesIn: 4096, removed: 12, suggestions: 2, model: 'coder-test', timing: { queued: 1, load: 2, model: 800 } })
+    record('unslop-code', 'bcdefghijk', s.clock.t - 60_000, { op: 'clean', exit: 11, outcome: 'refused', reason: 'malformed' })
+    record('unslop', 'cdefghijkl', s.clock.t - 30_000, { op: 'docs' })
+    const body = await s.agents()
+    expect(row(body, 'unslop-code').lastRun).toEqual({ at: new Date(s.clock.t - 60_000).toISOString(), op: 'clean', outcome: 'refused' })
+    expect(row(body, 'unslop').lastRun).toEqual({ at: new Date(s.clock.t - 30_000).toISOString(), op: 'docs', outcome: 'ok' })
+    const runs = await (await s.app.request('/api/mesh/agents/runs?name=unslop-code')).json()
+    expect(runs).toMatchObject({ on: true, name: 'unslop-code', older: false, forget: 'npm run meshctl -- forget-runs --unslop-code' })
+    expect(runs.runs.map((r: Json) => [r.id, r.agent, r.op, r.outcome])).toEqual([['bcdefghijk', 'unslop-code', 'clean', 'refused'], ['abcdefghij', 'unslop-code', 'clean', 'ok']])
+    expect(runs.runs[1]).toMatchObject({ status: 'cleaned', files: 3, bytesIn: 4096, removed: 12, suggestions: 2, model: 'coder-test', timing: { queued: 1, load: 2, model: 800 } })
+    expect(runs.runs[1]).not.toHaveProperty('path')
+    // not configured: ok:false, as for any known agent mesh.json does not hold
+    const only = setup(unslopAt(await freePort()))
+    expect(await (await only.app.request('/api/mesh/agents/runs?name=unslop-code')).json()).toEqual({ ok: false, error: 'not configured' })
+    expect(await (await only.post({ trigger: 'refresh', name: 'unslop-code' })).json()).toEqual({ ok: false, error: 'not configured' })
+  })
+
+  it('an open or a refresh naming it checks only it, with its own 60 s and 5 s skips', async () => {
+    const code = await serve(UNSLOP_CODE)
+    const plain = await serve(UNSLOP)
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: `http://127.0.0.1:${plain.port}` }, 'unslop-code': { endpoint: `http://127.0.0.1:${code.port}` } } })
+    await s.post({ trigger: 'open', name: 'unslop-code' })
+    expect([code.connections, plain.connections]).toEqual([1, 0])
+    s.clock.t += 30_000
+    await s.post({ trigger: 'open', name: 'unslop-code' })
+    expect(code.connections).toBe(1)
+    await s.post({ trigger: 'refresh', name: 'unslop-code' })
+    expect(code.connections).toBe(2)
+    expect(plain.connections).toBe(0)
   })
 })

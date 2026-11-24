@@ -320,7 +320,9 @@ export function createKeyboardUI({ getScope, getActionScope, navigate }) {
       consume(event)
       goPrefix = true
       root.setAttribute('data-go-prefix', 'true')
-      announce('Go to: D Home, I Needs you, P Plans, F Find, N Find: Notes, H Find: All, C Find: Chats, S Settings, O Projects, A Agents, L Sessions. Esc cancels.')
+      // M goes nowhere while the mesh is off, and the Agent cards tab is then hidden
+      const cardsWord = available(document.querySelector('#tabs [data-tab="cards"]')) ? ', M Agent cards' : ''
+      announce(`Go to: D Home, I Needs you, P Plans, F Find, N Find: Notes, H Find: All, C Find: Chats, S Settings, O Projects, A Agents, L Sessions${cardsWord}. Esc cancels.`)
       return
     }
     if (/^[1-4]$/.test(lower)) {

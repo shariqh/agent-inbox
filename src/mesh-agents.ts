@@ -9,20 +9,27 @@
 // run records (cards view V5 §5.7), through mesh-runs.ts's readRuns only. Every user-facing
 // reason, fix and the forget command live here, so no viewer, page or Electron file names the
 // clients or the command (test/mesh.test.ts's text guard).
+// Agent cards step 1 (D6): an agent `meshctl add` wrote is shown from the card copy meshctl keeps
+// (mesh-config.ts's readCardCopy), and only when that copy still matches the entry's pin by the
+// one card rule (agent-card.ts's canonicalCard). The viewer never checks or contacts an added
+// agent: its state is `added`. The entry rule comes from mesh-entry.ts, never mesh-add.ts, so the
+// viewer's import graph never reaches the public address check (src/public-address.ts).
+import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import type { IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { join } from 'node:path'
-import { cardJson, checkCard, summarizeCard } from './agent-card.js'
-import { loopbackPort, meshFile, readMesh, requestPostEndpoint } from './mesh-config.js'
+import { canonicalCard, cardJson, checkCard, summarizeCard } from './agent-card.js'
+import { loopbackPort, meshFile, readCardCopy, readMesh, requestPostEndpoint } from './mesh-config.js'
+import { BUILT_IN_AGENTS, addedEntry, addedPlace, idRefusal } from './mesh-entry.js'
 import { readRuns } from './mesh-runs.js'
-import type { RunAgent, RunsCache, RunsRead } from './mesh-runs.js'
+import type { RunsCache, RunsRead } from './mesh-runs.js'
 
 type Agent = 'unslop' | 'request-post'
 type State = 'unchecked' | 'checking' | 'up' | 'not-running' | 'unreachable' | 'not-a-card' | 'mismatch' | 'invalid'
-type Where = 'local' | 'tailnet' | 'ssh-tunnel' | null
+type Where = 'local' | 'tailnet' | 'ssh-tunnel' | 'public' | null
 type Shown = { summary: ReturnType<typeof summarizeCard>; json: string }
 type Usage = { date: string; tasks: number; modelMs: number }
 type Result = { state: State; reason: string | null; fix: string | null; checkedAt: number | null; card: Shown | null }
@@ -33,6 +40,11 @@ const STAT_EVERY_MS = 5_000
 const DEADLINE_MS: Record<Agent, number> = { unslop: 3_000, 'request-post': 5_000 }
 const SKIP_MS = { open: 60_000, refresh: 5_000 }
 const FIX: Record<Agent, string> = { unslop: 'rebuild packages/mesh', 'request-post': 'update agent-inbox or the service' }
+// one line a built-in agent's card shows only while no card text is known (never a card's own)
+const BLURB: Record<Agent, string> = {
+  unslop: 'Copy-edits public text by the unslop rules.',
+  'request-post': 'Files a post request with your publishing service.',
+}
 const UNCHECKED: Result = { state: 'unchecked', reason: 'press Refresh', fix: null, checkedAt: null, card: null }
 const OFF = { on: false, agents: [] }
 const BUDGET_MAX = 4 * 1024
@@ -90,7 +102,16 @@ interface Rec {
   running: Promise<void> | null
 }
 
-interface Config { count: number; others: number; recs: Map<Agent, Rec> }
+/** An agent `meshctl add` wrote, valid by mesh-entry.ts's rule; its card comes from the copy. */
+interface Added {
+  id: string
+  endpoint: string
+  where: Where
+  pin: string
+  copy: { at: number; shown: Shown | null; fix: string | null; quiet: boolean }
+}
+
+interface Config { count: number; others: number; recs: Map<Agent, Rec>; added: Map<string, Added> }
 
 export interface MeshAgentsOpts {
   /** the mesh dir, from mesh-config.ts's meshDir() */
@@ -198,7 +219,7 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
 
   // V5 §5.7: one readdir pass per agent per 5 s at most, shared by the route and lastRun; each
   // day file is parsed again only when its identity, size or mtime changed.
-  function runsOf(name: RunAgent): RunsRead {
+  function runsOf(name: string): RunsRead {
     let entry = history.get(name)
     if (!entry) history.set(name, entry = { at: -Infinity, read: NO_RUNS, cache: new Map() })
     if (now() - entry.at >= STAT_EVERY_MS) {
@@ -224,7 +245,20 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
     const agents = mesh?.kind === 'present' ? mesh.doc['agents'] : undefined
     const entries = agents && typeof agents === 'object' && !Array.isArray(agents) ? Object.entries(agents) : []
     const recs = new Map<Agent, Rec>()
+    const added = new Map<string, Added>()
     for (const [key, value] of entries) {
+      const read = BUILT_IN_AGENTS.includes(key) ? undefined : addedEntry(key, value)
+      if (read !== undefined && read !== 'invalid') {
+        const place = addedPlace(read.endpoint)
+        const old = config?.added.get(key)
+        added.set(key, {
+          id: key, endpoint: read.endpoint, pin: read.cardSha256,
+          where: read.public ? 'public' : !('refused' in place) && place.loopback ? 'local' : 'tailnet',
+          // a changed pin or endpoint reads the copy again at once
+          copy: old && old.pin === read.cardSha256 && old.endpoint === read.endpoint ? old.copy : { at: -Infinity, shown: null, fix: null, quiet: false },
+        })
+        continue
+      }
       if (!AGENTS.includes(key as Agent)) continue
       const name = key as Agent
       const entry = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
@@ -241,8 +275,42 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
       rec.profile = profile
       recs.set(name, rec)
     }
-    config = recs.size ? { count: recs.size, others: entries.length - recs.size, recs } : null
+    // "others" are entries that are neither built in nor a valid added one (D6)
+    const others = entries.filter(([key]) => !BUILT_IN_AGENTS.includes(key) && !added.has(key)).length
+    config = recs.size + added.size ? { count: recs.size + added.size, others, recs, added } : null
     return config
+  }
+
+  // D6: the card copy, read at most once per 5 s per agent by mesh-config.ts's rule, shown only
+  // when its pin by canonicalCard equals the entry's; the fixed line says what to run otherwise
+  function copyOf(rec: Added): Added['copy'] {
+    if (now() - rec.copy.at < STAT_EVERY_MS) return rec.copy
+    const read = readCardCopy(opts.dir, rec.id)
+    // a missing copy is not a problem (the add may predate the copy): its line is quiet; a refused or mismatching one is not
+    let copy: Added['copy'] = { at: now(), shown: null, fix: `Run meshctl check ${rec.id} to show its card`, quiet: read === 'missing' }
+    if (typeof read === 'object') {
+      try {
+        const pin = createHash('sha256').update(canonicalCard(read.card)).digest('hex')
+        copy = pin === rec.pin
+          ? { at: copy.at, shown: { json: cardJson(read.card), summary: summarizeCard(read.card) }, fix: null, quiet: false }
+          : { at: copy.at, shown: null, fix: `Its card copy does not match; run meshctl check ${rec.id}`, quiet: false }
+      } catch { /* nested past the stack's depth: shown as refused */ }
+    }
+    rec.copy = copy
+    return copy
+  }
+
+  function addedView(rec: Added) {
+    const copy = copyOf(rec)
+    return {
+      key: `mesh.json:${rec.id}`, name: rec.id, kind: 'added', where: rec.where, endpoint: rec.endpoint, profile: null,
+      // never checked, so never said to be reachable
+      state: 'added', reason: null, fix: copy.fix, fixQuiet: copy.quiet, checkedAt: null,
+      // the page says so in place of "checked" and Refresh; the command's name comes from here (design §3.4)
+      checkNote: `The app does not check added agents. meshctl check ${rec.id} does.`,
+      card: copy.shown?.summary ?? null, cardJson: copy.shown?.json ?? null, lastSeen: null,
+      lastRun: ((run) => run ? { at: run['at'], op: run['op'], outcome: run['outcome'] } : null)(runsOf(rec.id).runs[0]),
+    }
   }
 
   // One check per agent at a time: a trigger that finds one running waits for it.
@@ -264,7 +332,7 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
     const r = rec.result
     const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString())
     return {
-      key: `mesh.json:${rec.name}`, name: rec.name, where: where(rec.name, rec.endpoint), endpoint: rec.endpoint, profile: rec.profile,
+      key: `mesh.json:${rec.name}`, name: rec.name, kind: 'built-in', blurb: BLURB[rec.name], where: where(rec.name, rec.endpoint), endpoint: rec.endpoint, profile: rec.profile,
       state: rec.running ? 'checking' : r.state, reason: rec.running ? null : r.reason, fix: rec.running ? null : r.fix,
       checkedAt: iso(r.checkedAt),
       card: r.card?.summary ?? null,
@@ -286,24 +354,32 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
     body: () => {
       const cfg = read()
       if (!cfg) return OFF
-      return { on: true, agents: [...cfg.recs.values()].sort((a, b) => a.name.localeCompare(b.name)).map((rec) => view(rec, localDate(now()))), others: cfg.others }
+      const today = localDate(now())
+      const agents = [...[...cfg.recs.values()].map((rec) => view(rec, today)), ...[...cfg.added.values()].map(addedView)]
+      // D6: what to do about entries that are neither built in nor a valid added one
+      return { on: true, agents: agents.sort((a, b) => a.name.localeCompare(b.name)), others: cfg.others, ...(cfg.others ? { othersFix: 'run meshctl status' } : {}) }
     },
     trigger: async (trigger, name) => {
-      const recs = [...(read()?.recs.values() ?? [])].filter((rec) => name === undefined || rec.name === name)
+      const cfg = read()
+      // an added agent is configured, and never checked (D6)
+      if (name !== undefined && cfg?.added.has(name)) return true
+      const recs = [...(cfg?.recs.values() ?? [])].filter((rec) => name === undefined || rec.name === name)
       if (name !== undefined && !recs.length) return false
       const due = (rec: Rec) => rec.running || rec.result.checkedAt === null || now() - rec.result.checkedAt >= SKIP_MS[trigger]
       await Promise.all(recs.filter(due).map(check))
       return true
     },
     runs: (name) => {
-      if (!RUN_AGENTS.includes(name)) return undefined
+      // a built-in's name, or any id an added agent can have (D6)
       const cfg = read()
+      if (!RUN_AGENTS.includes(name) && (idRefusal(name) || !cfg?.added.has(name))) return undefined
       if (!cfg) return { on: false, runs: [] }
-      if (!cfg.recs.has(name as Agent)) return { ok: false, error: 'not configured' }
-      const r = runsOf(name as RunAgent)
+      const isAdded = cfg.added.has(name)
+      if (!cfg.recs.has(name as Agent) && !isAdded) return { ok: false, error: 'not configured' }
+      const r = runsOf(name)
       return {
         on: true, name, runs: r.runs.slice(0, RUNS_SHOWN), older: r.runs.length > RUNS_SHOWN, skipped: r.skipped, truncated: r.truncated,
-        keptDays: r.keptDays, forget: `npm run meshctl -- forget-runs --${name}`,
+        keptDays: r.keptDays, forget: `npm run meshctl -- forget-runs ${isAdded ? `--id ${name}` : `--${name}`}`,
       }
     },
   }

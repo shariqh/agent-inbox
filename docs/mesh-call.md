@@ -244,6 +244,10 @@ npm run meshctl -- check http://127.0.0.1:4500/.well-known/agent-card.json --tok
   `https://<name>[:<port>][/<path>]`, and a name `add` would take as public gets its address check. Any other
   URL is a usage error (4) before any connection, and the error never repeats the URL.
 - The card is fetched as `add` fetches it: one GET, no token, no redirect, no proxy, 64 KiB, 5 s.
+- `meshctl check <id>` (Agent cards step 1) checks an added agent's card URL from its entry the
+  same way and, when the card still matches the entry's pin, writes the card copy the app shows
+  (`<mesh dir>/mesh/cards/<id>.json`, 0600) if it is missing or differs; its last line says what it
+  did ("Card copy  …"). It is how an agent added before the copy existed gets its card in the app.
 - `--token-file` (a 0600 file you own) turns on the live tests. On a public name they connect only
   through the same address check as `add` (#534). The token
   goes only to the card's origin, on loopback only after the agent answers the

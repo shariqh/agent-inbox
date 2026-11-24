@@ -2,10 +2,10 @@
 // attention count is INJECTED rather than imported, so the filter-blindness
 // rule is stated here instead of hiding inside a call site.
 
-// `agent` (cards view V5 §3.3) is shown only while a mesh agent is open, and never counted
 // Home (`dashboard`) holds the asks and the lanes on one page: there is no separate Inbox tab
 // `find` (UX pass, slice 4) replaces Notes and History, and (step B) Chats: its Chats chip
-export const TAB_IDS = ['dashboard', 'boards', 'find', 'agent']
+// `cards` (Agent cards step 1) is shown only while the mesh is on, and never counted
+export const TAB_IDS = ['dashboard', 'boards', 'find', 'cards']
 
 // the active tab is never persisted — the app always opens at the live desk
 export const DEFAULT_TAB = 'dashboard'

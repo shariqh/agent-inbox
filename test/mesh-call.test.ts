@@ -308,6 +308,28 @@ describe('the card pin (#531 accepts again; #530 refuses)', () => {
     expect((await run(home(fake), [ID])).code).toBe(0)
   })
 
+  // Agent cards step 1 (D6): an agent added before the card copy existed gets it at its first call
+  // whose card matches the pin; a changed card, or a copy already there, is never written
+  it('a card that matches its pin backfills a missing card copy (0600, 0700 folder); a changed card or an existing copy is left', async () => {
+    const fake = await fakeAgent()
+    const dir = home(fake)
+    const copy = join(dir, 'mesh', 'cards', `${ID}.json`)
+    expect((await run(dir, [ID])).code).toBe(0)
+    expect(cardSha256(JSON.parse(readFileSync(copy, 'utf8')))).toBe(PIN)
+    expect([(statSync(copy).mode & 0o777).toString(8), (statSync(join(dir, 'mesh', 'cards')).mode & 0o777).toString(8)]).toEqual(['600', '700'])
+    // an existing copy is never rewritten by a call
+    writeFileSync(copy, '{"kept":true}')
+    expect((await run(dir, [ID])).code).toBe(0)
+    expect(readFileSync(copy, 'utf8')).toBe('{"kept":true}')
+    // a changed card writes none
+    const card = structuredClone(CARD)
+    card.skills.push({ id: 'web-fetch', name: 'web-fetch', description: 'x', tags: [] })
+    const changed = await fakeAgent('stream', { card })
+    const other = home(changed)
+    expect((await run(other, [ID])).code).toBe(16)
+    expect(readdirSync(join(other, 'mesh'))).toEqual(['tokens'])
+  })
+
   it('--skill must be one of the card\'s skill ids, checked before any request', async () => {
     const fake = await fakeAgent()
     const r = await run(home(fake), [ID, '--skill', 'web-fetch'])

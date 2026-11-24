@@ -20,6 +20,17 @@ mesh today"; and supersedes unslop §4.5 (b) and request-post §1's "no viewer c
 agent opens in an agent tab with Run history and Details; the section's rows become a strip of
 cards; `meshctl` keeps a run record the viewer reads. It touches §1, §2.1–§2.3, §2.6, §3.2, §4.5,
 §4.7, §5.2, §6 and §7.
+**Amended 2026-11-24 by Agent cards step 1:** §2.1's choice is reversed. The agent cards leave
+the Agents home for a tab of their own, `cards` ("Agent cards", after Find, shown only while
+`/api/version` carries `mesh`, never counted, `G M`), whose one section is "Yours": a
+grid of three, two or one columns by the tab's own width. Pressing a card opens that agent's page
+inside the tab (the agent tab of V5 folds into it), under "← Agent cards"; Escape goes back. §4.5's
+open trigger is now only entering the Agent cards from another tab (no boot, Home,
+`showAgentsHome()` or card-press open); Refresh is unchanged. Agents added with `meshctl add` are
+shown, state `added`, from the card copy meshctl keeps (`<mesh dir>/mesh/cards/<id>.json`) and only
+when it matches the entry's pin; the viewer never contacts them, and §5.3 still holds. Every other
+rule here stands. `docs/architecture/viewer-dashboard-and-shell.md` and
+`docs/architecture/mesh.md` hold the rules as built.
 **Revised 2026-11-09 after review round 1:** §2.2-§2.6, §3.4, §4.2-§4.7, §5.1, §7, §9, §10 and
 §13 Q3 (now checks on open and Refresh only). Round 2: the open trigger's exact handlers (§4.5),
 what paints after each trigger, and the `unchecked` state (§2.4).
@@ -84,6 +95,9 @@ card fetcher, one read route, one refresh route).
 ## §2 — Decision 1: what the user sees
 
 ### 2.1 Where the agents live
+
+*Reversed 2026-11-24 by Agent cards step 1: the agents live in a Agent cards tab of their own
+(option B, without a count), not in the Agents home. See the header's amendment note.*
 
 | Option | For | Against |
 |---|---|---|

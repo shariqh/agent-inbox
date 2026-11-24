@@ -102,7 +102,7 @@ describe('Chats in Find (#586 PR 2; UX pass, slice 4, step B)', () => {
   it('has no tab of its own: G C opens Find with the Chats chip and the field focused', async () => {
     await boot()
     // step B: the Chats page folded into Find's fifth chip
-    expect([...document.querySelectorAll<HTMLElement>('#tabs .tab')].map((t) => t.dataset.tab).slice(-2)).toEqual(['find', 'agent'])
+    expect([...document.querySelectorAll<HTMLElement>('#tabs .tab')].map((t) => t.dataset.tab).slice(-2)).toEqual(['find', 'cards'])
     expect(document.querySelector('[data-tab="chats"], #chats')).toBeNull()
     // G C is "Find: Chats": no tile of its own, like G N and G H
     expect(document.querySelector('[data-shortcut="G C"]')).toBeNull()

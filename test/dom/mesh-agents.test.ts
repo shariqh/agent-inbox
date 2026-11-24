@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
-// The agent cards view V3 (design docs/superpowers/specs/2026-11-09-agent-cards-view-design.md
-// §2, §4.5, §7): the Agents home's Mesh agents section. It reads `/api/mesh/agents` only while
-// the last /api/version carried `mesh`, the Dashboard shows and the window is visible; an open
-// (boot on the Dashboard, showAgentsHome(), selectTab('dashboard') from another tab) posts one
-// check and paints through the next poll tick, Refresh through reloadAndPaint(). It is global
-// and never an ask. The viewer's real routes answer from a stand-in for src/mesh-agents.ts, so
-// no socket opens.
+// The Agent cards tab, step 1 (agent cards view design docs/superpowers/specs/2026-11-09-agent-cards-view-design.md
+// §2, §4.5, §7, as amended by Agent cards step 1): "Yours", in a tab of its own that
+// exists only while the last /api/version carried `mesh`. It reads `/api/mesh/agents` only while
+// the Agent cards is the current tab and the window is visible; entering the tab from another tab
+// posts one check (an open) and paints through the next poll tick, Refresh through
+// reloadAndPaint(). Pressing a card opens that agent's page inside the tab; "← Agent cards" and
+// Escape go back. It is global and never an ask. The viewer's real routes answer from a stand-in
+// for src/mesh-agents.ts, so no socket opens. (Before step 1 this file pinned the Mesh agents strip
+// on the Agents home and the hidden agent tab; every case reaches the same content through the
+// Agent cards tab now.)
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -24,6 +27,7 @@ afterEach(() => {
   db = null
   delete (document as unknown as Record<string, unknown>).visibilityState
   delete (window as unknown as Record<string, unknown>).agentInboxSetup
+  if (location.hash) history.replaceState(null, '', location.pathname)
 })
 
 type Json = Record<string, unknown>
@@ -47,14 +51,20 @@ const hhmm = (iso: string) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 const unslop = (over: Json = {}): Json => ({
-  key: 'mesh.json:unslop', name: 'unslop', where: 'local', endpoint: 'http://127.0.0.1:4420', profile: 'unslop',
+  key: 'mesh.json:unslop', name: 'unslop', kind: 'built-in', where: 'local', endpoint: 'http://127.0.0.1:4420', profile: 'unslop',
   state: 'not-running', reason: 'starts on its first call', fix: null, checkedAt: at(60_000),
   card: null, cardJson: null, lastSeen: { at: at(2 * 60 * 60 * 1000), card: summarizeCard(UNSLOP_CARD) }, ...over,
 })
 const requestPost = (over: Json = {}): Json => ({
-  key: 'mesh.json:request-post', name: 'request-post', where: 'tailnet', endpoint: 'https://request-post.tailnet-name.ts.net',
+  key: 'mesh.json:request-post', name: 'request-post', kind: 'built-in', where: 'tailnet', endpoint: 'https://request-post.tailnet-name.ts.net',
   profile: null, state: 'up', reason: null, fix: null, checkedAt: at(60_000),
   card: summarizeCard(RP_CARD), cardJson: cardJson(RP_CARD), lastSeen: null, ...over,
+})
+// an agent the add command wrote, as src/mesh-agents.ts answers it (D6)
+const echo = (over: Json = {}): Json => ({
+  key: 'mesh.json:echo', name: 'echo', kind: 'added', where: 'public', endpoint: 'https://agent.example.com/a2a', profile: null,
+  state: 'added', reason: null, fix: null, checkedAt: null, card: summarizeCard({ ...UNSLOP_CARD, name: 'Echo Agent', description: 'Echoes one text.', version: '1.0.0' }),
+  cardJson: null, lastSeen: null, lastRun: null, ...over,
 })
 const body = (...agents: Json[]) => ({ on: true, agents, others: 0 })
 
@@ -116,25 +126,36 @@ const triggers = (bridge: ViewerBridge) => bridge.posts.filter((p) => p.url === 
 const posted = (bridge: ViewerBridge) => bridge.posts.filter((p) => p.url === '/api/mesh/agents/refresh')
   .map((p) => JSON.parse(String(p.init?.body)) as Json)
 const meshReads = (log: string[]) => log.filter((entry) => entry === 'GET /api/mesh/agents').length
-// in the Quiet lane, after its rows and before the folds (dashboard lanes design §3.4)
-const section = () => document.querySelector<HTMLElement>('.agents-home .quiet-lane .mesh-agents')
-const meshRow = (name: string) => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-card')]
+// "Yours", in the Agent cards tab's panel
+const section = () => document.querySelector<HTMLElement>('#cards .mesh-agents')
+const meshRow = (name: string) => [...document.querySelectorAll<HTMLElement>('#cards .ma-card')]
   .find((el) => el.querySelector('.ma-name')?.textContent === name) ?? null
-const shown = () => [...document.querySelectorAll<HTMLElement>('.mesh-agents .ma-card')].map((el) => [
-  el.querySelector('.ma-name')?.textContent, el.querySelector('.ma-status')?.textContent,
+// a card's name, state word, foot and fix line (the reason is on the agent's page, in full)
+const shown = () => [...document.querySelectorAll<HTMLElement>('#cards .ma-card')].map((el) => [
+  el.querySelector('.ma-name')?.textContent, el.querySelector('.ma-word')?.textContent,
   el.querySelector('.ma-facts')?.textContent, el.querySelector<HTMLElement>('.ma-fix')?.hidden ? '' : el.querySelector('.ma-fix')?.textContent,
 ])
 const tab = (id: string) => click(document.querySelector(`.tab[data-tab="${id}"]`))
 const UP_ROWS = [
   ['request-post', 'Reachable', 'Remote · tailnet · v0.0.0-fixture', ''],
-  ['unslop', 'Not running · starts on its first call', 'Local · v0.3.1 · seen 2h ago', ''],
+  ['unslop', 'Not running', 'Local · v0.3.1 · seen 2h ago', ''],
 ]
-// cards view V5c1: pressing a card (V5c2) opens the agent tab; its page holds the details
-const agentTab = () => document.querySelector<HTMLElement>('#tabs .tab[data-tab="agent"]')!
+const cardsTab = () => document.querySelector<HTMLElement>('#tabs .tab[data-tab="cards"]')!
 const page = () => document.getElementById('agentPage')!
 const activeTab = () => document.querySelector('#tabs .tab[aria-selected="true"]')?.getAttribute('data-tab')
+async function enter(): Promise<void> {
+  tab('cards')
+  await settle()
+}
+// pressing a card opens that agent's page in the tab; from another tab, enter it first
 async function openAgent(name: string): Promise<void> {
+  if (activeTab() !== 'cards') await enter()
+  else if (!page().hidden) await back()
   click(meshRow(name))
+  await settle()
+}
+async function back(): Promise<void> {
+  click(page().querySelector('.map-back'))
   await settle()
 }
 function openJson(): void {
@@ -143,30 +164,38 @@ function openJson(): void {
   json.dispatchEvent(new Event('toggle'))
 }
 const pageLines = () => [...page().querySelectorAll('.ma-lines dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent])
+const pageStatus = () => page().querySelector('.map-status')?.textContent
 function pointer(el: Element | null, type: 'pointerdown' | 'pointerup'): void {
   el!.dispatchEvent(new window.PointerEvent(type, { bubbles: true }))
 }
+const pressKey = (key: string) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
 
 // The boot reads, then one poll tick's nine reads (test/dom/agents-home.test.ts's BOOT_REQUESTS).
 const POLL = ['/api/items', '/api/boards', '/api/boards/archived/summary', '/api/activity',
   '/api/activity/history?since_ms=1781949600000', '/api/projects/closed', '/api/links', '/api/issues', '/api/messages']
 const BOOT_REQUESTS = ['/api/version', '/api/setup', ...POLL, ...POLL]
 
-describe('the Mesh agents section (agent cards view V3)', () => {
-  it('with no mesh key, the page makes exactly its old reads, posts no check and draws no section', async () => {
+describe('the Agent cards tab: Yours (Agent cards step 1)', () => {
+  it('with no mesh key, the page makes exactly its old reads, posts no check and has no Agent cards tab', async () => {
     const { bridge, log } = await boot({ mesh: null })
     await pollTick()
     await settle()
     expect(log.map((entry) => entry.replace(/^GET /, ''))).toEqual(BOOT_REQUESTS)
     expect(section()).toBeNull()
-    // no navigation posts anything without `mesh` in the last /api/version
+    expect(cardsTab().hidden).toBe(true)
+    // no navigation posts anything without `mesh` in the last /api/version; G M does nothing
     tab('boards')
     await settle()
     tab('dashboard')
     await settle()
     click(document.getElementById('sessionsIndicator'))
     await settle()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    pressKey('g')
+    pressKey('m')
+    await settle()
     await pollTick()
+    expect(activeTab()).toBe('dashboard')
     expect(triggers(bridge)).toEqual([])
     expect(bridge.posts).toEqual([])
     expect(log.some((entry) => entry.includes('/api/mesh/'))).toBe(false)
@@ -177,32 +206,42 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     quiet.s.version = undefined
     const again = await boot({ mesh: quiet })
     await pollTick()
+    expect(cardsTab().hidden).toBe(true)
     expect(triggers(again.bridge)).toEqual([])
     expect(meshReads(again.log)).toBe(0)
   })
 
-  it('draws both cards with the state words and the server’s reason and fix, read only on a visible Dashboard', async () => {
+  it('draws both cards with the state words and the server’s fix, the reason on the page; read only on a visible Agent cards tab', async () => {
     const { log, s } = await boot()
     await pollTick()
-    await settle()
-    expect(section()?.querySelector('.ma-toggle')?.textContent).toBe('Mesh agents (2)')
-    expect(section()?.querySelector('.ma-toggle')?.getAttribute('aria-expanded')).toBe('true')
+    // the tab shows with the mesh on, with no count; nothing is read before it is entered
+    expect([cardsTab().hidden, cardsTab().querySelector('.tab-count'), cardsTab().querySelector('.tab-name')?.textContent]).toEqual([false, null, 'Agent cards'])
+    expect(meshReads(log)).toBe(0)
+    await enter()
+    expect(activeTab()).toBe('cards')
+    expect(section()?.querySelector('.ma-title-text')?.textContent).toBe('Yours')
+    expect(section()?.querySelector('.ma-count')?.textContent).toBe('2')
     expect(section()?.querySelector('.ma-checked')?.textContent).toBe('checked 1m ago')
     expect(shown()).toEqual(UP_ROWS)
     expect(meshRow('request-post')?.classList.contains('ma-tone-up')).toBe(true)
     expect(meshRow('unslop')?.classList.contains('ma-tone-neutral')).toBe(true)
 
-    // a mismatch names its check and carries the server's fix, amber
+    // a mismatch carries the server's fix, amber; the reason shows in full on the agent's page
     s.body = body(unslop({ state: 'mismatch', reason: 'no unslop skill', fix: 'rebuild packages/mesh', card: summarizeCard(UNSLOP_CARD), cardJson: cardJson(UNSLOP_CARD), lastSeen: null }),
       requestPost({ state: 'unreachable', reason: 'does not resolve (is this Mac on the tailnet?)', card: null, cardJson: null }))
     await pollTick()
     expect(shown()).toEqual([
-      ['request-post', 'Unreachable · does not resolve (is this Mac on the tailnet?)', 'Remote · tailnet', ''],
-      ['unslop', 'Card does not match this build · no unslop skill', 'Local · v0.3.1', 'Fix: rebuild packages/mesh'],
+      ['request-post', 'Unreachable', 'Remote · tailnet', ''],
+      ['unslop', 'Card does not match this build', 'Local · v0.3.1', 'Fix: rebuild packages/mesh'],
     ])
     expect(meshRow('unslop')?.classList.contains('ma-tone-amber')).toBe(true)
+    await openAgent('request-post')
+    expect(pageStatus()).toBe('Unreachable · does not resolve (is this Mac on the tailnet?)')
+    await openAgent('unslop')
+    expect([pageStatus(), page().querySelector('.ma-fix')?.textContent]).toEqual(['Card does not match this build · no unslop skill', 'Fix: rebuild packages/mesh'])
+    await back()
 
-    // leaving the Dashboard stops the read and keeps the last body
+    // leaving the Agent cards stops the read and keeps the last body
     const reads = meshReads(log)
     tab('boards')
     await settle()
@@ -210,9 +249,8 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     await pollTick()
     await pollTick()
     expect(meshReads(log)).toBe(reads)
-    tab('dashboard')
-    await settle()
-    expect(shown()[0]?.[1]).toBe('Unreachable · does not resolve (is this Mac on the tailnet?)')
+    await enter()
+    expect(shown()[0]?.[1]).toBe('Unreachable')
     await pollTick()
     expect(meshReads(log)).toBe(reads + 1)
     expect(shown()).toEqual(UP_ROWS)
@@ -227,7 +265,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(meshReads(log)).toBe(reads + 2)
   })
 
-  it('every state reads in the page’s words; unknown agents are counted, never named', () => {
+  it('every state reads in the page’s words; invalid entries are counted, never named', () => {
     const now = Date.now()
     const words = (agent: Json) => meshRows(body(agent), now).rows[0]?.status
     expect(words(unslop({ state: 'unchecked', reason: 'press Refresh', checkedAt: null, lastSeen: null }))).toBe('Not checked yet · press Refresh')
@@ -238,55 +276,88 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       .toBe('Not an agent card · something other than the unslop agent answers (HTTP 404)')
     const invalid = meshRows(body(requestPost({ state: 'invalid', where: null, endpoint: null, card: null, fix: 'run the status command' })), now).rows[0]!
     expect([invalid.status, invalid.fix, invalid.facts, invalid.tone]).toEqual(['Endpoint not accepted', 'Fix: run the status command', 'Remote', 'amber'])
-    expect(meshRows({ ...body(unslop()), others: 1 }, now).others).toBe('1 other agent in mesh.json is not shown by this build')
-    expect(meshRows({ ...body(unslop()), others: 2 }, now).others).toBe('2 other agents in mesh.json are not shown by this build')
+    // D6: the others line counts the entries that are neither built in nor valid, with the server's fix
+    expect(meshRows({ ...body(unslop()), others: 1, othersFix: 'run the status command' }, now).others).toBe('1 entry in mesh.json is not valid: run the status command')
+    expect(meshRows({ ...body(unslop()), others: 2, othersFix: 'run the status command' }, now).others).toBe('2 entries in mesh.json are not valid: run the status command')
     expect(meshRows(body(unslop({ checkedAt: null }), requestPost({ checkedAt: null })), now).checked).toBe('not checked yet')
+    // D6: an added agent is "Added", neutral, never said to be reachable; its tag and where
+    const added = meshRows(body(echo({ fix: 'Run the check command to show its card', card: null })), now).rows[0]!
+    expect([added.word, added.status, added.tone, added.tag, added.facts, added.fix]).toEqual(['Added', 'Added', 'neutral', 'Added by you', 'Remote · public', 'Run the check command to show its card'])
+    expect(meshRows(body(unslop()), now).rows[0]!.tag).toBe('Built in')
+    expect(meshRows(body(echo({ where: 'local' })), now).rows[0]!.facts).toBe('Local · v1.0.0')
+    expect(meshRows(body(echo({ where: 'tailnet' })), now).rows[0]!.facts).toBe('Remote · tailnet · v1.0.0')
   })
 
-  describe('the open trigger, one per navigation', () => {
-    it('booting on the Dashboard posts one open once the boot’s /api/version carries mesh', async () => {
+  it('shows an added agent with its tag and the server’s one line, and an invalid entry only as a count', async () => {
+    const { log } = await boot({ mesh: fakeMesh({ ...body(unslop(), echo({ card: null, fix: 'Run meshctl check echo to show its card' })), others: 1, othersFix: 'run meshctl status' }) })
+    await enter()
+    expect(shown()).toEqual([
+      ['echo', 'Added', 'Remote · public', 'Run meshctl check echo to show its card'],
+      ['unslop', 'Not running', 'Local · v0.3.1 · seen 2h ago', ''],
+    ])
+    expect([...document.querySelectorAll('#cards .ma-badge')].map((el) => el.textContent)).toEqual(['Added by you', 'Built in'])
+    expect(meshRow('echo')?.classList.contains('ma-tone-neutral')).toBe(true)
+    const others = section()!.querySelector<HTMLElement>('.ma-others')!
+    expect([others.hidden, others.textContent]).toEqual([false, '1 entry in mesh.json is not valid: run meshctl status'])
+    // its page: the same line in full, and no claim that it is reachable
+    await openAgent('echo')
+    expect([pageStatus(), page().querySelector('.ma-fix')?.textContent, page().querySelector('.map-badge')?.textContent])
+      .toEqual(['Added', 'Run meshctl check echo to show its card', 'Added by you'])
+    expect(log.some((entry) => entry.includes('agent.example.com'))).toBe(false)
+  })
+
+  describe('the open trigger: entering the Agent cards, and nothing else', () => {
+    it('booting posts none; entering posts one; a poll tick, Refresh and re-selecting it post no open', async () => {
       const { bridge, s } = await boot()
+      await pollTick()
+      expect(triggers(bridge)).toEqual([])
+      await enter()
       expect(triggers(bridge)).toEqual(['open'])
       expect(s.triggers).toEqual(['open'])
-      // a poll tick, reloadAndPaint() (Refresh) and re-selecting the Dashboard post no open
+      // a poll tick, reloadAndPaint() (Refresh) and re-selecting the Agent cards post no open
       await pollTick()
-      tab('dashboard')
+      tab('cards')
       await settle()
       click(section()?.querySelector('.ma-refresh'))
       await settle()
       expect(triggers(bridge)).toEqual(['open', 'refresh'])
+      // nor do Home and its own way in
+      tab('dashboard')
+      await settle()
+      click(document.getElementById('sessionsIndicator'))
+      await settle()
+      expect(triggers(bridge)).toEqual(['open', 'refresh'])
     })
 
-    it('booting on another tab posts none; selecting the Dashboard from it posts one, and again while there none', async () => {
+    it('waits for /api/version: the tab shows once it says mesh; entering from another tab posts one, and again while there none', async () => {
       let release = () => {}
       const held = new Promise<void>((done) => { release = done })
       const { bridge } = await boot({ intercept: (url, _init, next) => (url === '/api/version' ? held.then(next) : null) })
+      expect(cardsTab().hidden).toBe(true)
       tab('boards')
       await settle()
       release()
       await settle()
       await pollTick()
+      expect(cardsTab().hidden).toBe(false)
       expect(triggers(bridge)).toEqual([])
-      tab('dashboard')
-      await settle()
+      await enter()
       expect(triggers(bridge)).toEqual(['open'])
-      tab('dashboard')
+      tab('cards')
       await settle()
       expect(triggers(bridge)).toEqual(['open'])
     })
 
-    it('showAgentsHome() posts exactly one from another tab and one from the Dashboard', async () => {
+    it('showAgentsHome() posts none, from another tab or from Home (D5)', async () => {
       const { bridge } = await boot()
-      expect(triggers(bridge)).toEqual(['open'])
       tab('boards')
       await settle()
       click(document.getElementById('sessionsIndicator'))
       await settle()
       expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
-      expect(triggers(bridge)).toEqual(['open', 'open'])
       click(document.getElementById('sessionsIndicator'))
       await settle()
-      expect(triggers(bridge)).toEqual(['open', 'open', 'open'])
+      expect(triggers(bridge)).toEqual([])
     })
 
     it('opening a session panel and a Setup install re-read /api/version and post nothing', async () => {
@@ -308,7 +379,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await settle()
       expect(install).toHaveBeenCalledTimes(1)
       expect(versions()).toBe(before + 2)
-      expect(triggers(bridge)).toEqual(['open'])
+      expect(triggers(bridge)).toEqual([])
       // nor does a session panel opened from another tab (the Inbox's Show on Agents ›)
       await showInbox()
       click(rows()[0])
@@ -318,12 +389,13 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(document.querySelector('.tab[data-tab="dashboard"]')?.getAttribute('aria-selected')).toBe('true')
       expect(document.querySelector<HTMLElement>('#dashboard .dash-focus')?.dataset.session).toBe('k2')
       expect(versions()).toBe(before + 3)
-      expect(triggers(bridge)).toEqual(['open'])
+      expect(triggers(bridge)).toEqual([])
     })
   })
 
   it('an open paints through the next poll tick, never reloadAndPaint(); a held press defers that paint', async () => {
     const { bridge, log, s } = await boot()
+    await enter()
     await pollTick()
     expect(shown()).toEqual(UP_ROWS)
     tab('boards')
@@ -335,7 +407,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     while (loads() === ticks) await vi.advanceTimersByTimeAsync(50)
     await vi.advanceTimersByTimeAsync(2800)
     const before = loads()
-    tab('dashboard')
+    tab('cards')
     await settle()
     expect(triggers(bridge)).toEqual(['open', 'open'])
     // the POST answered with the new state; nothing loaded or painted for it
@@ -362,7 +434,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect([name.isConnected, String(document.getSelection())]).toEqual([true, 'request'])
   })
 
-  describe('the section is global', () => {
+  describe('the section is global, and Home no longer holds it (D4)', () => {
     function seed(d: Database.Database): void {
       insertItem(d, { project: 'agent-inbox', stream: 'main', agent: 'copilot', kind: 'question', title: 'Ship it?' })
       insertItem(d, { project: 'zeta', stream: 'main', agent: 'claude-code', kind: 'note', title: 'A note' })
@@ -373,9 +445,11 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     it('shows the same cards whatever the lanes hold, and under a lens that hides every session', async () => {
       await boot({ seed })
       await pollTick()
+      expect(document.querySelector('#dashboard .mesh-agents, .agents-home .ah-mesh')).toBeNull()
+      await enter()
       const expected = shown()
       expect(expected).toEqual(UP_ROWS)
-      // the one session stops working: it moves to Quiet, beside the section, which stays the same
+      // the one session stops working: it moves to Quiet on Home; the cards stay the same
       upsertActivity(db!, { session: 'c1', agent: 'copilot', project: 'agent-inbox', stream: 'main', doing: 'open', idle: true })
       await pollTick()
       expect(document.querySelector('.agents-home .quiet-lane .qt-rows [data-session-card="session:c1"]')).not.toBeNull()
@@ -392,20 +466,21 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(shown()).toEqual(expected)
     })
 
-    it('shows with no session at all, under the empty state’s text', async () => {
+    it('shows with no session at all; Home’s empty state has no agent section under it', async () => {
       await boot()
       await pollTick()
       const empty = document.querySelector<HTMLElement>('.agents-home .ah-empty')!
       expect(empty.hidden).toBe(false)
+      expect(document.querySelector('.agents-home .mesh-agents')).toBeNull()
+      await enter()
       expect(shown()).toEqual(UP_ROWS)
-      expect(empty.compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
   })
 
-  it('a failed read keeps the cards, marked stale, and never fails the tick; an off body hides the section until /api/version says mesh again', async () => {
+  it('a failed read keeps the cards, marked stale, and never fails the tick; an off body hides the tab once left, until /api/version says mesh again', async () => {
     let failure: (() => Response) | null = null
     const { bridge, log, s } = await boot({ intercept: (url) => (url === '/api/mesh/agents' && failure ? Promise.resolve(failure()) : null) })
-    await pollTick()
+    await enter()
     const stale = () => section()!.querySelector<HTMLElement>('.ma-stale')!
     expect(stale().hidden).toBe(true)
     for (const make of [
@@ -425,27 +500,33 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     await pollTick()
     expect(stale().hidden).toBe(true)
 
-    // off: the section goes and the reads stop
+    // off: the section goes and the reads stop; the tab stays while it is the current one, saying so
     s.body = { on: false, agents: [] }
     s.version = undefined
     await pollTick()
     expect(section()).toBeNull()
+    expect([activeTab(), cardsTab().hidden, document.getElementById('agentCardsOff')?.hidden]).toEqual(['cards', false, false])
     const reads = meshReads(log)
     await pollTick()
     await pollTick()
     expect(meshReads(log)).toBe(reads)
-    // a /api/version read without mesh changes nothing; one with it brings the section back
+    // once left, the tab is gone; a /api/version read without mesh changes nothing
     click(document.getElementById('sessionsIndicator'))
     await settle()
     await pollTick()
+    expect([activeTab(), cardsTab().hidden]).toEqual(['dashboard', true])
     expect(meshReads(log)).toBe(reads)
+    // one with it brings the tab back, and entering reads and shows the cards
     s.version = { agents: 2 }
     s.body = body(unslop(), requestPost())
     click(document.getElementById('sessionsIndicator'))
     await settle()
+    expect(cardsTab().hidden).toBe(false)
+    await enter()
     await pollTick()
-    expect(meshReads(log)).toBe(reads + 1)
+    expect(meshReads(log)).toBeGreaterThan(reads)
     expect(shown()).toEqual(UP_ROWS)
+    expect(document.getElementById('agentCardsOff')?.hidden).toBe(true)
     expect(triggers(bridge)).toEqual(['open', 'open'])
   })
 
@@ -467,16 +548,16 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       return {
         title: document.title,
         badge: badgeCount(),
-        tabs: ['dashboard', 'find', 'boards', 'agent'].map(tabCount),
+        tabs: ['dashboard', 'find', 'boards', 'cards'].map(tabCount),
         needsYou: await (async () => { await showInbox(); return rows().map((el) => el.querySelector('.nrow-title')?.textContent) })(),
       }
     }
     const railCounts = () => [...document.querySelectorAll('#rail .rail-tab')].map((el) => el.textContent?.replace(/\s+/g, ' ').trim() ?? '')
     let railOff: string[] = []
-    it.each([['off', null], ['on, every row amber', 'amber'], ['on, the agent tab open', 'tab']] as const)('mesh %s', async (_label, mode) => {
+    it.each([['off', null], ['on, every row amber', 'amber'], ['on, an agent’s page open', 'page']] as const)('mesh %s', async (_label, mode) => {
       const fake = mode ? fakeMesh(body(unslop({ state: 'mismatch', reason: 'no unslop skill', fix: 'rebuild packages/mesh' }),
         requestPost({ state: 'unreachable', reason: 'connection refused', card: null, cardJson: null }))) : null
-      // V5d: Run history, the agent tab's default, full of runs that went wrong
+      // V5d: Run history, the page's default, full of runs that went wrong
       if (fake) {
         fake.s.runs = {
           unslop: [
@@ -488,12 +569,16 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await boot({ mesh: fake, seed })
       await pollTick()
       await settle()
-      expect(Boolean(section())).toBe(Boolean(mode))
-      if (mode === 'tab') {
+      expect(cardsTab().hidden).toBe(!mode)
+      if (mode) {
+        await enter()
+        expect(Boolean(section())).toBe(true)
+      }
+      if (mode === 'page') {
         await openAgent('unslop')
         await pollTick()
-        expect(agentTab().hidden).toBe(false)
-        expect(agentTab().querySelector('.tab-count')).toBeNull()
+        expect(page().hidden).toBe(false)
+        expect(cardsTab().querySelector('.tab-count')).toBeNull()
         expect(document.querySelectorAll('#agentPagePanel-runs tbody .mar-amber')).toHaveLength(2)
       }
       // the rail as the run without mesh drew it (it.each runs in order)
@@ -514,7 +599,9 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     }
     const { log } = await boot({ mesh: fakeMesh(body(requestPost({ state: 'mismatch', reason: 'no request-post-status skill', fix: 'update agent-inbox or the service', card: summarizeCard(hostile), cardJson: cardJson(hostile) }))) })
     const images = document.querySelectorAll('img').length
-    await pollTick()
+    await enter()
+    // the card's description line is text too
+    expect(meshRow('request-post')?.querySelector('.ma-description')?.textContent).toBe('<a href="https://evil.example/">click</a><script>alert(2)</script>')
     await openAgent('request-post')
     openJson()
     const row = page()
@@ -526,14 +613,14 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(row.querySelector('.ma-json-text')?.textContent).toBe(cardJson(hostile))
     expect(section()!.querySelectorAll('img, a, script, b, i, [href], [src]')).toHaveLength(0)
     expect(page().querySelectorAll('img, a, script, b, i, [href], [src]')).toHaveLength(0)
-    expect(agentTab().querySelectorAll('img, a, [href], [src]')).toHaveLength(0)
+    expect(cardsTab().querySelectorAll('img, a, [href], [src]')).toHaveLength(0)
     expect(document.querySelectorAll('img')).toHaveLength(images)
     await pollTick()
     expect(log.filter((entry) => !/^(GET|POST) \/api\//.test(entry))).toEqual([])
     expect(log.some((entry) => entry.includes('evil.example'))).toBe(false)
   })
 
-  it('unslop\'s usage line (V4): the design\'s words as text, absent with no usage key, unchanged on an idle tick', async () => {
+  it('unslop\'s usage line (V4), on its page: the design\'s words as text, absent with no usage key, unchanged on an idle tick', async () => {
     const statuses: number[] = []
     const { s } = await boot({
       mesh: fakeMesh(body(unslop({ usage: { date: '2026-11-09', tasks: 12, modelMs: 480000 } }), requestPost())),
@@ -544,18 +631,20 @@ describe('the Mesh agents section (agent cards view V3)', () => {
         return res
       },
     })
-    await pollTick()
-    const usage = (name: string) => meshRow(name)!.querySelector<HTMLElement>('.ma-usage')!
-    expect(usage('unslop').hidden).toBe(false)
-    expect(usage('unslop').textContent).toBe('Today: 12 tasks · 8 model-minutes')
-    expect(usage('unslop').children).toHaveLength(0)
-    expect(usage('request-post').hidden).toBe(true)
-    expect(usage('request-post').textContent).toBe('')
+    const usage = () => page().querySelector<HTMLElement>('.map-usage')!
+    await openAgent('request-post')
+    expect([usage().hidden, usage().textContent]).toEqual([true, ''])
+    await openAgent('unslop')
+    expect(usage().hidden).toBe(false)
+    expect(usage().textContent).toBe('Today: 12 tasks · 8 model-minutes')
+    expect(usage().children).toHaveLength(0)
     expect(shown()).toEqual(UP_ROWS)
 
+    await pollTick()
     const records: MutationRecord[] = []
     const observer = new MutationObserver((list) => records.push(...list))
     observer.observe(section()!, { subtree: true, childList: true, characterData: true, attributes: true })
+    observer.observe(page(), { subtree: true, childList: true, characterData: true, attributes: true })
     await pollTick()
     expect(statuses.at(-1)).toBe(304)
     expect(records).toEqual([])
@@ -563,8 +652,8 @@ describe('the Mesh agents section (agent cards view V3)', () => {
 
     s.body = body(unslop(), requestPost())
     await pollTick()
-    expect(usage('unslop').hidden).toBe(true)
-    expect(usage('unslop').textContent).toBe('')
+    expect(usage().hidden).toBe(true)
+    expect(usage().textContent).toBe('')
 
     const words = (u: unknown) => meshRows(body(unslop({ usage: u })), Date.now()).rows[0]!.usage
     expect(words({ date: '2026-11-09', tasks: 1, modelMs: 60_000 })).toBe('Today: 1 task · 1 model-minute')
@@ -583,7 +672,6 @@ describe('the Mesh agents section (agent cards view V3)', () => {
         return res
       },
     })
-    await pollTick()
     await openAgent('request-post')
     openJson()
     await pollTick()
@@ -591,10 +679,10 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     const observer = new MutationObserver((list) => records.push(...list))
     observer.observe(section()!, { subtree: true, childList: true, characterData: true, attributes: true })
     observer.observe(page(), { subtree: true, childList: true, characterData: true, attributes: true })
-    observer.observe(agentTab(), { subtree: true, childList: true, characterData: true, attributes: true })
+    observer.observe(cardsTab(), { subtree: true, childList: true, characterData: true, attributes: true })
     await pollTick()
     await pollTick()
-    // the agent tab keeps the read going, and a 304 paints nothing on it
+    // the open page keeps the read going, and a 304 paints nothing on it
     expect(statuses.slice(-2)).toEqual([304, 304])
     expect(records).toEqual([])
     observer.disconnect()
@@ -623,17 +711,17 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect([pre.firstChild, text.isConnected, String(document.getSelection())]).toEqual([text, true, selected])
   })
 
-  it('Refresh sits in the header row outside the disclosure: it posts refresh, then (and only then) repaints through reloadAndPaint()', async () => {
+  it('Refresh sits in the header row beside the title: it posts refresh, then (and only then) repaints through reloadAndPaint()', async () => {
     let release = () => {}
     let holding = false
     const { bridge, log, s } = await boot({
       intercept: (url, _init, next) => (url === '/api/mesh/agents/refresh' && holding ? new Promise<void>((done) => { release = done }).then(next) : null),
     })
-    await pollTick()
-    const toggle = section()!.querySelector('.ma-toggle')!
+    await enter()
+    const title = section()!.querySelector('.ma-title-text')!
     const refresh = section()!.querySelector('.ma-refresh')!
-    expect(toggle.contains(refresh)).toBe(false)
-    expect(refresh.parentElement).toBe(toggle.parentElement)
+    expect(title.contains(refresh)).toBe(false)
+    expect(refresh.parentElement).toBe(title.parentElement)
     expect(section()!.querySelector('summary .ma-refresh')).toBeNull()
 
     holding = true
@@ -642,7 +730,6 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     const before = loads()
     click(refresh)
     await vi.advanceTimersByTimeAsync(0)
-    expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(triggers(bridge)).toEqual(['open', 'refresh'])
     // nothing reloads while the checks run
     expect(loads()).toBe(before)
@@ -654,16 +741,11 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     expect(shown()[1]?.[1]).toBe('Checking…')
   })
 
-  it('the toggles are window-local, repaint at once and are in frameInputs()', async () => {
+  it('the open page is window-local, repaints at once and is in frameInputs()', async () => {
     const { s } = await boot()
-    await pollTick()
-    const toggle = () => section()!.querySelector('.ma-toggle')!
-    click(toggle())
-    expect(toggle().getAttribute('aria-expanded')).toBe('false')
-    expect(section()!.querySelector<HTMLElement>('.ma-body')?.hidden).toBe(true)
-    click(toggle())
     await openAgent('unslop')
     expect(page().hidden).toBe(false)
+    expect(document.getElementById('agentCardsHome')?.hidden).toBe(true)
     // the last good card's details, marked as such; Card JSON only for a card fetched now
     const lines = pageLines()
     expect(lines).toContainEqual(['Where', 'Local · http://127.0.0.1:4420profile: unslop'])
@@ -674,188 +756,217 @@ describe('the Mesh agents section (agent cards view V3)', () => {
     // the open agent survives polls, a changed body included, and nothing is stored
     s.body = body(unslop({ checkedAt: at(0) }), requestPost())
     await pollTick()
-    expect([activeTab(), page().querySelector('.map-name')?.textContent]).toEqual(['agent', 'unslop'])
+    expect([activeTab(), document.getElementById('pageTitle')?.textContent]).toEqual(['cards', 'unslop'])
     expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toMatch(/mesh|unslop/i)
-    // pinned as source: the section's state joins agentsHome.state(), the page's its own, and both frameInputs()
+    // pinned as source: the page's state joins frameInputs()
     const app = readFileSync(resolve(REPO, 'public', 'app.js'), 'utf8')
     const frame = app.slice(app.indexOf('function frameInputs()'), app.indexOf('function noteOutsideChange'))
     expect(frame).toContain('agentsHome.state()')
     expect(frame).toContain('meshAgentPage.state()')
-    expect(readFileSync(resolve(REPO, 'public', 'agents-home.js'), 'utf8')).toMatch(/state: \(\) => \[[^\n]*mesh\.state\(\)/)
   })
 
-  describe('the agent tab (cards view V5c1)', () => {
-    const pressKey = (key: string) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+  describe('an agent’s page in the Agent cards tab (D3; was the agent tab, cards view V5c1)', () => {
     const heading = () => [document.getElementById('pageKicker')?.textContent, document.getElementById('pageTitle')?.textContent]
-    const rowButton = (name: string) => meshRow(name)
 
-    it('with no mesh key there is no agent tab, and selecting it does nothing', async () => {
+    it('with no mesh key there is no Agent cards tab, and selecting it does nothing', async () => {
       const { bridge, log } = await boot({ mesh: null })
       await pollTick()
       await settle()
       expect(log.map((entry) => entry.replace(/^GET /, ''))).toEqual(BOOT_REQUESTS)
-      expect([agentTab().hidden, page().hidden]).toEqual([true, true])
-      click(agentTab())
+      expect([cardsTab().hidden, document.getElementById('cards')?.hidden, page().hidden]).toEqual([true, true, true])
+      click(cardsTab())
       await settle()
-      expect([activeTab(), page().hidden, agentTab().hidden]).toEqual(['dashboard', true, true])
+      expect([activeTab(), document.getElementById('cards')?.hidden, cardsTab().hidden]).toEqual(['dashboard', true, true])
+      // (a deep link and G M with the mesh off: test/dom/agent-cards-links.test.ts, whose app is the only one listening)
       expect(bridge.posts).toEqual([])
     })
 
-    it('pressing a card opens the agent in the one tab: one open for it, one reloadAndPaint(); Close returns to its card', async () => {
+    it('pressing a card opens the agent in the tab: no check, one reloadAndPaint(); ← Agent cards returns to its card', async () => {
       const { bridge, log, s } = await boot()
+      await enter()
       await pollTick()
       const loads = () => log.filter((entry) => entry === 'GET /api/items').length
       const before = loads()
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
       await openAgent('unslop')
-      expect([agentTab().hidden, agentTab().querySelector('.tab-name')?.textContent, activeTab()]).toEqual([false, 'unslop', 'agent'])
-      expect([page().hidden, document.getElementById('dashboard')?.hidden]).toEqual([false, true])
-      expect(heading()).toEqual(['Mesh agent', 'unslop'])
+      expect([activeTab(), page().hidden, document.getElementById('agentCardsHome')?.hidden, document.getElementById('dashboard')?.hidden]).toEqual(['cards', false, true, true])
+      expect(heading()).toEqual(['Agent cards', 'unslop'])
+      expect(document.getElementById('pageTitle')?.textContent).toBe('unslop')
       expect(page().querySelector('.map-status')?.textContent).toBe('Not running · starts on its first call')
       expect(page().querySelector('.map-checked')?.textContent).toBe('checked 1m ago')
-      expect(posted(bridge)).toEqual([{ trigger: 'open' }, { trigger: 'open', name: 'unslop' }])
-      expect(s.triggers).toEqual(['open', 'open unslop'])
+      expect(page().querySelector('.map-badge')?.textContent).toBe('Built in')
+      // the press posts no check (D5: entering the tab did) and moves focus to the way back
+      expect(posted(bridge)).toEqual([{ trigger: 'open' }])
+      expect(s.triggers).toEqual(['open'])
       expect(loads()).toBe(before + 1)
+      expect(document.activeElement).toBe(page().querySelector('.map-back'))
+      expect(page().querySelector('.map-back')?.textContent).toBe('← Agent cards')
       // V5d: the page opens on Run history, then Details
       const inner = [...page().querySelectorAll<HTMLElement>('.map-tabs [role="tab"]')]
       expect(inner.map((t) => [t.textContent, t.getAttribute('aria-selected'), t.tabIndex])).toEqual([['Run history', 'true', 0], ['Details', 'false', -1]])
       for (const t of inner) expect(page().querySelector(`#${t.getAttribute('aria-controls')}`)?.getAttribute('aria-labelledby')).toBe(t.id)
 
-      // an inner tab, the active agent tab and a poll post nothing
+      // an inner tab, the active Agent cards tab and a poll post nothing
       click(inner[1])
       click(inner[0])
-      click(agentTab())
+      click(cardsTab())
       await settle()
       await pollTick()
-      expect(posted(bridge)).toHaveLength(2)
-      // the agent tab from another tab is an open for that agent; it stays in the list meanwhile
+      expect(posted(bridge)).toHaveLength(1)
+      // the tab from another tab is an open for every agent; the page is still there
       tab('boards')
       await settle()
-      expect(agentTab().hidden).toBe(false)
-      tab('agent')
+      expect(cardsTab().hidden).toBe(false)
+      tab('cards')
       await settle()
-      expect(posted(bridge).slice(2)).toEqual([{ trigger: 'open', name: 'unslop' }])
+      expect(posted(bridge).slice(1)).toEqual([{ trigger: 'open' }])
+      expect([page().hidden, document.getElementById('pageTitle')?.textContent]).toEqual([false, 'unslop'])
 
-      // Close: the Dashboard (one open for every agent), focus on the agent's card in a focused window
-      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-      page().querySelector<HTMLElement>('.map-close')!.focus()
-      click(page().querySelector('.map-close'))
+      // ← Agent cards: the grid again, focus on the agent's card in a focused window
+      page().querySelector<HTMLElement>('.map-back')!.focus()
+      click(page().querySelector('.map-back'))
       await settle()
-      expect([activeTab(), agentTab().hidden, page().hidden]).toEqual(['dashboard', true, true])
-      expect(posted(bridge).slice(3)).toEqual([{ trigger: 'open' }])
-      expect(document.activeElement).toBe(rowButton('unslop'))
-      expect(heading()).toEqual(['', 'Home'])
+      expect([activeTab(), page().hidden, document.getElementById('agentCardsHome')?.hidden]).toEqual(['cards', true, false])
+      expect(posted(bridge)).toHaveLength(2)
+      expect(document.activeElement).toBe(meshRow('unslop'))
+      expect(heading()).toEqual(['', 'Agent cards'])
 
-      // a second press within 60 s posts one open (the server skips the check)
-      await openAgent('unslop')
-      expect(posted(bridge).slice(4)).toEqual([{ trigger: 'open', name: 'unslop' }])
       // another agent replaces it in the same slot
-      tab('dashboard')
-      await settle()
       await openAgent('request-post')
-      // UX pass, slice 4: Home, Plans, Find and the agent (step B folded Chats into Find)
+      // UX pass, slice 4: Home, Plans, Find and (step 1) the Agent cards
       expect(document.querySelectorAll('#tabs .tab:not([hidden])')).toHaveLength(4)
-      expect([agentTab().querySelector('.tab-name')?.textContent, page().querySelector('.map-name')?.textContent, heading()[1]])
-        .toEqual(['request-post', 'request-post', 'request-post'])
+      expect([document.getElementById('pageTitle')?.textContent, heading()[1]]).toEqual(['request-post', 'request-post'])
       expect(pageLines()).toContainEqual(['Where', 'Remote · https://request-post.tailnet-name.ts.net'])
       expect(pageLines().find(([label]) => label === 'Where')).not.toContain('profile: unslop')
-      expect(agentTab().classList.contains('ma-tone-up')).toBe(true)
-      expect(posted(bridge).slice(6)).toEqual([{ trigger: 'open', name: 'request-post' }])
+      expect(page().querySelector('.map-head')?.classList.contains('ma-tone-up')).toBe(true)
+      expect(posted(bridge)).toHaveLength(2)
     })
 
-    it('Settings opened over the agent tab keeps its title through a forced paint and a changed poll', async () => {
-      const { s } = await boot()
-      await pollTick()
+    // Escape and the deep links live in test/dom/agent-cards-keys.test.ts and test/dom/agent-cards-links.test.ts:
+    // window and document listeners accumulate across boots in one file (the harness's blind spot),
+    // so an earlier test's app would answer the same key or hash first.
+
+    it('a repaint keeps the open page, the focus on its control and the cards’ order', async () => {
+      const { s } = await boot({ mesh: fakeMesh(body(unslop(), requestPost(), echo())) })
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+      await enter()
+      const names = () => [...document.querySelectorAll('#cards .ma-card .ma-name')].map((el) => el.textContent)
+      expect(names()).toEqual(['echo', 'request-post', 'unslop'])
       await openAgent('unslop')
-      expect(heading()).toEqual(['Mesh agent', 'unslop'])
+      const refresh = page().querySelector<HTMLElement>('.map-refresh')!
+      refresh.focus()
+      // a poll whose body changed and lists the agents in another order
+      s.body = body(requestPost({ checkedAt: at(0) }), unslop({ state: 'up', reason: null, card: summarizeCard(UNSLOP_CARD), cardJson: cardJson(UNSLOP_CARD), lastSeen: null }), echo())
+      await pollTick()
+      await pollTick()
+      expect([page().hidden, document.getElementById('pageTitle')?.textContent, pageStatus()]).toEqual([false, 'unslop', 'Running'])
+      expect(document.activeElement).toBe(refresh)
+      await back()
+      expect(names()).toEqual(['echo', 'request-post', 'unslop'])
+      // and on the grid, a card keeps focus across a changed poll
+      const card = meshRow('request-post')!
+      card.focus()
+      s.body = body(echo(), unslop(), requestPost({ checkedAt: at(1000) }))
+      await pollTick()
+      expect([document.activeElement, page().hidden, names()]).toEqual([card, true, ['echo', 'request-post', 'unslop']])
+    })
+
+    it('Settings opened over the Agent cards keeps its title through a forced paint and a changed poll', async () => {
+      const { s } = await boot({ seed: (d) => { insertItem(d, { project: 'zeta', stream: 'main', agent: 'copilot', kind: 'note', title: 'A note' }) } })
+      await openAgent('unslop')
+      expect(heading()).toEqual(['Agent cards', 'unslop'])
       click(document.getElementById('gear'))
       await settle()
       expect(heading()).toEqual(['Agent Inbox', 'Settings'])
       s.body = body(unslop({ checkedAt: at(0) }), requestPost())
       await pollTick()
-      click(section()!.querySelector('.ma-toggle'))
+      // a lens change forces a paint
+      const agent = document.getElementById('agentSelect') as HTMLSelectElement
+      agent.value = 'copilot'
+      agent.dispatchEvent(new Event('change', { bubbles: true }))
       await settle()
       expect(heading()).toEqual(['Agent Inbox', 'Settings'])
       click(document.getElementById('gear'))
       await settle()
-      expect([activeTab(), heading()]).toEqual(['agent', ['Mesh agent', 'unslop']])
+      expect([activeTab(), heading()]).toEqual(['cards', ['Agent cards', 'unslop']])
     })
 
-    it('no path lands on an empty agent tab: roving, G keys, a hash, a focus bookmark', async () => {
+    it('every way in: the tablist’s roving, G M, other G keys, an item hash; focus kept on the page across a poll', async () => {
       let id = ''
       await boot({ seed: (d) => { id = insertItem(d, { project: 'demo', stream: 'main', agent: 'copilot', kind: 'question', title: 'Ship it?' }) } })
       await pollTick()
       vi.spyOn(document, 'hasFocus').mockReturnValue(true)
-      // a bookmark captured while the tab was open, then the tab closed
+      // focus on the page's Refresh survives a poll, and going back lands on the card
       await openAgent('unslop')
       page().querySelector<HTMLElement>('.map-refresh')!.focus()
       await pollTick()
       expect(document.activeElement).toBe(page().querySelector('.map-refresh'))
-      click(page().querySelector('.map-close'))
-      await settle()
+      await back()
       await pollTick()
-      expect([activeTab(), document.activeElement]).toEqual(['dashboard', rowButton('unslop')])
+      expect([activeTab(), document.activeElement]).toEqual(['cards', meshRow('unslop')])
 
-      // roving in the library's tablist skips the hidden tab: End lands on Find, the last shown (step B)
+      // roving in the library's tablist reaches the Agent cards, the last tab shown
       const dashboardTab = document.querySelector<HTMLElement>('#tabs .tab[data-tab="dashboard"]')!
+      tab('dashboard')
+      await settle()
       dashboardTab.focus()
       dashboardTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
-      expect(document.activeElement?.getAttribute('data-tab')).toBe('find')
+      expect(document.activeElement?.getAttribute('data-tab')).toBe('cards')
       document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
       expect(document.activeElement?.getAttribute('data-tab')).toBe('dashboard')
 
-      // every G destination: none is the agent tab
+      // every other G destination: none is the Agent cards
       for (const key of ['d', 'i', 'p', 'n', 'h', 'c', 'l']) {
         ;(document.activeElement as HTMLElement | null)?.blur()
         pressKey('g')
         pressKey(key)
         await settle()
-        expect([activeTab(), agentTab().hidden, page().hidden], key).toEqual([activeTab(), true, true])
-        expect(activeTab(), key).not.toBe('agent')
+        expect(activeTab(), key).not.toBe('cards')
       }
+      // G M: the Agent cards, its panel focused
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      pressKey('g')
+      pressKey('m')
+      await settle()
+      expect([activeTab(), document.activeElement?.id]).toEqual(['cards', 'cards'])
       // an item hash lands on the item's own tab
-      tab('dashboard')
-      await settle()
       navigateToHash(`#item/${id}`)
-      await settle()
-      expect([activeTab(), page().hidden]).toEqual(['dashboard', true])
-      // and the hidden tab's own click (selectTab('agent')) does nothing
-      click(agentTab())
       await settle()
       expect(activeTab()).toBe('dashboard')
     })
 
-    it('an agent leaving mesh.json keeps the tab under one line; a reload starts with no agent tab', async () => {
+    it('an agent leaving mesh.json keeps its page under one line; a reload starts with no page open', async () => {
       const { s } = await boot()
-      await pollTick()
       await openAgent('request-post')
       const gone = page().querySelector<HTMLElement>('.map-gone')!
       expect(gone.hidden).toBe(true)
       const lines = pageLines()
       s.body = body(unslop())
       await pollTick()
-      expect([activeTab(), agentTab().hidden, gone.hidden, gone.textContent]).toEqual(['agent', false, false, 'This agent is not in mesh.json any more'])
+      expect([activeTab(), page().hidden, gone.hidden, gone.textContent]).toEqual(['cards', false, false, 'This agent is not in mesh.json any more'])
       expect(pageLines()).toEqual(lines)
       s.body = body(unslop(), requestPost())
       await pollTick()
       expect(gone.hidden).toBe(true)
-      // mesh off: the same line, the tab kept
+      // mesh off: the same line, the page and the tab kept while it is the current one
       s.body = { on: false, agents: [] }
       s.version = undefined
       await pollTick()
-      expect([activeTab(), agentTab().hidden, gone.hidden]).toEqual(['agent', false, false])
+      expect([activeTab(), cardsTab().hidden, page().hidden, gone.hidden]).toEqual(['cards', false, false, false])
 
       expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toMatch(/request-post|agentPage/)
       db?.close()
       db = null
+      // the markup a reload starts from: no page open, the tab hidden until /api/version says mesh
       await boot()
       await pollTick()
-      expect([agentTab().hidden, page().hidden, activeTab()]).toEqual([true, true, 'dashboard'])
+      expect([cardsTab().hidden, page().hidden, activeTab()]).toEqual([true, true, 'dashboard'])
     })
   })
 
-  describe('the card strip (cards view V5c2)', () => {
-    const strip = () => section()!.querySelector<HTMLElement>('.ma-strip')!
-    const cards = () => [...strip().querySelectorAll<HTMLElement>(':scope > li > .ma-card')]
+  describe('the card grid (D2; was the card strip, cards view V5c2)', () => {
+    const grid = () => section()!.querySelector<HTMLElement>('.ma-grid')!
+    const cards = () => [...grid().querySelectorAll<HTMLElement>(':scope > li > .ma-card')]
     const names = () => cards().map((el) => el.querySelector('.ma-name')?.textContent)
     const tabbable = () => cards().filter((el) => el.tabIndex === 0).map((el) => el.querySelector('.ma-name')?.textContent)
     const key = (el: Element | null, k: string) => {
@@ -867,64 +978,88 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       .map((id) => document.getElementById(id)?.textContent)
     const webSearch = (over: Json = {}) => requestPost({ key: 'mesh.json:web-search', name: 'web-search', ...over })
 
-    it('draws one fixed-size card per agent, a native button named by agent and state, the other lines its description', async () => {
+    it('draws one card per agent, a native button named by agent, state and tag, its other lines its description', async () => {
       await boot({ mesh: fakeMesh(body(unslop({ usage: { date: '2026-11-09', tasks: 12, modelMs: 480000 } }), requestPost())) })
-      await pollTick()
-      expect([strip().tagName, strip().getAttribute('role')]).toEqual(['UL', 'list'])
-      expect([...strip().children].map((li) => [li.tagName, li.children.length, (li as HTMLElement).dataset.meshKey]))
+      await enter()
+      expect([grid().tagName, grid().getAttribute('role')]).toEqual(['UL', 'list'])
+      expect([...grid().children].map((li) => [li.tagName, li.children.length, (li as HTMLElement).dataset.meshKey]))
         .toEqual([['LI', 1, 'mesh.json:request-post'], ['LI', 1, 'mesh.json:unslop']])
       expect(cards().map((el) => [el.tagName, el.getAttribute('type')])).toEqual([['BUTTON', 'button'], ['BUTTON', 'button']])
       expect(shown()).toEqual(UP_ROWS)
-      // V5 §2.1: no skill count, protocol or description on a card (Details has them)
-      expect(section()!.textContent).not.toMatch(/A2A|skill|Removes generic/)
+      // D2: the name, the state, one description line, where and the version, the tag; no skill
+      // count or protocol, and the usage and last-run lines live on the agent's page
+      expect(section()!.textContent).not.toMatch(/A2A|skill|Today:|Last run|No runs/)
       const [rp, un] = cards()
-      expect(un!.getAttribute('aria-label')).toBe('unslop, Not running')
-      expect(rp!.getAttribute('aria-label')).toBe('request-post, Reachable')
-      expect(described(un!)).toEqual(['Not running · starts on its first call', 'Local · v0.3.1 · seen 2h ago', 'Today: 12 tasks · 8 model-minutes'])
-      expect(described(rp!)).toEqual(['Reachable', 'Remote · tailnet · v0.0.0-fixture'])
+      expect(un!.getAttribute('aria-label')).toBe('unslop, Not running, Built in')
+      expect(rp!.getAttribute('aria-label')).toBe('request-post, Reachable, Built in')
+      expect(described(un!)).toEqual(['Removes generic AI-writing patterns from prose.', 'Local · v0.3.1 · seen 2h ago'])
+      expect(described(rp!)).toEqual([summarizeCard(RP_CARD).description, 'Remote · tailnet · v0.0.0-fixture'])
       // ids from a counter, never from a name
-      expect(cards().flatMap((el) => described(el).length ? (el.getAttribute('aria-describedby') ?? '').split(' ') : []).join(' ')).not.toMatch(/unslop|request/)
+      expect(cards().flatMap((el) => (el.getAttribute('aria-describedby') ?? '').split(' ')).join(' ')).not.toMatch(/unslop|request/)
       expect(cards().some((el) => el.hasAttribute('aria-current'))).toBe(false)
 
-      // fixed width and height, every line one line; the strip scrolls sideways
+      // the description clamps to two lines, the other lines to one
       attachStylesheet()
-      expect(getComputedStyle(un!).height).toBe('134px')
-      expect(getComputedStyle(un!.querySelector('.ma-status')!).whiteSpace).toBe('nowrap')
-      expect(getComputedStyle(strip()).overflowX).toBe('auto')
-      // jsdom drops what it cannot parse (min(), gradients), so the rest is pinned as source
+      expect(getComputedStyle(un!.querySelector('.ma-facts')!.parentElement!).whiteSpace).toBe('nowrap')
+      // jsdom drops what it cannot parse (container queries, line clamps), so the rest is pinned as source
       const css = readFileSync(resolve(REPO, 'public', 'style.css'), 'utf8')
-      const rule = css.slice(css.indexOf('.ma-strip {'), css.indexOf('}', css.indexOf('.ma-strip {')))
-      expect(rule).toContain('scrollbar-width: thin')
-      expect(rule).toContain('scroll-snap-type: x proximity')
-      for (const edge of ['left', 'right']) {
-        expect(rule).toMatch(new RegExp(`${edge} center / 28px 100% no-repeat local`))
-        expect(rule).toMatch(new RegExp(`${edge} center / 14px 100% no-repeat scroll`))
-      }
-      expect(css.slice(css.indexOf('.ma-card {'), css.indexOf('}', css.indexOf('.ma-card {')))).toContain('width: min(232px, 78cqi);')
+      const rule = (selector: string) => css.slice(css.indexOf(`${selector} {`), css.indexOf('}', css.indexOf(`${selector} {`)))
+      expect(rule('.ma-grid')).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))')
+      expect(rule('.agent-cards')).toContain('container: agent-cards / inline-size')
+      expect(css).toMatch(/@container agent-cards \(max-width: 700px\) \{\s*\.ma-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/)
+      expect(css).toMatch(/@container agent-cards \(max-width: 460px\) \{\s*\.ma-grid \{ grid-template-columns: minmax\(0, 1fr\);/)
+      expect(rule('.ma-description')).toContain('-webkit-line-clamp: 2')
       expect(css).toContain('.ma-card[aria-current="true"] { border-color: var(--app-border-strong); }')
-      const mesh = css.slice(css.indexOf('.ma-body[hidden]'), css.indexOf('.ma-lines {'))
-      expect(mesh).not.toMatch(/transition|animation|scroll-behavior/)
+      // exactly one responsive width query in the file; the tab's rules use no CSS order and no motion
+      expect(css.match(/@media\s*\((?:max|min)-width[^)]*\)/g)).toEqual(['@media (max-width: 1279px)'])
+      const mesh = css.slice(css.indexOf('/* the Agent cards tab (Agent cards step 1)'), css.indexOf('.map-panel {'))
+      expect(mesh).not.toMatch(/(^|[;{\s])order\s*:|@media/m)
+      expect(mesh).not.toMatch(/transition|animation|scroll-behavior|:hover|:focus/)
     })
 
-    it('one card is tabbable; Left, Right, Home and End move focus without animating; J and K never reach the strip', async () => {
+    it('Down from a card with a row below but no card directly below goes to the last card; Up and a last-row Down are unchanged', async () => {
+      await boot({ mesh: fakeMesh(body(unslop(), requestPost(), webSearch(), echo())) })
+      await enter()
+      const [first, second, third, last] = cards()
+      const rects = new Map(cards().map((el, i) => [el, { top: Math.floor(i / 3) * 140, left: (i % 3) * 300, width: 290, height: 132 }]))
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        const r = rects.get(this as HTMLElement) ?? { top: 0, left: 0, width: 0, height: 0 }
+        return { ...r, right: r.left + r.width, bottom: r.top + r.height, x: r.left, y: r.top, toJSON: () => r } as DOMRect
+      })
+      for (const from of [second!, third!]) {
+        from.focus()
+        expect(key(from, 'ArrowDown').defaultPrevented).toBe(true)
+        expect(document.activeElement, from.querySelector('.ma-name')?.textContent).toBe(last)
+      }
+      // the last row stays put, and Up from the last card is what it was: one row up, same column
+      key(last!, 'ArrowDown')
+      expect(document.activeElement).toBe(last)
+      key(last!, 'ArrowUp')
+      expect(document.activeElement).toBe(first)
+      // a card with a card directly below goes there
+      key(first!, 'ArrowDown')
+      expect(document.activeElement).toBe(last)
+    })
+
+    it('one card is tabbable; the arrows, Home and End move focus without animating; J and K never reach the grid', async () => {
       const { s } = await boot({
-        mesh: fakeMesh(body(unslop(), requestPost(), webSearch())),
+        mesh: fakeMesh(body(unslop(), requestPost(), webSearch(), echo())),
         seed: (d) => {
           for (const id of ['s1', 's2']) upsertActivity(d, { session: id, agent: 'copilot', project: 'demo', stream: 'main', doing: `Working ${id}` })
         },
       })
-      await pollTick()
+      await enter()
       // the harness installs its own scrollIntoView as it mounts, so the spy comes after
       const scrolls: unknown[] = []
       vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element, arg?: boolean | ScrollIntoViewOptions) { scrolls.push([this, arg]) })
-      expect(names()).toEqual(['request-post', 'unslop', 'web-search'])
-      expect(tabbable()).toEqual(['request-post'])
-      const [first, middle, last] = cards()
+      expect(names()).toEqual(['echo', 'request-post', 'unslop', 'web-search'])
+      expect(tabbable()).toEqual(['echo'])
+      const [first, second, third, last] = cards()
       first!.focus()
       expect(key(first!, 'ArrowRight').defaultPrevented).toBe(true)
-      expect([document.activeElement, tabbable()]).toEqual([middle, ['unslop']])
-      expect(scrolls.at(-1)).toEqual([middle, { block: 'nearest', inline: 'nearest' }])
-      key(middle!, 'End')
+      expect([document.activeElement, tabbable()]).toEqual([second, ['request-post']])
+      expect(scrolls.at(-1)).toEqual([second, { block: 'nearest', inline: 'nearest' }])
+      key(second!, 'End')
       expect(document.activeElement).toBe(last)
       key(last!, 'ArrowRight')
       expect(document.activeElement).toBe(last)
@@ -932,7 +1067,27 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(document.activeElement).toBe(first)
       key(first!, 'ArrowLeft')
       expect(document.activeElement).toBe(first)
-      key(first!, 'End')
+      // with no layout to read (one column), Up and Down step one card
+      key(first!, 'ArrowDown')
+      expect(document.activeElement).toBe(second)
+      key(second!, 'ArrowUp')
+      expect(document.activeElement).toBe(first)
+      // three columns: Down moves a row, and past the last row stays put
+      const rects = new Map(cards().map((el, i) => [el, { top: Math.floor(i / 3) * 140, left: (i % 3) * 300, width: 290, height: 132 }]))
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        const r = rects.get(this as HTMLElement) ?? { top: 0, left: 0, width: 0, height: 0 }
+        return { ...r, right: r.left + r.width, bottom: r.top + r.height, x: r.left, y: r.top, toJSON: () => r } as DOMRect
+      })
+      key(first!, 'ArrowDown')
+      expect(document.activeElement).toBe(last)
+      key(last!, 'ArrowDown')
+      expect(document.activeElement).toBe(last)
+      key(last!, 'ArrowUp')
+      expect(document.activeElement).toBe(first)
+      key(first!, 'ArrowUp')
+      expect(document.activeElement).toBe(first)
+      third!.focus()
+      key(third!, 'End')
       expect(tabbable()).toEqual(['web-search'])
 
       // an idle tick changes no node and keeps the roving card and focus
@@ -950,20 +1105,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
         expect(document.activeElement, k).toBe(last)
       }
       expect(key(last!, 'Enter').defaultPrevented).toBe(false)
-      expect(activeTab()).toBe('dashboard')
-      // and from the session cards, J and K stop at their own last and first card
-      const sessions = [...document.querySelectorAll<HTMLElement>('.agents-home [data-session-card]')]
-      expect(sessions).toHaveLength(2)
-      sessions[0]!.focus()
-      expect(document.activeElement).toBe(sessions[0])
-      key(sessions[0]!, 'k')
-      expect(document.activeElement).toBe(sessions[0])
-      key(sessions[0]!, 'j')
-      expect(document.activeElement).toBe(sessions[1])
-      key(sessions[1]!, 'j')
-      key(sessions[1]!, 'ArrowRight')
-      expect(document.activeElement).toBe(sessions[1])
-      expect(strip().contains(document.activeElement)).toBe(false)
+      expect([activeTab(), page().hidden]).toEqual(['cards', true])
 
       // a card that leaves hands the tab stop to the first card
       s.body = body(unslop(), requestPost())
@@ -972,38 +1114,45 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       // Enter's activation is the button's click: it opens that agent
       click(cards()[1])
       await settle()
-      expect([activeTab(), agentTab().querySelector('.tab-name')?.textContent]).toEqual(['agent', 'unslop'])
-    })
+      expect([activeTab(), document.getElementById('pageTitle')?.textContent]).toEqual(['cards', 'unslop'])
 
-    it('the open agent’s card carries aria-current, the others none; Close clears it', async () => {
-      await boot()
-      await pollTick()
-      const current = () => cards().filter((el) => el.getAttribute('aria-current') === 'true').map((el) => el.querySelector('.ma-name')?.textContent)
-      await openAgent('unslop')
+      // and on Home, J and K stop at the session cards' own last and first card
       tab('dashboard')
       await settle()
+      const sessions = [...document.querySelectorAll<HTMLElement>('.agents-home [data-session-card]')]
+      expect(sessions).toHaveLength(2)
+      sessions[0]!.focus()
+      key(sessions[0]!, 'k')
+      expect(document.activeElement).toBe(sessions[0])
+      key(sessions[0]!, 'j')
+      expect(document.activeElement).toBe(sessions[1])
+      key(sessions[1]!, 'j')
+      key(sessions[1]!, 'ArrowRight')
+      expect(document.activeElement).toBe(sessions[1])
+      expect(grid().contains(document.activeElement)).toBe(false)
+    })
+
+    it('the open agent’s card carries aria-current, the others none; ← Agent cards clears it', async () => {
+      await boot()
+      const current = () => cards().filter((el) => el.getAttribute('aria-current') === 'true').map((el) => el.querySelector('.ma-name')?.textContent)
+      await openAgent('unslop')
       expect(current()).toEqual(['unslop'])
       expect(cards().filter((el) => el.hasAttribute('aria-current'))).toHaveLength(1)
       await openAgent('request-post')
-      tab('dashboard')
-      await settle()
       expect(current()).toEqual(['request-post'])
       await pollTick()
       expect(current()).toEqual(['request-post'])
-      tab('agent')
-      await settle()
-      click(page().querySelector('.map-close'))
-      await settle()
-      expect(activeTab()).toBe('dashboard')
+      await back()
+      expect(activeTab()).toBe('cards')
       expect(cards().some((el) => el.hasAttribute('aria-current'))).toBe(false)
     })
 
-    it('a poll that changes a card’s text keeps the strip’s scroll position, its nodes and a selection', async () => {
+    it('a poll that changes a card’s text keeps the grid, its nodes and a selection', async () => {
       const { s } = await boot({ mesh: fakeMesh(body(unslop(), requestPost(), webSearch())) })
-      await pollTick()
-      const list = strip()
+      await enter()
+      const list = grid()
       const nodes = cards()
-      list.scrollLeft = 150
+      list.scrollTop = 150
       const name = nodes[0]!.querySelector('.ma-name')!.firstChild!
       const range = document.createRange()
       range.setStart(name, 0)
@@ -1013,8 +1162,8 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       s.body = body(unslop({ state: 'up', reason: null, card: summarizeCard(UNSLOP_CARD), cardJson: cardJson(UNSLOP_CARD), lastSeen: null }), requestPost(), webSearch())
       await pollTick()
       expect(shown()[1]).toEqual(['unslop', 'Running', 'Local · v0.3.1', ''])
-      expect(cards()[1]!.getAttribute('aria-label')).toBe('unslop, Running')
-      expect([strip(), list.scrollLeft, list.isConnected]).toEqual([list, 150, true])
+      expect(cards()[1]!.getAttribute('aria-label')).toBe('unslop, Running, Built in')
+      expect([grid(), list.scrollTop, list.isConnected]).toEqual([list, 150, true])
       expect(cards()).toEqual(nodes)
       expect(cards().every((el, i) => el === nodes[i])).toBe(true)
       expect([name.isConnected, String(document.getSelection())]).toEqual([true, 'request'])
@@ -1029,11 +1178,15 @@ describe('the Mesh agents section (agent cards view V3)', () => {
         }))),
       })
       const images = document.querySelectorAll('img').length
-      await pollTick()
+      await enter()
       const [card] = cards()
-      expect(shown()).toEqual([[evil, 'Card does not match this build · <a href="https://evil.example/">r</a>', 'Remote · tailnet · v<b>9</b>', 'Fix: <script>alert(2)</script>']])
-      expect(card!.getAttribute('aria-label')).toBe(`${evil}, Card does not match this build`)
+      expect(shown()).toEqual([[evil, 'Card does not match this build', 'Remote · tailnet · v<b>9</b>', 'Fix: <script>alert(2)</script>']])
+      expect(card!.getAttribute('aria-label')).toBe(`${evil}, Card does not match this build, Built in`)
       expect(section()!.querySelectorAll('img, a, script, b, [href], [src], [onerror]')).toHaveLength(0)
+      click(card)
+      await settle()
+      expect(pageStatus()).toBe('Card does not match this build · <a href="https://evil.example/">r</a>')
+      expect(page().querySelectorAll('img, a, script, b, [href], [src], [onerror]')).toHaveLength(0)
       expect(document.querySelectorAll('img')).toHaveLength(images)
       expect(log.some((entry) => entry.includes('evil.example'))).toBe(false)
     })
@@ -1062,10 +1215,11 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       return String(document.getSelection())
     }
 
-    it('opens on Run history and reads runs only while the agent tab is active, Run history shows and the document is visible', async () => {
+    it('opens on Run history and reads runs only while its page is open in the Agent cards, Run history shows and the document is visible', async () => {
       const fake = fakeMesh()
       fake.s.runs = { unslop: [run('b', 10 * MIN), run('a', 20 * MIN)], 'request-post': [] }
       const { log } = await boot({ mesh: fake })
+      await enter()
       await pollTick()
       await pollTick()
       expect(log.some((entry) => entry.includes('/api/mesh/agents/runs'))).toBe(false)
@@ -1095,7 +1249,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await settle()
       await pollTick()
       expect(runsReads(log)).toBe(3)
-      tab('agent')
+      tab('cards')
       await settle()
       expect(runRows()).toEqual(nodes)
       await pollTick()
@@ -1110,21 +1264,22 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       await pollTick()
       expect(runsReads(log)).toBe(5)
 
-      // Details is kept while the tab stays open; every open (a re-open of the same agent too) starts on Run history
+      // Details is kept while the page stays open; every open (a re-open of the same agent too) starts on Run history
       click(innerTab('Details'))
       tab('boards')
       await settle()
-      tab('agent')
+      tab('cards')
       await settle()
       expect(innerTab('Details').getAttribute('aria-selected')).toBe('true')
-      tab('dashboard')
-      await settle()
       await openAgent('unslop')
       expect(innerTab('Run history').getAttribute('aria-selected')).toBe('true')
+      // the grid between pages reads no runs
+      await back()
+      const between = runsReads(log)
+      await pollTick()
+      expect(runsReads(log)).toBe(between)
 
       // opening another agent drops the last agent's rows at once, before its own read lands
-      tab('dashboard')
-      await settle()
       click(meshRow('request-post'))
       expect(runRows()).toEqual([])
       await settle()
@@ -1177,8 +1332,6 @@ describe('the Mesh agents section (agent cards view V3)', () => {
         run('r', 3 * MIN, { agent: 'request-post', op: 'status', exit: 11, outcome: 'refused', status: undefined, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined, fields: ['channels'], ms: 300 }),
         run('s', 4 * MIN, { agent: 'request-post', op: 'wait', exit: 124, outcome: 'timed-out', status: undefined, attempts: undefined, rules: undefined, bytesIn: undefined, timing: undefined, phase: 'awaiting-go', ms: 60 * MIN }),
       ]
-      tab('dashboard')
-      await settle()
       await openAgent('request-post')
       expect(cells().map((row) => row.slice(1))).toEqual([
         ['file', 'filed', '1.2 s', 'awaiting-go · blog, x-thread · brand-a'],
@@ -1233,8 +1386,7 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect(runRows().length).toBe(120)
       expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toMatch(/mesh|unslop|more/i)
       // a re-open starts at one page again
-      click(page().querySelector('.map-close'))
-      await settle()
+      await back()
       await openAgent('unslop')
       expect(runRows().length).toBe(50)
       // pinned as source: the shown count joins the page's state(), which frameInputs() reads
@@ -1339,20 +1491,20 @@ describe('the Mesh agents section (agent cards view V3)', () => {
       expect([stale().hidden, runRows()]).toEqual([true, nodes])
     })
 
-    it('the card’s last-run line follows lastRun by the label clock', async () => {
+    it('the last-run line, on the agent’s page, follows lastRun by the label clock', async () => {
       const ended = at(5 * MIN)
       const { s } = await boot({ mesh: fakeMesh(body(unslop({ lastRun: { at: ended, op: 'docs', outcome: 'ok' } }), requestPost({ lastRun: null }))) })
-      await pollTick()
-      const line = (name: string) => meshRow(name)!.querySelector<HTMLElement>('.ma-lastrun')!
-      expect([line('unslop').textContent, line('unslop').hidden]).toEqual([`Last run ${hhmm(ended)} · ok`, false])
-      expect(line('request-post').textContent).toBe('No runs yet')
-      // part of the card's description
-      expect(meshRow('unslop')!.getAttribute('aria-describedby')).toContain(line('unslop').id)
+      const line = () => page().querySelector<HTMLElement>('.map-lastrun')!
+      await openAgent('unslop')
+      expect([line().textContent, line().hidden]).toEqual([`Last run ${hhmm(ended)} · ok`, false])
+      await openAgent('request-post')
+      expect([line().textContent, line().hidden]).toEqual(['No runs yet', false])
       const older = at(2 * 24 * 60 * MIN)
       s.body = body(unslop({ lastRun: { at: ended, op: 'docs', outcome: 'ok' } }), requestPost({ lastRun: { at: older, op: 'file', outcome: 'refused' } }))
       await pollTick()
-      expect(line('request-post').textContent).toBe(`Last run ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(older).getDay()]} · refused`)
-      expect(line('request-post').classList.contains('ma-lastrun')).toBe(true)
+      expect(line().textContent).toBe(`Last run ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(older).getDay()]} · refused`)
+      // not on the card: D2's card has no last-run line
+      expect(meshRow('request-post')!.textContent).not.toContain('Last run')
     })
   })
 

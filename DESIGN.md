@@ -78,14 +78,17 @@ The primary navigation order is:
 1. Home
 2. Plans
 3. Find
-4. Chats
+4. Agent cards, only while the mesh is on (Agent cards step 1)
 
 Home is the cold-launch view and the one place for asks: the focused action queue
 (Needs you) comes first, the opened ask in front beside it, then the lanes that monitor
 real current state and truthful local claim history. There is no separate Inbox page.
 Find is one list of answers, notes, plans and finished work (UX pass, slice 4, in place of
 Notes and History): a row at rest is its type, title, one small extra, project and age, and
-expands in place into the full card.
+expands in place into the full card. Chats are Find's fifth chip, not a page of their own.
+The Agent cards holds "Yours", every A2A agent set up on this Mac, built in or added,
+in a grid of three, two or one columns by its own width; a card opens that agent's page in the
+same tab, under "← Agent cards". The tab never carries a count, and nothing in it is an ask.
 
 At wide widths the project library can collapse to a 72px icon rail. The collapse
 state is window-persistent, preserves the prior resizable width, and never changes
@@ -154,8 +157,8 @@ up to two lines, then its subagents and plan progress. Its first button is **Ope
 session panel; **Message** follows it. **Quiet** is a compact table: state, session (project
 and agent), branch, last caption, since, and the state's main action (Open and Message for an
 idle session, Take over and Resume… for a parked one). Each row is one line, ending in an
-ellipsis, and when a message reaches the session is in Message's tooltip. The Mesh agents
-section follows the rows, then the folds: Ended (with Earlier sessions inside), Dormant,
+ellipsis, and when a message reaches the session is in Message's tooltip. The folds follow the
+rows (the agent cards moved to the Agent cards tab): Ended (with Earlier sessions inside), Dormant,
 Closed projects and Not delivered, shown only with something in them. A lane with nothing
 keeps its header and says so in one quiet line; with no session at all, Working shows the
 first-run message.

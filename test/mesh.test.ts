@@ -10,9 +10,10 @@ import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo, LookupFunction } from 'node:net'
 import { join } from 'node:path'
-import { MESH_FILE_MAX, meshDir, meshFile, parseMesh } from '../src/mesh-config.js'
-import { runAdd, runMeshctl, suffixFrom } from '../src/meshctl.js'
-import { addSummary, addedPlace, reachOf, tailnetRefusal } from '../src/mesh-add.js'
+import { MESH_FILE_MAX, meshDir, meshFile, parseMesh, readCardCopy } from '../src/mesh-config.js'
+import { runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
+import { addSummary, cardSha256, reachOf, tailnetRefusal } from '../src/mesh-add.js'
+import { addedPlace } from '../src/mesh-entry.js'
 import { checkProfile } from '../src/agent-card.js'
 import { verifyCardSignatures } from '../src/card-signature.js'
 import { jws, signWith, testKey } from './signed-card.js'
@@ -952,6 +953,97 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect([before, after].every((a) => a.seen.every((h) => h.authorization === undefined))).toBe(true)
   })
 
+  // Agent cards step 1 (D6): the card copy the app shows an added agent from
+  it('keeps the card copy: add --apply and --move write it, check <id> backfills it, remove deletes it', async () => {
+    const before = await profiledAgent()
+    const t = setup()
+    const cards = join(t.dir, 'mesh', 'cards')
+    const copy = join(cards, 'echo.json')
+    const dry = await t.add(before.url, '--id', 'echo', '--token-file', t.tokenFile)
+    expect(dry.out).toContain(`Would keep the card as ${copy} (0600) for the app to show.`)
+    expect(existsSync(cards)).toBe(false)
+    const on = await t.add(before.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')
+    expect(on.code, on.err).toBe(0)
+    expect(on.out).toContain(`Kept the card as ${copy}.`)
+    const pin = json(t.dir).agents.echo.cardSha256
+    const kept = readCardCopy(t.dir, 'echo')
+    expect(typeof kept === 'object' && kept.card.name).toBe('Echo Agent')
+    // the copy pins as the entry does
+    const copyPin = () => { const c = readCardCopy(t.dir, 'echo'); return typeof c === 'object' ? cardSha256(c.card) : c }
+    expect(copyPin()).toBe(pin)
+    expect([mode(cards), mode(copy)]).toEqual(['700', '600'])
+
+    // --move writes it again for the same card at its new place
+    unlinkSync(copy)
+    const after = await profiledAgent()
+    expect((await t.add(after.url, '--move', 'echo', '--apply')).code).toBe(0)
+    expect(copyPin()).toBe(pin)
+
+    // check <id>: a missing copy is backfilled from the card at the entry's URL, when it matches the pin
+    unlinkSync(copy)
+    const check = async (...args: string[]) => {
+      const out: string[] = []
+      const err: string[] = []
+      const code = await runCheckCommand(args, { env: { AGENT_INBOX_MESH_DIR: t.dir }, home: '/nonexistent-home', out: (x) => out.push(x), err: (x) => err.push(x), tailnet: () => undefined })
+      return { code, out: out.join(''), err: err.join('') }
+    }
+    const first = await check('echo', '--level', 'local')
+    expect(first.out).toContain(`Card ${' '.repeat(6)}"Echo Agent" at ${after.url}`)
+    expect(first.out).toContain(`Card copy  kept the card as ${copy} for the app to show\n`)
+    expect(copyPin()).toBe(pin)
+    expect((await check('echo', '--level', 'local')).out).toContain(`Card copy  ${copy} matches the card\n`)
+    // a copy of another card is replaced; --json prints the JSON only
+    writeFileSync(copy, '{"name":"other"}', { mode: 0o600 })
+    const quiet = await check('echo', '--level', 'local', '--json')
+    expect(JSON.parse(quiet.out)).toMatchObject({ level: 'local' })
+    expect(copyPin()).toBe(pin)
+    // a symlinked copy is left alone and named
+    unlinkSync(copy)
+    writeFileSync(join(t.dir, 'elsewhere.json'), '{}', { mode: 0o600 })
+    symlinkSync(join(t.dir, 'elsewhere.json'), copy)
+    expect((await check('echo', '--level', 'local')).out).toContain(`Card copy  ${copy} breaks the file rule`)
+    expect(lstatSync(copy).isSymbolicLink()).toBe(true)
+    unlinkSync(copy)
+    // an id that is not an added agent is a usage error, and a card URL is check as before
+    expect((await check('nobody')).code).toBe(4)
+    expect((await check('nobody')).err).toContain('nobody is not an agent meshctl add wrote')
+    expect((await check(after.url, '--level', 'local')).out).not.toContain('Card copy')
+    expect(existsSync(copy)).toBe(false)
+
+    // a card that no longer matches the pin is never kept
+    const changed = await profiledAgent((c) => { c.description = 'Changed.' })
+    writeFileSync(meshFile(t.dir), JSON.stringify({ ...json(t.dir), agents: { echo: { ...json(t.dir).agents.echo, card: changed.url, endpoint: `${changed.origin}/a2a` } } }))
+    expect((await check('echo', '--level', 'local')).out).toContain(`Card copy  not kept: the card is not the one you added (pin ${pin.slice(0, 12)}, now `)
+    expect(existsSync(copy)).toBe(false)
+    writeFileSync(meshFile(t.dir), JSON.stringify({ ...json(t.dir), agents: { echo: { ...json(t.dir).agents.echo, card: after.url, endpoint: `${after.origin}/a2a` } } }))
+
+    // remove deletes the copy and its folder with the entry
+    await check('echo', '--level', 'local')
+    expect(t.run('remove', 'echo').out).toContain(`Would delete the card copy ${copy}.`)
+    expect(t.run('remove', 'echo', '--apply').code).toBe(0)
+    expect(existsSync(cards)).toBe(false)
+    expect(pin).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  // a cards folder the copy rule refuses must not stop an add that worked before the copy existed
+  it('add --apply succeeds when the cards folder breaks the folder rule, says so, and check <id> names the folder', async () => {
+    const a = await profiledAgent()
+    const t = setup()
+    const cards = join(t.dir, 'mesh', 'cards')
+    mkdirSync(cards, { recursive: true })
+    chmodSync(cards, 0o755)
+    const r = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')
+    expect(r.code, r.err).toBe(0)
+    expect(r.out).toContain('Could not keep the card copy (cards folder refused); meshctl check echo keeps it later.')
+    expect(json(t.dir).agents.echo.card).toBe(a.url)
+    expect(existsSync(join(t.dir, 'mesh', 'tokens', 'echo'))).toBe(true)
+    expect(existsSync(join(cards, 'echo.json'))).toBe(false)
+    const out: string[] = []
+    await runCheckCommand(['echo', '--level', 'local'], { env: { AGENT_INBOX_MESH_DIR: t.dir }, home: '/nonexistent-home', out: (x) => out.push(x), err: () => {}, tailnet: () => undefined })
+    expect(out.join('')).toContain(`Card copy  ${cards} breaks the folder rule (a symlink, another user's or open to others): fix or delete the folder, then run check again\n`)
+    expect(out.join('')).not.toContain('delete it, then')
+  })
+
   it('--move refuses another agent, a changed card, a card with no id and an entry it cannot match, writing nothing', async () => {
     const t = setup('{"schema":1,"agents":{"mine":{"endpoint":"x"}}}\n')
     const first = await profiledAgent()
@@ -1063,14 +1155,18 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect((await t.add(unsigned.url, '--move', 'echo', '--apply')).code).toBe(0)
   })
 
-  it('(off) an added entry turns on no viewer check and no /api/version key: nothing connects to it', async () => {
+  // Agent cards step 1 (D6): an added agent is shown, so it counts in /api/version's `mesh` key,
+  // and is configured for a trigger; the viewer still never checks or contacts it
+  it('(off) an added entry turns on no viewer check: nothing connects to it, though /api/version counts it', async () => {
     const a = await agent()
     const t = setup()
     expect((await t.add(a.url, '--token-file', t.tokenFile, '--apply')).code).toBe(0)
     const connections = a.connections()
     const mesh = meshAgents({ dir: t.dir })
-    expect(mesh.version()).toBeUndefined()
-    expect(await mesh.trigger('open', 'echo-agent')).toBe(false)
+    expect(mesh.version()).toEqual({ agents: 1 })
+    expect(await mesh.trigger('open', 'echo-agent')).toBe(true)
+    expect(await mesh.trigger('refresh', 'echo-agent')).toBe(true)
+    expect(JSON.stringify(mesh.body())).toContain('"state":"added"')
     await mesh.trigger('refresh')
     t.run('status')
     expect(a.connections()).toBe(connections)
@@ -1078,7 +1174,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/public-address.ts', 'src/unslop-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'public/agents-home.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/public-address.ts', 'src/unslop-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'src/mesh-entry.ts', 'public/agents-home.js', 'public/mesh-section.js', 'public/mesh-agent-page.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -1093,20 +1189,22 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './public-address.js', './version.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-entry.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './public-address.js', './version.js'])
     // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
     // the identity proof (#492) and the https link (#530): Node core only
     expect([...code('src/mesh-identity.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net'])
     // meshctl call (#530): the card rule, the frame, add's rules, the config reader and the link; never a child process
-    expect([...code('src/mesh-call.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', 'node:path', './agent-card.js', './agent-result.js', './mesh-add.js', './mesh-add.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './public-address.js', './mesh-runs.js'])
+    expect([...code('src/mesh-call.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', 'node:path', './agent-card.js', './agent-result.js', './mesh-add.js', './mesh-entry.js', './mesh-entry.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './public-address.js', './mesh-runs.js'])
     // meshctl check (#538): the card rules, add's rules and fetch, the token reader and the links; never a child process
-    expect([...code('src/mesh-check.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', './agent-card.js', './card-signature.js', './mesh-add.js', './mesh-add.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './public-address.js'])
+    expect([...code('src/mesh-check.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:net', './agent-card.js', './card-signature.js', './mesh-add.js', './mesh-add.js', './mesh-entry.js', './mesh-entry.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './public-address.js'])
     expect(local('src/request-post-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-runs.js'])
     for (const file of ['src/unslop-client.ts', 'src/request-post-client.ts', 'src/mesh-call.ts']) expect(code(file), file).toContain(`import type { RunCollector } from './mesh-runs.js'`)
     expect(local('src/mesh-config.ts')).toEqual([])
     // meshctl add's rules and card fetch (#529): HTTP, a hash, the card rule and the tailnet test (#557), never a child process
-    expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net', './agent-card.js', './card-signature.js', './card-signature.js', './mesh-config.js', './public-address.js'])
+    expect([...code('src/mesh-add.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:http', 'node:http', 'node:https', 'node:net', './agent-card.js', './card-signature.js', './card-signature.js', './mesh-config.js', './mesh-entry.js', './mesh-entry.js', './public-address.js'])
+    // the added-entry rule (Agent cards step 1, D6): pure, the card rule and the thumbprint only, so the viewer can read it
+    expect([...code('src/mesh-entry.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['./agent-card.js', './card-signature.js'])
     // the public name's address check (#534): Node core only
     expect([...code('src/public-address.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:dns', 'node:dns', 'node:net', 'node:net'])
     // the card signature verifier and meshctl key (#536): Node core, the card rule and the thumbprint only
@@ -1116,14 +1214,33 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     expect([...code('src/mesh-skills.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:child_process', 'node:fs', 'node:path', './mesh-config.js', './mesh-config.js'])
     // run records (cards view V5 §5.6): Node core only
     expect([...code('src/mesh-runs.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:crypto', 'node:fs', 'node:path'])
-    // the viewer's cards view (agent cards view design §3.4): HTTP, the config rule and the run
-    // reader only (V5 §5.7), so it can never start an agent (no child_process) or open the hub
+    // the viewer's cards view (agent cards view design §3.4): HTTP, the config rule, the added-entry
+    // rule (Agent cards D6), the hash of the card pin and the run reader only (V5 §5.7), so it can
+    // never start an agent (no child_process) or open the hub
     expect([...code('src/mesh-agents.ts').matchAll(SPECIFIERS)].map((m) => m[2]!))
-      .toEqual(['node:fs', 'node:http', 'node:http', 'node:https', 'node:net', 'node:path', './agent-card.js', './mesh-config.js', './mesh-runs.js', './mesh-runs.js'])
+      .toEqual(['node:crypto', 'node:fs', 'node:http', 'node:http', 'node:https', 'node:net', 'node:path', './agent-card.js', './mesh-config.js', './mesh-entry.js', './mesh-runs.js', './mesh-runs.js'])
     // the card rule is pure (agent cards view design §3.4): no import at all, Node core included
     expect([...code('src/agent-card.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
     // the untrusted-result frame (#528, D16): pure too, so every client can share it
     expect([...code('src/agent-result.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual([])
+  })
+
+  // Agent cards step 1 (D6): the viewer shows added agents from their card copies and contacts no
+  // new host, so its whole import graph stays clear of the public address check and add's fetch
+  it('the viewer’s import graph never reaches src/public-address.ts, src/mesh-add.ts or a client', () => {
+    const seen = new Set<string>()
+    const walk = (file: string): void => {
+      if (seen.has(file)) return
+      seen.add(file)
+      for (const m of code(file).matchAll(SPECIFIERS)) {
+        const spec = m[2]!
+        if (spec.startsWith('./')) walk(`src/${spec.slice(2).replace(/\.js$/, '.ts')}`)
+      }
+    }
+    walk('src/viewer-server.ts')
+    expect(seen).toContain('src/mesh-agents.ts')
+    expect(seen).toContain('src/mesh-entry.ts')
+    for (const file of ['src/public-address.ts', 'src/mesh-add.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/meshctl.ts']) expect(seen, file).not.toContain(file)
   })
 
   // unslop design §4.5 (b), request-post design §10: the clients are meshctl subcommands;

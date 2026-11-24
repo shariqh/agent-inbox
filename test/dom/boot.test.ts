@@ -101,7 +101,7 @@ describe('viewer boots against a real DB', () => {
     expect(document.querySelector('.brand')?.textContent).toContain('Agent Inbox')
     expect(document.getElementById('pageTitle')?.textContent).toBe('Home')
     expect(document.getElementById('pageKicker')?.hidden, 'an empty kicker draws nothing').toBe(true)
-    // the agent tab (cards view V5c1) stays hidden until a mesh agent is opened
+    // the Agent cards tab (Agent cards step 1) stays hidden while the mesh is off
     expect([...document.querySelectorAll('#tabs .tab:not([hidden]) .tab-name')].map((tab) => tab.textContent))
       .toEqual(['Home', 'Plans', 'Find'])
     click(document.querySelector('.tab[data-tab="dashboard"]'))

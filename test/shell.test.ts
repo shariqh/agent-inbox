@@ -44,18 +44,22 @@ describe('shell markup', () => {
     expect(css).not.toMatch(/settings-open[^}]*transition/)
   })
 
-  it('has a project rail and the three content tabs in product order, then the agent tab (Live is a footer strip, not a tab)', () => {
+  it('has a project rail and the three content tabs in product order, then the Agent cards tab (Live is a footer strip, not a tab)', () => {
     expect(html).toContain('id="rail"')
     const tabs = [...html.matchAll(/<button class="tab"[^>]*data-tab="(\w+)"/g)].map((m) => m[1])
     // UX pass, slice 4: Find in place of Notes and History, and (step B) of Chats
-    expect(tabs).toEqual(['dashboard', 'boards', 'find', 'agent'])
+    expect(tabs).toEqual(['dashboard', 'boards', 'find', 'cards'])
     expect(html).not.toContain('data-tab="live"')
-    // cards view V5 §3.3: hidden until an agent is open, with no count, and CSS that lets it hide
-    const agent = /<button class="tab"[^>]*data-tab="agent"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? ''
-    expect(agent).toMatch(/data-tab="agent"[^>]* hidden>/)
-    expect(agent).not.toContain('tab-count')
+    // Agent cards step 1 (D1): hidden until the mesh is on, with no count, and CSS that lets it hide
+    const cards = /<button class="tab"[^>]*data-tab="cards"[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? ''
+    expect(cards).toMatch(/data-tab="cards"[^>]* hidden>/)
+    expect(cards).not.toContain('tab-count')
+    expect(cards).toContain('<span class="tab-name">Agent cards</span>')
     expect(css).toContain('.tab[hidden] { display: none; }')
-    expect(html).toMatch(/<section class="panel" id="agentPage" role="tabpanel"[^>]* hidden><\/section>/)
+    // the agent's page folds into the tab's panel (D3): no panel or tab of its own
+    expect(html).toMatch(/<section class="panel" id="cards" role="tabpanel"[^>]* hidden>/)
+    expect(html).toMatch(/<div id="agentPage" class="agent-cards-agent" hidden><\/div>/)
+    expect(html).not.toContain('data-tab="agent"')
   })
 
   it('gives every counted tab a count slot', () => {
@@ -399,9 +403,9 @@ describe('closed projects (issue #32)', () => {
     expect(fn('function wireTablist(', '\nfunction btn(')).toContain('!t.hidden')
   })
 
-  // cards view V5 §3.3: no G key, hash or stale caller lands on an empty agent tab
-  it('selectTab refuses the agent tab with no agent open, and navigateKeyboard focuses only a tab it selected', () => {
-    expect(fn('function selectTab(', '\nfunction initTabs(')).toMatch(/id === 'agent' && !meshAgentPage\.current\(\)\)\) return/)
+  // Agent cards step 1 (D1): no G key, hash or stale caller lands on the Agent cards while the mesh is off
+  it('selectTab refuses the Agent cards with the mesh off, and navigateKeyboard focuses only a tab it selected', () => {
+    expect(fn('function selectTab(', '\nfunction initTabs(')).toMatch(/id === 'cards' && !agentCardsShown\(\)\)\) return/)
     expect(fn('function navigateKeyboard(', '\nfunction initKeys(')).toContain('if (activeTab === destination) focusKeyboardPanel(')
   })
 

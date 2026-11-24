@@ -17,17 +17,20 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs
 import type { LookupFunction } from 'node:net'
 import { agentIdRefusal, checkAddedCard, checkProfile, claim, egressRefusal, residencyRefusal } from './agent-card.js'
 import { tooDeep, unstableReason, verifyCardSignatures } from './card-signature.js'
-import { SEMVER, addedPlace, bearerUsable, fetchCard } from './mesh-add.js'
-import type { FetchSeams, Place } from './mesh-add.js'
+import { SEMVER, bearerUsable, fetchCard } from './mesh-add.js'
+import type { FetchSeams } from './mesh-add.js'
+import { addedPlace } from './mesh-entry.js'
+import type { Place } from './mesh-entry.js'
 import { inTailnet, readTokenFile } from './mesh-config.js'
 import { bareLink, meshLink, tlsLink } from './mesh-identity.js'
 import type { MeshLink } from './mesh-identity.js'
 import { publicLookup } from './public-address.js'
 
-export const CHECK_USAGE = `usage: agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
+export const CHECK_USAGE = `usage: agent-inbox-meshctl check <card-url> | <id> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
 Checks an A2A agent's card against what meshctl add needs (--level local) or what someone else
 needs to add it (publishable, the default), and writes nothing. The card URL is
-http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>]. Live tests run only with
+http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>]; an <id> is an agent meshctl add
+wrote, whose card copy for the app check writes when the card still matches its pin. Live tests run only with
 --token-file (a 0600 file you own; the token goes only to the card's origin) and create no work; --send
 sends the message in <file> as one real task. --strict fails on any should. Exit 0: conforms;
 17: a test failed; 15: the card could not be fetched; 4: usage. Tests: docs/mesh-call.md.
@@ -46,6 +49,8 @@ export interface CheckIo {
   cardMs?: number
   pollMs?: number
   sendMs?: number
+  /** the card as fetched, before any test reads it: `check <id>` keeps its copy (meshctl.ts) */
+  card?: (card: Json) => void
 }
 
 type Json = Record<string, unknown>
@@ -400,6 +405,7 @@ export async function runCheck(args: string[], io: CheckIo): Promise<number> {
   const outcomes = new Map<string, Outcome>()
   const fetched = await fetchCard(place, io.cardMs, seams)
   const card = 'card' in fetched && !tooDeep(fetched.card) ? fetched.card : undefined
+  if (card) io.card?.(card)
   if ('failed' in fetched) outcomes.set('card.fetch', miss(fetched.failed === 'http' ? 'http-status' : fetched.failed))
   else outcomes.set('card.fetch', card ? PASS : miss('too-deep'))
   const shape = card ? checkAddedCard(card) : undefined

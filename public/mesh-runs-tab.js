@@ -1,4 +1,4 @@
-// The agent tab's Run history (cards view V5 design
+// An agent page's Run history, in the Agent cards tab (cards view V5 design
 // docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md §5.8, V5d): the
 // newest run records `/api/mesh/agents/runs` returns for the open agent, as a
 // summary line, a table keyed by run `id` and sorted by end time, Show more, an

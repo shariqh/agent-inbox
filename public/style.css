@@ -2158,75 +2158,83 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ah-fold > .ah-cards { margin-top: 10px; }
 .ah-fold-earlier { margin-top: 10px; }
 .ah-undelivered:empty { display: none; }
-/* the Mesh agents section (agent cards view V3): global, never an ask, so amber
-   (--app-warning) for a card it cannot use and never the attention colour; no motion */
-.mesh-agents { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--app-border); }
-.ma-body[hidden], .ma-stale[hidden], .ma-others[hidden], .ma-line[hidden], .ma-fix[hidden], .ma-usage[hidden], .ma-json[hidden] { display: none; }
-.ma-head { display: flex; align-items: center; gap: 10px; }
-.ma-toggle { padding: 0; border: 0; background: none; color: var(--app-text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
-.ma-toggle::after { margin-left: 6px; color: var(--app-text-soft); content: "▸"; }
-.ma-toggle[aria-expanded="true"]::after { content: "▾"; }
-.ma-checked { color: var(--app-text-soft); font-size: 11.5px; }
+/* the Agent cards tab (Agent cards step 1): "Yours" in a grid that follows its own
+   column's width (a container query, never a second width query), or one agent's page in its
+   place. Global and never an ask, so amber (--app-warning) for a card it cannot use and never the
+   attention colour; no motion, and nothing enters or leaves the layout on hover or focus. */
+.tab[hidden] { display: none; }
+.agent-cards {
+  container: agent-cards / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 900px;
+  margin: 0 auto;
+  padding-top: var(--sp-2);
+  font-size: 12.5px;
+}
+.agent-cards-home[hidden], .agent-cards-agent[hidden], .agent-cards-off[hidden] { display: none; }
+.agent-cards-off { margin: 0; color: var(--app-muted); }
+.ma-stale[hidden], .ma-others[hidden], .ma-line[hidden], .ma-fix[hidden], .ma-json[hidden], .map-usage[hidden], .map-lastrun[hidden] { display: none; }
+.ma-head { display: flex; align-items: baseline; gap: 10px; padding: 0 4px; }
+.ma-title-text { margin: 0; color: var(--app-text); font-size: 17px; font-weight: 600; }
+.ma-count, .ma-checked { color: var(--app-text-soft); font-size: 12.5px; }
 .ma-refresh { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
 .ma-stale, .ma-others { margin: 8px 0 0; color: var(--app-muted); font-size: 12px; }
-/* cards view V5 §2.3: a strip of fixed-width cards that scrolls sideways. The compact tab
-   row's trick at both ends, no JS: a shade at an edge while more cards wait past it, none
-   once scrolled there (each `local` cover scrolls with the cards, each `scroll` shade stays
-   at its edge; the cards are see-through so the shade shows on them). The thin scrollbar
-   stays visible for a mouse without a horizontal wheel. Nothing animates. */
-.ma-strip {
-  display: flex;
-  gap: 10px;
-  margin: 10px 0 0;
-  padding: 2px 2px 8px;
-  overflow-x: auto;
+/* three columns, two, then one, by the page's own column; the cards keep their DOM order */
+.ma-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 0;
   list-style: none;
-  scroll-snap-type: x proximity;
-  scroll-padding-inline: 2px;
-  scrollbar-width: thin;
-  background:
-    linear-gradient(to right, var(--app-surface) 45%, transparent) left center / 28px 100% no-repeat local,
-    linear-gradient(to left, var(--app-surface) 45%, transparent) right center / 28px 100% no-repeat local,
-    linear-gradient(to right, color-mix(in srgb, var(--app-text) 16%, transparent), transparent) left center / 14px 100% no-repeat scroll,
-    linear-gradient(to left, color-mix(in srgb, var(--app-text) 16%, transparent), transparent) right center / 14px 100% no-repeat scroll;
 }
-.ma-item { flex: 0 0 auto; scroll-snap-align: start; }
-.ma-card, .map-head, .tab[data-tab="agent"] { --ma-tone: var(--app-text-soft); }
+@container agent-cards (max-width: 700px) {
+  .ma-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container agent-cards (max-width: 460px) {
+  .ma-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+}
+.ma-item { display: flex; min-width: 0; }
+.ma-card, .map-head { --ma-tone: var(--app-text-soft); }
 .ma-tone-up { --ma-tone: var(--app-success); }
 .ma-tone-amber { --ma-tone: var(--app-warning); }
-/* a fixed size, so the strip never changes height as text changes; every line clamps to one */
+/* every line keeps its place: the description clamps to two lines, the others to one */
 .ma-card {
   display: flex;
-  /* 232px, narrowed against the lanes' dash-lanes container, the Dashboard's width while no
-     session panel is open beside them (not the viewport, which also counts the padding
-     around the strip), so the next card still peeks */
-  width: min(232px, 78cqi);
-  height: 134px;
+  width: 100%;
+  min-height: 132px;
   box-sizing: border-box;
   flex-direction: column;
-  gap: 3px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 16px 18px;
   overflow: hidden;
   border: 1px solid var(--app-border);
-  border-radius: 10px;
-  background: transparent;
+  border-radius: 14px;
+  background: var(--app-surface);
   color: var(--app-text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 13.5px;
   text-align: left;
   cursor: pointer;
 }
 .ma-card[aria-current="true"] { border-color: var(--app-border-strong); }
 .ma-line { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ma-title { display: flex; align-items: center; gap: 8px; }
-.ma-title .ma-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ma-top { display: flex; align-items: center; gap: 10px; }
+.ma-top .ma-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 15.5px; font-weight: 600; }
+.ma-state { display: inline-flex; flex: none; align-items: center; gap: 6px; margin-left: auto; color: var(--app-muted); font-size: 12.5px; }
+.ma-card.ma-tone-amber .ma-state, .map-head.ma-tone-amber .map-status, .ma-fix { color: var(--app-warning); }
 .ma-dot { width: 8px; height: 8px; flex: none; align-self: center; border-radius: 50%; background: var(--ma-tone); }
 .ma-tone-neutral .ma-dot { border: 1.5px solid var(--ma-tone); background: transparent; }
-.ma-name { font-weight: 700; }
-.ma-status { color: var(--app-muted); }
-.ma-card.ma-tone-amber .ma-status, .map-head.ma-tone-amber .map-status, .ma-fix { color: var(--app-warning); }
-.ma-facts, .ma-usage, .ma-lastrun { color: var(--app-text-soft); font-size: 11.5px; }
-.ma-fix { font-size: 11.5px; }
+.ma-description { display: -webkit-box; color: var(--app-muted); white-space: normal; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ma-fix { font-size: 12px; }
+/* a missing card copy is not a problem: its line reads like the description, not like a warning */
+.ma-fix.ma-quiet { color: var(--app-muted); }
+.ma-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; color: var(--app-text-soft); font-size: 12.5px; }
+.ma-facts { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ma-badge, .map-badge { flex: none; margin-left: auto; padding: 1px 8px; border-radius: 999px; background: var(--app-soft); color: var(--app-muted); font-size: 11.5px; }
+.map-badge:empty { display: none; }
 .ma-lines { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
 .ma-lines dt { color: var(--app-text-soft); font-weight: 600; }
 .ma-lines dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
@@ -2234,18 +2242,15 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ma-json { margin-top: 8px; }
 .ma-json > summary { color: var(--app-muted); font-size: 12px; cursor: pointer; }
 .ma-json-text { max-height: 360px; margin: 6px 0 0; padding: 8px; overflow: auto; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-soft); font-size: 11.5px; white-space: pre; user-select: text; }
-/* the agent tab (cards view V5c1): one slot at the end of the tabs, hidden with no agent open (`.tab`'s
-   display would otherwise beat the UA's [hidden] rule); its icon is the agent's state dot; no count */
-.tab[hidden] { display: none; }
-.tab[data-tab="agent"] .ma-dot { margin-inline: 3.5px; }
-#agentPage { font-size: 12.5px; }
+/* an agent's page in the tab: "← Agent cards" first, then its header */
+.map-back { align-self: flex-start; margin: 0 0 10px; padding: 3px 4px; border: 0; border-radius: 7px; background: none; color: var(--app-muted); font: inherit; font-size: 13px; cursor: pointer; }
 .map-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
-.map-name { font-weight: 700; }
+.map-head .map-badge { margin-left: 0; }
 .map-status { color: var(--app-muted); }
 .map-checked { color: var(--app-text-soft); font-size: 11.5px; }
-.map-refresh, .map-close { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
-#agentPage > .ma-fix, .map-gone, #agentPage > .ma-stale { margin: 8px 0 0; font-size: 12px; }
-.map-gone { color: var(--app-muted); }
+.map-refresh { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+#agentPage > .ma-fix, .map-note, .map-gone, #agentPage > .ma-stale, .map-usage, .map-lastrun { margin: 8px 0 0; font-size: 12px; }
+.map-note, .map-gone, .map-usage, .map-lastrun { color: var(--app-muted); }
 .map-gone[hidden], .map-panel[hidden] { display: none; }
 .map-tabs { display: flex; gap: 4px; margin: 14px 0 0; border-bottom: 1px solid var(--app-border); }
 .map-tab { padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--app-muted); font: inherit; cursor: pointer; }
@@ -3091,12 +3096,19 @@ body.sidebar-collapsed .gear[data-shortcut]::after { display: none; }
     }
   }
 
+  /* four tabs do not fit a phone-width row with their names: the Agent cards tab keeps its icon,
+     and its name stays in its title (a container query on the masthead, not a second width query) */
+  @container compact-masthead (max-width: 520px) {
+    .tabstrip .tab[data-tab="cards"] .tab-name { display: none; }
+  }
   @container compact-masthead (max-width: 440px) {
     .sidebar-shell {
       grid-template-columns: minmax(0, 1fr) auto auto;
       grid-template-rows: auto auto auto;
     }
     .brand { grid-column: 1; grid-row: 1; }
+    /* four tabs fit the row here without scrolling */
+    #tabs .tab { padding-inline: 7px; }
     /* the chip keeps its dot; its words stay in its title and label */
     .sessions-indicator { grid-column: 2; grid-row: 1; padding: 0 11px; }
     .sessions-indicator .si-text { display: none; }

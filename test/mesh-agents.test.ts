@@ -6,12 +6,14 @@ import { createServer as createHttpServer } from 'node:http'
 import type { IncomingHttpHeaders, Server, ServerResponse } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import type { LookupFunction, Server as NetServer } from 'node:net'
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { startServer } from '../packages/mesh/src/a2a.js'
 import { meshAgents } from '../src/mesh-agents.js'
-import { loopbackPort, requestPostEndpoint } from '../src/mesh-config.js'
+import { canonicalCard, cardJson, summarizeCard } from '../src/agent-card.js'
+import { loopbackPort, requestPostEndpoint, writeCardCopy } from '../src/mesh-config.js'
 import type { MeshAgentsOpts } from '../src/mesh-agents.js'
 import { createViewer } from '../src/viewer.js'
 import { openDb } from '../src/store.js'
@@ -197,6 +199,15 @@ describe('checks and their words (design §2.4, §4.2-§4.5)', () => {
     const headers = agent.requests[0]!
     expect(headers.host).toBe(`127.0.0.1:${agent.port}`)
     for (const name of ['authorization', 'origin', 'cookie', 'a2a-version']) expect(headers[name], name).toBeUndefined()
+  })
+
+  it('each built-in agent carries the one line the card shows while no card text is known', async () => {
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' }, 'request-post': { endpoint: 'https://svc.tailnet-example.ts.net' } } })
+    const rows = (await s.agents()).agents as Json[]
+    expect(rows.map((a) => [a.name, a.blurb])).toEqual([
+      ['request-post', 'Files a post request with your publishing service.'],
+      ['unslop', 'Copy-edits public text by the unslop rules.'],
+    ])
   })
 
   it('unslop refused is not-running; a good card then a failure shows lastSeen, never up', async () => {
@@ -562,5 +573,140 @@ describe('run history (cards view V5 §5.7, slice V5b)', () => {
     append(s.dir, rec(s.clock.t - 3_600_000))
     s.clock.t += 5_000
     expect(lastRuns(await s.agents())[1][1].at).toBe(later['at'])
+  })
+})
+
+// Agent cards step 1 (D6): an agent meshctl add wrote is shown from the card copy meshctl keeps,
+// only while that copy matches the entry's pin; the viewer never checks or contacts it.
+describe('added agents (Agent cards step 1, D6)', () => {
+  const ECHO: Json = {
+    name: 'Echo Agent', description: 'Echoes one text.', version: '1.0.0',
+    supportedInterfaces: [{ url: 'http://127.0.0.1:4555/a2a', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+    capabilities: { streaming: true },
+    securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } },
+    securityRequirements: [{ schemes: { bearer: { list: [] } } }],
+    defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain'],
+    skills: [{ id: 'echo', name: 'echo', description: 'Echo one text.', tags: ['test'] }],
+  }
+  const pinOf = (card: unknown) => createHash('sha256').update(canonicalCard(card)).digest('hex')
+  const entry = (over: Json = {}) => ({ card: 'http://127.0.0.1:4555/.well-known/agent-card.json', endpoint: 'http://127.0.0.1:4555/a2a', tokenFile: '/nonexistent/token', cardSha256: pinOf(ECHO), ...over })
+  const added = (body: Json) => body.agents.find((a: Json) => a.name === 'echo')
+  const copyDir = (dir: string) => join(dir, 'mesh', 'cards')
+  const mode = (path: string) => (statSync(path).mode & 0o777).toString(8)
+
+  it('a matching copy shows the card; the state is added, neutral, never checked, and /api/version counts it', async () => {
+    const counter = await serve(ECHO)
+    const s = setup({ schema: 1, agents: { echo: entry({ card: `http://127.0.0.1:${counter.port}/.well-known/agent-card.json`, endpoint: `http://127.0.0.1:${counter.port}/a2a` }) } })
+    writeCardCopy(s.dir, 'echo', ECHO)
+    expect([mode(copyDir(s.dir)), mode(join(copyDir(s.dir), 'echo.json'))]).toEqual(['700', '600'])
+    expect((await (await s.app.request('/api/version')).json()).mesh).toEqual({ agents: 1 })
+    expect(await (await s.post({ trigger: 'open' })).json()).toEqual({ ok: true })
+    expect(await (await s.post({ trigger: 'refresh', name: 'echo' })).json()).toEqual({ ok: true })
+    const body = await s.agents()
+    expect([body.others, 'othersFix' in body]).toEqual([0, false])
+    expect(added(body)).toMatchObject({
+      key: 'mesh.json:echo', name: 'echo', kind: 'added', where: 'local', state: 'added', reason: null, fix: null, checkedAt: null,
+      card: { name: 'Echo Agent', description: 'Echoes one text.', version: '1.0.0' }, cardJson: cardJson(ECHO), lastSeen: null, lastRun: null,
+    })
+    // nothing connects to an added agent: not a read, an open or a Refresh
+    expect(counter.connections).toBe(0)
+  })
+
+  it('where: Local on loopback, tailnet for a tailnet name, public for a public entry', async () => {
+    const s = setup({
+      schema: 1, agents: {
+        a: entry(), b: entry({ card: 'https://agent.tailnet-example.ts.net/.well-known/agent-card.json', endpoint: 'https://agent.tailnet-example.ts.net/a2a', tokenFile: undefined }),
+        c: entry({ card: 'https://agent.example.com/.well-known/agent-card.json', endpoint: 'https://agent.example.com/a2a', tokenFile: undefined, public: true }),
+      },
+    })
+    expect((await s.agents()).agents.map((a: Json) => [a.name, a.where, a.kind])).toEqual([['a', 'local', 'added'], ['b', 'tailnet', 'added'], ['c', 'public', 'added']])
+  })
+
+  it('a missing, symlinked or oversized copy shows the id and the line to run; a mismatching one says so', async () => {
+    const s = setup({ schema: 1, agents: { echo: entry() } })
+    const line = (body: Json) => [added(body).card, added(body).cardJson, added(body).fix]
+    const RUN = 'Run meshctl check echo to show its card'
+    // missing
+    expect(line(await s.agents())).toEqual([null, null, RUN])
+    // mismatching: another card than the pinned one
+    writeCardCopy(s.dir, 'echo', { ...ECHO, description: 'Something else.' })
+    s.clock.t += 5_000
+    expect(line(await s.agents())).toEqual([null, null, 'Its card copy does not match; run meshctl check echo'])
+    // a symlink to the right card is refused
+    const real = join(s.dir, 'real.json')
+    writeFileSync(real, JSON.stringify(ECHO), { mode: 0o600 })
+    renameSync(join(copyDir(s.dir), 'echo.json'), join(s.dir, 'moved.json'))
+    symlinkSync(real, join(copyDir(s.dir), 'echo.json'))
+    s.clock.t += 5_000
+    expect(line(await s.agents())).toEqual([null, null, RUN])
+    renameSync(join(copyDir(s.dir), 'echo.json'), join(s.dir, 'link.json'))
+    // over the 64 KiB cap, though it pins right
+    const big = { ...ECHO, padding: 'x'.repeat(64 * 1024) }
+    writeFileSync(join(copyDir(s.dir), 'echo.json'), JSON.stringify(big), { mode: 0o600 })
+    s.write({ schema: 1, agents: { echo: entry({ cardSha256: pinOf(big) }) } })
+    s.clock.t += 5_000
+    expect(line(await s.agents())).toEqual([null, null, RUN])
+    // open to others: refused too; the right copy, private, shows
+    writeFileSync(join(copyDir(s.dir), 'echo.json'), JSON.stringify(ECHO), { mode: 0o644 })
+    chmodSync(join(copyDir(s.dir), 'echo.json'), 0o644)
+    s.write({ schema: 1, agents: { echo: entry() } })
+    s.clock.t += 5_000
+    expect(line(await s.agents())).toEqual([null, null, RUN])
+    chmodSync(join(copyDir(s.dir), 'echo.json'), 0o600)
+    s.clock.t += 5_000
+    expect(line(await s.agents())).toEqual([summarizeCard(ECHO), cardJson(ECHO), null])
+    // a cards folder that is a symlink is refused as a whole
+    renameSync(copyDir(s.dir), join(s.dir, 'cards-real'))
+    symlinkSync(join(s.dir, 'cards-real'), copyDir(s.dir))
+    s.clock.t += 5_000
+    expect(line(await s.agents())).toEqual([null, null, RUN])
+  })
+
+  it('an added agent says the app does not check it, and a missing copy is a quiet line, not a problem', async () => {
+    const s = setup({ schema: 1, agents: { echo: entry() } })
+    const row = async () => added(await s.agents())
+    expect(await row()).toMatchObject({ checkNote: 'The app does not check added agents. meshctl check echo does.', fixQuiet: true })
+    // a mismatching copy is a problem state
+    writeCardCopy(s.dir, 'echo', { ...ECHO, description: 'Something else.' })
+    s.clock.t += 5_000
+    expect(await row()).toMatchObject({ fixQuiet: false })
+    // a refused copy too
+    chmodSync(join(copyDir(s.dir), 'echo.json'), 0o644)
+    s.clock.t += 5_000
+    expect(await row()).toMatchObject({ fixQuiet: false })
+    // the right copy: no line at all
+    writeCardCopy(s.dir, 'echo', ECHO)
+    s.clock.t += 5_000
+    expect(await row()).toMatchObject({ fix: null, fixQuiet: false })
+  })
+
+  it('an invalid entry is not shown: it counts in others; one that is not an added entry, or a built-in name, too', async () => {
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: 'http://127.0.0.1:4420' }, echo: entry(), bad: entry({ cardSha256: 'nope' }), later: {}, 'web-search': { endpoint: 'http://127.0.0.1:4430' } } })
+    expect((await (await s.app.request('/api/version')).json()).mesh).toEqual({ agents: 2 })
+    const body = await s.agents()
+    expect(body.agents.map((a: Json) => a.name)).toEqual(['echo', 'unslop'])
+    // neither built in nor a valid added entry: bad and later; web-search is built in
+    expect(body.others).toBe(2)
+    // the page's line says what to run; the words naming the command come from here (design §3.4)
+    expect(body.othersFix).toBe('run meshctl status')
+    expect(JSON.stringify(body)).not.toMatch(/"bad"|later/)
+    // only invalid entries: off, byte-identical
+    const off = setup({ schema: 1, agents: { bad: entry({ cardSha256: 'nope' }) } })
+    expect(await (await off.app.request('/api/version')).text()).toBe(await (await off.plain.request('/api/version')).text())
+    expect(await off.agents()).toEqual({ on: false, agents: [] })
+  })
+
+  it('runs: an added agent’s records are read and its lastRun shown; the forget command names its id', async () => {
+    const s = setup({ schema: 1, agents: { echo: entry() } })
+    mkdirSync(join(s.dir, 'mesh', 'runs'), { recursive: true, mode: 0o700 })
+    chmodSync(join(s.dir, 'mesh', 'runs'), 0o700)
+    const at = new Date(s.clock.t - 60_000)
+    const ymd = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`
+    writeFileSync(join(s.dir, 'mesh', 'runs', `echo-${ymd}.jsonl`), `${JSON.stringify({ v: 1, id: 'abcdefghij', agent: 'echo', op: 'call', at: at.toISOString(), ms: 300, exit: 0, outcome: 'ok' })}\n`, { mode: 0o600 })
+    expect(added(await s.agents()).lastRun).toEqual({ at: at.toISOString(), op: 'call', outcome: 'ok' })
+    const runs = await (await s.app.request('/api/mesh/agents/runs?name=echo')).json()
+    expect([runs.on, runs.runs.length, runs.forget]).toEqual([true, 1, 'npm run meshctl -- forget-runs --id echo'])
+    // an id mesh.json does not hold is still a 400
+    expect((await s.app.request('/api/mesh/agents/runs?name=other')).status).toBe(400)
   })
 })

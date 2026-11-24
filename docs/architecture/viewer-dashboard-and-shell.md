@@ -251,51 +251,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   to session does, so no launch is ever unreachable. Subagents carry `status()`'s
   optional `state` into the panel's list and the card's tooltip. Nothing it draws
   reaches attention.
-- The Agents home's **Mesh agents** section (agent cards view V3, design
-  `docs/superpowers/specs/2026-11-09-agent-cards-view-design.md` §2, §4.5) is
-  `public/mesh-section.js`, mounted by `agents-home.js` in the Quiet lane after its rows and
-  before the folds, in a slot no lens touches: the project and agent lens never narrow it,
-  and it shows with no session. Its body is a strip of
-  cards (cards view V5c2, V5 design §2): `<ul class="ma-strip" role="list">`, one `<li>` per agent
-  by `mesh.json` name, keyed by the server's `key`, each holding one native
-  `<button class="ma-card">`, updated in place (never rebuilt), so the strip's horizontal scroll
-  position, focus and a selection survive polls. A card is a fixed 232 by 134 px
-  (`min(232px, 78cqi)` against the `.agents-home`'s `dash-lanes` container, the Dashboard's
-  width while no session panel is open beside the lanes, with no
-  `@media` rule, so in a narrow window the next card still peeks) and every line clamps to one with an
-  ellipsis: the state dot and name; the state word with the server's `reason`; the `fix` in
-  amber; where it runs (Local, Remote · tailnet, Remote · SSH tunnel, never a host or port) with
-  the version and "seen 2h ago" for the last good card; unslop's usage line; the last run from
-  the body's `lastRun` (V5d: "Last run 14:02 · ok", a weekday within 6 days, else the date, by
-  the label clock; "No runs yet" for `null`; no line for a body without the key). No skill count,
-  "A2A 1.0" or description (those are in Details). Its accessible name is "name, state word"
-  (`aria-label`); the other shown lines are its `aria-describedby`, ids from a counter, never a
-  name. The open agent's card carries `aria-current="true"` (a `--app-border-strong` border),
-  from `meshAgentPage.current()` passed as the paint input's `meshOpen`. The strip is one Tab
-  stop: the last focused card, else the first, and a card that leaves hands it to the first;
-  Left/Right step, Home/End go to the ends, each calling `scrollIntoView({ block: 'nearest',
-  inline: 'nearest' })` with no `behavior`; Enter and Space are the button's own. J and K stay
-  the session cards' keys and never move into the strip. The strip scrolls (`overflow-x: auto`,
-  `scroll-snap-type: x proximity`, a visible `scrollbar-width: thin`) with the compact tab row's
-  CSS-only shade at both ends (a `local` cover over a `scroll` shade per edge; the cards are
-  see-through so the shade shows on them). Nothing animates. A card uses the page's state words (Not checked yet,
-  Checking…, Running for unslop / Reachable for request-post, Not running, Unreachable, Not an
-  agent card, Card does not match this build, Endpoint not accepted) with the server's `reason`
-  and `fix`; quiet green for up, neutral grey for unchecked, checking and not running, amber
-  (`--app-warning`, never the attention colour) for the rest. Pressing a card opens the agent
-  tab (below). Card text reaches the DOM only through
-  `textContent` and the `aria-label` attribute's value: no `img`, no `href`, no request to a card's URL. `app.js` reads
-  `GET /api/mesh/agents` (a conditional snapshot) only while the last `/api/version` carried
-  `mesh`, Home or an open agent tab is the tab and the document is visible; a skipped read keeps the last
-  body, a failed read keeps it marked stale (never a failed tick), and an `on: false` body hides
-  the section and stops the read until `/api/version` carries `mesh` again. The open trigger
-  (`meshOpen()`) fires only on boot on the Dashboard once the boot's `/api/version` carries
-  `mesh`, `showAgentsHome()` (once, after its version read; its `selectTab` passes
-  `open: false`) and `selectTab('dashboard')` from another tab; its result paints through the
-  next poll tick. Refresh, in the header row beside the disclosure button, posts `refresh` and
-  then repaints through `reloadAndPaint()`. The section's open state is window-local and joins
-  `agentsHome.state()`, so `frameInputs()`. With no `mesh` the page's requests are unchanged and
-  no section exists. Nothing it draws reaches attention.
+- The Agents home holds no agent cards since Agent cards step 1 (D4): they are in the
+  **Agent cards** tab (below).
 - **Find** (UX pass, slice 4, step A) replaces Notes and History: `data-tab="find"` after
   Plans in `#tabs`, `'find'` in `TAB_IDS`, panel `#find`, its tab counting unread notes (the
   History total went with its page). The panel's field `#findQuery` and its chips (All,
@@ -324,46 +281,95 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   or `#chats` panel. `G C` is "Find: Chats" (the query cleared, the field focused) and `#chats`
   opens the same. Entering Find reads `/api/chats` under its 60-second rule (never from the
   poll); `chats.md` has the rules.
-- The **agent tab** (cards view V5c1, design
-  `docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md` §3, §4) is one slot after
-  Find: `data-tab="agent"` in `#tabs`, `'agent'` last in `TAB_IDS`, its panel
-  `#agentPage`, painted by `public/mesh-agent-page.js` from `paintAmbient()` (so from `load()`
-  and `reloadAndPaint()` only). It is `hidden` while no agent is open (`.tab[hidden]` beats
-  `.tab`'s `display`), and `wireTablist` skips a hidden tab as it skips one in a closed
-  `<details>`. `selectTab('agent')` returns without effect with no agent open, so a G key, an
-  item hash or a focus bookmark never lands on an empty page. Pressing a section card opens the
-  agent (replacing any other in the same slot), selects the tab, which posts
-  `{trigger:'open', name}` for that agent only, and calls `reloadAndPaint()` once; selecting the
-  agent tab from another tab posts the same open, selecting it while active or switching inner
-  tabs posts nothing. `PAGE_META.agent` gives the kicker "Mesh agent"; the title is the agent's
-  name. The page header holds the state dot, name, state word, "checked …", **Refresh**
-  (`{trigger:'refresh', name}` then `reloadAndPaint()`) and **Close**, which hides the tab,
-  selects Home (an open for every agent) and, if focus was in the page in a focused
-  window, focuses the agent's card, else the Agents heading. Esc does not close it. Its inner
-  tablist (`wireTablist(…, 'horizontal')`) holds **Run history** (V5d, `public/mesh-runs-tab.js`),
-  the default on every open (a re-open of the same agent included; the chosen inner tab is kept
-  while the tab stays open), and **Details**: the card's labelled lines and a nested Card JSON
-  whose `<pre>` is rewritten only when `cardJson` changes, so a selection in it survives polls.
-  Run history reads `GET /api/mesh/agents/runs?name=` (a conditional snapshot, `?name=` a
-  `QUERY_ROUTES` representation) in the poll tick only while the agent tab is active, Run
-  history shows, the document is visible and the last `/api/mesh/agents` body still names the
-  agent (`meshRunsUrl()`); a skipped read keeps the last body, a failed one keeps it marked stale
-  (never a failed tick), and a body read for another agent never shows under this one
-  (`lastData.runs.key`). It shows a summary ("Last 48 runs: 44 ok · 3 refused · median 8.2 s"),
-  a `<table>` (Ended, What, Outcome, Took, Details; `<th scope="col">`) with rows keyed by run
-  `id` and sorted by end time as the route sends them, so a new run inserts one row and no other
-  row is rebuilt; the only text that changes in an old row is its Ended cell (clock time today,
-  weekday and time within 6 days, else the date; the full start and end in `title`), rewritten
-  by the label clock only when it changes. Amber only for failed, outcome unknown, unavailable,
-  timed out and interrupted. 50 rows, then **Show 50 more** up to the 200 returned (a count in
-  the page's `state()`), "Older runs in the kept period are not shown." with `older`, an empty
-  state, and a footer whose forget command is the route's `forget` text in a `<code>` with a
-  Copy button, so no `public/` file names the command. Every value goes through `textContent`.
-  An agent that leaves `mesh.json`, or a body with `on: false`, keeps the tab and its last lines
-  under "This agent is not in mesh.json any more" and stops reading its runs. The open agent,
-  inner tab, Card JSON state and rows shown are window-local, never persisted (a reload has no agent tab), and join `frameInputs()` through
-  `meshAgentPage.state()`. The tab never carries a count (`tabCounts()` has no `agent` key) and
-  nothing on it reaches attention.
+- The **Agent cards** tab (Agent cards step 1; agent cards view design
+  `docs/superpowers/specs/2026-11-09-agent-cards-view-design.md` §2, §4.5, amended, and cards
+  view V5 §3, §4) is `data-tab="cards"` after Find in `#tabs`, `'cards'` last in `TAB_IDS`,
+  with a storefront icon and no count slot (`tabCounts()` has no `cards` key). Its panel
+  `#cards` holds `#agentCardsHome` ("Yours", `public/mesh-section.js`) and `#agentPage`
+  (one agent's page, `public/mesh-agent-page.js`), one shown at a time, both painted by
+  `paintAgentCards()` in `public/app.js` from `paintAmbient()` (so from `load()` and
+  `reloadAndPaint()` only) and when a `/api/version` read lands. The tab is `hidden`
+  (`.tab[hidden]` beats `.tab`'s `display`) unless the last `/api/version` carried `mesh` and no
+  `on: false` body came since (`meshWanted()`), or it is the current tab, so a passive read that
+  turns the mesh off never takes the page from under the person: the grid goes, "The mesh is off
+  on this Mac." shows, and the tab hides once they leave. `selectTab('cards')` returns without
+  effect while it is hidden, so `G M` (in the keys table and the keyboard help), `#cards` and a
+  stale caller do nothing with the mesh off; `wireTablist` skips the hidden tab.
+  **Yours** is a section with a header row (the title, the count, "checked 1m ago" for
+  the built-in agents only, absent when there are none, and **Refresh**: posts `refresh`, then
+  repaints through `reloadAndPaint()`) and a
+  `<ul class="ma-grid" role="list">`, one `<li>` per agent by name, keyed by the server's `key`,
+  each holding one native `<button class="ma-card">` updated in place (never rebuilt), so focus
+  and a selection survive polls and no card moves under a press. The grid has three columns,
+  then two at a 700px column, then one at 460px, through `@container agent-cards` on `.agent-cards` (no
+  `@media`, no CSS `order`). A card shows the name; the state dot and word; one description line
+  from the card (two lines at most, then an ellipsis; a built-in agent's own `blurb`, sent by
+  the server, stands in only while no card text at all, not even a last-seen card, is known); the
+  `fix` in amber (an added agent's line as the server sends it; with `fixQuiet`, a missing card
+  copy, in the muted text colour instead); a foot with where it runs (Local, Remote · tailnet, Remote · SSH
+  tunnel, Remote · public, never a host or port), the version and "seen 2h ago" for the last good
+  card; and a tag, "Built in" or "Added by you". Its accessible name is "name, state word, tag";
+  the description, fix and foot are its `aria-describedby`, ids from a counter, never a name. The
+  open agent's card carries `aria-current="true"`. The grid is one Tab stop (the last focused
+  card, else the first): Left/Right step, Up/Down move by the columns the grid draws (read from
+  the cards' positions; one with no layout; Down from a card with a row below but no card
+  directly below goes to the last card), Home/End go to the ends, each with
+  `scrollIntoView({ block: 'nearest', inline: 'nearest' })` and no `behavior`; Enter and Space
+  are the button's own; J and K stay the session cards' keys. The words: Not checked yet,
+  Checking…, Running for unslop / Reachable for request-post, Not running, Unreachable, Not an
+  agent card, Card does not match this build, Endpoint not accepted, and Added for an agent the
+  add command wrote; quiet green for up, neutral grey for unchecked, checking, not running and
+  added, amber (`--app-warning`, never the attention colour) for the rest. Below the grid, "1
+  entry in mesh.json is not valid: …" with the server's `othersFix`.
+  **An agent's page**: pressing a card opens it in the tab in the grid's place (one slot, replaced
+  by the next agent), moves focus to **← Agent cards** and calls `reloadAndPaint()` once; it
+  posts no check. **← Agent cards**, or Escape when focus is not in a field, goes back to the
+  grid and, if focus was in the page in a focused window, focuses the agent's card, or the top
+  bar's heading (`#pageTitle`, given `tabIndex = -1` then) when the agent left `mesh.json` or the
+  mesh went off. `#cards/<key>`, or `#cards/<name>` for the one configured agent of that name,
+  opens the tab on that agent (it waits for the first `/api/version` read, and is dropped once
+  that read settled, failed or not, or when the person chooses a tab; the viewer never writes the
+  hash). With a page open the kicker is "Agent cards" and the title the agent's name. The
+  status row holds the state dot, the state word with the server's `reason`, the tag, "checked …"
+  and **Refresh** (`{trigger:'refresh', name}`, then `reloadAndPaint()`); the name is the page
+  title above it, not repeated. For an added agent the row has no "checked" text and no Refresh
+  (the app never checks it), and one line, the server's `checkNote`, stands under it; Details has
+  no "Checked" line. Under it the `fix`,
+  unslop's usage line and the last run ("Last run 14:02 · ok", "No runs yet"), each in full and
+  only when there is one. Its inner tablist (`wireTablist(…, 'horizontal')`) holds **Run
+  history** (V5d, `public/mesh-runs-tab.js`), the default on every open (the chosen inner tab is
+  kept while the page stays open), and **Details**: the card's labelled lines and a nested Card
+  JSON whose `<pre>` is rewritten only when `cardJson` changes, so a selection in it survives
+  polls.
+  **Reads and checks.** `app.js` reads `GET /api/mesh/agents` (a conditional snapshot) only while
+  `meshWanted()`, the Agent cards is the current tab and the document is visible; a skipped read
+  keeps the last body, a failed read keeps it marked stale (never a failed tick), and an
+  `on: false` body hides the section and stops the read until `/api/version` carries `mesh`
+  again. The open trigger (`meshOpen()`, `{trigger:'open'}`) fires only when the Agent cards is
+  entered from another tab (the first entry, with nothing read yet, also reads at once through
+  `reloadAndPaint()`); never on boot, on Home, from a poll or a card's press. Its result paints
+  through the next poll tick under the normal gates. Run history reads
+  `GET /api/mesh/agents/runs?name=` (a conditional snapshot, `?name=` a `QUERY_ROUTES`
+  representation) in the poll tick only while the tab is current with that agent's page open,
+  Run history shows, the document is visible and the last body still names the agent
+  (`meshRunsUrl()`); a skipped read keeps the last body, a failed one keeps it marked stale, and
+  a body read for another agent never shows under this one (`lastData.runs.key`). It shows a
+  summary ("Last 48 runs: 44 ok · 3 refused · median 8.2 s"), a `<table>` (Ended, What, Outcome,
+  Took, Details; `<th scope="col">`) with rows keyed by run `id` and sorted by end time as the
+  route sends them, so a new run inserts one row and no other row is rebuilt; the only text that
+  changes in an old row is its Ended cell (clock time today, weekday and time within 6 days, else
+  the date; the full start and end in `title`), rewritten by the label clock only when it
+  changes. Amber only for failed, outcome unknown, unavailable, timed out and interrupted. 50
+  rows, then **Show 50 more** up to the 200 returned (a count in the page's `state()`), "Older
+  runs in the kept period are not shown." with `older`, an empty state, and a footer whose forget
+  command is the route's `forget` text in a `<code>` with a Copy button, so no `public/` file
+  names the command. An agent that leaves `mesh.json`, or a body with `on: false`, keeps its page
+  and its last lines under "This agent is not in mesh.json any more". Card and record text
+  reaches the DOM only through `textContent` and attribute values: no `img`, no `href`, no
+  request to a card's URL. The open agent, inner tab, Card JSON state and rows shown are
+  window-local, never persisted (a reload starts with no page open), and join `frameInputs()`
+  through `meshAgentPage.state()`. Nothing in the tab reaches attention, and with no `mesh` the
+  page's requests are unchanged.
 - The sidebar's Sessions line (`#sessionsIndicator`, #454, where the Live footer strip
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M

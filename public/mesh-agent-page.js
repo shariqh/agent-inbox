@@ -1,14 +1,13 @@
-// The agent tab's page (cards view V5 design
-// docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md §3, §4, V5c1):
-// one mesh agent opened from the Agents home's Mesh agents section, in the
-// library's sixth tab. One slot: opening another agent replaces it; Close hides
-// it; nothing is persisted, so a reload starts without it. The page owns its
-// header (state dot, name, state word, checked, Refresh, Close) and an inner
-// tablist. Details is exactly what V3's expanded row showed: the card's lines
-// and a nested Card JSON whose <pre> is rewritten only when it changes. Run
-// history (V5d, public/mesh-runs-tab.js) is the inner tablist's first tab and the
-// default on every open. Card text is untrusted: textContent only, no href, no image.
-// Nothing here is an ask: the tab never carries a count.
+// An agent's page inside the Agent cards tab (Agent cards step 1, D3; cards view V5 design
+// docs/superpowers/specs/2026-11-09-agent-cards-view-v5-design.md §3, §4, V5c1): one agent
+// opened from a card in "Yours". One slot: opening another agent replaces it;
+// "← Agent cards" (or Escape) goes back to the grid; nothing is persisted, so a reload starts
+// without it. The page owns its way back, its header (state dot, name, state word and reason,
+// Built in or Added by you, checked, Refresh), the fix, usage and last-run lines the card left
+// out, and an inner tablist. Details is exactly what V3's expanded row showed: the card's lines
+// and a nested Card JSON whose <pre> is rewritten only when it changes. Run history (V5d,
+// public/mesh-runs-tab.js) is the inner tablist's first tab and the default on every open.
+// Card text is untrusted: textContent only, no href, no image. Nothing here is an ask.
 import { relMs } from './rowview.js'
 import { meshRows } from './mesh-section.js'
 import { installRunsTab } from './mesh-runs-tab.js'
@@ -33,7 +32,9 @@ const yes = (value) => (value === true ? 'yes' : value === false ? 'no' : 'not s
 // The cards design's §2.3 labelled lines, from the card the agent shows (its own, else the last good one).
 function details(agent, card, nowMs) {
   const lines = []
-  if (card?.description) lines.push(['Description', [card.description]])
+  // a built-in agent's own line (the server's) stands in only while no card text at all is known
+  const described = card ? card.description : agent.blurb
+  if (described) lines.push(['Description', [described]])
   if (card?.name && card.name !== agent.name) lines.push(['Card name', [card.name]])
   const where = [agent.where === 'local' ? 'Local' : 'Remote', agent.endpoint ?? 'endpoint not shown'].join(' · ')
   lines.push(['Where', [where, ...(agent.profile ? [`profile: ${agent.profile}`] : [])]])
@@ -59,6 +60,8 @@ function details(agent, card, nowMs) {
     })), ...more(card.skills)]])
     lines.push(['Modes', [`in ${[...items(card.inputModes), ...more(card.inputModes)].join(', ') || 'none'} · out ${[...items(card.outputModes), ...more(card.outputModes)].join(', ') || 'none'}`]])
   }
+  // the app never checks an added agent: no "Checked" line claims it (the page says so once, in the header)
+  if (agent.kind === 'added') return lines
   const checked = agent.checkedAt ? `checked ${clock(agent.checkedAt)}` : 'not checked yet'
   const fetched = agent.card ? ` · card fetched ${clock(agent.checkedAt)}` : agent.lastSeen?.at ? ` · last good card ${clock(agent.lastSeen.at)} (${ago(nowMs - Date.parse(agent.lastSeen.at))})` : ''
   lines.push(['Checked', [checked + fetched]])
@@ -66,9 +69,9 @@ function details(agent, card, nowMs) {
 }
 
 /**
- * @param {{doc?: Document, tab: () => HTMLElement | null, page: () => HTMLElement | null,
+ * @param {{doc?: Document, page: () => HTMLElement | null,
  *   wireTablist?: (host: Element, orientation: string) => void,
- *   onRefresh?: (name: string) => void, onClose?: () => void}} deps
+ *   onRefresh?: (name: string) => void, onBack?: () => void}} deps
  */
 export function installMeshAgentPage(deps) {
   const doc = deps.doc ?? globalThis.document
@@ -97,16 +100,18 @@ export function installMeshAgentPage(deps) {
 
   function build(page) {
     if (page.querySelector('.map-head')) return
+    // the way back to the grid, first in the page's reading and Tab order
+    const back = make('button', 'map-back', '← Agent cards')
+    back.type = 'button'
+    back.setAttribute('aria-label', 'Back to Agent cards')
     const head = make('div', 'map-head')
     const dot = make('span', 'ma-dot')
     dot.setAttribute('aria-hidden', 'true')
     const refresh = make('button', 'map-refresh', 'Refresh')
     refresh.type = 'button'
     refresh.title = 'Check this agent’s card now'
-    const close = make('button', 'map-close', 'Close')
-    close.type = 'button'
-    close.title = 'Close this agent’s tab'
-    head.append(dot, make('span', 'map-name'), make('span', 'map-status'), make('span', 'ah-spacer'), make('small', 'map-checked'), refresh, close)
+    // the agent's name is the page title above (the top bar's heading), not repeated here
+    head.append(dot, make('span', 'map-status'), make('span', 'map-badge'), make('span', 'ah-spacer'), make('small', 'map-checked'), refresh)
     const tabs = make('div', 'map-tabs')
     tabs.setAttribute('aria-label', 'Agent views')
     const panels = INNER.map(([id, label]) => {
@@ -126,10 +131,11 @@ export function installMeshAgentPage(deps) {
     const json = make('details', 'ma-json')
     json.append(make('summary', '', 'Card JSON'), make('pre', 'ma-json-text'))
     panels[INNER.findIndex(([id]) => id === 'details')].append(make('dl', 'ma-lines'), json)
-    page.append(head, make('div', 'ma-fix'), make('p', 'map-gone', GONE), make('p', 'ma-stale', 'could not read; showing what was last read'), tabs, ...panels)
+    page.append(back, head, make('p', 'map-note'), make('div', 'ma-fix'), make('p', 'map-usage'), make('p', 'map-lastrun'), make('p', 'map-gone', GONE),
+      make('p', 'ma-stale', 'could not read; showing what was last read'), tabs, ...panels)
     deps.wireTablist?.(tabs, 'horizontal')
     refresh.addEventListener('click', () => { if (current) deps.onRefresh?.(current.name) })
-    close.addEventListener('click', () => deps.onClose?.())
+    back.addEventListener('click', () => deps.onBack?.())
     // switching posts nothing and repaints only this region, from the last model
     tabs.addEventListener('click', (event) => {
       const tab = event.target instanceof doc.defaultView.Element ? event.target.closest('[data-map-tab]') : null
@@ -179,25 +185,23 @@ export function installMeshAgentPage(deps) {
   }
 
   /**
-   * Paints the tab and, while an agent is open, its page from the last `/api/mesh/agents` body.
-   * An agent the body no longer names keeps its tab and last lines, under one line saying so.
-   * Run history paints from `runsInput`, the last `/api/mesh/agents/runs` body for `key`.
+   * Paints the open agent's page from the last `/api/mesh/agents` body. An agent the body no
+   * longer names (or a body that says the mesh is off) keeps its last lines, under one line
+   * saying so; before any body is read there is neither. Run history paints from `runsInput`,
+   * the last `/api/mesh/agents/runs` body for `key`.
    * @param {{body: any, stale: boolean} | null} input @param {number} nowMs
    * @param {{key: string, body: any, stale: boolean} | null} [runsInput]
    */
   function paint(input, nowMs, runsInput = null) {
-    const tab = deps.tab()
     const page = deps.page()
-    if (!tab || !page) return
-    setHidden(tab, !current)
-    if (!current) return
+    if (!page || !current) return
     build(page)
     const body = input?.body
     const agent = body?.on === true && Array.isArray(body.agents) ? body.agents.find((a) => String(a.key) === current.key) : undefined
-    setHidden(page.querySelector('.map-gone'), Boolean(agent))
+    // a deep link names its agent before the first read: the name shows, and no line says it left
+    if (agent && current.name !== String(agent.name)) current = { ...current, name: String(agent.name) }
+    setHidden(page.querySelector('.map-gone'), Boolean(agent) || !body)
     setHidden(page.querySelector('.ma-stale'), !(agent && input?.stale))
-    setText(tab.querySelector('.tab-name'), current.name)
-    setText(page.querySelector('.map-name'), current.name)
     paintInner(page)
     lastRuns = runsInput
     lastNow = nowMs
@@ -205,13 +209,22 @@ export function installMeshAgentPage(deps) {
     if (!agent) return
     const model = meshRows({ on: true, agents: [agent], others: 0 }, nowMs)
     const row = model.rows[0]
-    setTone(tab, row.tone)
     setTone(page.querySelector('.map-head'), row.tone)
     setText(page.querySelector('.map-status'), row.status)
-    setText(page.querySelector('.map-checked'), model.checked)
-    const fix = page.querySelector('.ma-fix')
-    setText(fix, row.fix)
-    setHidden(fix, !row.fix)
+    setText(page.querySelector('.map-badge'), row.tag)
+    // an added agent is never checked by the app: no "checked" text, no Refresh, the server's one line
+    setText(page.querySelector('.map-checked'), row.added ? '' : model.checked)
+    setHidden(page.querySelector('.map-checked'), row.added)
+    setHidden(page.querySelector('.map-refresh'), row.added)
+    setText(page.querySelector('.map-note'), row.note)
+    setHidden(page.querySelector('.map-note'), !row.note)
+    // the fix, unslop's usage and the last run, each in full and only when there is one
+    for (const [selector, text] of [['.ma-fix', row.fix], ['.map-usage', row.usage], ['.map-lastrun', row.lastrun]]) {
+      const el = page.querySelector(selector)
+      setText(el, text)
+      setHidden(el, !text)
+    }
+    page.querySelector('.ma-fix').classList.toggle('ma-quiet', row.quiet)
     const lines = page.querySelector('.ma-lines')
     const linesData = details(agent, agent.card ?? agent.lastSeen?.card ?? null, nowMs)
     const linesKey = JSON.stringify(linesData)

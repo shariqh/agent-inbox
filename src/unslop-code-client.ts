@@ -204,6 +204,11 @@ export function collectChange(o: { cwd: string; base?: string; paths: string[]; 
       leftOut.push(`${oneLine(path)}: left out (over ${FILE_MAX / 1024} KiB)`)
       continue
     }
+    // git's own test for binary content, for untracked files too
+    if (bytes.subarray(0, 8000).includes(0)) {
+      leftOut.push(`${oneLine(path)}: left out (binary)`)
+      continue
+    }
     let text: string
     try {
       // the BOM stays, so the text is the bytes exactly
@@ -248,7 +253,7 @@ export function patchFiles(patch: string, sent: ReadonlySet<string>): string[] |
   let i = 0
   while (i < lines.length) {
     const m = /^diff --git a\/(\S+) b\/(\S+)$/.exec(lines[i]!)
-    if (!m || m[1] !== m[2] || !sent.has(m[1]!) || files.includes(m[1]!)) return undefined
+    if (!m || m[1] !== m[2] || !sent.has(m[1]!) || files.includes(m[1]!) || m[1]!.split('/').some((part) => part === '' || part === '.' || part === '..')) return undefined
     if (lines[i + 1] !== `--- a/${m[1]}` || lines[i + 2] !== `+++ b/${m[1]}`) return undefined
     files.push(m[1]!)
     i += 3

@@ -376,6 +376,10 @@ const DECLARATION = new RegExp(String.raw`^${MODIFIERS}(?:function\b|class\b|int
 const VARIABLE = new RegExp(String.raw`^${MODIFIERS}(?:const|let|var)\s`)
 // a variable that holds a function: `const f = (a) =>`, `let g = async function`
 const FUNCTION_VALUE = /^(?:const|let|var)\s+[$\w]+\s*(?::[^=]*)?=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|[$\w]+)\s*(?::[^=]*?)?=>)/
+// a function or class assigned to a name or a property: `exports.run = (a) =>`, `A.prototype.m = function`
+const ASSIGNED_FUNCTION = /^[$\w][$\w.[\]'"#]*\s*=\s*(?:async\s*)?(?:function\b|class\b|(?:\([^)]*\)|[$\w]+)\s*(?::[^=]*?)?=>)/
+// a CommonJS export: `module.exports = …`, `exports.limit = …`
+const COMMONJS_EXPORT = /^(?:module\.)?exports\b[$\w.[\]'"]*\s*=(?!=)/
 
 /** Whether the line whose first token is `t` begins a declaration a comment above would explain. */
 function declares(line: string, t: Token): boolean {
@@ -384,6 +388,7 @@ function declares(line: string, t: Token): boolean {
   const inside = t.inside
   const top = !inside || (inside.t === '{' && inside.kind === 'module')
   if (VARIABLE.test(code)) return top || FUNCTION_VALUE.test(code)
+  if (ASSIGNED_FUNCTION.test(code) || (top && COMMONJS_EXPORT.test(code))) return true
   // a method or property of a class or an object literal
   const member = inside?.t === '{' && ['class', 'object', 'colon', 'unknown'].includes(inside.kind)
   return member && (t.kind === 'name' || t.kind === 'str' || t.kind === 'num' || ['[', '#', '*', '...', '@'].includes(line.slice(t.start, t.end)))

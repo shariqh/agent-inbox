@@ -126,6 +126,37 @@ describe('commentLines', () => {
     expect(doc(src)).toEqual([1, 5, 10, 12, 15, 16, 21, 24])
   })
 
+  it('marks the explanation above a function or class assigned to a property, and above a top-level CommonJS export', () => {
+    const src = lines(
+      '// what the module exports', // 1
+      'module.exports = function () {}', // 2
+      '// what run does', // 3
+      'exports.run = async (a) => a', // 4
+      '// what m does', // 5
+      'A.prototype.m = function m() {}', // 6
+      '// a class', // 7
+      'module.exports.Thing = class {}', // 8
+      '// a single parameter', // 9
+      "exports['one'] = a => a", // 10
+      '// an exported value', // 11
+      'exports.limit = 3', // 12
+      '// an assignment, not an export', // 13
+      'counter = 0', // 14
+      '// a comparison, not an assignment', // 15
+      'exports.limit == function () {}', // 16
+      'function setup() {', // 17
+      '  // a handler', // 18
+      '  emitter.onDone = function () {}', // 19
+      '  // narrates', // 20
+      '  exports.ready = true', // 21
+      '  // narrates too', // 22
+      '  total = (a) + b', // 23
+      '}', // 24
+    )
+    expect(whole(src)).toEqual([1, 3, 5, 7, 9, 11, 13, 15, 18, 20, 22])
+    expect(doc(src)).toEqual([1, 3, 5, 7, 9, 11, 18])
+  })
+
   it('finds a class body after a heading that holds a type literal', () => {
     const src = lines('export class A<T extends { a: number }> extends B<{ b: string }> {', '  // why run exists', '  run(): void {}', '}')
     expect(doc(src, false)).toEqual([2])

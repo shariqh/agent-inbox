@@ -78,6 +78,7 @@ describe('commentLines', () => {
 
   it('does not take `//` inside a template literal, a block comment or a string continued with a backslash', () => {
     expect(whole(lines('const t = `', '  // inside the template', '  ${x + `', '  // nested', '  `}', '`', '// real'))).toEqual([7])
+    expect(whole(lines('const e = `\\` and \\${', '// still the template', '`', '// real'))).toEqual([4])
     expect(whole(lines('/*', '// inside a block comment', '*/', '/** doc', ' // also inside', ' */'))).toEqual([])
     expect(whole(lines("const s = 'line \\", "// still the string'", '// real'))).toEqual([3])
     expect(commentLines('const s = "a \\\r\n// still the string"\r\n// real\r\n')).toEqual({ whole: new Set([3]), doc: new Set(), unsure: false })
@@ -85,6 +86,7 @@ describe('commentLines', () => {
 
   it('reads a regular expression that holds `//` as code', () => {
     expect(whole(lines('const url = /https?:\\/\\//', '// real', 'const slash = /[/]/.test(s) ? 1 : 2', 'if (!/^\\s*\\//.test(t)) go()'))).toEqual([2])
+    expect(whole(lines('if (ok) /a\\/\\/b/.test(s) && go()', '// real', 'for (const x of xs) /c/.test(x) // trailing'))).toEqual([2])
     expect(whole(lines('const half = total / 2 // division, then a comment', 'const r = a / b / c', '// real'))).toEqual([3])
   })
 

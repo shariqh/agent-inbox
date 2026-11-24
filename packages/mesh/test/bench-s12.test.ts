@@ -64,12 +64,6 @@ describe('S12 bar on the recorded answers', () => {
   })
 })
 
-// Step 1's scanner reads the body of a function declared `): void {` as an object
-// literal (`void` is also an operator), so a comment there above a line that
-// starts with a name counts as a member's explanation and stays: two of the
-// planted slop comments, in files.ts's writeFd and writePrivate, cannot go.
-const GUARDED = ['files:41', 'files:58']
-
 describe('S12 change fixtures', () => {
   it('are sound: planted slop is on added whole-line comments the guards let go, old comments lie outside the change', () => {
     expect(CHANGES).toHaveLength(6)
@@ -82,7 +76,7 @@ describe('S12 change fixtures', () => {
       for (const n of [...f.slop, ...f.old]) expect(lines.whole.has(n), `${f.id}: ${n}`).toBe(true)
       for (const n of f.slop) expect(f.added, `${f.id}: ${n}`).toContain(n)
       for (const n of f.old) expect(f.added, `${f.id}: ${n}`).not.toContain(n)
-      expect(decide({ source: f.given, added: f.added, remove: f.slop, keep: [], jsx: f.ext !== '.ts' }).remove, f.id).toEqual(f.slop.filter((n) => !GUARDED.includes(`${f.id}:${n}`)))
+      expect(decide({ source: f.given, added: f.added, remove: f.slop, keep: [], jsx: f.ext !== '.ts' }).remove, f.id).toEqual(f.slop)
       // the planted lines are not the file's own: none of their text is anywhere else in it
       const text = f.given.split('\n')
       for (const n of [...f.slop, ...f.old]) expect(text.filter((l) => l === text[n - 1]), `${f.id}: ${n}`).toHaveLength(1)
@@ -91,7 +85,7 @@ describe('S12 change fixtures', () => {
 
   it('score apart, and the hand-written answers remove every planted slop comment and nothing else', () => {
     const s = totalChanges(CHANGES.map((f) => scoreChange(f, apply(f.given, f.ext, CHANGE_ANSWERS[f.id]!, f.added).decision)))
-    expect(s).toMatchObject({ slop: { removed: 22, total: 24 }, good: { removed: 0, total: 28 }, old: { removed: 0, total: 12 }, sameProgram: { holds: 6, total: 6 } })
+    expect(s).toMatchObject({ slop: { removed: 24, total: 24 }, good: { removed: 0, total: 28 }, old: { removed: 0, total: 12 }, sameProgram: { holds: 6, total: 6 } })
     const careless = scoreChange(CHANGES[0]!, { remove: [CHANGES[0]!.good[0]!, ...CHANGES[0]!.old], dropped: [] })
     expect(careless.good.removed).toHaveLength(1)
     expect(careless.old.removed).toEqual(['// Create the set of authorities', '// Add the loopback aliases for port 80'])
@@ -151,7 +145,7 @@ describe('S12 live runner, against a fake backend', () => {
     expect(printed).toContain('- Good comments removed: 0 of 31.')
     expect(printed).toContain('- Clean functions byte-identical: 5 of 5.')
     expect(printed).toContain('- sameProgram: 15 of 15.')
-    expect(printed).toContain('# S12 changes\n\n- Slop comments removed: 22 of 24.\n- Good comments removed: 0 of 28.\n- Comments outside the change removed: 0 of 12.\n- sameProgram: 6 of 6.\n- Slop left in files: 2 of 4\n')
+    expect(printed).toContain('# S12 changes\n\n- Slop comments removed: 24 of 24.\n- Good comments removed: 0 of 28.\n- Comments outside the change removed: 0 of 12.\n- sameProgram: 6 of 6.\n')
     expect(auth.every((a) => a === 'Bearer Zq7secretkey')).toBe(true)
     expect(statSync(out).mode & 0o777).toBe(0o700)
     const files = readdirSync(out)
@@ -172,7 +166,7 @@ describe('S12 live runner, against a fake backend', () => {
     expect(await main(['--base-url', base, '--out', scratch(), '--only', 'find-age,files', '--no-suggest'], (t) => { printed += t })).toBe(0)
     expect(asked).toEqual(['remove', 'keep', 'remove', 'keep'])
     expect(printed).toContain('- Slop comments removed: 4 of 4.')
-    expect(printed).toContain('# S12 changes\n\n- Slop comments removed: 2 of 4.')
+    expect(printed).toContain('# S12 changes\n\n- Slop comments removed: 4 of 4.')
   })
 
   it('refuses an out folder inside the checkout, a missing flag and an unknown fixture, before any call', async () => {

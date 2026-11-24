@@ -765,10 +765,7 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     command reads no profile, never runs in CI, and `test/bench-s12.test.ts` runs it only
     against a fake backend on 127.0.0.1 that answers with the recorded answers and the
     change fixtures' hand-written ones (what a correct model would answer: they prove the
-    plumbing, not a model). Two planted comments in `files.ts`'s fixture stay even then:
-    the scanner reads the body of a function declared `): void {` as an object literal,
-    so a comment above a line there that starts with a name counts as a member's
-    explanation. Nothing outside the package calls the task yet.
+    plumbing, not a model). Nothing outside the package calls the task yet.
 
 ## request-post conformance fixtures (M2b R1, #500)
 

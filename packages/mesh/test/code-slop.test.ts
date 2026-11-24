@@ -157,6 +157,27 @@ describe('commentLines', () => {
     expect(doc(src)).toEqual([1, 3, 5, 7, 9, 11, 18])
   })
 
+  it('reads the body of a function whose return type is void as a body, not an object literal', () => {
+    const src = lines(
+      'function f(a: number): void {', // 1
+      '  // narrates', // 2
+      '  go(a)', // 3
+      '}', // 4
+      'class A {', // 5
+      '  run(): void {', // 6
+      '    // narrates too', // 7
+      '    go(1)', // 8
+      '  }', // 9
+      '}', // 10
+    )
+    expect(whole(src, false)).toEqual([2, 7])
+    expect(doc(src, false)).toEqual([])
+    // so a `/` after such a body is not taken for division: the file is unsure
+    expect(commentLines(lines('function f(): void {}', '/x/.test(s)', '// c'), { jsx: false }).unsure).toBe(true)
+    // `void` before an object literal is still the operator
+    expect(doc(lines('const o = void {', '  // a member', '  key: 1,', '}'), false)).toEqual([2])
+  })
+
   it('finds a class body after a heading that holds a type literal', () => {
     const src = lines('export class A<T extends { a: number }> extends B<{ b: string }> {', '  // why run exists', '  run(): void {}', '}')
     expect(doc(src, false)).toEqual([2])

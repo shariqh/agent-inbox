@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSy
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import vm from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import meshProcess from '../electron/mesh-process.cjs'
 import { removeScratchDirs, scratchDir } from './scratch.js'
@@ -633,5 +634,117 @@ process.stdout.write(JSON.stringify({ applied: false, steps: ['Would add the ser
     const { __CF_USER_TEXT_ENCODING: _encoding, ...env } = got.env
     expect(env).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: f.home, USER: 'tester', AGENT_INBOX_MESH_DIR: f.dir })
     expect(got.cwd).toBe(realpathSync(f.home))
+  })
+})
+
+// The page's side: agentInboxMesh in electron/setup-preload.cjs, run for real against a fake
+// `electron`, so its checks are exercised rather than pinned as text.
+function loadPreload(answer: (channel: string, ...args: unknown[]) => unknown, file = 'electron/setup-preload.cjs') {
+  const exposed: Record<string, unknown> = {}
+  const invoke = vi.fn(async (channel: string, ...args: unknown[]) => answer(channel, ...args))
+  const electron = {
+    contextBridge: { exposeInMainWorld: (name: string, api: unknown) => { exposed[name] = api } },
+    ipcRenderer: { invoke, on: () => {}, removeListener: () => {} },
+  }
+  const factory = vm.runInThisContext(`(function (require, process) {\n${readFileSync(join(REPO, file), 'utf8')}\n})`, { filename: file }) as
+    (require: (id: string) => unknown, process: { argv: string[] }) => void
+  factory((id) => {
+    if (id !== 'electron') throw new Error(`unexpected require ${id}`)
+    return electron
+  }, { argv: [] })
+  return { exposed, invoke, mesh: exposed.agentInboxMesh as Record<'available' | 'run' | 'chooseFile', (...args: unknown[]) => Promise<unknown>> }
+}
+
+describe('agentInboxMesh: the page’s bridge', () => {
+  it('has exactly available, run and chooseFile, each sending exactly its arguments on its own channel', async () => {
+    const { mesh, invoke } = loadPreload(() => null)
+    expect(Object.keys(mesh).sort()).toEqual(['available', 'chooseFile', 'run'])
+    await mesh.available()
+    await mesh.run('add-server', { name: 'box', baseUrl: 'https://m.example', key: KEY_HANDLE, apply: false })
+    await mesh.run('servers', {})
+    await mesh.chooseFile('token')
+    expect(invoke.mock.calls).toEqual([
+      ['agent-inbox:mesh-available'],
+      ['agent-inbox:mesh-run', 'add-server', { name: 'box', baseUrl: 'https://m.example', key: KEY_HANDLE, apply: false }],
+      ['agent-inbox:mesh-run', 'servers', {}],
+      ['agent-inbox:mesh-choose-file', 'token'],
+    ])
+  })
+
+  it('sends a fresh copy of the values, never the page’s own object', async () => {
+    const { mesh, invoke } = loadPreload(() => null)
+    const values = { name: 'box', apply: true }
+    await mesh.run('remove-server', values)
+    expect(invoke.mock.calls[0]![2]).toEqual(values)
+    expect(invoke.mock.calls[0]![2]).not.toBe(values)
+  })
+
+  it.each([
+    ['available', ['x']],
+    ['run', []], ['run', ['servers']], ['run', ['servers', {}, 'x']], ['run', ['servers', null]], ['run', ['servers', []]],
+    ['run', ['shell', {}]], ['run', [['servers'], {}]], ['run', ['servers', { apply: true }]], ['run', ['remove-server', { name: 'box', apply: 'yes' }]],
+    ['run', ['check-server', { name: 7 }]], ['run', ['check-server', { name: 'x'.repeat(2049) }]], ['run', ['disable', { agent: 'unslop', apply: false, purge: true }]],
+    ['run', ['add-server', { name: 'box', baseUrl: 'https://m.example', key: { file: '/Users/me/.keys/box' }, apply: false }]],
+    ['chooseFile', []], ['chooseFile', ['path']], ['chooseFile', ['key', '/Users/me/.keys/box']],
+  ] as const)('refuses %s(%j) without asking main', async (method, args) => {
+    const { mesh, invoke } = loadPreload(() => ({ ok: true }))
+    const answer = await mesh[method](...args)
+    expect(answer).toEqual(method === 'available' ? { available: false, reason: 'invalid' } : { ok: false, reason: 'invalid' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('rebuilds every answer against its shape, dropping unknown fields and cutting long strings', async () => {
+    const answers: Record<string, unknown> = {
+      'agent-inbox:mesh-available': { available: true, node: '/rt/bin/node' },
+      'agent-inbox:mesh-choose-file': { ok: true, handle: KEY_HANDLE, name: 'n'.repeat(100), path: '/Users/me/.keys/box' },
+    }
+    const runs: Record<string, unknown> = {
+      servers: { ok: true, servers: [{ name: 'box', baseUrl: 'https://m.example', key: 'file', agents: ['unslop'], apiKey: { file: '/k' } }], inline: [], extra: 1 },
+      'check-server': { ok: true, reachable: true, models: ['m'.repeat(100)], skipped: 2, baseUrl: 'https://m.example' },
+      'remove-server': { ok: false, applied: false, steps: ['s'.repeat(5000)], refused: 'named by unslop', notes: ['n'], stderr: 'x' },
+    }
+    const { mesh } = loadPreload((channel, operation) => (channel === 'agent-inbox:mesh-run' ? runs[operation as string] : answers[channel]))
+    expect(await mesh.available()).toEqual({ available: true })
+    expect(await mesh.chooseFile('key')).toEqual({ ok: true, handle: KEY_HANDLE, name: 'n'.repeat(80) })
+    expect(await mesh.run('servers', {})).toEqual({ ok: true, servers: [{ name: 'box', baseUrl: 'https://m.example', key: 'file', agents: ['unslop'] }], inline: [] })
+    expect(await mesh.run('check-server', { name: 'box' })).toEqual({ ok: true, reachable: true, models: ['m'.repeat(64)], skipped: 2 })
+    expect(await mesh.run('remove-server', { name: 'box', apply: false })).toEqual({ ok: false, applied: false, steps: ['s'.repeat(4096)], refused: 'named by unslop', notes: ['n'] })
+  })
+
+  it('answers failed for a rejected call or an unexpected shape, and passes on only its own refusal words', async () => {
+    const thrown = loadPreload(() => { throw new Error('gone') })
+    expect(await thrown.mesh.available()).toEqual({ available: false, reason: 'failed' })
+    expect(await thrown.mesh.run('servers', {})).toEqual({ ok: false, reason: 'failed' })
+    expect(await thrown.mesh.chooseFile('key')).toEqual({ ok: false, reason: 'failed' })
+    for (const bad of [null, 'ok', [], { ok: true }, { ok: true, servers: 'box', inline: [] }, { ok: true, servers: [{ name: 'box', baseUrl: 'u', key: 'secret', agents: [] }], inline: [] }]) {
+      expect(await loadPreload(() => bad).mesh.run('servers', {}), JSON.stringify(bad)).toEqual({ ok: false, reason: 'failed' })
+    }
+    expect(await loadPreload(() => ({ ok: true, handle: '/Users/me/.keys/box', name: 'box' })).mesh.chooseFile('key')).toEqual({ ok: false, reason: 'failed' })
+    expect(await loadPreload(() => ({ available: 'yes' })).mesh.available()).toEqual({ available: false, reason: 'failed' })
+    expect(await loadPreload(() => ({ ok: false, reason: 'not-installed' })).mesh.run('servers', {})).toEqual({ ok: false, reason: 'not-installed' })
+    expect(await loadPreload(() => ({ ok: false, reason: 'see /Users/me' })).mesh.run('servers', {})).toEqual({ ok: false, reason: 'failed' })
+    expect(await loadPreload(() => ({ available: false, reason: 'unsafe' })).mesh.available()).toEqual({ available: false, reason: 'unsafe' })
+    expect(await loadPreload(() => ({ ok: false, reason: 'cancelled' })).mesh.chooseFile('key')).toEqual({ ok: false, reason: 'cancelled' })
+  })
+
+  it('names the same operations, with the same keys, and the same refusal words as main', () => {
+    const preload = readFileSync(join(REPO, 'electron', 'setup-preload.cjs'), 'utf8')
+    const literal = (name: string, close: string) => {
+      const at = preload.indexOf(`const ${name} = `)
+      expect(at, name).toBeGreaterThan(-1)
+      return new Function(`return ${preload.slice(at + `const ${name} = `.length, preload.indexOf(close, at) + close.length)}`)() as unknown
+    }
+    const operations = literal('MESH_OPERATIONS', '\n})') as Record<string, string[]>
+    expect(Object.keys(operations).sort()).toEqual(Object.keys(meshProcess.OPERATIONS).sort())
+    for (const [name, spec] of Object.entries(meshProcess.OPERATIONS)) {
+      expect([...operations[name]!].sort(), name).toEqual([...spec.required, ...(spec.optional ?? [])].sort())
+    }
+    expect([...(literal('MESH_REASONS', '\n])') as Set<string>)].sort()).toEqual([...meshProcess.REASONS].sort())
+  })
+
+  it('is absent from the view showing another Mac’s Inbox, and the page’s files never name the command', () => {
+    expect(Object.keys(loadPreload(() => null, 'electron/remote-preload.cjs').exposed)).toEqual(['agentInboxDesk'])
+    const publicFiles = spawnSync('/usr/bin/grep', ['-rl', 'meshctl', join(REPO, 'public')], { encoding: 'utf8' })
+    expect(publicFiles.stdout).toBe('')
   })
 })

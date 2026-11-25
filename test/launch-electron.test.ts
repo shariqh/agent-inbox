@@ -2704,7 +2704,7 @@ describe('main’s wiring (source)', () => {
   it('grants launch only to the owned viewer, with the switch on, on macOS, and drops it when a quit begins', () => {
     expect(main).toContain("launchAllowed: () => viewerOwned && launchEnabled && process.platform === 'darwin',")
     expect(main).toContain('launchWebContentsId = launch ? setupWindowWebContentsId : null')
-    const begin = main.slice(main.indexOf('function beginAppQuit()'), main.indexOf('return installGate.beginQuit()'))
+    const begin = main.slice(main.indexOf('function beginAppQuit()'), main.indexOf('installGate.beginQuit()'))
     expect(begin).toContain('launchWebContentsId = null')
     expect(begin).toContain('launchController?.beginQuit()')
     // the quit prompt waits for a start already past the gate, so it lists that launch too

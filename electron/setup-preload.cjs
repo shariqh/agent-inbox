@@ -422,6 +422,122 @@ contextBridge.exposeInMainWorld('agentInboxChats', {
   },
 })
 
+// Agent setup in the app, step 2a: a fixed list of operations main runs with the person's own
+// command line, as a dry run unless `apply` is true. The page names an operation and its values,
+// never a command, a path or a secret: a key or token file is chosen in main's own picker and
+// named here only by a handle and its base name. Main checks everything again; every answer is
+// rebuilt here field by field, and anything else is the fixed failure `failed`.
+const MESH_OPERATIONS = Object.freeze({
+  servers: [],
+  'check-server': ['name'],
+  'add-server': ['name', 'baseUrl', 'key', 'apply'],
+  'adopt-server': ['name', 'from', 'apply'],
+  'set-server': ['name', 'baseUrl', 'key', 'apply'],
+  'remove-server': ['name', 'apply'],
+  'enable-model-agent': ['agent', 'server', 'model', 'apply'],
+  'enable-request-post': ['endpoint', 'token', 'apply'],
+  disable: ['agent', 'apply'],
+})
+const MESH_REASONS = new Set([
+  'unavailable', 'invalid', 'handle', 'busy', 'setup', 'updating', 'quitting',
+  'unsupported', 'environment', 'not-installed', 'unsafe', 'unrecognized', 'stale',
+  'outdated', 'output', 'timeout', 'failed', 'cancelled',
+])
+const MESH_KEYS = new Set(['file', 'command', 'env', 'none'])
+const MESH_CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model-server', 'timeout', 'key'])
+const MESH_HANDLE = /^[0-9a-f]{32}$/
+const MESH_VALUE_MAX = 2048
+const meshFailed = (reason = 'failed') => ({ ok: false, reason })
+const meshCut = (text, max) => (text.length <= max ? text : text.slice(0, max).replace(/[\ud800-\udbff]$/, ''))
+const meshStrings = (value, count, max) => (Array.isArray(value) && value.every((item) => typeof item === 'string')
+  ? value.slice(0, count).map((item) => meshCut(item, max)) : null)
+
+// a fresh object of exactly the operation's keys, each a short string or (apply) a boolean
+function meshValues(operation, values) {
+  if (typeof operation !== 'string' || !Object.hasOwn(MESH_OPERATIONS, operation) || !isPlainObject(values)) return null
+  const allowed = MESH_OPERATIONS[operation]
+  const out = {}
+  for (const key of Object.keys(values)) {
+    if (!allowed.includes(key)) return null
+    const value = values[key]
+    if (key === 'apply' ? typeof value !== 'boolean' : typeof value !== 'string' || value.length > MESH_VALUE_MAX) return null
+    out[key] = value
+  }
+  return out
+}
+
+function meshPlan(value) {
+  const steps = meshStrings(value.steps, 32, 4096)
+  if (typeof value.ok !== 'boolean' || typeof value.applied !== 'boolean' || steps === null) return null
+  const out = { ok: value.ok, applied: value.applied, steps }
+  if (typeof value.refused === 'string') out.refused = meshCut(value.refused, 4096)
+  const notes = meshStrings(value.notes, 32, 4096)
+  if (notes !== null) out.notes = notes
+  return out
+}
+
+function meshServer(row) {
+  const agents = isPlainObject(row) ? meshStrings(row.agents, 8, 40) : null
+  if (agents === null || typeof row.name !== 'string' || typeof row.baseUrl !== 'string' || !MESH_KEYS.has(row.key)) return null
+  return { name: meshCut(row.name, 40), baseUrl: meshCut(row.baseUrl, 2048), key: row.key, agents }
+}
+
+function meshServers(value) {
+  const inline = meshStrings(value.inline, 8, 40)
+  if (typeof value.ok !== 'boolean' || !Array.isArray(value.servers) || inline === null) return null
+  const servers = value.servers.slice(0, 32).map(meshServer)
+  if (servers.includes(null)) return null
+  const out = { ok: value.ok, servers, inline }
+  if (typeof value.refused === 'string') out.refused = meshCut(value.refused, 4096)
+  return out
+}
+
+function meshCheck(value) {
+  const models = meshStrings(value.models, 50, 64)
+  if (typeof value.ok !== 'boolean' || typeof value.reachable !== 'boolean' || models === null) return null
+  const out = { ok: value.ok, reachable: value.reachable, models, skipped: Number.isSafeInteger(value.skipped) && value.skipped >= 0 ? value.skipped : 0 }
+  if (MESH_CHECK_FAILURES.has(value.failure)) out.failure = value.failure
+  if (typeof value.refused === 'string') out.refused = meshCut(value.refused, 4096)
+  return out
+}
+
+function meshAnswer(operation, value) {
+  if (!isPlainObject(value)) return meshFailed()
+  if (value.ok === false && typeof value.reason === 'string') return meshFailed(MESH_REASONS.has(value.reason) ? value.reason : 'failed')
+  const rebuilt = operation === 'servers' ? meshServers(value) : operation === 'check-server' ? meshCheck(value) : meshPlan(value)
+  return rebuilt ?? meshFailed()
+}
+
+function meshChosen(value) {
+  if (!isPlainObject(value)) return meshFailed()
+  if (value.ok === true && typeof value.handle === 'string' && MESH_HANDLE.test(value.handle) && typeof value.name === 'string') {
+    return { ok: true, handle: value.handle, name: meshCut(value.name, 80) }
+  }
+  return meshFailed(value.ok === false && MESH_REASONS.has(value.reason) ? value.reason : 'failed')
+}
+
+function meshAvailability(value) {
+  if (isPlainObject(value) && value.available === true) return { available: true }
+  return { available: false, reason: isPlainObject(value) && MESH_REASONS.has(value.reason) ? value.reason : 'failed' }
+}
+
+contextBridge.exposeInMainWorld('agentInboxMesh', {
+  available(...args) {
+    if (args.length !== 0) return Promise.resolve({ available: false, reason: 'invalid' })
+    return ipcRenderer.invoke('agent-inbox:mesh-available').then(meshAvailability, () => meshAvailability(null))
+  },
+  run(...args) {
+    const values = args.length === 2 ? meshValues(args[0], args[1]) : null
+    if (!values) return Promise.resolve(meshFailed('invalid'))
+    const operation = args[0]
+    return ipcRenderer.invoke('agent-inbox:mesh-run', operation, values).then((value) => meshAnswer(operation, value), () => meshFailed())
+  },
+  chooseFile(...args) {
+    if (args.length !== 1 || (args[0] !== 'key' && args[0] !== 'token')) return Promise.resolve(meshFailed('invalid'))
+    return ipcRenderer.invoke('agent-inbox:mesh-choose-file', args[0]).then(meshChosen, () => meshFailed())
+  },
+})
+
 // #617 PR 3b: the same `agentInboxDesk` the hub view has, answering for This Mac. No IPC: the
 // local page is This Mac. #617 PR 4b: Open desk is offered only in the hub's page, so here
 // `available()` stays `{ open: false }` and there is no `open`.

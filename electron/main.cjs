@@ -42,6 +42,7 @@ const { captureShellEnv } = require('./shell-env.cjs')
 const { runWorktreeCommand, startDriver } = require('./driver-process.cjs')
 const { createLaunchController, quitChoice, runningAtQuit } = require('./launch-controller.cjs')
 const { registerLaunchIpc } = require('./launch-ipc.cjs')
+const { createMeshBridge, registerMeshIpc } = require('./mesh-process.cjs')
 const { createChatResume, registerChatResumeIpc } = require('./chat-resume.cjs')
 const { createRemoteConnect } = require('./remote-connect.cjs')
 const { CONNECT_CHANNELS, createHubView, hubMenuItems, openSettings, registerHubIpc, watchOnline, windowTitle, zoomMenuItems } = require('./hub-view.cjs')
@@ -131,6 +132,9 @@ let updateInstallWebContentsId = null
 let launchEnabled = false
 let launchWebContentsId = null
 let launchQuitAsked = false
+// The mesh bridge (agent setup in the app, step 2a): the window holding it, which is the owned
+// viewer's window as for local files, set only by the binding and dropped when a quit begins.
+let meshWebContentsId = null
 let updateRestartRequested = false
 let quitAfterUpdateInstall = false
 
@@ -323,7 +327,11 @@ function beginAppQuit() {
   // the launch gate (#412 step 3): nothing starts once a quit has begun
   launchWebContentsId = null
   launchController?.beginQuit()
-  return installGate.beginQuit()
+  // the mesh bridge (step 2a): nothing starts, its run in flight is stopped and waited for too
+  meshWebContentsId = null
+  const meshStopping = meshBridge.beginQuit()
+  const setupStopping = installGate.beginQuit()
+  return setupStopping && meshStopping ? Promise.all([setupStopping, meshStopping]).then(() => undefined) : setupStopping ?? meshStopping
 }
 
 // Asked once per page load and again when Settings opens. A reload's re-proof
@@ -695,6 +703,41 @@ registerChatResumeIpc({
   settled: () => installBinding?.settled() ?? Promise.resolve(),
   isOwned: (event) => linkSender(event) && linkFilesPermitted(event),
   chatResume: chatResumeFor,
+})
+
+// ── the mesh bridge (agent setup in the app, step 2a) ──────────────────────
+// The owned viewer's page asks main to run one operation off a fixed list with the person's own
+// meshctl (electron/mesh-process.cjs): main checks every value, builds the argv itself, and runs
+// the node and script the person's shim names, with no shell. A key or token file is chosen in
+// this picker, on the window, and the page only ever holds a handle for it. The grant is the
+// window's file grant (the owned viewer), revoked with it; one run at a time, of its own gate, and
+// none while Setup runs, an update installs or the app quits. Nothing here is logged.
+const meshGate = createInstallGate()
+const meshBridge = createMeshBridge({
+  platform: process.platform,
+  env: () => process.env,
+  home: () => app.getPath('home'),
+  spawnImpl: spawn,
+  gate: meshGate,
+  choose: async (purpose) => {
+    const options = {
+      title: purpose === 'key' ? 'Choose the key file' : 'Choose the token file', buttonLabel: 'Choose',
+      properties: ['openFile', 'showHiddenFiles'],
+    }
+    const result = linkWindow && !linkWindow.isDestroyed()
+      ? await dialog.showOpenDialog(linkWindow, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? null : result.filePaths[0] ?? null
+  },
+  isQuitting: () => installGate.quitting(),
+  isSetupRunning: () => installGate.running(),
+  isUpdateInstalling: () => updateController?.isInstalling() === true,
+})
+registerMeshIpc({
+  ipcMain,
+  bridge: meshBridge,
+  settled: () => installBinding?.settled() ?? Promise.resolve(),
+  isGranted: (event) => linkSender(event) && meshWebContentsId !== null && event.sender.id === meshWebContentsId,
 })
 
 // ── sharing this Inbox with your other Macs (#617, PR 2d) ───────────────────
@@ -1668,6 +1711,9 @@ app.whenReady().then(async () => {
       updateInstallWebContentsId = update ? setupWindowWebContentsId : null
       fileLinkWebContentsId = files ? setupWindowWebContentsId : null
       launchWebContentsId = launch ? setupWindowWebContentsId : null
+      // the mesh bridge (step 2a) goes with the file grant, and its chosen files with it
+      meshWebContentsId = files ? setupWindowWebContentsId : null
+      if (!files) meshBridge.revoke()
       updateController?.refreshInstallPermission()
       // #617 PR 3c: the page that draws the strip lost (a reload, a navigation, a crash) or regained the binding
       hubView?.ownerChanged()

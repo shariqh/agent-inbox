@@ -64,6 +64,10 @@ Use Node 24 in every step (`fnm use 24`).
      `enable --unslop --apply` again and copy the `start` it prints.
    - Optional: `terms` (product terms the edit must keep), `allowEmails` (addresses or
      `@domain`s the screen allows) and `customerPaths` (customer notes folders).
+   - In place of `baseUrl` and `apiKey`, the profile can name a model server you added once
+     with `meshctl server add`: `"server": "<name>"`. `enable --unslop --server <name>` writes
+     it, and `server add <name> --from unslop --move` turns filled-in settings into a server.
+     See [Model servers](model-servers.md).
 
 4. Optional but recommended: list customer names and domains, one per line, in
    `<mesh dir>/mesh/unslop-deny.txt` (mode 0600). The screen refuses any draft that

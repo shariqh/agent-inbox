@@ -1530,3 +1530,54 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   agent on: no folder, no link; `disable --apply` removes every folder and link meshctl made).
   `test/prstate.test.ts` and `test/mesh.test.ts` keep the module out of the stdio graph, the
   viewer, `public/` and `electron/`, and pin its imports.
+
+## Model servers
+
+User guide: [`docs/model-servers.md`](../model-servers.md). A model server is a local agent's
+OpenAI-compatible backend, added once by name; a profile names it instead of holding `baseUrl`
+and `apiKey`. This step is the command line and the agent program; the app does not read it yet.
+
+- **One file, one rule, two readers.** `<mesh dir>/mesh/servers.json` is `{ "schema": 1,
+  "servers": { "<name>": { "baseUrl", "apiKey"? } } }`, mode 0600 in a 0700 folder.
+  `src/mesh-config.ts` (`readServers`, `parseServers`, `baseUrlRefusal`, `isKeySource`) and
+  `packages/mesh/src/mesh-config.ts` (`readServers`) apply the same rule: a regular file (never a
+  symlink) this user owns with no group or other bits, at most 64 KiB; nothing but `schema` and
+  `servers` at the top and `baseUrl` and `apiKey` in a server; a name matching
+  `^[a-z0-9][a-z0-9-]{0,39}$`; at most 32 servers; `baseUrl` by `checkBaseUrl`'s rule (https, or
+  http on a loopback address; no credentials, query, fragment, `//` or backslash) plus printable
+  ASCII of at most 2048 bytes; `apiKey` a key source by shape (exactly one of an absolute or `~/`
+  `file`, a `command` whose first word is absolute, an `env` name of letters, digits and `_`).
+  Anything else refuses the whole file with a reason code. `test/fixtures/servers-json/cases.json`
+  holds the shared verdicts, run by `test/servers-json-parity.test.ts` and
+  `packages/mesh/test/servers-config.test.ts`. Reasons are fixed words, never a value.
+- **The agent** (`packages/mesh/src/agent.ts`, `backendOf`): a profile with `server` and an inline
+  `baseUrl` or `apiKey`, or with neither, is a configuration error naming the profile and the
+  rule. A named server is resolved when the agent starts (missing file, refused file or unknown
+  name: a configuration error naming the server, never a value), and its entry replaces the inline
+  values. The 60-second gate re-reads that entry for such an agent only and stops it with the stop
+  reason `server` when the address or key source differs from the start's, or the entry, the file
+  or its rule is gone. An inline profile never calls the lookup, so its agent never opens
+  `servers.json` (`packages/mesh/test/model-servers-agent.test.ts` proves it with a refused file).
+- **meshctl** stays the only writer. `server add|set|remove` write through `writeAtomic` with a
+  timestamped backup (`remove` of the last server deletes the file, keeping one); `add --from
+  <agent>` takes a filled-in inline profile's settings (by `inlineSettings`, the servers.json
+  rule), and `--move` rewrites that profile with `server` in `baseUrl`'s place, `apiKey` removed and
+  every other key kept in order (`rewriteProfile`), keeping a backup. `remove` is refused while a
+  readable profile names the server. `enable --unslop|--unslop-code --server|--model` writes a new
+  profile naming the server, or changes an existing one by `rewriteProfile` (the one case in which
+  enable changes a profile); without either option enable behaves as before, except that
+  `enable --unslop-code` names unslop's server when unslop's profile names one.
+- **`server check`** (`src/mesh-server-check.ts`; Node core and the config rule; never reached by
+  the viewer, the frontend or Electron) reads the key from its source, then sends one
+  `GET <baseUrl>/v1/models` through `node:http(s)` (no redirect, no proxy, 10 s for the whole
+  check, 256 KiB). A 401 or 403 is `unauthorized`; a redirect, another status, junk or too much is
+  `not-a-model-server`; a key source that gives nothing is `key`, and nothing is sent. Only ids
+  matching `^[A-Za-z0-9._:/-]{1,64}$` are kept, deduplicated, sorted, at most 50, and printed
+  JSON-quoted under a fixed untrusted header.
+- **`--json` plans** (`runMeshctl`): `enable`, `disable` and `server add|set|remove` collect each
+  step's first line (`runSteps` with a `Plan`), a refusal or failed step as `refused`, and any other
+  line as a note, then print `{ applied, steps, refused?, notes? }`. A usage error stays text on
+  stderr.
+- **Never printed:** a key, a key file's path, a key command, a key variable's name or a token.
+  Only the key's kind is shown. An address is printed by `server list`, `server check`, `status`
+  and the `server add|set` that was given it; `enable --server` names keys, not values.

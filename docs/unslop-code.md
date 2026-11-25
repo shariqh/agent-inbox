@@ -54,6 +54,10 @@ Use Node 24 in every step (`fnm use 24`).
      no `apiKey` at all when the server needs no key.
    - Leave `start` as written: it is the command the client runs to start the agent. If Node or
      the checkout moves, run `enable --unslop-code --apply` again and copy the `start` it prints.
+   - In place of `baseUrl` and `apiKey`, the profile can name a model server you added once with
+     `meshctl server add`: `"server": "<name>"`. `enable --unslop-code --server <name>` writes it
+     (and `--model <name>` sets the model); when unslop's profile names a server, the new profile
+     names the same one. See [Model servers](model-servers.md).
 
 4. Link the routing skill into the assistants' skill folders, as for unslop:
 

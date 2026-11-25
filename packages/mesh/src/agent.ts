@@ -2,7 +2,11 @@
 // one agent per process, chosen by `--profile`: reads its private files, refuses to
 // start unless mesh.json's `agents.<profile>` names a loopback endpoint, serves A2A there, and exits within one minute of that key
 // going or the caller token changing (a disable and enable writes a new one, which
-// this process would otherwise refuse until it stopped), or after 30 idle minutes. Every path derives from the mesh dir. The
+// this process would otherwise refuse until it stopped), or after 30 idle minutes. A profile
+// names its model backend inline (`baseUrl`, `apiKey`) or by a model server's name (`server`, an
+// entry of mesh/servers.json, model servers step 1): such an agent also stops within a minute of
+// that entry changing or going, so its next call starts it with the new settings. An inline
+// profile's agent never reads servers.json. Every path derives from the mesh dir. The
 // log gets one JSON line per task with sizes, timings and classes: never text,
 // never a matched value, never the token or the API key.
 import { readFileSync } from 'node:fs'
@@ -14,7 +18,8 @@ import type { Post, Sampling } from './backend.js'
 import { ConfigError, appendPrivate, localDate, readPrivate, writePrivate } from './files.js'
 import { fixed, home, readApiKey, strings } from './key-source.js'
 import type { KeySource } from './key-source.js'
-import { meshDir, meshFile, readMesh } from './mesh-config.js'
+import { SERVER_NAME, meshDir, meshFile, readMesh, readServers } from './mesh-config.js'
+import type { ServerEntry, ServersRead } from './mesh-config.js'
 import { createRulesLoader } from './rules.js'
 import { codeSkill, unslopSkill } from './skills.js'
 import { runUnslop } from './unslop.js'
@@ -27,7 +32,7 @@ const DAILY_MODEL_MS = 180 * 60_000
 
 type BackendProfile = { baseUrl: string; apiKey?: KeySource; model?: string; sampling?: Partial<Sampling> }
 type Profile = BackendProfile & { skill: string; terms?: string[]; allowEmails?: string[]; customerPaths?: string[] }
-export type StopReason = 'mesh.json' | 'token' | 'idle' | 'signal'
+export type StopReason = 'mesh.json' | 'token' | 'server' | 'idle' | 'signal'
 export type AgentOptions = {
   meshDir: string
   profile: string
@@ -59,17 +64,53 @@ function parseJson<T>(text: string): T {
   }
 }
 
-function checkBackend(p: BackendProfile): void {
-  if (typeof p.baseUrl !== 'string') throw new ConfigError('the profile needs a `baseUrl`')
-  fixed(() => checkBaseUrl(p.baseUrl))
+// fixed words for a refused servers.json, as src/mesh-config.ts's SERVERS_REASONS words them
+const SERVERS_REFUSED: Record<Extract<ServersRead, { kind: 'refused' }>['reason'], string> = {
+  'not-regular': 'is not a regular file', 'not-private': 'is not a file you own that only you can read', 'too-large': 'is too large',
+  unreadable: 'cannot be read', 'not-json': 'is not valid JSON', 'not-object': 'is not a JSON object', 'no-schema': 'has no valid "schema"',
+  'newer-schema': 'was written by a newer Agent Inbox', 'unknown-key': 'holds a key this build does not know', 'no-servers': 'has no "servers" object',
+  'too-many': 'holds too many servers', 'bad-name': 'holds a bad server name', 'bad-entry': 'holds a server that is not an object',
+  'bad-base-url': 'holds a bad baseUrl', 'bad-api-key': 'holds a bad apiKey',
 }
 
-function parseProfile(text: string): Profile {
+/** The entry of the model server `server` in mesh/servers.json; a refusal names the server, never a value. */
+function serverEntry(dir: string, server: string): ServerEntry {
+  const read = readServers(dir)
+  if (read.kind === 'missing') throw new ConfigError(`the profile names the server ${server}, but mesh/servers.json is missing: run meshctl server add ${server}`)
+  if (read.kind === 'refused') throw new ConfigError(`the profile names the server ${server}, but mesh/servers.json ${SERVERS_REFUSED[read.reason]}: run meshctl server list`)
+  if (!Object.hasOwn(read.servers, server)) throw new ConfigError(`the profile names the server ${server}, which mesh/servers.json does not hold: run meshctl server list`)
+  return read.servers[server]!
+}
+/** What the gate compares: the entry's address and key source. */
+const entryKey = (entry: ServerEntry): string => JSON.stringify([entry.baseUrl, entry.apiKey ?? null])
+
+/** Resolves the server a profile names (startAgent records what it resolved, for the gate). */
+type Lookup = (server: string) => ServerEntry
+
+/**
+ * The backend a profile names: either `server` (a model server's name) or the inline `baseUrl`
+ * with its optional `apiKey`, never both and never neither. The error names the profile and the rule.
+ */
+function backendOf(p: BackendProfile & { server?: unknown }, agent: AgentName, lookup: Lookup): { baseUrl: string; apiKey?: KeySource } {
+  const named = Object.hasOwn(p, 'server')
+  if (named && (Object.hasOwn(p, 'baseUrl') || Object.hasOwn(p, 'apiKey'))) {
+    throw new ConfigError(`the ${agent} profile holds both \`server\` and an inline \`baseUrl\` or \`apiKey\`: keep one (meshctl enable --${agent} --server <name> rewrites it)`)
+  }
+  if (named) {
+    if (typeof p.server !== 'string' || !SERVER_NAME.test(p.server)) throw new ConfigError(`the ${agent} profile's \`server\` is not a server name`)
+    return lookup(p.server)
+  }
+  if (typeof p.baseUrl !== 'string') throw new ConfigError(`the ${agent} profile needs a \`baseUrl\` or a \`server\``)
+  fixed(() => checkBaseUrl(p.baseUrl))
+  return { baseUrl: p.baseUrl, apiKey: p.apiKey }
+}
+
+function parseProfile(text: string, lookup: Lookup): Profile {
   const p = parseJson<Profile>(text)
   if (!p || typeof p !== 'object' || typeof p.skill !== 'string' || !isAbsolute(home(p.skill))) throw new ConfigError('the profile needs an absolute `skill` folder')
-  checkBackend(p)
+  const backend = backendOf(p, 'unslop', lookup)
   for (const key of ['terms', 'allowEmails', 'customerPaths'] as const) if (p[key] !== undefined && !strings(p[key])) throw new ConfigError(`the profile's \`${key}\` must be a list of strings`)
-  return { ...p, skill: home(p.skill) }
+  return { ...p, baseUrl: backend.baseUrl, apiKey: backend.apiKey, skill: home(p.skill) }
 }
 
 function createBudget(file: string, now: () => number): { take(): boolean; spend(ms: number): void } {
@@ -103,11 +144,11 @@ function createBudget(file: string, now: () => number): { take(): boolean; spend
 /** What a profile's agent needs once its profile, port and token are read. */
 type Context = { root: string; env: NodeJS.ProcessEnv; now: () => number; post?: Post; log: (entry: object) => void }
 /** Per agent: parse its profile (first, so a bad profile is reported before the token), then build its skill. */
-type AgentDef = (profileText: string) => (c: Context) => Skill<any, any>
+type AgentDef = (profileText: string, lookup: Lookup) => (c: Context) => Skill<any, any>
 
 const AGENTS = {
-  unslop: (text) => {
-    const profile = parseProfile(text)
+  unslop: (text, lookup) => {
+    const profile = parseProfile(text, lookup)
     return ({ root, env, now, post, log }) => {
       const denyFile = join(root, 'unslop-deny.txt')
       readPrivate(denyFile, true)
@@ -142,13 +183,13 @@ const AGENTS = {
     }
   },
   // no skill folder, no deny list and no rules: its questions are built in (src/code-prompt.ts)
-  'unslop-code': (text) => {
+  'unslop-code': (text, lookup) => {
     const p = parseJson<BackendProfile>(text)
-    if (!p || typeof p !== 'object') throw new ConfigError('the profile needs a `baseUrl`')
-    checkBackend(p)
+    if (!p || typeof p !== 'object') throw new ConfigError('the unslop-code profile needs a `baseUrl` or a `server`')
+    const backend = backendOf(p, 'unslop-code', lookup)
     return ({ env, now, post, log }) => {
-      const apiKey = readApiKey(p.apiKey, env)
-      const profile = { baseUrl: p.baseUrl, apiKey, model: p.model, sampling: p.sampling }
+      const apiKey = readApiKey(backend.apiKey, env)
+      const profile = { baseUrl: backend.baseUrl, apiKey, model: p.model, sampling: p.sampling }
       return codeSkill({ run: (task, onState) => runCodeSlop(task, { profile, post, now, log, onState }) })
     }
   },
@@ -163,7 +204,14 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
   const env = o.env ?? process.env
   const port = endpointPort(o.meshDir, name)
   const root = join(o.meshDir, 'mesh')
-  const build: ReturnType<AgentDef> = AGENTS[name](readPrivate(join(root, 'wrappers', `${name}.json`)))
+  // only a profile that names a server reads servers.json, and the gate re-reads only that entry
+  let named: { server: string; key: string } | undefined
+  const lookup: Lookup = (server) => {
+    const entry = serverEntry(o.meshDir, server)
+    named = { server, key: entryKey(entry) }
+    return entry
+  }
+  const build: ReturnType<AgentDef> = AGENTS[name](readPrivate(join(root, 'wrappers', `${name}.json`)), lookup)
   const tokenFile = join(root, 'tokens', name)
   const token = readPrivate(tokenFile).trim()
   if (!/^[\x21-\x7E]{32,}$/.test(token)) throw new ConfigError('the token must be at least 32 printable characters')
@@ -204,8 +252,17 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
     try {
       sameToken = readPrivate(tokenFile).trim() === token
     } catch {}
+    let sameServer = true
+    if (named) {
+      try {
+        sameServer = entryKey(serverEntry(o.meshDir, named.server)) === named.key
+      } catch {
+        sameServer = false
+      }
+    }
     if (!on) void stop('mesh.json')
     else if (!sameToken) void stop('token')
+    else if (!sameServer) void stop('server')
     else if (server.idleMs() >= IDLE_MS) void stop('idle')
   })
   return { port, exited, stop }

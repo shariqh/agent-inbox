@@ -758,6 +758,8 @@ which removes the comments a coding agent added to a change (`npm run meshctl --
 [`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- add <card-url>`
 adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--apply` (#529), and
 `npm run meshctl -- call <id>` calls it (#530; see [`docs/mesh-call.md`](docs/mesh-call.md)).
+The two local agents can share one model backend: `npm run meshctl -- server add <name> …` adds a
+model server once, and each agent's profile names it (see [`docs/model-servers.md`](docs/model-servers.md)).
 The app's **Agent cards** tab shows the agents `mesh.json` turns on: the three built-in ones (unslop, unslop-code and request-post) and the ones you added.
 To write such an agent on `@a2a-js/sdk`, start from the agent kit and its example
 ([`docs/agent-kit.md`](docs/agent-kit.md), #539).

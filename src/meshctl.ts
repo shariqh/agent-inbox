@@ -22,11 +22,11 @@
 // and `skills unlink` add and remove those links for Claude Code, Codex and Copilot CLI.
 //
 //   meshctl enable --agents-view [--apply]   says the Agents view is always on
-//   meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
+//   meshctl enable --unslop [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--json] [--apply]
 //   meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
 //   meshctl disable [--apply]                turn every mesh piece off
 //   meshctl disable --unslop [--purge] [--apply]
-//   meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--apply]
+//   meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--json] [--apply]
 //   meshctl disable --unslop-code [--purge] [--apply]
 //   meshctl disable --request-post [--purge] [--apply]
 //   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
@@ -43,6 +43,8 @@
 //   meshctl check <id> […]                   the same for an added agent's card URL; keeps its card copy
 //   meshctl forget-runs (--unslop | --unslop-code | --request-post | --web-search | --id <id> | --all) [--apply]
 //   meshctl status                           say what mesh.json turns on
+//   meshctl server list|add|set|remove|check …
+//                                            the model servers local agents name (docs/model-servers.md)
 //   meshctl --version                        this build's version
 //   meshctl skills link|unlink [--target claude|agents|all] [--apply]
 //                                            link the routing skills into the harnesses' skill folders
@@ -51,6 +53,10 @@
 //   meshctl unslop-code [--base <ref>] [--apply] [--no-suggest] [--report <file>] [--timeout <s>] [-- <path>…]
 //                                            its shim's command (src/unslop-code-client.ts, #652)
 //   meshctl request-post file|status|wait …  its shim's command (src/request-post-client.ts)
+//
+// `server …` (model servers step 1) keeps <mesh dir>/mesh/servers.json: each model server once, by
+// name, with its address and key source; a local agent's profile names one instead of holding
+// baseUrl and apiKey. enable, disable and server add|set|remove take --json: one plan object.
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, `unslop-code` its own
@@ -64,11 +70,11 @@ import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import type { LookupFunction } from 'node:net'
 import { fileURLToPath } from 'node:url'
-import { MESH_SCHEMA, cardCopyFile, inTailnet, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readPrivate, readTokenFile, removeCardCopy, requestPostEndpoint, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
-import type { MeshDocument, MeshRead } from './mesh-config.js'
+import { MESH_SCHEMA, MODEL_NAME, SERVERS_MAX, SERVERS_REASONS, SERVER_NAME, baseUrlRefusal, cardCopyFile, inTailnet, isKeySource, keyKind, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readPrivate, readServers, readTokenFile, removeCardCopy, requestPostEndpoint, serversFile, serversText, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
+import type { KeySource, MeshDocument, MeshRead, ServerEntry } from './mesh-config.js'
 import { addSummary, cardEndpoint, cardSha256, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine } from './mesh-add.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
@@ -84,6 +90,7 @@ import type { RequestPostIo } from './request-post-client.js'
 import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
 import type { UnslopIo } from './unslop-client.js'
 import { UNSLOP_CODE_USAGE, runUnslopCode } from './unslop-code-client.js'
+import { SERVER_CHECK_USAGE, runServerCheck } from './mesh-server-check.js'
 import { publicLookup } from './public-address.js'
 import { AGENT_INBOX_VERSION } from './version.js'
 
@@ -95,9 +102,9 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl --version
        agent-inbox-meshctl disable [--apply]
        agent-inbox-meshctl enable --agents-view [--apply]
-       agent-inbox-meshctl enable --unslop [--port <n>] [--checkout <path>] [--apply]
+       agent-inbox-meshctl enable --unslop [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--apply]
        agent-inbox-meshctl disable --unslop [--purge] [--apply]
-       agent-inbox-meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--apply]
+       agent-inbox-meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--apply]
        agent-inbox-meshctl disable --unslop-code [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
@@ -112,8 +119,16 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl unslop --kind <kind> [--report <file>] [--timeout <s>] < draft
        agent-inbox-meshctl unslop-code [--base <ref>] [--apply] [--no-suggest] [--report <file>] [--timeout <s>] [-- <path>…]
        agent-inbox-meshctl request-post file|status|wait …
+       agent-inbox-meshctl server list [--json]
+       agent-inbox-meshctl server add <name> --base-url <url> (--key-file <path> | --key-env <NAME> | --no-key) [--apply]
+       agent-inbox-meshctl server add <name> --from unslop|unslop-code [--move] [--apply]
+       agent-inbox-meshctl server set <name> [--base-url <url>] [--key-file <path> | --key-env <NAME> | --no-key] [--apply]
+       agent-inbox-meshctl server remove <name> [--apply]
+       agent-inbox-meshctl server check <name> [--json]
 
-Without --apply, enable, disable, add, remove, forget-runs, skills and key are dry runs: they print what they would do.
+Without --apply, enable, disable, add, remove, forget-runs, skills, key and server add|set|remove are dry runs: they print what they would do.
+enable, disable and server add|set|remove also take --json: they print one JSON object,
+{ "applied", "steps", "refused"?, "notes"? }, each step its first line as the text prints it.
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
@@ -125,6 +140,13 @@ entry uses is refused). Its profile takes baseUrl and apiKey from the unslop pro
 one is readable. unslop-code is what <mesh dir>/bin/unslop-code runs inside a git repository: it
 sends the JavaScript and TypeScript files a change touched and prints the patch (docs/unslop-code.md).
 disable --unslop-code keeps its profile, logs, budget and run records unless --purge.
+A model server is a backend added once, by name, to <mesh dir>/mesh/servers.json: its address and
+key source (a file, a command or an environment variable; never the key). enable --unslop and
+--unslop-code --server <name> make the profile name it (its baseUrl and apiKey go, every other key
+stays, with a backup); --model <name> sets the model. server add --from <agent> [--move] turns an
+agent's inline settings into a server. server check asks the server which models it has (GET
+<address>/v1/models, no redirect, 10 seconds) and writes nothing. No server command prints a key,
+a key file's path, a key command or a key variable's name (docs/model-servers.md).
 enable --request-post copies the per-device bearer token from --token-file (never printed);
 the endpoint is ${ENDPOINT_RULE}; a tailnet name must be on this Mac's tailnet (read from
 tailscale status), never another tailnet or a Funnel host (docs/request-post.md).
@@ -261,30 +283,44 @@ function unslopCodePaths(dir: string) {
 const UNSLOP_LOG = /^unslop-(?:\d{4}-\d{2}-\d{2}|agent)\.log$/
 const UNSLOP_CODE_LOG = /^unslop-code-(?:\d{4}-\d{2}-\d{2}|agent)\.log$/
 
-type Backend = { baseUrl: string; apiKey?: unknown }
+// a backend inline (baseUrl and its key source) or a model server's name (model servers step 1)
+type Backend = { baseUrl: string; apiKey?: unknown } | { server: string }
 
 // The agent refuses the placeholders (baseUrl is not a URL, the env name holds no key) and ignores
 // `_about` and `start`. With unslop's backend the two values are that profile's, copied as written:
-// `apiKey` is a key source (a file, a command or an env name), never a key.
-function codeProfileTemplate(start: string[], backend: Backend | undefined): string {
+// `apiKey` is a key source (a file, a command or an env name), never a key. A server's name goes
+// in their place (model servers D5), and `model` is the one given or the default.
+function codeProfileTemplate(start: string[], backend: Backend | undefined, model = 'coder-next'): string {
+  const inline = backend && 'baseUrl' in backend ? backend : undefined
   return `${JSON.stringify({
-    _about: backend
-      ? 'The unslop-code agent\'s profile (agent-inbox #652). baseUrl and apiKey were taken from the unslop profile; change them here if this agent needs another backend. start is what meshctl runs.'
-      : 'The unslop-code agent\'s profile (agent-inbox #652). Fill in baseUrl and apiKey (or remove apiKey when the backend needs no key); the agent refuses to start until you do. start is what meshctl runs.',
-    baseUrl: backend ? backend.baseUrl : 'FILL IN: the https:// base URL of the OpenAI-compatible backend (http:// only on a loopback address)',
-    ...(backend ? (Object.hasOwn(backend, 'apiKey') ? { apiKey: backend.apiKey } : {}) : {
-      apiKey: { env: 'FILL IN: the name of the environment variable holding the key, or use { "file": "/absolute/path" } (0600) or { "command": ["/absolute/path", "arg"] }' },
+    _about: backend && 'server' in backend
+      ? 'The unslop-code agent\'s profile (agent-inbox #652). Its backend is the model server named by "server" (meshctl server list). start is what meshctl runs.'
+      : backend
+        ? 'The unslop-code agent\'s profile (agent-inbox #652). baseUrl and apiKey were taken from the unslop profile; change them here if this agent needs another backend. start is what meshctl runs.'
+        : 'The unslop-code agent\'s profile (agent-inbox #652). Fill in baseUrl and apiKey (or remove apiKey when the backend needs no key); the agent refuses to start until you do. start is what meshctl runs.',
+    ...(backend && 'server' in backend ? { server: backend.server } : {
+      baseUrl: inline ? inline.baseUrl : 'FILL IN: the https:// base URL of the OpenAI-compatible backend (http:// only on a loopback address)',
+      ...(inline ? (Object.hasOwn(inline, 'apiKey') ? { apiKey: inline.apiKey } : {}) : {
+        apiKey: { env: 'FILL IN: the name of the environment variable holding the key, or use { "file": "/absolute/path" } (0600) or { "command": ["/absolute/path", "arg"] }' },
+      }),
     }),
-    model: 'coder-next',
+    model,
     sampling: { temperature: 0, top_p: 0.9, presence_penalty: 0 },
     start,
   }, null, 2)}\n`
 }
 
-/** unslop's backend (its profile's baseUrl and apiKey source) when that profile is readable and filled in. */
+/**
+ * unslop's backend when that profile is readable and filled in: its baseUrl and apiKey source, or
+ * the model server it names (with no inline settings beside it).
+ */
 function unslopBackend(profile: string): Backend | undefined {
   try {
     const p = objectOf(JSON.parse(readPrivate(profile)))
+    if (p && Object.hasOwn(p, 'server')) {
+      const server = p['server']
+      return typeof server === 'string' && SERVER_NAME.test(server) && !Object.hasOwn(p, 'baseUrl') && !Object.hasOwn(p, 'apiKey') ? { server } : undefined
+    }
     const baseUrl = p?.['baseUrl']
     if (typeof baseUrl !== 'string' || !baseUrl || baseUrl.startsWith('FILL IN')) return undefined
     if (!Object.hasOwn(p!, 'apiKey')) return { baseUrl }
@@ -325,13 +361,19 @@ function writeAtomic(path: string, text: string, mode: number): void {
 
 // The agent refuses each placeholder: `skill` is not absolute, `baseUrl` is not a
 // URL and the `env` name holds no key. Keys it does not read (`_about`, `start`) it ignores.
-function profileTemplate(start: string[]): string {
+// With a server (model servers D5) the profile names it in place of baseUrl and apiKey; `skill`
+// stays the person's to fill in.
+function profileTemplate(start: string[], choice: BackendChoice = {}): string {
   return `${JSON.stringify({
-    _about: 'The unslop agent\'s profile (agent-inbox #483). Fill in skill, baseUrl and apiKey (or remove apiKey when the backend needs no key); the agent refuses to start until you do. start is what meshctl runs.',
+    _about: choice.server === undefined
+      ? 'The unslop agent\'s profile (agent-inbox #483). Fill in skill, baseUrl and apiKey (or remove apiKey when the backend needs no key); the agent refuses to start until you do. start is what meshctl runs.'
+      : 'The unslop agent\'s profile (agent-inbox #483). Fill in skill; the agent refuses to start until you do. Its backend is the model server named by "server" (meshctl server list). start is what meshctl runs.',
     skill: 'FILL IN: the absolute path of the unslop skill folder, which holds rules.md',
-    baseUrl: 'FILL IN: the https:// base URL of the OpenAI-compatible backend (http:// only on a loopback address)',
-    apiKey: { env: 'FILL IN: the name of the environment variable holding the key, or use { "file": "/absolute/path" } (0600) or { "command": ["/absolute/path", "arg"] }' },
-    model: 'chat-long',
+    ...(choice.server === undefined ? {
+      baseUrl: 'FILL IN: the https:// base URL of the OpenAI-compatible backend (http:// only on a loopback address)',
+      apiKey: { env: 'FILL IN: the name of the environment variable holding the key, or use { "file": "/absolute/path" } (0600) or { "command": ["/absolute/path", "arg"] }' },
+    } : { server: choice.server }),
+    model: choice.model ?? 'chat-long',
     sampling: { temperature: 0.2, top_p: 0.9, presence_penalty: 0 },
     terms: [], allowEmails: [], customerPaths: [],
     start,
@@ -371,8 +413,31 @@ function requestPostPaths(dir: string) {
 
 type Step = { dry: string; run: () => string; lock?: true }
 
-function runSteps(steps: Step[], apply: boolean, out: (text: string) => void, err: (text: string) => void, failed: string): number {
+/**
+ * A plan a program reads (model servers D6): with --json, enable, disable and server add|set|remove
+ * print one object, `{ applied, steps, refused?, notes? }`, where each step is its first line as
+ * the text prints it (never a profile's body, a template or a shim's text).
+ */
+type Plan = { steps: string[]; notes: string[]; refused?: string }
+const firstLine = (text: string): string => text.split('\n', 1)[0]!
+
+function runSteps(steps: Step[], apply: boolean, out: (text: string) => void, err: (text: string) => void, failed: string, plan?: Plan): number {
   const n = steps.length
+  if (plan) {
+    for (const [i, step] of steps.entries()) {
+      if (!apply) {
+        plan.steps.push(firstLine(step.dry))
+        continue
+      }
+      try {
+        plan.steps.push(firstLine(step.run()))
+      } catch {
+        plan.refused = `Failed at step ${i + 1}/${n}. ${failed}`
+        return 1
+      }
+    }
+    return 0
+  }
   if (!apply) {
     out(`Dry run.\n${steps.map((step, i) => `${i + 1}/${n} ${step.dry}`).join('\n')}\nNothing changed. Re-run with --apply.\n`)
     return 0
@@ -391,8 +456,124 @@ function runSteps(steps: Step[], apply: boolean, out: (text: string) => void, er
 const objectOf = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 
+// ── model servers (model servers step 1) ────────────────────────────────────
+// `<mesh dir>/mesh/servers.json` (src/mesh-config.ts holds its rule) names each model server once;
+// a local agent's profile names one by `server` instead of holding baseUrl and apiKey. meshctl
+// prints a server's name, address and key KIND only: never a key, a key file's path, a key command
+// or a key variable's name.
+
+const LOCAL_AGENTS = ['unslop', 'unslop-code'] as const
+type LocalAgent = typeof LOCAL_AGENTS[number]
+type BackendChoice = { server?: string; model?: string }
+const profileFile = (dir: string, agent: LocalAgent): string => join(dir, 'mesh', 'wrappers', `${agent}.json`)
+const SERVER_NAME_RULE = 'a server name is 1 to 40 lower-case letters, digits or "-", starting with a letter or digit'
+
+/** A local agent's profile: its object when it is a JSON object in a private file, else why not. */
+function readProfile(path: string): { p: Record<string, unknown> } | 'missing' | 'unreadable' {
+  if (!exists(path)) return 'missing'
+  try {
+    const p = objectOf(JSON.parse(readPrivate(path)))
+    return p ? { p } : 'unreadable'
+  } catch {
+    return 'unreadable'
+  }
+}
+
+/** The server a profile names, when its name passes the rule. */
+const namedServer = (p: Record<string, unknown>): string | undefined =>
+  typeof p['server'] === 'string' && SERVER_NAME.test(p['server']) ? p['server'] : undefined
+
+/** A profile's inline settings when they are filled in and pass servers.json's rule: what `server add --from` takes. */
+function inlineSettings(p: Record<string, unknown>): ServerEntry | undefined {
+  if (Object.hasOwn(p, 'server') || baseUrlRefusal(p['baseUrl'])) return undefined
+  const baseUrl = p['baseUrl'] as string
+  if (!Object.hasOwn(p, 'apiKey')) return { baseUrl }
+  return isKeySource(p['apiKey']) ? { baseUrl, apiKey: p['apiKey'] } : undefined
+}
+
+/** The local agents whose profiles name each server. */
+function serverUsers(dir: string): Map<string, LocalAgent[]> {
+  const users = new Map<string, LocalAgent[]>()
+  for (const agent of LOCAL_AGENTS) {
+    const read = readProfile(profileFile(dir, agent))
+    const server = typeof read === 'object' ? namedServer(read.p) : undefined
+    if (server !== undefined) users.set(server, [...(users.get(server) ?? []), agent])
+  }
+  return users
+}
+
+/** One line per server, for `server list` and `status`: its name, address, key kind and the agents naming it. */
+const serverLine = (name: string, entry: ServerEntry, agents: string[]): string =>
+  `Server ${name}: ${entry.baseUrl}; key: ${keyKind(entry)}; agents: ${agents.length ? agents.join(', ') : 'none'}.`
+
+/**
+ * The profile with `server` in place of its inline baseUrl and apiKey (when a server is given) and
+ * `model` set (when one is given), every other key kept where it was; which keys it sets and removes.
+ */
+function rewriteProfile(p: Record<string, unknown>, choice: BackendChoice): { next: Record<string, unknown>; set: string[]; removed: string[] } {
+  const entries: Array<[string, unknown]> = []
+  const removed: string[] = []
+  let placed = false
+  for (const [key, value] of Object.entries(p)) {
+    if (choice.server !== undefined && (key === 'baseUrl' || key === 'apiKey' || key === 'server')) {
+      if (key !== 'server') removed.push(key)
+      if (!placed) entries.push(['server', choice.server])
+      placed = true
+    } else entries.push([key, key === 'model' && choice.model !== undefined ? choice.model : value])
+  }
+  if (choice.server !== undefined && !placed) entries.push(['server', choice.server])
+  if (choice.model !== undefined && !Object.hasOwn(p, 'model')) entries.push(['model', choice.model])
+  const set = [...(choice.server !== undefined && p['server'] !== choice.server ? ['server'] : []), ...(choice.model !== undefined && p['model'] !== choice.model ? ['model'] : [])]
+  // fromEntries defines each key as the object's own, a "__proto__" key included
+  return { next: Object.fromEntries(entries), set, removed }
+}
+
+/** Why a --key-file is refused, in words that never hold its path: it is checked here, never read. */
+function keyFileRefusal(path: string): string | undefined {
+  if (!isAbsolute(path) || !isKeySource({ file: path })) return 'the key file must be given as an absolute path'
+  let stat
+  try {
+    stat = lstatSync(path)
+  } catch {
+    return 'the key file does not exist'
+  }
+  if (!stat.isFile()) return 'the key file must be a regular file, not a symlink or a folder'
+  if (process.getuid && stat.uid !== process.getuid()) return 'the key file must be a file you own'
+  if (stat.mode & 0o077) return 'the key file is open to other users: chmod 600 it'
+  return undefined
+}
+
+/** Whether a command takes --json for a plan (D6): enable, disable and server add|set|remove. */
+const wantsPlan = (argv: string[]): boolean => argv.includes('--json')
+  && (argv[0] === 'enable' || argv[0] === 'disable' || (argv[0] === 'server' && ['add', 'set', 'remove'].includes(argv[1] ?? '')))
+
 export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
-  const code = meshctl(argv, io)
+  const plan: Plan | undefined = wantsPlan(argv) ? { steps: [], notes: [] } : undefined
+  let code: number
+  if (!plan) code = meshctl(argv, io)
+  else {
+    // with --json the text goes into the plan: a refusal as `refused`, any other line as a note;
+    // a usage error stays the usage text on stderr, with no JSON
+    const usageText: string[] = []
+    code = meshctl(argv, {
+      ...io,
+      out: (text) => { plan.notes.push(text.trim()) },
+      err: (text) => {
+        if (text.startsWith('usage:')) usageText.push(text)
+        else if (/^(Refused: |Failed at step )/.test(text)) plan.refused ??= text.replace(/^Refused: /, '').trim()
+        else plan.notes.push(text.replace(/^Note: /, '').trim())
+      },
+    }, plan)
+    const out = io.out ?? ((text: string) => { process.stdout.write(text) })
+    const err = io.err ?? ((text: string) => { process.stderr.write(text) })
+    if (code === 2) err(usageText.join(''))
+    else {
+      out(`${JSON.stringify({
+        applied: argv.includes('--apply') && code === 0, steps: plan.steps,
+        ...(plan.refused === undefined ? {} : { refused: plan.refused }), ...(plan.notes.length ? { notes: plan.notes } : {}),
+      })}\n`)
+    }
+  }
   // deleting expired run records is housekeeping, not a configuration change, so a dry run
   // does it too (cards view V5 §5.6)
   if ((argv[0] === 'enable' || argv[0] === 'disable') && code !== 2) {
@@ -403,7 +584,7 @@ export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
 
-function meshctl(argv: string[], io: MeshctlIo): number {
+function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   const env = io.env ?? process.env
   const home = io.home ?? homedir()
   const now = io.now ?? (() => new Date())
@@ -454,15 +635,21 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   }
   const flags = new Set<string>()
   const values = new Map<string, string>()
-  for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i]!
-    if (['--port', '--checkout', '--endpoint', '--token-file', '--id', '--target'].includes(arg)) {
-      const value = rest[++i]
+  // `server` reads its own arguments (below)
+  const parsed = command === 'server' ? [] : rest
+  for (let i = 0; i < parsed.length; i++) {
+    const arg = parsed[i]!
+    if (['--port', '--checkout', '--endpoint', '--token-file', '--id', '--target', '--server', '--model'].includes(arg)) {
+      const value = parsed[++i]
       if (value === undefined || values.has(arg)) return usage()
       values.set(arg, value)
     } else if (flags.has(arg)) return usage()
     else flags.add(arg)
   }
+  // --json (D6) is enable's and disable's only; runMeshctl prints the plan
+  if (flags.delete('--json') && !plan) return usage()
+  // --server and --model (D5) are enable --unslop's and --unslop-code's only
+  if ((values.has('--server') || values.has('--model')) && !(command === 'enable' && (flags.has('--unslop') || flags.has('--unslop-code')))) return usage()
   const apply = flags.delete('--apply')
   const unslop = flags.delete('--unslop')
   const requestPost = flags.delete('--request-post')
@@ -529,14 +716,222 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   }
   // runSteps, holding the setup lock (scripts/setup-lock.sh) when a step changes a harness's skill folder
   const run = (steps: Step[], failed: string): number => {
-    if (!apply || !steps.some((step) => step.lock)) return runSteps(steps, apply, out, err, failed)
+    if (!apply || !steps.some((step) => step.lock)) return runSteps(steps, apply, out, err, failed, plan)
     const lock = holdSetupLock(env, home)
     if ('refused' in lock) return refuse(lock.refused)
     try {
-      return runSteps(steps, apply, out, err, failed)
+      return runSteps(steps, apply, out, err, failed, plan)
     } finally {
       lock.release()
     }
+  }
+
+  // ── model servers (model servers step 1, D4) ──
+  const sFile = serversFile(dir)
+  const sName = show(sFile)
+  // enable's --server and --model (D5): the server must be in servers.json, the model a plain name
+  const backendChoice = (): BackendChoice | { refused: string } => {
+    const server = values.get('--server')
+    const model = values.get('--model')
+    if (model !== undefined && !MODEL_NAME.test(model)) return { refused: 'a model name is 1 to 64 letters, digits, ".", "_", ":", "/" or "-"' }
+    if (server === undefined) return { model }
+    if (!SERVER_NAME.test(server)) return { refused: SERVER_NAME_RULE }
+    const read = readServers(dir)
+    if (read.kind === 'refused') return { refused: `${sName} ${SERVERS_REASONS[read.reason]}` }
+    if (read.kind === 'missing' || !Object.hasOwn(read.servers, server)) return { refused: `the server ${server} is not in ${sName}: meshctl server add ${server} adds it` }
+    return { server, model }
+  }
+  // the one change enable makes to an existing profile (D5): server and model set, the inline
+  // baseUrl and apiKey removed, every other key kept, a backup beside it; it names keys, never values
+  const changeProfile = (path: string, choice: BackendChoice): Step | { refused: string } => {
+    const read = readProfile(path)
+    if (typeof read !== 'object') return { refused: `the profile ${show(path)} cannot be read (it must be a JSON object in a file you own with mode 0600), so enable cannot change it` }
+    const { next, set, removed } = rewriteProfile(read.p, choice)
+    if (!set.length && !removed.length) {
+      return { dry: `Would keep the profile ${show(path)} (it already names the server and model given).`, run: () => `Kept ${show(path)}: it already names the server and model given.` }
+    }
+    const what = (removedWord: string): string => [...(set.length ? [`set ${set.join(' and ')}`] : []), ...(removed.length ? [`${removedWord} ${removed.join(' and ')}`] : [])].join('; ')
+    return {
+      dry: `Would change the profile ${show(path)} (keeping a backup beside it): ${what('remove')}; every other key stays.`,
+      run: () => {
+        const backup = writeBackup(path, now())
+        writeAtomic(path, `${JSON.stringify(next, null, 2)}\n`, 0o600)
+        return `Changed ${show(path)} (backup: ${show(backup)}): ${what('removed')}.`
+      },
+    }
+  }
+
+  if (command === 'server') {
+    const [sub, ...args] = rest
+    if (sub === 'check') {
+      // async: the entry below runs it (runServerCheck in src/mesh-server-check.ts)
+      err(SERVER_CHECK_USAGE)
+      return 4
+    }
+    const names: string[] = []
+    const opts = new Map<string, string>()
+    const switches = new Set<string>()
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!
+      if (['--base-url', '--key-file', '--key-env', '--from'].includes(arg)) {
+        const value = args[++i]
+        if (value === undefined || opts.has(arg)) return usage()
+        opts.set(arg, value)
+      } else if (arg.startsWith('-')) {
+        if (switches.has(arg) || !['--apply', '--json', '--no-key', '--move'].includes(arg)) return usage()
+        switches.add(arg)
+      } else names.push(arg)
+    }
+    // each subcommand's options and switches
+    const allowed = {
+      list: [[], ['--json']],
+      add: [['--base-url', '--key-file', '--key-env', '--from'],
+        ['--apply', '--json', '--no-key', '--move']],
+      set: [['--base-url', '--key-file', '--key-env'], ['--apply', '--json', '--no-key']],
+      remove: [[], ['--apply', '--json']],
+    }
+    if (sub !== 'list' && sub !== 'add' && sub !== 'set' && sub !== 'remove') return usage()
+    const [optsOk, switchesOk] = allowed[sub]
+    if ([...opts.keys()].some((key) => !optsOk!.includes(key)) || [...switches].some((key) => !switchesOk!.includes(key))) return usage()
+    if (names.length !== (sub === 'list' ? 0 : 1)) return usage()
+    const sApply = switches.has('--apply')
+    const read = readServers(dir)
+
+    if (sub === 'list') {
+      const users = serverUsers(dir)
+      const rows = read.kind === 'present' ? Object.entries(read.servers).map(([name, entry]) => ({ name, baseUrl: entry.baseUrl, key: keyKind(entry), agents: users.get(name) ?? [] })) : []
+      const inline = LOCAL_AGENTS.filter((agent) => {
+        const profile = readProfile(profileFile(dir, agent))
+        return typeof profile === 'object' && inlineSettings(profile.p) !== undefined
+      })
+      const refused = read.kind === 'refused' ? `${sName} ${SERVERS_REASONS[read.reason]}` : undefined
+      if (switches.has('--json')) {
+        out(`${JSON.stringify({ servers: rows, inline, ...(refused ? { refused } : {}) })}\n`)
+        return refused ? 1 : 0
+      }
+      if (refused) out(`Model servers: ${refused}, so no agent can use a server. Fix or remove it by hand.\n`)
+      else if (read.kind === 'missing') out(`No model servers: ${sName} is missing (meshctl server add <name> --base-url <url> adds one).\n`)
+      else if (!rows.length) out(`No model servers in ${sName}.\n`)
+      else out(`Model servers in ${sName}:\n${rows.map((row) => `${serverLine(row.name, read.kind === 'present' ? read.servers[row.name]! : { baseUrl: row.baseUrl }, row.agents)}\n`).join('')}`)
+      if (inline.length) out(`Inline settings: the ${inline.join(' and ')} profile${inline.length === 1 ? ' holds' : 's hold'} baseUrl itself (meshctl server add <name> --from <agent> --move turns that into a server).\n`)
+      return refused ? 1 : 0
+    }
+
+    const server = names[0]!
+    if (!SERVER_NAME.test(server)) return refuse(SERVER_NAME_RULE)
+    if (read.kind === 'refused') return refuse(`${sName} ${SERVERS_REASONS[read.reason]}. Fix or remove it by hand`)
+    const present = read.kind === 'present'
+    const current = read.kind === 'present' ? read.servers : {}
+    const writeServers = (servers: Record<string, ServerEntry>, replacing: boolean): string => {
+      mkdirSync(join(dir, 'mesh'), { recursive: true, mode: 0o700 })
+      const backup = replacing ? ` (backup: ${show(writeBackup(sFile, now()))})` : ''
+      writeAtomic(sFile, serversText(servers), 0o600)
+      return backup
+    }
+    const failed = 'Steps before it are done; nothing after it ran.'
+    // the key option of add and set: a key source, null for --no-key, undefined when none is given
+    const keyGiven = [opts.has('--key-file'), opts.has('--key-env'), switches.has('--no-key')].filter(Boolean).length
+    if (keyGiven > 1) return usage()
+    let key: KeySource | null | undefined
+    if (opts.has('--key-file')) {
+      const bad = keyFileRefusal(opts.get('--key-file')!)
+      if (bad) return refuse(bad)
+      key = { file: opts.get('--key-file')! }
+    } else if (opts.has('--key-env')) {
+      key = { env: opts.get('--key-env')! }
+      if (!isKeySource(key)) return refuse('the key variable\'s name must be letters, digits and "_", not starting with a digit')
+    } else if (switches.has('--no-key')) key = null
+    const url = opts.get('--base-url')
+    const urlBad = url === undefined ? undefined : baseUrlRefusal(url)
+
+    if (sub === 'add') {
+      const from = opts.get('--from')
+      if (from === undefined ? url === undefined || !keyGiven || switches.has('--move') : url !== undefined || keyGiven) return usage()
+      if (Object.hasOwn(current, server)) return refuse(`the server ${server} is already in ${sName}: meshctl server set changes it`)
+      if (Object.keys(current).length >= SERVERS_MAX) return refuse(`${sName} already holds ${SERVERS_MAX} servers, the most it may`)
+      const steps: Step[] = []
+      const create = (what: string, done: string): Step => ({
+        dry: present ? `Would add the server ${server} to ${sName}, ${what}, keeping every other server (and a backup beside it).` : `Would create ${sName} (0600) with the server ${server}, ${what}.`,
+        run: () => `Added the server ${server} to ${sName}${writeServers({ ...current, [server]: entry }, present)}${done}.`,
+      })
+      let entry: ServerEntry
+      if (from === undefined) {
+        if (urlBad) return refuse(urlBad)
+        entry = { baseUrl: url!, ...(key ? { apiKey: key } : {}) }
+        steps.push(create(`at ${entry.baseUrl}, key: ${keyKind(entry)}`, `: at ${entry.baseUrl}, key: ${keyKind(entry)}`))
+      } else {
+        if (from !== 'unslop' && from !== 'unslop-code') return refuse('--from takes a local agent: unslop or unslop-code')
+        const path = profileFile(dir, from)
+        const profile = readProfile(path)
+        if (profile === 'missing') return refuse(`the ${from} profile ${show(path)} is missing: meshctl enable --${from} writes it`)
+        if (profile === 'unreadable') return refuse(`the ${from} profile ${show(path)} cannot be read (it must be a JSON object in a file you own with mode 0600)`)
+        if (Object.hasOwn(profile.p, 'server')) {
+          const named = namedServer(profile.p)
+          return refuse(`the ${from} profile already names ${named === undefined ? 'a server' : `the server ${named}`}`)
+        }
+        const inline = inlineSettings(profile.p)
+        if (!inline) return refuse(`the ${from} profile's baseUrl and apiKey are not filled in, or break the servers.json rule (https://, or http:// on a loopback address; a key source, never a key)`)
+        entry = inline
+        const keyed = Object.hasOwn(inline, 'apiKey')
+        // the words enable --unslop-code uses for settings it copies: neither value is printed
+        steps.push(create(`taking baseUrl${keyed ? ' and the apiKey source' : ''} from ${show(path)} (not printed)`, `, with the ${from} profile's settings (not printed)`))
+        if (switches.has('--move')) {
+          const { next } = rewriteProfile(profile.p, { server })
+          steps.push({
+            dry: `Would rewrite the profile ${show(path)} to name the server ${server}, removing baseUrl${keyed ? ' and apiKey' : ''} and keeping every other key (and a backup beside it).`,
+            run: () => {
+              const backup = writeBackup(path, now())
+              writeAtomic(path, `${JSON.stringify(next, null, 2)}\n`, 0o600)
+              return `Rewrote ${show(path)} (backup: ${show(backup)}): it names the server ${server}.`
+            },
+          })
+        }
+      }
+      return runSteps(steps, sApply, out, err, failed, plan)
+    }
+
+    if (sub === 'set') {
+      if (url === undefined && !keyGiven) return usage()
+      if (!Object.hasOwn(current, server)) return refuse(`the server ${server} is not in ${sName}: meshctl server add adds it`)
+      if (urlBad) return refuse(urlBad)
+      const old = current[server]!
+      const apiKey = keyGiven ? key ?? undefined : old.apiKey
+      const entry: ServerEntry = { baseUrl: url ?? old.baseUrl, ...(apiKey ? { apiKey } : {}) }
+      const changes = [
+        ...(entry.baseUrl !== old.baseUrl ? [`address to ${entry.baseUrl}`] : []),
+        ...(JSON.stringify(entry.apiKey ?? null) !== JSON.stringify(old.apiKey ?? null) ? [`key to ${keyKind(entry)}`] : []),
+      ].join(' and ')
+      if (!changes) {
+        out(`The server ${server} already has these settings in ${sName}. Nothing to do.\n`)
+        return 0
+      }
+      const users = serverUsers(dir).get(server) ?? []
+      const restart = users.length
+        ? ` The ${users.join(' and ')} profile${users.length === 1 ? ' names' : 's name'} it: its agent stops within a minute and starts with the new settings on the next call.`
+        : ''
+      return runSteps([{
+        dry: `Would change the server ${server} in ${sName} (keeping a backup beside it): ${changes}.${restart}`,
+        run: () => `Changed the server ${server} in ${sName}${writeServers({ ...current, [server]: entry }, true)}: ${changes}.${restart}`,
+      }], sApply, out, err, failed, plan)
+    }
+
+    // remove
+    if (!Object.hasOwn(current, server)) {
+      out(`The server ${server} is not in ${sName}. Nothing to do.\n`)
+      return 0
+    }
+    const users = serverUsers(dir).get(server) ?? []
+    if (users.length) {
+      return refuse(`the server ${server} is named by the ${users.join(' and ')} profile${users.length === 1 ? '' : 's'}: point ${users.length === 1 ? 'it' : 'them'} at another server first (meshctl enable --<agent> --server <name>)`)
+    }
+    const { [server]: _gone, ...others } = current
+    return runSteps([Object.keys(others).length ? {
+      dry: `Would remove the server ${server} from ${sName}, keeping every other server (and a backup beside it).`,
+      run: () => `Removed the server ${server} from ${sName}${writeServers(others, true)}.`,
+    } : {
+      dry: `Would delete ${sName}: the server ${server} was its only one (keeping a backup beside it).`,
+      run: () => { const backup = writeBackup(sFile, now()); unlinkSync(sFile); return `Deleted ${sName} (backup: ${show(backup)}).` },
+    }], sApply, out, err, failed, plan)
   }
 
   if (command === 'skills') {
@@ -580,9 +975,18 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     const has = (path: string): string => (exists(path) ? 'present' : 'missing')
     const state = port ? `on at http://127.0.0.1:${port}` : entry === undefined ? 'off' : 'off (agents.unslop.endpoint is not http://127.0.0.1:<port>)'
     out(`Unslop: ${state}. Profile ${show(paths.profile)}: ${has(paths.profile)}; token: ${has(paths.token)}; shim ${show(paths.shim)}: ${has(paths.shim)}.\n`)
+    // which server a local agent's profile names (D7); a name that breaks the rule is never echoed
+    const namesLine = (agent: LocalAgent, label: string): void => {
+      const read = readProfile(profileFile(dir, agent))
+      if (typeof read !== 'object' || !Object.hasOwn(read.p, 'server')) return
+      const server = namedServer(read.p)
+      out(`${label} profile: ${server === undefined ? 'its "server" is not a server name' : `names the server ${server}`}.\n`)
+    }
+    namesLine('unslop', 'Unslop')
     const code = unslopCodePaths(dir)
     const codeState = codePort ? `on at http://127.0.0.1:${codePort}` : codeEntry === undefined ? 'off' : 'off (agents.unslop-code.endpoint is not http://127.0.0.1:<port>)'
     out(`Unslop-code: ${codeState}. Profile ${show(code.profile)}: ${has(code.profile)}; token: ${has(code.token)}; shim ${show(code.shim)}: ${has(code.shim)}.\n`)
+    namesLine('unslop-code', 'Unslop-code')
     // the endpoint is printed only when it passed the rule, so it can hold no token
     const rp = requestPostPaths(dir)
     const rpState = rpEndpoint ? `on at ${rpEndpoint}` : rpEntry === undefined ? 'off' : `off (agents.request-post.endpoint is not ${ENDPOINT_RULE})`
@@ -593,6 +997,13 @@ function meshctl(argv: string[], io: MeshctlIo): number {
       out(read === 'invalid'
         ? `Added agent ${who}: off (the entry breaks meshctl add's rules; remove it and add it again).\n`
         : `Added agent ${id}: at ${read.endpoint}${read.agentId === undefined ? '' : ` (agent id ${read.agentId})`}; card pin ${read.cardSha256.slice(0, 12)}…; token: ${read.tokenFile === undefined ? 'none' : has(read.tokenFile)}.\n`)
+    }
+    // one line per model server (D7); a missing servers.json prints nothing
+    const servers = readServers(dir)
+    if (servers.kind === 'refused') out(`Model servers: ${sName} ${SERVERS_REASONS[servers.reason]}, so no agent can use a server.\n`)
+    else if (servers.kind === 'present') {
+      const users = serverUsers(dir)
+      for (const [server, entry] of Object.entries(servers.servers)) out(`${serverLine(server, entry, users.get(server) ?? [])}\n`)
     }
     return existing.kind === 'refused' ? 1 : 0
   }
@@ -721,7 +1132,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   }
 
   if (command === 'enable' && unslopCode) {
-    if (flags.size || !only('--port', '--checkout')) return usage()
+    if (flags.size || !only('--port', '--checkout', '--server', '--model')) return usage()
     const portText = values.get('--port') ?? String(UNSLOP_CODE_PORT)
     const port = /^\d{1,5}$/.test(portText) ? loopbackPort(`http://127.0.0.1:${portText}`) : undefined
     if (!port) return refuse('the port must be a number from 1 to 65535 other than 80; the endpoint is always http://127.0.0.1:<port>')
@@ -751,13 +1162,18 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     }
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
     if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
+    const choice = backendChoice()
+    if ('refused' in choice) return refuse(choice.refused)
     const code = unslopCodePaths(dir)
     const start = [node, wrap, '--agent', 'openai-compatible', '--profile', 'unslop-code']
-    const backend = unslopBackend(paths.profile)
-    const template = codeProfileTemplate(start, backend)
+    // --server names a server; without it the profile takes unslop's backend, inline or the server it names (D5)
+    const backend: Backend | undefined = choice.server !== undefined ? { server: choice.server } : unslopBackend(paths.profile)
+    const template = codeProfileTemplate(start, backend, choice.model)
     // the dry run shows where the backend comes from, never the URL or the key source
     const hidden = '(taken from the unslop profile; not printed)'
-    const shownTemplate = backend ? codeProfileTemplate(start, { baseUrl: hidden, ...(Object.hasOwn(backend, 'apiKey') ? { apiKey: hidden } : {}) }) : template
+    const shownTemplate = backend && 'baseUrl' in backend ? codeProfileTemplate(start, { baseUrl: hidden, ...(Object.hasOwn(backend, 'apiKey') ? { apiKey: hidden } : {}) }, choice.model) : template
+    const changed = exists(code.profile) && (choice.server !== undefined || choice.model !== undefined) ? changeProfile(code.profile, choice) : undefined
+    if (changed && 'refused' in changed) return refuse(changed.refused)
     const shim = shimText('unslop-code', 652, node, script, dir, false)
     const json = `${JSON.stringify(next, null, 2)}\n`
     const dirs = (): void => {
@@ -771,21 +1187,24 @@ function meshctl(argv: string[], io: MeshctlIo): number {
             dry: `Would write a new random caller token to ${show(code.token)} (0600).`,
             run: () => { dirs(); writeNew(code.token, `${randomBytes(32).toString('base64url')}\n`, 0o600, true); return `Wrote ${show(code.token)}.` },
           },
-      exists(code.profile)
+      changed ?? (exists(code.profile)
         ? {
             dry: `Would keep the profile ${show(code.profile)} (present; never overwritten).`,
             run: () => `Kept ${show(code.profile)}. If Node or the checkout moved, set its "start" by hand to ${JSON.stringify(start)}.`,
           }
         : {
-            dry: backend
-              ? `Would write the profile ${show(code.profile)} (0600), taking baseUrl${Object.hasOwn(backend, 'apiKey') ? ' and the apiKey source' : ''} from ${show(paths.profile)} (not printed):\n${shownTemplate}`
-              : `Would write the profile template ${show(code.profile)} (0600):\n${template}`,
+            dry: backend && 'server' in backend
+              ? `Would write the profile ${show(code.profile)} (0600), naming the server ${backend.server}${choice.server === undefined ? `, as ${show(paths.profile)} does` : ''}:\n${template}`
+              : backend
+                ? `Would write the profile ${show(code.profile)} (0600), taking baseUrl${Object.hasOwn(backend, 'apiKey') ? ' and the apiKey source' : ''} from ${show(paths.profile)} (not printed):\n${shownTemplate}`
+                : `Would write the profile template ${show(code.profile)} (0600):\n${template}`,
             run: () => {
               dirs()
               writeNew(code.profile, template, 0o600, true)
-              return backend ? `Wrote ${show(code.profile)} with the unslop profile's backend.` : `Wrote ${show(code.profile)}: fill in baseUrl and apiKey.`
+              return backend && 'server' in backend ? `Wrote ${show(code.profile)}: it names the server ${backend.server}.`
+                : backend ? `Wrote ${show(code.profile)} with the unslop profile's backend.` : `Wrote ${show(code.profile)}: fill in baseUrl and apiKey.`
             },
-          },
+          }),
       {
         dry: `Would write the shim ${show(code.shim)} (0755):\n${shim}`,
         run: () => { dirs(); writeAtomic(code.shim, shim, 0o755); return `Wrote ${show(code.shim)}.` },
@@ -833,7 +1252,7 @@ function meshctl(argv: string[], io: MeshctlIo): number {
   }
 
   if (command === 'enable') {
-    if (flags.size || !only('--port', '--checkout')) return usage()
+    if (flags.size || !only('--port', '--checkout', '--server', '--model')) return usage()
     const portText = values.get('--port') ?? String(UNSLOP_PORT)
     const port = /^\d{1,5}$/.test(portText) ? loopbackPort(`http://127.0.0.1:${portText}`) : undefined
     if (!port) return refuse('the port must be a number from 1 to 65535 other than 80; the endpoint is always http://127.0.0.1:<port>')
@@ -855,8 +1274,12 @@ function meshctl(argv: string[], io: MeshctlIo): number {
     }
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
     if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
+    const choice = backendChoice()
+    if ('refused' in choice) return refuse(choice.refused)
+    const changed = exists(paths.profile) && (choice.server !== undefined || choice.model !== undefined) ? changeProfile(paths.profile, choice) : undefined
+    if (changed && 'refused' in changed) return refuse(changed.refused)
     const start = [node, wrap, '--agent', 'openai-compatible', '--profile', 'unslop']
-    const template = profileTemplate(start)
+    const template = profileTemplate(start, choice)
     const shim = shimText('unslop', 483, node, script, dir)
     const json = `${JSON.stringify(next, null, 2)}\n`
     const dirs = (): void => {
@@ -870,15 +1293,19 @@ function meshctl(argv: string[], io: MeshctlIo): number {
             dry: `Would write a new random caller token to ${show(paths.token)} (0600).`,
             run: () => { dirs(); writeNew(paths.token, `${randomBytes(32).toString('base64url')}\n`, 0o600, true); return `Wrote ${show(paths.token)}.` },
           },
-      exists(paths.profile)
+      changed ?? (exists(paths.profile)
         ? {
             dry: `Would keep the profile ${show(paths.profile)} (present; never overwritten).`,
             run: () => `Kept ${show(paths.profile)}. If Node or the checkout moved, set its "start" by hand to ${JSON.stringify(start)}.`,
           }
         : {
-            dry: `Would write the profile template ${show(paths.profile)} (0600):\n${template}`,
-            run: () => { dirs(); writeNew(paths.profile, template, 0o600, true); return `Wrote ${show(paths.profile)}: fill in skill, baseUrl and apiKey.` },
-          },
+            dry: `Would write the profile template ${show(paths.profile)} (0600)${choice.server === undefined ? '' : `, naming the server ${choice.server}`}:\n${template}`,
+            run: () => {
+              dirs()
+              writeNew(paths.profile, template, 0o600, true)
+              return `Wrote ${show(paths.profile)}: fill in ${choice.server === undefined ? 'skill, baseUrl and apiKey' : 'skill'}.`
+            },
+          }),
       {
         dry: `Would write the shim ${show(paths.shim)} (0755):\n${shim}`,
         run: () => { dirs(); writeAtomic(paths.shim, shim, 0o755); return `Wrote ${show(paths.shim)}.` },
@@ -1334,6 +1761,7 @@ if (isMain) {
   process.exitCode = command === 'unslop' || command === 'unslop-code' || command === 'request-post' || command === 'call'
     ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
     : command === 'add' ? await runAdd(rest)
+      : command === 'server' && rest[0] === 'check' ? await runServerCheck(rest.slice(1))
       : command === 'check' ? await runCheckCommand(rest, { tailnet: magicDnsSuffix })
         : runMeshctl(process.argv.slice(2))
 }

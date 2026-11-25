@@ -1413,7 +1413,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {
-  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/public-address.ts', 'src/unslop-client.ts', 'src/unslop-code-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'src/mesh-entry.ts', 'public/agents-home.js', 'public/mesh-section.js', 'public/mesh-agent-page.js']
+  const MESH_FILES = ['src/mesh-config.ts', 'src/meshctl.ts', 'src/card-signature.ts', 'src/mesh-keys.ts', 'src/mesh-skills.ts', 'src/mesh-add.ts', 'src/public-address.ts', 'src/unslop-client.ts', 'src/unslop-code-client.ts', 'src/mesh-identity.ts', 'src/request-post-client.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-agents.ts', 'src/mesh-runs.ts', 'src/mesh-entry.ts', 'src/mesh-server-check.ts', 'public/agents-home.js', 'public/mesh-section.js', 'public/mesh-agent-page.js']
   const SPECIFIERS = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'"\n]+)\1/g
   // comment lines name modules in prose; only code imports count
   const code = (file: string): string => readFileSync(join(REPO, file), 'utf8').split('\n')
@@ -1428,7 +1428,9 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-entry.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './unslop-code-client.js', './public-address.js', './version.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-entry.js', './card-signature.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './unslop-code-client.js', './mesh-server-check.js', './public-address.js', './version.js'])
+    // meshctl server check (model servers D4): one GET to the server's own address, and a key command through child_process
+    expect([...code('src/mesh-server-check.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:child_process', 'node:http', 'node:http', 'node:https', 'node:os', 'node:path', './mesh-config.js', './mesh-config.js'])
     // the clients take the run collector's type only (cards view V5 §5.3); meshctl's entry writes the record
     expect(local('src/unslop-client.ts')).toEqual(['./agent-card.js', './mesh-config.js', './mesh-identity.js', './mesh-identity.js', './mesh-runs.js'])
     // unslop-code's client (#652): git and the agent start through child_process, never the network but the proven link
@@ -1481,7 +1483,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     walk('src/viewer-server.ts')
     expect(seen).toContain('src/mesh-agents.ts')
     expect(seen).toContain('src/mesh-entry.ts')
-    for (const file of ['src/public-address.ts', 'src/mesh-add.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/meshctl.ts']) expect(seen, file).not.toContain(file)
+    for (const file of ['src/public-address.ts', 'src/mesh-add.ts', 'src/mesh-call.ts', 'src/mesh-check.ts', 'src/mesh-server-check.ts', 'src/meshctl.ts']) expect(seen, file).not.toContain(file)
   })
 
   // unslop design §4.5 (b), request-post design §10: the clients are meshctl subcommands;
@@ -1493,7 +1495,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
       ...readdirSync(join(REPO, 'electron')).filter((f) => /\.c?js$/.test(f)).map((f) => `electron/${f}`),
     ]
     expect(files.length).toBeGreaterThan(10)
-    for (const file of files) expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(/unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-skills|mesh-keys|card-signature|meshctl/)
+    for (const file of files) expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(/unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-server-check|mesh-skills|mesh-keys|card-signature|meshctl/)
   })
 
   // The app's whole dependency set, pinned by name: package.json's dependencies and

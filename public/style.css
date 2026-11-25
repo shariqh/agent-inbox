@@ -2173,14 +2173,14 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
   padding-top: var(--sp-2);
   font-size: 12.5px;
 }
-.agent-cards-home[hidden], .agent-cards-agent[hidden], .agent-cards-off[hidden] { display: none; }
+.agent-cards-home[hidden], .agent-cards-agent[hidden], .agent-cards-off[hidden], .agent-cards-setup[hidden] { display: none; }
 .agent-cards-off { margin: 0; color: var(--app-muted); }
-.ma-stale[hidden], .ma-others[hidden], .ma-line[hidden], .ma-fix[hidden], .ma-json[hidden], .map-usage[hidden], .map-lastrun[hidden] { display: none; }
+.ma-stale[hidden], .ma-others[hidden], .ma-line[hidden], .ma-fix[hidden], .ma-json[hidden], .map-usage[hidden], .map-lastrun[hidden], .ma-grid[hidden], .ma-empty[hidden] { display: none; }
 .ma-head { display: flex; align-items: baseline; gap: 10px; padding: 0 4px; }
 .ma-title-text { margin: 0; color: var(--app-text); font-size: 17px; font-weight: 600; }
 .ma-count, .ma-checked { color: var(--app-text-soft); font-size: 12.5px; }
-.ma-refresh { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
-.ma-stale, .ma-others { margin: 8px 0 0; color: var(--app-muted); font-size: 12px; }
+.ma-refresh, .ms-btn { padding: 3px 9px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+.ma-stale, .ma-others, .ma-empty { margin: 8px 0 0; color: var(--app-muted); font-size: 12px; }
 /* three columns, two, then one, by the page's own column; the cards keep their DOM order */
 .ma-grid {
   display: grid;
@@ -2256,6 +2256,48 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .map-tab { padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--app-muted); font: inherit; cursor: pointer; }
 .map-tab[aria-selected="true"] { border-bottom-color: var(--app-link); color: var(--app-text); font-weight: 650; }
 .map-panel { padding-top: 4px; }
+/* agent setup in the app (step 2b): the Marketplace in the grid's style, the model servers as
+   rows in one card, the set-up pages' short forms and an agent page's foot; every row and line
+   wraps, so nothing scrolls sideways at phone width, and nothing appears on hover or focus */
+.ms-section { margin-top: 28px; }
+.ms-section[hidden], .ms-section .ms-line[hidden], .ms-rows[hidden], .ms-row-note[hidden], .ms-ask[hidden], .ms-btn[hidden],
+.ms-terminal[hidden], .ms-file-name[hidden], .ms-message[hidden], .ms-actions[hidden], .ms-review[hidden], .ms-review [hidden],
+.ms-field [hidden] { display: none; }
+.ms-line { margin: 8px 0 0; padding: 0 4px; color: var(--app-muted); font-size: 12px; }
+.ms-btn:disabled { cursor: default; opacity: .55; }
+.ms-primary { border-color: var(--app-border-strong); }
+.ms-offer { cursor: default; }
+.ms-offer.ms-openable { cursor: pointer; }
+.ms-needs { color: var(--app-text-soft); }
+.ms-terminal { min-width: 0; color: var(--app-muted); white-space: normal; }
+.ms-rows { margin: 12px 0 0; padding: 0; overflow: hidden; border: 1px solid var(--app-border); border-radius: 14px; background: var(--app-surface); list-style: none; }
+.ms-row { padding: 12px 16px; border-top: 1px solid var(--app-border); }
+.ms-row:first-child { border-top: 0; }
+.ms-row-main, .ms-row-actions, .ms-actions, .ms-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.ms-row-text { min-width: 0; flex: 1 1 220px; overflow-wrap: anywhere; }
+.ms-row-name { margin-right: 8px; font-weight: 600; }
+.ms-row-facts, .ms-row-note { color: var(--app-muted); }
+.ms-row-note { margin: 6px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.ms-ask { margin-top: 8px; }
+.ms-add { margin-top: 10px; }
+.ms-form { display: flex; max-width: 520px; flex-direction: column; gap: 14px; }
+.ms-fields { display: flex; flex-direction: column; gap: 12px; }
+.ms-field, .ms-choice { display: flex; min-width: 0; flex-direction: column; gap: 4px; margin: 0; padding: 0; border: 0; }
+.ms-label { padding: 0; color: var(--app-text-soft); font-weight: 600; }
+.ms-hint { margin: 0; color: var(--app-muted); font-size: 12px; }
+.ms-input, .ms-select { min-width: 0; max-width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface); color: var(--app-text); font: inherit; }
+.ms-input:focus-visible, .ms-select:focus-visible, .ms-radio input:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
+.ms-radio { display: inline-flex; align-items: center; gap: 6px; }
+.ms-file { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.ms-file-name { min-width: 0; overflow-wrap: anywhere; }
+.ms-message { margin: 0; color: var(--app-warning); overflow-wrap: anywhere; }
+.ms-review { padding: 12px 16px; border: 1px solid var(--app-border); border-radius: 14px; background: var(--app-surface); }
+.ms-review-title { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.ms-steps { margin: 0 0 10px; padding-left: 18px; overflow-wrap: anywhere; }
+.ms-refused { margin: 0 0 10px; overflow-wrap: anywhere; }
+.ms-foot { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--app-border); }
+.ms-foot .ms-ask-text { flex: 1 1 220px; min-width: 0; }
+.ms-foot .ms-message { margin-top: 8px; }
 /* Run history (cards view V5d): one table, rows keyed by run id; amber only for the outcomes that
    went wrong, never green or pink; the scroll anchor keeps a scrolled table still as a row lands */
 .mar-stale, .mar-summary, .mar-empty, .mar-older, .mar-kept, .mar-forget { margin: 8px 0 0; }

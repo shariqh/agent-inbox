@@ -48,6 +48,7 @@ import { installAgentsHome, moveKeepingFocus } from '/agents-home.js'
 import { installPlansLane } from '/plans-lane.js'
 import { installMeshAgentPage } from '/mesh-agent-page.js'
 import { installMeshAgents } from '/mesh-section.js'
+import { installMeshSetup } from '/mesh-setup.js'
 import { SHELL_WARNING } from '/launches.js'
 import { refreshLaunchSettings, renderLaunchSettings } from '/launch-settings.js'
 // #617 PR 2d: Settings → Other devices, sharing this Inbox with the owner's other Macs
@@ -767,10 +768,12 @@ async function messagesBody(read) {
 // stops the read until /api/version carries `mesh` again.
 let meshOff = false
 const meshWanted = () => Boolean(liveVersion?.mesh) && !meshOff
-// the tab shows while the mesh is on, and stays while it is the current tab, so a passive read
-// that turns the mesh off never takes the page from under the person
-const agentCardsShown = () => meshWanted() || activeTab === 'cards'
-const meshReadable = () => meshWanted() && activeTab === 'cards' && document.visibilityState !== 'hidden'
+// the tab shows while the mesh is on, or while this Mac's app can set an agent up (step 2b, D1), and
+// stays while it is the current tab, so a passive read that turns the mesh off never takes the page
+// from under the person
+const meshShown = () => meshWanted() || meshSetup.usable()
+const agentCardsShown = () => meshShown() || activeTab === 'cards'
+const meshReadable = () => meshShown() && activeTab === 'cards' && document.visibilityState !== 'hidden'
 async function meshBody(read) {
   try {
     return await settledValue(read).json()
@@ -812,8 +815,8 @@ function meshOpen() {
 // Refresh, the human's press (the section's, or the agent page's for its agent): the result
 // paints through the human path.
 async function meshRefresh(name) {
-  if (!meshWanted()) return
-  await postMesh('refresh', name).catch(() => {})
+  if (!meshShown()) return
+  if (meshWanted()) await postMesh('refresh', name).catch(() => {})
   await reloadAndPaint()
 }
 
@@ -821,7 +824,11 @@ async function meshRefresh(name) {
 // slot, replaced by the next agent opened, never counted and never persisted. Which agent is
 // open is the page module's state, by key; a passive repaint never opens or closes it.
 const meshAgents = installMeshAgents({
-  onRefresh: () => { meshRefresh() },
+  // the section's Refresh asks the servers again too (step 2b, D2)
+  onRefresh: () => {
+    meshRefresh()
+    meshSetup.entered()
+  },
   onOpen: (key, name) => openMeshAgent(key, name, { focus: true }),
 })
 const meshAgentPage = installMeshAgentPage({
@@ -829,6 +836,40 @@ const meshAgentPage = installMeshAgentPage({
   wireTablist,
   onRefresh: (name) => { meshRefresh(name) },
   onBack: () => closeMeshAgent(),
+})
+// Agent setup in the app, step 2b: the Marketplace and Model servers sections, the set-up pages in
+// the tab and the foot of an agent's page, through the local window's mesh bridge only.
+const meshSetup = installMeshSetup({
+  bridge: () => window.agentInboxMesh ?? null,
+  local: async () => {
+    await hubMode.ready()
+    return hubMode.local()
+  },
+  home: () => document.getElementById('agentCardsHome'),
+  setupPage: () => document.getElementById('agentSetup'),
+  agentPage: () => document.getElementById('agentPage'),
+  panel: () => document.getElementById('cards'),
+  heading: () => {
+    const heading = document.getElementById('pageTitle')
+    if (heading) heading.tabIndex = -1
+    return heading
+  },
+  active: () => activeTab === 'cards',
+  changed: () => paintAgentCards(),
+  reload: () => {
+    refreshLiveVersion()
+    reloadAndPaint()
+  },
+  turnedOn: (name) => openMeshAgent(`mesh.json:${name}`, name, { focus: true, pending: true }),
+  turnedOff: () => {
+    meshAgentPage.close()
+    paintAgentCards()
+    const heading = document.getElementById('pageTitle')
+    if (heading) {
+      heading.tabIndex = -1
+      heading.focus({ preventScroll: true })
+    }
+  },
 })
 
 // The chats (#586), Find's Chats chip since UX pass, slice 4, step B: their own read on entering
@@ -873,23 +914,32 @@ function paintAgentCards() {
   const home = document.getElementById('agentCardsHome')
   const page = document.getElementById('agentPage')
   if (!home || !page) return
-  const open = Boolean(meshAgentPage.current())
-  setHidden(home, open)
+  const setup = document.getElementById('agentSetup')
+  // a set-up page (step 2b) covers both the grid and an agent's page, which it may go back to
+  const setupOpen = Boolean(setup) && meshSetup.open()
+  const open = !setupOpen && Boolean(meshAgentPage.current())
+  setHidden(home, open || setupOpen)
   setHidden(page, !open)
-  const input = meshWanted() && lastData?.mesh?.body?.on === true ? lastData.mesh : null
+  if (setup) setHidden(setup, !setupOpen)
+  // with no agent on, an app that can set one up shows the home with "No agent is on yet." (D1, D2)
+  const body = lastData?.mesh?.body
+  const input = meshWanted() && body?.on === true ? lastData.mesh : meshSetup.usable() ? (body ? lastData.mesh : { body: { on: false, agents: [] }, stale: false }) : null
   meshAgents.paint(home, input, Date.now(), meshAgentPage.current()?.key ?? null)
-  setHidden(document.getElementById('agentCardsOff'), meshWanted())
+  setHidden(document.getElementById('agentCardsOff'), meshShown())
   // the page, from the same body, whether or not mesh is still on (it then says the agent left)
   meshAgentPage.paint(lastData?.mesh ?? null, Date.now(), lastData?.runs ?? null)
+  const current = meshAgentPage.current()
+  const agent = current && body?.on === true && Array.isArray(body.agents) ? body.agents.find((a) => String(a.key) === current.key && a.kind !== 'added') : null
+  meshSetup.paint({ body: input?.body ?? null, agent: agent ? { name: String(agent.name) } : null })
   if (activeTab === 'cards' && !document.getElementById('cards').hidden) paintPageHeading('cards')
 }
 // A card's press, a deep link: the agent's page in the Agent cards tab, painted at once from the
 // last bodies; one reloadAndPaint() brings what the page reads without waiting for a tick. It
 // posts no check (D5): entering the tab did. A press moves focus to the way back, so focus never
 // stays on a card the page now covers.
-function openMeshAgent(key, name, { focus = false } = {}) {
+function openMeshAgent(key, name, { focus = false, pending = false } = {}) {
   if (!agentCardsShown()) return
-  meshAgentPage.open(key, name)
+  meshAgentPage.open(key, name, { pending })
   if (activeTab !== 'cards') selectTab('cards')
   paintAgentCards()
   if (focus) document.querySelector('#agentPage .map-back')?.focus({ preventScroll: true })
@@ -924,7 +974,7 @@ function applyAgentCardsLink() {
   }
   const link = agentCardsLink
   agentCardsLink = null
-  if (!meshWanted()) return
+  if (!meshShown()) return
   if (link.key) {
     const key = agentCardsKeyFor(link.key)
     openMeshAgent(key, key.slice(key.indexOf(':') + 1))
@@ -3890,6 +3940,7 @@ function frameInputs() {
     frontWaitsOnLanes && (lanesHoldFocus() || lanesUnderPointer()),
     agentsHome.state(),
     meshAgentPage.state(),
+    meshSetup.state(),
     chatsView.state(),
     launchUi?.version() ?? null,
   ]
@@ -6109,6 +6160,8 @@ function selectTab(id, { paint = true, open = true } = {}) {
   if (open && id === 'cards' && from !== 'cards') {
     meshOpen()
     if (!lastData?.mesh?.body) reloadAndPaint()
+    // step 2b (D2): the model servers are asked on entering, never on a timer
+    meshSetup.entered()
   }
 }
 
@@ -7083,11 +7136,12 @@ function initAgentSelect() {
 // The top bar's kicker and title for the panel showing; the Agent cards names an open agent.
 function paintPageHeading(id) {
   const page = PAGE_META[id] ?? PAGE_META.dashboard
-  const agent = id === 'cards' ? meshAgentPage.current() : null
+  // an open set-up page's title (step 2b), else the open agent's name
+  const named = id === 'cards' ? (meshSetup.open() ? meshSetup.title() : meshAgentPage.current()?.name ?? null) : null
   const kicker = document.getElementById('pageKicker')
-  setText(kicker, agent ? page.title : page.kicker)
+  setText(kicker, named ? page.title : page.kicker)
   setHidden(kicker, !kicker.textContent)
-  setText(document.getElementById('pageTitle'), agent ? agent.name : page.title)
+  setText(document.getElementById('pageTitle'), named ?? page.title)
 }
 
 // which content panel is visible; the tab strip drives this in Task 8
@@ -7218,6 +7272,9 @@ function refreshLiveVersion() {
       liveVersion = body && typeof body === 'object' ? body : null
       if (liveVersion?.mesh) meshOff = false
     })
+    .catch(() => {})
+    // step 2b (D1): whether this Mac's app can set an agent up decides the tab too, so it is known first
+    .then(() => meshSetup.refreshAvailable())
     .catch(() => {})
     // the Agent cards tab follows the read at once; a deep link that waited on it lands now
     .then(() => {
@@ -12500,9 +12557,10 @@ function initKeys() {
       return
     }
     // Agent cards step 1 (D3): Escape on an agent's page goes back to the grid, unless focus is in a field
-    if (e.key === 'Escape' && !typing && !triageDeck && activeTab === 'cards' && meshAgentPage.current() && activeScope === document) {
+    if (e.key === 'Escape' && !typing && !triageDeck && activeTab === 'cards' && (meshSetup.open() || meshAgentPage.current()) && activeScope === document) {
       e.preventDefault()
-      closeMeshAgent()
+      // a set-up page goes back where it came from (step 2b, D3)
+      if (!(meshSetup.open() && meshSetup.back())) closeMeshAgent()
       return
     }
     // optionCount must come from the SAME target runIntent will answer — the

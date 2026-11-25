@@ -29,6 +29,14 @@ const TERMINAL = new Set<State>([S.completed, S.rejected, S.failed, S.canceled])
 type Json = Record<string, unknown>
 /** What every skill's run returns: the server reads the code, the status line and the model time. */
 export type SkillResult = { code: number; status: string; reason?: string; ms: { load: number; model: number } }
+/** What the task keeps for its answer to reach the client before the client's own deadline. */
+const ANSWER_MARGIN_MS = 5000
+/**
+ * A task's budget once it starts (Claude Code D5): its own limit, or the client's time left less
+ * the margin, never under one second; with no time left at all it stays at or below 0, so the
+ * task ends without a model call.
+ */
+export const budgetOf = (leftMs: number): number => (leftMs <= 0 ? leftMs : Math.max(1000, Math.min(TASK_MS, leftMs - ANSWER_MARGIN_MS)))
 export type RunContext = { taskId: string; queuedMs: number; budgetMs: number; signal: AbortSignal }
 /** A message the skill takes: its input, its queue estimate and its log fields (sizes and classes only). */
 export type Accepted<I> = { input: I; estimateMs: number; log: Json }
@@ -170,7 +178,7 @@ export async function startServer<I, R extends SkillResult>(o: ServerOptions<I, 
     running = t
     t.startedAt = now()
     const queuedMs = t.startedAt - t.submittedAt
-    const context: RunContext = { taskId: t.id, queuedMs, budgetMs: Math.min(TASK_MS, t.timeoutMs - queuedMs), signal: t.abort.signal }
+    const context: RunContext = { taskId: t.id, queuedMs, budgetMs: budgetOf(t.timeoutMs - queuedMs), signal: t.abort.signal }
     skill.run(t.input as I, context, (state) => { if (!TERMINAL.has(t.status.state)) setState(t, S.working, state) }).then((r) => finish(t, r), () => finish(t, undefined)).catch(() => fail(t))
   }
 

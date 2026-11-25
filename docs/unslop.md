@@ -2,7 +2,8 @@
 
 Agent Inbox can run the `unslop` editing skill as a local A2A agent (#483, mesh phase
 M2a). Copilot CLI, Claude Code or a plain shell sends a public draft to it, and the
-agent edits the draft with a local model by the same `rules.md` the skill uses
+agent edits the draft with the model its [server](model-servers.md) gives it (a local model, or
+Claude Code on this Mac) by the same `rules.md` the skill uses
 in-session. Code, not the model, checks that facts, links, numbers, negations and
 conditions survived the edit. If the check fails twice, you get the original back.
 
@@ -110,7 +111,8 @@ within a minute of `disable --unslop --apply`) and for one started before the la
 On anything but 0, edit the original in-session; don't retry, and say in the reply that the agent
 was not used, with the exit code and the shim's last stderr line (the routing skill does). `--report <file>` gets
 the result as JSON (mode 0600, never through a symlink): `status`, `model`,
-`rulesSha256`, `attempts`, the hard check results, `warnings` (such as a changed
+`rulesSha256`, `attempts`, `calls` (the model calls made), `tokens` (`{ in, out }`, when the
+model reported them), the hard check results, `warnings` (such as a changed
 `may`), any refusal classes and timings. When the last attempt failed the check, it also
 has `failures`: one entry per failed class, `{ class, kind, lost, added }` (and `moved`
 for a value that changed place), with at most 10 values of 80 characters each, so you

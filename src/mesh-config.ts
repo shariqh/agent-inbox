@@ -9,7 +9,7 @@
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.
 // A missing key or file means off. A newer schema is never read as on: this
 // build cannot know what it would turn on.
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -237,9 +237,10 @@ const PRINTABLE = /^[^\x00-\x1f\x7f]{0,4096}$/
 export const serversFile = (dir: string): string => join(dir, 'mesh', 'servers.json')
 
 export type KeySource = { file: string } | { command: string[] } | { env: string }
-export type ServerEntry = { baseUrl: string; apiKey?: KeySource }
+/** A model server: an address with an optional key source, or Claude Code on this Mac (no address, no key). */
+export type ServerEntry = { baseUrl: string; apiKey?: KeySource } | { kind: 'claude-code' }
 export type ServersReason = 'not-regular' | 'not-private' | 'too-large' | 'unreadable' | 'not-json' | 'not-object' | 'no-schema' | 'newer-schema'
-  | 'unknown-key' | 'no-servers' | 'too-many' | 'bad-name' | 'bad-entry' | 'bad-base-url' | 'bad-api-key'
+  | 'unknown-key' | 'no-servers' | 'too-many' | 'bad-name' | 'bad-entry' | 'bad-kind' | 'bad-base-url' | 'bad-api-key'
 export type ServersRead =
   | { kind: 'missing' }
   | { kind: 'refused'; reason: ServersReason }
@@ -255,11 +256,12 @@ export const SERVERS_REASONS: Record<ServersReason, string> = {
   'not-object': 'is not a JSON object',
   'no-schema': 'has no valid "schema"',
   'newer-schema': `was written by a newer Agent Inbox (schema above ${SERVERS_SCHEMA})`,
-  'unknown-key': 'holds a key this build does not know (the file holds only schema and servers, a server only baseUrl and apiKey)',
+  'unknown-key': 'holds a key this build does not know (the file holds only schema and servers, a server only baseUrl and apiKey, or kind)',
   'no-servers': 'has no "servers" object',
   'too-many': `holds more than ${SERVERS_MAX} servers`,
   'bad-name': 'holds a server name that is not 1 to 40 lower-case letters, digits or "-" (starting with a letter or digit)',
   'bad-entry': 'holds a server that is not an object',
+  'bad-kind': 'holds a kind this build does not know, or a kind beside baseUrl or apiKey',
   'bad-base-url': 'holds a baseUrl that is not https://, or http:// on a loopback address, without credentials, a query or a fragment',
   'bad-api-key': 'holds an apiKey that is not { "file": "/absolute/path" }, { "command": ["/absolute/path", "arg"] } or { "env": "NAME" }',
 }
@@ -299,9 +301,12 @@ export function isKeySource(value: unknown): value is KeySource {
   return false
 }
 
+/** Whether `entry` is Claude Code on this Mac: its model calls run the claude program, with no address and no key. */
+export const isClaudeServer = (entry: ServerEntry): entry is { kind: 'claude-code' } => 'kind' in entry
+
 /** The kind of a server's key source, the only thing about it meshctl prints. */
 export const keyKind = (entry: ServerEntry): 'file' | 'command' | 'env' | 'none' =>
-  entry.apiKey === undefined ? 'none' : 'file' in entry.apiKey ? 'file' : 'command' in entry.apiKey ? 'command' : 'env'
+  isClaudeServer(entry) || entry.apiKey === undefined ? 'none' : 'file' in entry.apiKey ? 'file' : 'command' in entry.apiKey ? 'command' : 'env'
 
 /** The servers in `text` by the one rule, or the first rule it breaks. */
 export function parseServers(text: string): { ok: true; servers: Record<string, ServerEntry> } | { ok: false; reason: ServersReason } {
@@ -327,7 +332,12 @@ export function parseServers(text: string): { ok: true; servers: Record<string, 
     if (!SERVER_NAME.test(name)) return { ok: false, reason: 'bad-name' }
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { ok: false, reason: 'bad-entry' }
     const e = entry as Record<string, unknown>
-    if (Object.keys(e).some((key) => key !== 'baseUrl' && key !== 'apiKey')) return { ok: false, reason: 'unknown-key' }
+    if (Object.keys(e).some((key) => key !== 'baseUrl' && key !== 'apiKey' && key !== 'kind')) return { ok: false, reason: 'unknown-key' }
+    if (Object.hasOwn(e, 'kind')) {
+      if (e['kind'] !== 'claude-code' || Object.hasOwn(e, 'baseUrl') || Object.hasOwn(e, 'apiKey')) return { ok: false, reason: 'bad-kind' }
+      servers[name] = { kind: 'claude-code' }
+      continue
+    }
     if (baseUrlRefusal(e['baseUrl'])) return { ok: false, reason: 'bad-base-url' }
     if (Object.hasOwn(e, 'apiKey') && !isKeySource(e['apiKey'])) return { ok: false, reason: 'bad-api-key' }
     servers[name] = { baseUrl: e['baseUrl'] as string, ...(Object.hasOwn(e, 'apiKey') ? { apiKey: e['apiKey'] as KeySource } : {}) }
@@ -362,6 +372,42 @@ export function readServers(dir: string): ServersRead {
 
 /** The text meshctl writes: schema 1 and the servers, in the order given. */
 export const serversText = (servers: Record<string, ServerEntry>): string => `${JSON.stringify({ schema: SERVERS_SCHEMA, servers }, null, 2)}\n`
+
+/** The places findClaude looks after PATH that are not in home: a test passes [] for them. */
+const CLAUDE_SYSTEM_PATHS = ['/opt/homebrew/bin/claude', '/usr/local/bin/claude']
+
+/**
+ * The claude program (Claude Code as a model server, D4): the first candidate that is a regular
+ * file the user may execute, among `<dir>/claude` for each absolute folder on `env.PATH`, then
+ * `fixed`, then `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin` (only when `home` is
+ * absolute). Its real path is
+ * returned (the usual install is a link) when it is owned by this user or root and neither group
+ * nor others may write it; the first candidate found decides, so an untrusted one gives undefined
+ * rather than a later one. The path is never printed, logged or put in any output.
+ */
+export function findClaude(env: NodeJS.ProcessEnv, home: string, fixed: readonly string[] = CLAUDE_SYSTEM_PATHS): string | undefined {
+  const fromPath = (env['PATH'] ?? '').split(':').filter((dir) => dir && isAbsolute(dir)).map((dir) => join(dir, 'claude'))
+  // an empty or relative home would make relative candidates, found from whatever folder this runs in
+  const inHome = isAbsolute(home) ? ['.local/bin/claude', '.claude/local/claude', '.npm-global/bin/claude'].map((rel) => join(home, rel)) : []
+  for (const candidate of [...fromPath, ...fixed, ...inHome]) {
+    let real: string
+    try {
+      accessSync(candidate, constants.X_OK)
+      real = realpathSync(candidate)
+      if (!statSync(real).isFile()) continue
+    } catch {
+      continue
+    }
+    try {
+      const info = statSync(real)
+      const uid = process.getuid?.() ?? -1
+      return (info.uid === uid || info.uid === 0) && (info.mode & 0o022) === 0 ? real : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
 
 /** The port of an `agents.unslop.endpoint`: only http://127.0.0.1:<port>, never port 80 (clients drop `:80` from Host). */
 export function loopbackPort(endpoint: unknown): number | undefined {

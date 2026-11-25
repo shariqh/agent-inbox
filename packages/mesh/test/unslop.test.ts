@@ -253,6 +253,22 @@ describe('fidelity and retry', () => {
     expect(retry.endsWith(`TEXT ${NONCE} BEGIN\n${INPUT}\nTEXT ${NONCE} END`)).toBe(true)
   })
 
+  it('counts the model calls and sums the tokens the replies report, in the result and the log (Claude Code D6)', async () => {
+    queue(reply(BAD, {}, { usage: { prompt_tokens: 300, completion_tokens: 40 } }), reply(GOOD, {}, { usage: { completion_tokens: 30 } }))
+    const { env, logs } = setup()
+    const result = await runUnslop(task(), env)
+    expect(result).toMatchObject({ code: 0, attempts: 2, calls: 2, tokens: { in: 300, out: 70 } })
+    expect(logs[0]).toMatchObject({ attempts: 2, calls: 2, tokens: { in: 300, out: 70 } })
+    // no counts at all: no tokens; a refusal before the network: no calls
+    queue(reply(GOOD, {}, { usage: {} }))
+    const bare = await runUnslop(task(), setup().env)
+    expect(bare).toMatchObject({ code: 0, calls: 1 })
+    expect(bare).not.toHaveProperty('tokens')
+    expect(await runUnslop(task('', {}), setup().env)).toMatchObject({ code: 11, calls: 0 })
+    // a deadline before the call: an attempt, but no call
+    expect(await runUnslop(task(INPUT, { budgetMs: 0 }), setup().env)).toMatchObject({ code: 13, reason: 'deadline', attempts: 1, calls: 0 })
+  })
+
   it('keeps the original after two failed checks, with the reasons', async () => {
     queue(reply(BAD), reply(BAD.replace('v2.5.0', 'v2.6.0')))
     const result = await runUnslop(task(), setup().env)

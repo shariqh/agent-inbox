@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readServers } from '../src/mesh-config.js'
+import { isClaudeServer, readServers } from '../src/mesh-config.js'
 
 type Case = { name: string; verdict: string; doc?: unknown; text?: string; mode?: number; pad?: number; kind?: 'symlink' | 'directory' | 'missing'; servers?: string[] }
 const FIXTURES = new URL('../../../test/fixtures/servers-json/', import.meta.url).pathname
@@ -58,7 +58,12 @@ describe('servers.json reader parity (model servers D1)', () => {
 
   it('returns each entry as written', () => {
     const dir = scratch()
-    materialise({ name: 'one', verdict: 'present', doc: { schema: 1, servers: { box: { baseUrl: 'https://box.example/llm', apiKey: { env: 'BOX_KEY' } }, open: { baseUrl: 'http://127.0.0.1:8080' } } } }, dir)
-    expect(readServers(dir)).toEqual({ kind: 'present', servers: { box: { baseUrl: 'https://box.example/llm', apiKey: { env: 'BOX_KEY' } }, open: { baseUrl: 'http://127.0.0.1:8080' } } })
+    materialise({ name: 'one', verdict: 'present', doc: { schema: 1, servers: { box: { baseUrl: 'https://box.example/llm', apiKey: { env: 'BOX_KEY' } }, open: { baseUrl: 'http://127.0.0.1:8080' }, cc: { kind: 'claude-code' } } } }, dir)
+    expect(readServers(dir)).toEqual({ kind: 'present', servers: { box: { baseUrl: 'https://box.example/llm', apiKey: { env: 'BOX_KEY' } }, open: { baseUrl: 'http://127.0.0.1:8080' }, cc: { kind: 'claude-code' } } })
+  })
+
+  it('isClaudeServer tells the two kinds apart', () => {
+    expect(isClaudeServer({ kind: 'claude-code' })).toBe(true)
+    expect(isClaudeServer({ baseUrl: 'https://box.example' })).toBe(false)
   })
 })

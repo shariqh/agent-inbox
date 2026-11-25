@@ -337,7 +337,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   - **Queue and budget (design §7.2).** One task runs and one waits; a third, or one whose
     estimated wait plus its own estimate (`max_tokens` at 44 tok/s) exceeds its
     `timeoutMs`, is `REJECTED` as busy (12) with `retryAfterMs`. A task gets at most
-    270 s from its start, and never more than what queueing left of its `timeoutMs`. After 200
+    `TASK_MS` (600 s) from its start, and never more than what queueing left of its `timeoutMs`
+    less a 5 s margin, so it answers before the client's own deadline (`budgetOf` in `a2a.ts`:
+    at least 1 s, unless queueing left nothing, when the task ends without a call). After 200
     tasks or 180 model-minutes in a local day, tasks are `REJECTED` "daily-budget" (11).
 - **Turning unslop on and off (U3a, unslop design §4.2-§4.3).** From a checkout, build
   `packages/mesh` (`npm ci && npm run build` there, Node 24), then run
@@ -432,8 +434,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
      its data says busy (with "try again in about N s") and 11 otherwise (the refusal and
      screen classes, never a value); `FAILED`, `CANCELED`, an unknown state or a lost agent
      is 13. `--report` writes the final data part (the §6.3 JSON: `code`, `status`,
-     `reason`, `screen`, `failures`, `rulesSha256`, `model`, `attempts`, `hard`, `warnings`,
-     `ms`, `skillStale`) through `O_NOFOLLOW`, mode 0600, for every final state that has
+     `reason`, `screen`, `failures`, `rulesSha256`, `model`, `attempts`, `calls`, `tokens`,
+     `hard`, `warnings`, `ms`, `skillStale`) through `O_NOFOLLOW`, mode 0600, for every final state that has
      one; a report it cannot write makes the exit 13. **On every exit but 0 stdout is
      empty**, and callers edit the original in-session without retrying.
   `test/unslop-client.test.ts` holds (f) (a counting listener and a spawn spy over a
@@ -742,10 +744,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     failed), each file's status (`cleaned`, `unchanged`, `skipped`, `not-reached`),
     removed lines, dropped lines with their guard reasons and suggestions, and `patch`,
     the cleaned files' `patchFor` patches joined in the order given. When the time left
-    cannot cover another answer at the observed speed the remaining files are
-    `not-reached` (code 0 with reason `budget`, or 13 `deadline` when no file was
-    decided); a busy or failed backend stops the task, and files already decided keep
-    their results. The log callback gets counts, sizes, timings and class names: never
+    cannot cover another answer at the observed speed, or a call runs out of time (the
+    transport's `deadline`), the remaining files are `not-reached` (code 0 with reason
+    `budget`, or 13 `deadline` when no file was decided); a cancel stays 13 `cancelled`, a
+    busy or failed backend stops the task, and files already decided keep their results. The log callback gets counts, sizes, timings and class names: never
     a path, a line or an answer. Tests: `test/unslop-code.test.ts` (a fake `post`).
   - **Bench S12, live.** `bench/s12/run.ts` runs `runCodeSlop` in-process against a real
     OpenAI-compatible backend, one task per fixture, and scores the results with the
@@ -800,12 +802,13 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `REJECTED` with code 11, reason `malformed`, before the budget and with nothing sent
     to the backend; only the known fields reach the task function. The body limit is
     4 MiB (unslop's stays 64 KiB); `runCodeSlop` applies its own limits per file and on
-    the number of files. The queue estimates twelve seconds a file, at most the 270 s
-    task limit.
+    the number of files. The queue estimates twelve seconds a file, at most 270 s
+    (`ESTIMATE_MAX_MS`, the task limit before it rose to 600 s), so admission at the default
+    280 s timeout is as it was.
   - **Result.** On code 0 the task completes with an artifact named `unslop-code`: a
     text part holding the patch (`text/x-diff`; empty when nothing was removed) and a
     data part with the rest of the result (code, status, reason, files, model, calls,
-    timings). Codes 11, 12 (with `retryAfterMs`) and 13 end the task `REJECTED` or
+    `tokens` `{ in, out }` summed over the replies that reported counts, timings). Codes 11, 12 (with `retryAfterMs`) and 13 end the task `REJECTED` or
     `FAILED` with that report in the status message and no patch, as unslop's non-zero
     codes do. Streaming status names the question being asked (`remove`, `keep`,
     `suggest`).
@@ -1534,15 +1537,20 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
 ## Model servers
 
 User guide: [`docs/model-servers.md`](../model-servers.md). A model server is a local agent's
-OpenAI-compatible backend, added once by name; a profile names it instead of holding `baseUrl`
-and `apiKey`. This step is the command line and the agent program; the app does not read it yet.
+OpenAI-compatible backend, or Claude Code on this Mac, added once by name; a profile names it
+instead of holding `baseUrl` and `apiKey`. The command line and the agent program read it; the
+app shows it through the bridge (`docs/architecture/electron-app.md`).
 
 - **One file, one rule, two readers.** `<mesh dir>/mesh/servers.json` is `{ "schema": 1,
-  "servers": { "<name>": { "baseUrl", "apiKey"? } } }`, mode 0600 in a 0700 folder.
+  "servers": { "<name>": { "baseUrl", "apiKey"? } or { "kind": "claude-code" } } }`, mode 0600 in
+  a 0700 folder.
   `src/mesh-config.ts` (`readServers`, `parseServers`, `baseUrlRefusal`, `isKeySource`) and
   `packages/mesh/src/mesh-config.ts` (`readServers`) apply the same rule: a regular file (never a
   symlink) this user owns with no group or other bits, at most 64 KiB; nothing but `schema` and
-  `servers` at the top and `baseUrl` and `apiKey` in a server; a name matching
+  `servers` at the top and `baseUrl`, `apiKey` and `kind` in a server (an unknown key is
+  `unknown-key`, checked first; then a `kind` that is not `"claude-code"` or stands beside `baseUrl`
+  or `apiKey` is `bad-kind`, and a server without `kind` follows the address rule; `isClaudeServer`
+  tells the two shapes apart in each package); a name matching
   `^[a-z0-9][a-z0-9-]{0,39}$`; at most 32 servers; `baseUrl` by `checkBaseUrl`'s rule (https, or
   http on a loopback address; no credentials, query, fragment, `//` or backslash) plus printable
   ASCII of at most 2048 bytes; `apiKey` a key source by shape (exactly one of an absolute or `~/`
@@ -1558,6 +1566,31 @@ and `apiKey`. This step is the command line and the agent program; the app does 
   reason `server` when the address or key source differs from the start's, or the entry, the file
   or its rule is gone. An inline profile never calls the lookup, so its agent never opens
   `servers.json` (`packages/mesh/test/model-servers-agent.test.ts` proves it with a refused file).
+  A Claude Code entry's gate key is `["claude-code"]`, so a change of kind stops the agent too.
+- **Claude Code on this Mac** (`packages/mesh/src/claude-post.ts`). A profile naming such a server
+  must hold `model` `haiku`, `sonnet` or `opus` (else a configuration error at start); `sampling`
+  is ignored. At start the agent finds the program with `findClaude` (one copy in each package,
+  `src/mesh-config.ts` and `packages/mesh/src/mesh-config.ts`, held by
+  `test/fixtures/claude-finder/cases.json`: the first `claude` among the absolute `PATH` folders,
+  `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin`
+  that the user may execute, by its real path, owned by the user or root and not writable by group
+  or others; the first found decides) and makes `mesh/claude-cwd` (0700). `claudePost` is then the
+  run functions' `post`, with the placeholder base URL `http://127.0.0.1:9/claude-code` and no key,
+  so `runUnslop` and `runCodeSlop` are unchanged. It reads the model and the first system and user
+  messages of the request body, spawns `claude -p --safe-mode --tools "" --system-prompt <system>
+  --model <m> --no-session-persistence --output-format json` asynchronously without a shell, the
+  user text on stdin, in `mesh/claude-cwd`, with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+  `TMPDIR`, `LANG` and `LC_ALL`; one call has at most the task's time left, capped at 120 s
+  (`SIGTERM`, then `SIGKILL` after 2 s: transport `deadline`), the abort signal kills it the same
+  way (`aborted`), stdout over 1 MiB is `too-large`, stderr is dropped. `is_error: false` with a
+  string `result` becomes a 200 OpenAI-shaped body: `usage.prompt_tokens` is input plus both cache
+  counts, `completion_tokens` the output tokens, and `timings` are shaped so that the start-up
+  counts as prompt time (no model load is booked) and the rate never reads below 44 tokens a
+  second. `is_error: true` becomes a bare status (`api_error_status` when 400 to 599, else 400),
+  its sentence dropped: 5xx is busy, 429 and any other 4xx fail. Anything else is `unreachable`.
+  `server check` of such a server sends nothing over the network: it runs `<program> auth status
+  --json` (the same environment, 10 s, 64 KiB) and reads only `loggedIn` (`no-program`,
+  `signed-out`, `timeout`).
 - **meshctl** stays the only writer. `server add|set|remove` write through `writeAtomic` with a
   timestamped backup (`remove` of the last server deletes the file, keeping one); `add --from
   <agent>` takes a filled-in inline profile's settings (by `inlineSettings`, the servers.json
@@ -1566,9 +1599,14 @@ and `apiKey`. This step is the command line and the agent program; the app does 
   readable profile names the server. `enable --unslop|--unslop-code --server|--model` writes a new
   profile naming the server, or changes an existing one by `rewriteProfile` (the one case in which
   enable changes a profile); without either option enable behaves as before, except that
-  `enable --unslop-code` names unslop's server when unslop's profile names one.
+  `enable --unslop-code` names unslop's server when unslop's profile names one. `server add <name>
+  --claude-code` writes `{ "kind": "claude-code" }`; `server set` refuses such a server; `enable
+  --server` naming one takes `haiku`, `sonnet` or `opus` only (`sonnet` when none is given, unless
+  the profile already holds one of the three). `server list --json` rows and `server check --json`
+  carry `kind` (`http` or `claude-code`); a Claude Code row keeps `baseUrl: ""` and `key: "none"`,
+  the shape the released bridge requires.
 - **`server check`** (`src/mesh-server-check.ts`; Node core and the config rule; never reached by
-  the viewer, the frontend or Electron) reads the key from its source, then sends one
+  the viewer or the frontend) of a server at an address reads the key from its source, then sends one
   `GET <baseUrl>/v1/models` through `node:http(s)` (no redirect, no proxy, 10 s for the whole
   check, 256 KiB). A 401 or 403 is `unauthorized`; a redirect, another status, junk or too much is
   `not-a-model-server`; a key source that gives nothing is `key`, and nothing is sent. Only ids
@@ -1578,6 +1616,8 @@ and `apiKey`. This step is the command line and the agent program; the app does 
   step's first line (`runSteps` with a `Plan`), a refusal or failed step as `refused`, and any other
   line as a note, then print `{ applied, steps, refused?, notes? }`. A usage error stays text on
   stderr.
-- **Never printed:** a key, a key file's path, a key command, a key variable's name or a token.
+- **Never printed:** a key, a key file's path, a key command, a key variable's name, a token, the
+  claude program's path, text sent to or returned by it, or anything from `claude auth status` but
+  whether it is signed in.
   Only the key's kind is shown. An address is printed by `server list`, `server check`, `status`
   and the `server add|set` that was given it; `enable --server` names keys, not values.

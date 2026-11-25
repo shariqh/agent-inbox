@@ -1,9 +1,10 @@
 # Model servers
 
 A **model server** is an OpenAI-compatible backend that the local agents (`unslop` and
-`unslop-code`) send their model calls to. You add it once, by name, and each agent's profile
-names it. When the server's address or key source changes, you change it in one place, and
-every agent that names it picks the change up on its next call.
+`unslop-code`) send their model calls to, or [Claude Code on this Mac](#claude-code-on-this-mac).
+You add it once, by name, and each agent's profile names it. When the server's address or key
+source changes, you change it in one place, and every agent that names it picks the change up on
+its next call.
 
 The servers live in `<mesh dir>/mesh/servers.json` (mode 0600 in a 0700 folder). `<mesh dir>` is
 `~/.agent-inbox` unless `AGENT_INBOX_MESH_DIR` (or `AGENT_INBOX_DB`) says otherwise. `meshctl` is
@@ -13,7 +14,8 @@ the only thing that writes it; the agents only read it.
 {
   "schema": 1,
   "servers": {
-    "box": { "baseUrl": "https://models.example/llm", "apiKey": { "file": "/Users/you/.keys/box" } }
+    "box": { "baseUrl": "https://models.example/llm", "apiKey": { "file": "/Users/you/.keys/box" } },
+    "cc": { "kind": "claude-code" }
   }
 }
 ```
@@ -24,9 +26,13 @@ the only thing that writes it; the agents only read it.
 - **`apiKey`** says where the key comes from, never the key itself: `{ "file": "/absolute/path" }`
   (a 0600 file you own), `{ "command": ["/absolute/path", "arg"] }` (run without a shell; its
   output is the key) or `{ "env": "NAME" }`. Leave it out when the server needs no key.
-- At most 32 servers. A server holds only `baseUrl` and `apiKey`, and the file only `schema` and
-  `servers`. A file that breaks any rule is refused whole; the message names the rule, never a
-  value from the file.
+- **`kind`** is only ever `"claude-code"`, alone in its server: Claude Code on this Mac, with no
+  address and no key (below). Another kind, or a kind beside `baseUrl` or `apiKey`, is refused.
+- At most 32 servers. A server holds only `baseUrl` and `apiKey`, or only `kind`, and the file
+  only `schema` and `servers`. A file that breaks any rule is refused whole; the message names the
+  rule, never a value from the file. A build older than the one that knows `kind` refuses a file
+  that holds one, and then no agent can use any server: update meshctl and the agents' checkout
+  (`packages/mesh`) before you add a Claude Code server.
 
 ## In the app
 
@@ -90,6 +96,7 @@ npm run meshctl -- server list
 ```
 
 Expect one line per server: `Server box: https://models.example/llm; key: file; agents: unslop-code.`
+A Claude Code server reads `Server cc: Claude Code on this Mac; agents: unslop.`
 The key is shown by its kind only (`file`, `command`, `env` or `none`). A last line names the
 agents whose profiles still hold inline settings, which you can turn into a server (below).
 `meshctl status` prints the same server lines and, for each local agent, the server its profile
@@ -102,10 +109,11 @@ npm run meshctl -- server add box --base-url https://models.example/llm --key-fi
 npm run meshctl -- server add box --base-url https://models.example/llm --key-file ~/.keys/box --apply
 ```
 
-Give exactly one of `--key-file <path>` (an absolute path to a regular file you own, mode 0600;
-meshctl checks it and never reads it), `--key-env <NAME>` or `--no-key`. The dry run says what it
-would write: the name, the address and the key's kind. A name that is already there is refused;
-`server set` changes it.
+For a server at an address, give exactly one of `--key-file <path>` (an absolute path to a regular
+file you own, mode 0600; meshctl checks it and never reads it), `--key-env <NAME>` or `--no-key`.
+The dry run says what it would write: the name, the address and the key's kind. A name that is
+already there is refused; `server set` changes it. A Claude Code server takes none of these: see
+[Claude Code on this Mac](#claude-code-on-this-mac).
 
 ### Turn an agent's inline settings into a server
 
@@ -160,8 +168,9 @@ Removing the last server deletes `servers.json` (keeping a backup).
 npm run meshctl -- server check box
 ```
 
-This sends one `GET <baseUrl>/v1/models`, with the key when the server has one, to the server's
-own address. It follows no redirect, waits at most 10 seconds, reads at most 256 KiB and writes
+For a server with an address, this sends one `GET <baseUrl>/v1/models`, with the key when the
+server has one, to the server's own address (a Claude Code server is checked without the network:
+see [below](#claude-code-on-this-mac)). It follows no redirect, waits at most 10 seconds, reads at most 256 KiB and writes
 nothing. Expect `reachable` and the model ids, quoted under a line that says they come from the
 server and are unverified; only ids that are plain model names are listed (at most 50, sorted).
 Otherwise it names a class of failure and exits 1: `unreachable`, `unauthorized`,
@@ -179,6 +188,75 @@ source gave no usable key, so nothing was sent).
   hand or move it aside, then add the servers again.
 - `server check` says `unauthorized`: the key source gives a key the server refuses; `server set
   <name> --key-file …` changes the source.
+
+## Claude Code on this Mac
+
+A server can be the Claude Code program installed on this Mac instead of an address. It has no
+address and no key. An agent that names it makes each model call by running `claude` once, with
+the account `claude` is signed in with. No `ANTHROPIC_*` variable is passed on.
+
+The agent's privacy screen runs first, as for any server. What passes it goes to Anthropic: for
+unslop the draft and its rules, for unslop-code windows of 20 lines around each added line.
+
+```sh
+npm run meshctl -- server add cc --claude-code
+npm run meshctl -- server add cc --claude-code --apply
+npm run meshctl -- server check cc
+npm run meshctl -- enable --unslop-code --server cc --apply
+```
+
+- `add` is a dry run until `--apply`. It says the server is `Claude Code on this Mac (its model
+  calls run the claude program; the text goes to Anthropic)`. `--claude-code` takes no address,
+  key option, `--from` or `--move`.
+- `server check cc` sends nothing over the network and makes no model call. It finds the program
+  and asks it whether you are signed in (`claude auth status`, of which it reads only that). Expect
+  `Server cc (Claude Code on this Mac): ready; signed in; 3 models.` and the three names.
+- The models are `haiku`, `sonnet` and `opus`. `enable --server cc` sets `sonnet` unless you give
+  `--model`, or the profile already names one of the three. Any other model name is refused, and
+  a `sampling` key in such a profile is ignored.
+- `server set` is refused for such a server: it has nothing to change. `server remove` works as
+  for any server.
+
+### What a call runs
+
+Each call runs without a shell, in an empty folder of its own (`<mesh dir>/mesh/claude-cwd`), with
+the text on standard input:
+
+```sh
+claude -p --safe-mode --tools "" --system-prompt <the agent's instructions> --model <model> --no-session-persistence --output-format json
+```
+
+- `-p` prints one answer and exits, and `--output-format json` makes that one JSON object. The
+  agent reads the answer and the token counts from it.
+- `--safe-mode` switches off your CLAUDE.md files, skills, plugins, hooks and MCP servers, and
+  keeps the sign-in. `--tools ""` gives it no tools. `--no-session-persistence` keeps no session.
+- The program gets only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG` and `LC_ALL`.
+- One call may take at most 120 seconds. An error the program reports is never taken as an
+  answer, and a usage limit (429) fails the task.
+- The program's start-up counts as model time in the agent's daily budget.
+
+The agent looks for `claude` in each folder on its `PATH`, then in `/opt/homebrew/bin`,
+`/usr/local/bin`, `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin`. The first one found
+must be a file you or root own that no one else may change; otherwise none is used. No command
+prints where it was found.
+
+### Time
+
+For any server, a task may run up to 600 seconds. `--timeout` still defaults to 280; give up to
+600 for a large change, and give the shell that runs the command a limit above it. unslop-code
+stops about 5 seconds before the limit and keeps the files it already decided; the rest are
+reported as not reached. unslop gives the original back.
+
+**If something's off**
+
+- `server check` says `no claude program found (looked in PATH and the usual places)` (`no-program`
+  in `--json`): install Claude Code, or link `claude` into one of the folders above. An agent that
+  finds none exits at once and says so.
+- It says `not signed in (run claude once and sign in)` (`signed-out`): run `claude` in a terminal,
+  sign in, then check again.
+- The app shows such a server with a blank address, and its **Check** says `That did not work
+  (output).`: that version of the app does not know this kind yet. Use `server check` in a
+  terminal until you update the app.
 
 ## Output for programs (`--json`)
 
@@ -198,15 +276,20 @@ one JSON object and nothing else, with the same exit codes:
   or a note about a routing skill.
 - A usage error (exit 2) prints the usage text on stderr and no JSON.
 
-`server list --json` prints `{ "servers": [{ "name", "baseUrl", "key", "agents" }], "inline":
-["<agent>"], "refused"?: "<reason>" }`. `server check --json` prints `{ "server", "baseUrl", "key",
-"reachable", "failure"?, "models": [], "skipped" }`, or `{ "server", "refused" }` when the server
-cannot be checked.
+`server list --json` prints `{ "servers": [{ "name", "kind", "baseUrl", "key", "agents" }],
+"inline": ["<agent>"], "refused"?: "<reason>" }`. `server check --json` prints `{ "server", "kind",
+"baseUrl", "key", "reachable", "failure"?, "models": [], "skipped" }`, or `{ "server", "refused" }`
+when the server cannot be checked. `kind` is `"http"` for a server with an address and
+`"claude-code"` for Claude Code on this Mac, whose rows carry `"baseUrl": ""` and `"key": "none"`;
+its check's `failure` is `no-program`, `signed-out` or `timeout`, and its `models` are `haiku`,
+`opus` and `sonnet` when it is ready.
 
 ## What is never printed
 
 No command prints a key, a key file's path, a key command or a key variable's name, in any mode,
-JSON included. A server's address is printed only by `server list`, `server check`, `status`, and
+JSON included. No meshctl output, agent log or run record holds the claude program's path, the
+text sent to it or its raw answer, or anything from `claude auth status` but whether you are
+signed in. A server's address is printed only by `server list`, `server check`, `status`, and
 the dry run or result of the `server add` or `server set` that was given it. Model ids from
 `server check` are untrusted text, printed quoted under a fixed header. `disable --purge` of an
 agent never touches `servers.json`.

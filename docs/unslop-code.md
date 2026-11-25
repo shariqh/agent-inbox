@@ -2,8 +2,9 @@
 
 Agent Inbox can run a second local A2A agent, `unslop-code` (#652), beside
 [unslop](unslop.md). After a coding agent writes or edits JavaScript or TypeScript in a git
-repository, the command sends the files the change touched to the agent. A local model
-answers with line numbers only, and code decides: a line goes only when the change added
+repository, the command sends the files the change touched to the agent. The agent's model (a
+local one, or Claude Code on this Mac: see [model servers](model-servers.md)) answers with line
+numbers only, and code decides: a line goes only when the change added
 it, it holds one whole-line `//` comment and nothing else, and the guards in
 `packages/mesh/src/code-slop.ts` allow it. The result is a deletions-only patch. Code is never
 rewritten; other things the model noticed come back as suggestions, which nothing applies.
@@ -107,7 +108,7 @@ What it prints:
 - **stdout:** the patch, and nothing else. It is empty when nothing is removed, and on every exit
   but 0, except when `--apply` was refused (exit 13), when the patch is still printed.
 - **stderr:** one summary line (the files looked at, the comment lines removed, the
-  suggestions), then each suggestion as `<path>:<line> <kind>` (`defensive`, `trycatch`, `cast`,
+  suggestions, and, when the agent reports them, `; N calls, I tokens in, O out` at its end), then each suggestion as `<path>:<line> <kind>` (`defensive`, `trycatch`, `cast`,
   `nesting` or `other`), then each file the agent skipped or did not reach and each file the
   command left out, with its reason. Paths and the agent's words are printed without control
   characters.
@@ -154,7 +155,8 @@ rely on that screen: never run the command on files that hold secrets or custome
 - A file over 256 KiB is left out and named on stderr.
 - The request stays under the agent's 4 MiB limit: files that do not fit are left out and named.
 - The agent's own limits apply too: 200 tasks and 180 model-minutes a day, counted apart from
-  unslop's, and 270 seconds of work per task.
+  unslop's, and 600 seconds of work per task, less 5 seconds kept for the answer to reach the
+  command within its `--timeout`.
 
 ### Exit codes
 

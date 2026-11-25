@@ -10,7 +10,8 @@ import type { HttpReply, Post } from '../src/backend.js'
 import { QUESTIONS, windows } from '../src/code-prompt.js'
 import type { Question } from '../src/code-prompt.js'
 import { ANSWER_TOKENS, runCodeSlop } from '../src/unslop-code.js'
-import type { CodeFile, CodeSlopEnv, CodeSlopLog, CodeSlopTask } from '../src/unslop-code.js'
+import type { CodeFile, CodeSlopEnv, CodeSlopLog, CodeSlopResult, CodeSlopTask } from '../src/unslop-code.js'
+import { codeSkill } from '../src/skills.js'
 
 const MARKER = 'Zq7marker'
 const lines = (...l: string[]): string => `${l.join('\n')}\n`
@@ -254,7 +255,8 @@ describe('the backend failing', () => {
       [{ status: 503, body: '{}' }, 12, 'busy', 'backend-5xx'],
       [{ status: 404, body: '{}' }, 13, 'failed', 'backend-http-404'],
       [{ status: 200, body: 'nope' }, 13, 'failed', 'backend-bad-response'],
-      [transportError('deadline'), 13, 'failed', 'deadline'],
+      // a call that ran out of time ends the run as the budget does, keeping what was decided (Claude Code D5)
+      [transportError('deadline'), 0, 'cleaned', 'budget'],
       [transportError('unreachable'), 13, 'failed', 'unreachable'],
     ] as Array<[HttpReply | Error, number, string, string]>) {
       const { post } = fake([['retryAfter', { remove: '{"remove":[3]}', keep: '{"keep":[]}' }], ['total(rows)', { remove: answer }]])
@@ -263,6 +265,13 @@ describe('the backend failing', () => {
       expect(result.files.map((f) => f.status)).toEqual(['cleaned', 'not-reached', 'not-reached'])
       expect(result.patch).toContain('-  // Convert the value to a number')
     }
+  })
+
+  it('a call that runs out of time before any file is decided still fails as deadline', async () => {
+    const { post } = fake([['retryAfter', { remove: transportError('deadline') }]])
+    const result = await runCodeSlop(task([fileA, fileB], { suggest: false }), setup(post).env)
+    expect(result).toMatchObject({ code: 13, status: 'failed', reason: 'deadline', patch: '' })
+    expect(result.files.map((f) => f.status)).toEqual(['not-reached', 'not-reached'])
   })
 
   it('stops on cancel', async () => {
@@ -291,6 +300,63 @@ describe('the backend failing', () => {
     expect(result.files.map((f) => [f.status, f.reason])).toEqual([['cleaned', undefined], ['skipped', 'language'], ['not-reached', undefined]])
     const none = await runCodeSlop(task([fileA], { budgetMs: 5000 }), setup(post).env)
     expect(none).toMatchObject({ code: 13, status: 'failed', reason: 'deadline', calls: 0, files: [{ status: 'not-reached' }] })
+  })
+})
+
+describe('calls and tokens (Claude Code D6)', () => {
+  it('sums the tokens the replies report into the result and the log; absent when none reported any', async () => {
+    const counted = (content: string, usage: Record<string, number>): HttpReply => {
+      const body = JSON.parse(ok(content).body) as Record<string, unknown>
+      return { status: 200, body: JSON.stringify({ ...body, usage }) }
+    }
+    const { post } = fake([['retryAfter', { remove: counted('{"remove":[3]}', { prompt_tokens: 1000, completion_tokens: 9 }), keep: counted('{"keep":[]}', { prompt_tokens: 800, completion_tokens: 4 }) }]])
+    const { env, logs } = setup(post)
+    const result = await runCodeSlop(task([fileA], { suggest: false }), env)
+    expect(result).toMatchObject({ code: 0, calls: 2, tokens: { in: 1800, out: 13 } })
+    expect(logs[0]).toMatchObject({ calls: 2, tokens: { in: 1800, out: 13 } })
+    // an address server that reports only completion tokens: in stays 0
+    const plain = await runCodeSlop(task([fileB], { suggest: false }), setup(fake([]).post).env)
+    expect(plain.tokens).toEqual({ in: 0, out: 12 * plain.calls })
+    const none: Post = async () => ({ status: 200, body: JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"suggest":[]}' } }] }) })
+    expect(await runCodeSlop(task([fileB]), setup(none).env)).not.toHaveProperty('tokens')
+  })
+})
+
+describe('token counts that are not plain counts (Claude Code D6)', () => {
+  const counted = (usage: Record<string, unknown>): HttpReply => {
+    const body = JSON.parse(ok('{"suggest":[]}').body) as Record<string, unknown>
+    return { status: 200, body: JSON.stringify({ ...body, usage }) }
+  }
+  const run = async (replies: HttpReply[]): Promise<{ result: CodeSlopResult; logs: CodeSlopLog[]; data: Record<string, unknown> }> => {
+    let i = 0
+    // after the listed replies, answers that report no counts
+    const post: Post = async () => replies[i++] ?? counted({})
+    const { env, logs } = setup(post)
+    const result = await runCodeSlop(task([fileB, { ...fileB, path: 'lib/other.js' }]), env)
+    const data = codeSkill({ run: async () => result }).outcome(result).data as Record<string, unknown>
+    return { result, logs, data }
+  }
+
+  it('a negative, fractional or huge figure never reaches the result, the log or the data part', async () => {
+    for (const usage of [{ prompt_tokens: -5, completion_tokens: 1.5 }, { prompt_tokens: 1e308, completion_tokens: 1e308 }, { prompt_tokens: '7', completion_tokens: null }]) {
+      const { result, logs, data } = await run([counted(usage)])
+      expect(result, JSON.stringify(usage)).not.toHaveProperty('tokens')
+      expect(logs[0]).not.toHaveProperty('tokens')
+      expect(data).not.toHaveProperty('tokens')
+    }
+    // plain counts beside bad ones: only the plain ones are summed
+    const mixed = await run([counted({ prompt_tokens: 100, completion_tokens: -1 }), counted({ prompt_tokens: 2.5, completion_tokens: 7 })])
+    expect(mixed.result.tokens).toEqual({ in: 100, out: 7 })
+    expect(mixed.logs[0]!.tokens).toEqual({ in: 100, out: 7 })
+    expect(mixed.data.tokens).toEqual({ in: 100, out: 7 })
+  })
+
+  it('stops adding once a sum would pass the largest safe integer, keeping the last safe sum', async () => {
+    const big = Number.MAX_SAFE_INTEGER - 10
+    const { result, logs } = await run([counted({ prompt_tokens: big, completion_tokens: 3 }), counted({ prompt_tokens: 20, completion_tokens: 4 })])
+    expect(result.tokens).toEqual({ in: big, out: 7 })
+    expect(logs[0]!.tokens).toEqual({ in: big, out: 7 })
+    expect(Number.isSafeInteger(result.tokens!.in)).toBe(true)
   })
 })
 

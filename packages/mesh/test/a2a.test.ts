@@ -9,11 +9,12 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { startServer } from '../src/a2a.js'
+import { budgetOf, startServer } from '../src/a2a.js'
 import type { A2AServer, ServerOptions } from '../src/a2a.js'
 import { GATE_MS, IDLE_MS, main, startAgent } from '../src/agent.js'
 import type { Agent, AgentOptions } from '../src/agent.js'
 import { maxTokens } from '../src/backend.js'
+import { TASK_MS } from '../src/unslop.js'
 import { localDate } from '../src/files.js'
 import { EXTENSION, unslopSkill } from '../src/skills.js'
 import type { RunResult } from '../src/skills.js'
@@ -154,7 +155,7 @@ const logLines = (dir: string): string => {
   return readdirSync(logs).map((f) => readFileSync(join(logs, f), 'utf8')).join('')
 }
 
-const result = (): RunResult => ({ code: 0, status: 'rewritten', text: 'edited', rulesSha256: '', model: 'm', attempts: 1, hard: {}, warnings: [], ms: { queued: 0, load: 0, model: 5, check: 0 } })
+const result = (): RunResult => ({ code: 0, status: 'rewritten', text: 'edited', rulesSha256: '', model: 'm', attempts: 1, calls: 1, hard: {}, warnings: [], ms: { queued: 0, load: 0, model: 5, check: 0 } })
 type UnslopRun = Parameters<typeof unslopSkill>[0]['run']
 const hang: UnslopRun = (_task, onState) => { onState('editing'); return new Promise(() => {}) }
 const skill = (run: UnslopRun = hang): ReturnType<typeof unslopSkill> => unslopSkill({ rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }), run })
@@ -308,6 +309,26 @@ describe('tasks', () => {
 })
 
 describe('queue and budget', () => {
+  it('gives a task its own limit or the client\'s time left less a 5 s margin, never under a second (Claude Code D5)', async () => {
+    expect(TASK_MS).toBe(600_000)
+    expect([budgetOf(600_000), budgetOf(280_000), budgetOf(5500), budgetOf(1000), budgetOf(0), budgetOf(-20)]).toEqual([595_000, 275_000, 1000, 1000, 0, -20])
+    expect(budgetOf(700_000)).toBe(600_000)
+    const budgets: number[] = []
+    const { port } = await server({ run: async (task) => { budgets.push(task.budgetMs!); return result() } })
+    // a timeout just over the queue's own estimate of this input
+    const short = Math.ceil((maxTokens(INPUT) / 44) * 1000) + 100
+    for (const timeoutMs of [600_000, 280_000, short]) {
+      const sent = await rpc(port, 'SendMessage', message(INPUT, { timeoutMs }))
+      expect(sent.body.result.task.status.state).toBe('TASK_STATE_COMPLETED')
+    }
+    expect(budgets[0]).toBeGreaterThan(594_000)
+    expect(budgets[0]).toBeLessThanOrEqual(595_000)
+    expect(budgets[1]).toBeGreaterThan(274_000)
+    expect(budgets[1]).toBeLessThanOrEqual(275_000)
+    expect(budgets[2]).toBeGreaterThanOrEqual(1000)
+    expect(budgets[2]).toBeLessThanOrEqual(Math.max(1000, short - 5000))
+  })
+
   it('runs one and queues one; a full queue or a wait past the timeout is busy (12) up front', async () => {
     const { dir, port } = await meshHome()
     await agent(dir)

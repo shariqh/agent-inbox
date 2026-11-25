@@ -16,7 +16,7 @@ import type { Agent } from '../src/agent.js'
 import { QUESTIONS } from '../src/code-prompt.js'
 import type { Question } from '../src/code-prompt.js'
 import { localDate } from '../src/files.js'
-import { CODE_EXTENSION, CODE_FILE_MS } from '../src/skills.js'
+import { CODE_EXTENSION, CODE_FILE_MS, ESTIMATE_MAX_MS } from '../src/skills.js'
 
 const TOKEN = 'e5'.repeat(32)
 const UNSLOP_TOKEN = 'd4'.repeat(32)
@@ -326,7 +326,9 @@ describe('unslop-code tasks', () => {
     const { dir, port } = await codeHome()
     await agent(dir)
     expect(CODE_FILE_MS).toBe(12_000)
-    // 40 files would be 480 s; capped at 270 s it fits the default 280 s
+    // 40 files would be 480 s; the estimate's own cap of 270 s (ESTIMATE_MAX_MS, below the task
+    // limit of 600 s) fits the default 280 s
+    expect(ESTIMATE_MAX_MS).toBe(270_000)
     const many = Array.from({ length: 40 }, (_, i) => ({ path: `f${i}.ts`, text: 'export const x = 1\n', added: [] }))
     const capped = await rpc(port, 'SendMessage', message({ files: many }))
     expect(capped.body.result.task.status.message.parts[1].data).toMatchObject({ code: 11, reason: 'all-skipped' })

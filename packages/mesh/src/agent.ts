@@ -6,19 +6,24 @@
 // names its model backend inline (`baseUrl`, `apiKey`) or by a model server's name (`server`, an
 // entry of mesh/servers.json, model servers step 1): such an agent also stops within a minute of
 // that entry changing or going, so its next call starts it with the new settings. An inline
-// profile's agent never reads servers.json. Every path derives from the mesh dir. The
+// profile's agent never reads servers.json. A server may be Claude Code on this Mac (`{ "kind":
+// "claude-code" }`): the agent then finds the claude program when it starts and makes each model
+// call by running it once (claude-post.ts) in the empty folder mesh/claude-cwd, with the model
+// haiku, sonnet or opus. Every path derives from the mesh dir. The
 // log gets one JSON line per task with sizes, timings and classes: never text,
 // never a matched value, never the token or the API key.
-import { readFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { startServer } from './a2a.js'
 import type { Skill } from './a2a.js'
 import { checkBaseUrl } from './backend.js'
 import type { Post, Sampling } from './backend.js'
+import { CLAUDE_MODELS, claudePost } from './claude-post.js'
 import { ConfigError, appendPrivate, localDate, readPrivate, writePrivate } from './files.js'
 import { fixed, home, readApiKey, strings } from './key-source.js'
 import type { KeySource } from './key-source.js'
-import { SERVER_NAME, meshDir, meshFile, readMesh, readServers } from './mesh-config.js'
+import { SERVER_NAME, findClaude, isClaudeServer, meshDir, meshFile, readMesh, readServers } from './mesh-config.js'
 import type { ServerEntry, ServersRead } from './mesh-config.js'
 import { createRulesLoader } from './rules.js'
 import { codeSkill, unslopSkill } from './skills.js'
@@ -31,6 +36,13 @@ const DAILY_TASKS = 200
 const DAILY_MODEL_MS = 180 * 60_000
 
 type BackendProfile = { baseUrl: string; apiKey?: KeySource; model?: string; sampling?: Partial<Sampling> }
+/** A profile's backend: an address with its key source, or the name of a Claude Code server. */
+type Backend = { baseUrl: string; apiKey?: KeySource } | { claude: string }
+/**
+ * The base URL a Claude Code server's calls are given: never contacted (claudePost ignores it), it
+ * only passes the run functions' own URL check, so that check stays as it is for address servers.
+ */
+const CLAUDE_PLACEHOLDER_URL = 'http://127.0.0.1:9/claude-code'
 type Profile = BackendProfile & { skill: string; terms?: string[]; allowEmails?: string[]; customerPaths?: string[] }
 export type StopReason = 'mesh.json' | 'token' | 'server' | 'idle' | 'signal'
 export type AgentOptions = {
@@ -40,6 +52,8 @@ export type AgentOptions = {
   now?: () => number
   every?: (ms: number, fn: () => void) => () => void
   post?: Post
+  /** the fixed system places findClaude looks in after PATH (a test seam: tests pass []) */
+  claudePaths?: readonly string[]
 }
 export type Agent = { port: number; exited: Promise<StopReason>; stop(reason: StopReason): Promise<void> }
 
@@ -70,7 +84,7 @@ const SERVERS_REFUSED: Record<Extract<ServersRead, { kind: 'refused' }>['reason'
   unreadable: 'cannot be read', 'not-json': 'is not valid JSON', 'not-object': 'is not a JSON object', 'no-schema': 'has no valid "schema"',
   'newer-schema': 'was written by a newer Agent Inbox', 'unknown-key': 'holds a key this build does not know', 'no-servers': 'has no "servers" object',
   'too-many': 'holds too many servers', 'bad-name': 'holds a bad server name', 'bad-entry': 'holds a server that is not an object',
-  'bad-base-url': 'holds a bad baseUrl', 'bad-api-key': 'holds a bad apiKey',
+  'bad-kind': 'holds a kind this build does not know', 'bad-base-url': 'holds a bad baseUrl', 'bad-api-key': 'holds a bad apiKey',
 }
 
 /** The entry of the model server `server` in mesh/servers.json; a refusal names the server, never a value. */
@@ -81,8 +95,8 @@ function serverEntry(dir: string, server: string): ServerEntry {
   if (!Object.hasOwn(read.servers, server)) throw new ConfigError(`the profile names the server ${server}, which mesh/servers.json does not hold: run meshctl server list`)
   return read.servers[server]!
 }
-/** What the gate compares: the entry's address and key source. */
-const entryKey = (entry: ServerEntry): string => JSON.stringify([entry.baseUrl, entry.apiKey ?? null])
+/** What the gate compares: the entry's address and key source, or its kind. */
+const entryKey = (entry: ServerEntry): string => JSON.stringify(isClaudeServer(entry) ? ['claude-code'] : [entry.baseUrl, entry.apiKey ?? null])
 
 /** Resolves the server a profile names (startAgent records what it resolved, for the gate). */
 type Lookup = (server: string) => ServerEntry
@@ -91,26 +105,56 @@ type Lookup = (server: string) => ServerEntry
  * The backend a profile names: either `server` (a model server's name) or the inline `baseUrl`
  * with its optional `apiKey`, never both and never neither. The error names the profile and the rule.
  */
-function backendOf(p: BackendProfile & { server?: unknown }, agent: AgentName, lookup: Lookup): { baseUrl: string; apiKey?: KeySource } {
+function backendOf(p: BackendProfile & { server?: unknown }, agent: AgentName, lookup: Lookup): Backend {
   const named = Object.hasOwn(p, 'server')
   if (named && (Object.hasOwn(p, 'baseUrl') || Object.hasOwn(p, 'apiKey'))) {
     throw new ConfigError(`the ${agent} profile holds both \`server\` and an inline \`baseUrl\` or \`apiKey\`: keep one (meshctl enable --${agent} --server <name> rewrites it)`)
   }
   if (named) {
     if (typeof p.server !== 'string' || !SERVER_NAME.test(p.server)) throw new ConfigError(`the ${agent} profile's \`server\` is not a server name`)
-    return lookup(p.server)
+    const entry = lookup(p.server)
+    if (!isClaudeServer(entry)) return entry
+    // the default models (chat-long, coder-next) would reach --model: a missing one is refused too
+    if (typeof p.model !== 'string' || !CLAUDE_MODELS.includes(p.model)) {
+      throw new ConfigError(`the ${agent} profile names the server ${p.server}, which is Claude Code on this Mac: its model must be haiku, sonnet or opus`)
+    }
+    return { claude: p.server }
   }
   if (typeof p.baseUrl !== 'string') throw new ConfigError(`the ${agent} profile needs a \`baseUrl\` or a \`server\``)
   fixed(() => checkBaseUrl(p.baseUrl))
   return { baseUrl: p.baseUrl, apiKey: p.apiKey }
 }
 
-function parseProfile(text: string, lookup: Lookup): Profile {
+function parseProfile(text: string, lookup: Lookup): Profile & { backend: Backend } {
   const p = parseJson<Profile>(text)
   if (!p || typeof p !== 'object' || typeof p.skill !== 'string' || !isAbsolute(home(p.skill))) throw new ConfigError('the profile needs an absolute `skill` folder')
   const backend = backendOf(p, 'unslop', lookup)
   for (const key of ['terms', 'allowEmails', 'customerPaths'] as const) if (p[key] !== undefined && !strings(p[key])) throw new ConfigError(`the profile's \`${key}\` must be a list of strings`)
-  return { ...p, baseUrl: backend.baseUrl, apiKey: backend.apiKey, skill: home(p.skill) }
+  return { ...p, backend, skill: home(p.skill) }
+}
+
+/**
+ * The model calls of a Claude Code server: the claude program found now (D4), run in the empty
+ * folder mesh/claude-cwd (made 0700 here, refused unless it is a real folder this user owns that
+ * only they can open). The tests' own `post` seam wins over claudePost, but the program and the
+ * folder are still checked.
+ */
+function claudeCalls(c: Context, server: string): Post {
+  const program = findClaude(c.env, c.env['HOME'] ?? homedir(), c.claudePaths)
+  if (program === undefined) throw new ConfigError(`the profile names the server ${server}, which is Claude Code on this Mac, but no claude program was found`)
+  const cwd = join(c.root, 'claude-cwd')
+  mkdirSync(cwd, { recursive: true, mode: 0o700 })
+  const stat = lstatSync(cwd)
+  if (!stat.isDirectory() || (process.getuid && stat.uid !== process.getuid()) || stat.mode & 0o077) {
+    throw new ConfigError('mesh/claude-cwd must be a folder you own that only you can open (chmod 700 it)')
+  }
+  return c.post ?? claudePost({ program, env: c.env, cwd })
+}
+
+/** What a run function is given for a backend: the address and key, or the placeholder and claudePost. */
+function transport(c: Context, backend: Backend): { baseUrl: string; apiKey?: string; post?: Post; claude: boolean } {
+  if ('claude' in backend) return { baseUrl: CLAUDE_PLACEHOLDER_URL, post: claudeCalls(c, backend.claude), claude: true }
+  return { baseUrl: backend.baseUrl, apiKey: readApiKey(backend.apiKey, c.env), post: c.post, claude: false }
 }
 
 function createBudget(file: string, now: () => number): { take(): boolean; spend(ms: number): void } {
@@ -142,17 +186,18 @@ function createBudget(file: string, now: () => number): { take(): boolean; spend
 }
 
 /** What a profile's agent needs once its profile, port and token are read. */
-type Context = { root: string; env: NodeJS.ProcessEnv; now: () => number; post?: Post; log: (entry: object) => void }
+type Context = { root: string; env: NodeJS.ProcessEnv; now: () => number; post?: Post; log: (entry: object) => void; claudePaths?: readonly string[] }
 /** Per agent: parse its profile (first, so a bad profile is reported before the token), then build its skill. */
 type AgentDef = (profileText: string, lookup: Lookup) => (c: Context) => Skill<any, any>
 
 const AGENTS = {
   unslop: (text, lookup) => {
     const profile = parseProfile(text, lookup)
-    return ({ root, env, now, post, log }) => {
+    return (c) => {
+      const { root, now, log } = c
       const denyFile = join(root, 'unslop-deny.txt')
       readPrivate(denyFile, true)
-      const apiKey = readApiKey(profile.apiKey, env)
+      const { baseUrl, apiKey, post, claude } = transport(c, profile.backend)
       const loadRules = createRulesLoader(profile.skill)
       let rules = fixed(loadRules)
       let loadedAt = new Date(now()).toISOString()
@@ -172,7 +217,8 @@ const AGENTS = {
           const deny = readPrivate(denyFile, true) ?? ''
           const result = await runUnslop(task, {
             profile: {
-              baseUrl: profile.baseUrl, apiKey, model: profile.model, sampling: profile.sampling, terms: profile.terms,
+              // a Claude Code server takes no sampling: a `sampling` key in its profile is ignored
+              baseUrl, apiKey, model: profile.model, sampling: claude ? undefined : profile.sampling, terms: profile.terms,
               screen: { deny, allowEmails: profile.allowEmails, customerPaths: profile.customerPaths },
             },
             rules: r, post, now, log, onState,
@@ -187,9 +233,10 @@ const AGENTS = {
     const p = parseJson<BackendProfile>(text)
     if (!p || typeof p !== 'object') throw new ConfigError('the unslop-code profile needs a `baseUrl` or a `server`')
     const backend = backendOf(p, 'unslop-code', lookup)
-    return ({ env, now, post, log }) => {
-      const apiKey = readApiKey(backend.apiKey, env)
-      const profile = { baseUrl: backend.baseUrl, apiKey, model: p.model, sampling: p.sampling }
+    return (c) => {
+      const { now, log } = c
+      const { baseUrl, apiKey, post, claude } = transport(c, backend)
+      const profile = { baseUrl, apiKey, model: p.model, sampling: claude ? undefined : p.sampling }
       return codeSkill({ run: (task, onState) => runCodeSlop(task, { profile, post, now, log, onState }) })
     }
   },
@@ -222,7 +269,7 @@ export async function startAgent(o: AgentOptions): Promise<Agent> {
       process.stderr.write('agent-inbox-wrap: could not write the task log\n')
     }
   }
-  const skill = build({ root, env, now, post: o.post, log })
+  const skill = build({ root, env, now, post: o.post, log, claudePaths: o.claudePaths })
   const budget = createBudget(join(root, `${name}-budget.json`), now)
   const version = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
 

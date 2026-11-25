@@ -125,8 +125,10 @@ npm run meshctl -- server remove box --apply
 
 `set` changes the address, the key source, or both, keeping a backup; the agents that name the
 server stop within a minute and start with the new settings on their next call. `remove` is
-refused while a profile names the server, and lists those agents. Removing the last server
-deletes `servers.json` (keeping a backup).
+refused while an agent that is on names the server; point that agent at another server first.
+An agent that is off keeps its settings but does not hold a server: `remove` goes through and
+says that the kept settings still name it, and turning that agent on again needs `--server`.
+Removing the last server deletes `servers.json` (keeping a backup).
 
 ### Ask a server which models it has
 

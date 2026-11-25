@@ -491,15 +491,29 @@ function inlineSettings(p: Record<string, unknown>): ServerEntry | undefined {
   return isKeySource(p['apiKey']) ? { baseUrl, apiKey: p['apiKey'] } : undefined
 }
 
-/** The local agents whose profiles name each server. */
-function serverUsers(dir: string): Map<string, LocalAgent[]> {
-  const users = new Map<string, LocalAgent[]>()
+/** The local agents that are on (mesh.json names them). */
+function localAgentsOn(dir: string): Set<LocalAgent> {
+  const mesh = readMesh(meshFile(dir))
+  const agents = mesh.kind === 'present' ? objectOf(mesh.doc['agents']) : undefined
+  return new Set(LOCAL_AGENTS.filter((agent) => agents !== undefined && Object.hasOwn(agents, agent)))
+}
+
+/**
+ * The local agents whose profiles name each server: `on` the ones that are on, which is who uses
+ * the server; `kept` the ones that are off, whose profile `disable` kept. Only `on` holds a server.
+ */
+function serverUsers(dir: string): { on: Map<string, LocalAgent[]>; kept: Map<string, LocalAgent[]> } {
+  const on = new Map<string, LocalAgent[]>()
+  const kept = new Map<string, LocalAgent[]>()
+  const running = localAgentsOn(dir)
   for (const agent of LOCAL_AGENTS) {
     const read = readProfile(profileFile(dir, agent))
     const server = typeof read === 'object' ? namedServer(read.p) : undefined
-    if (server !== undefined) users.set(server, [...(users.get(server) ?? []), agent])
+    if (server === undefined) continue
+    const into = running.has(agent) ? on : kept
+    into.set(server, [...(into.get(server) ?? []), agent])
   }
-  return users
+  return { on, kept }
 }
 
 /** One line per server, for `server list` and `status`: its name, address, key kind and the agents naming it. */
@@ -798,7 +812,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const read = readServers(dir)
 
     if (sub === 'list') {
-      const users = serverUsers(dir)
+      const users = serverUsers(dir).on
       const rows = read.kind === 'present' ? Object.entries(read.servers).map(([name, entry]) => ({ name, baseUrl: entry.baseUrl, key: keyKind(entry), agents: users.get(name) ?? [] })) : []
       const inline = LOCAL_AGENTS.filter((agent) => {
         const profile = readProfile(profileFile(dir, agent))
@@ -905,7 +919,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
         out(`The server ${server} already has these settings in ${sName}. Nothing to do.\n`)
         return 0
       }
-      const users = serverUsers(dir).get(server) ?? []
+      const users = serverUsers(dir).on.get(server) ?? []
       const restart = users.length
         ? ` The ${users.join(' and ')} profile${users.length === 1 ? ' names' : 's name'} it: its agent stops within a minute and starts with the new settings on the next call.`
         : ''
@@ -920,17 +934,21 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
       out(`The server ${server} is not in ${sName}. Nothing to do.\n`)
       return 0
     }
-    const users = serverUsers(dir).get(server) ?? []
+    const naming = serverUsers(dir)
+    const users = naming.on.get(server) ?? []
     if (users.length) {
       return refuse(`the server ${server} is named by the ${users.join(' and ')} profile${users.length === 1 ? '' : 's'}: point ${users.length === 1 ? 'it' : 'them'} at another server first (meshctl enable --<agent> --server <name>)`)
     }
+    // an agent that is off keeps its profile; it does not hold the server, and says so
+    const kept = naming.kept.get(server) ?? []
+    const still = kept.length ? ` The kept settings of ${kept.join(' and ')} still name it: turning ${kept.length === 1 ? 'that agent' : 'those agents'} on again needs --server <name>.` : ''
     const { [server]: _gone, ...others } = current
     return runSteps([Object.keys(others).length ? {
-      dry: `Would remove the server ${server} from ${sName}, keeping every other server (and a backup beside it).`,
-      run: () => `Removed the server ${server} from ${sName}${writeServers(others, true)}.`,
+      dry: `Would remove the server ${server} from ${sName}, keeping every other server (and a backup beside it).${still}`,
+      run: () => `Removed the server ${server} from ${sName}${writeServers(others, true)}.${still}`,
     } : {
-      dry: `Would delete ${sName}: the server ${server} was its only one (keeping a backup beside it).`,
-      run: () => { const backup = writeBackup(sFile, now()); unlinkSync(sFile); return `Deleted ${sName} (backup: ${show(backup)}).` },
+      dry: `Would delete ${sName}: the server ${server} was its only one (keeping a backup beside it).${still}`,
+      run: () => { const backup = writeBackup(sFile, now()); unlinkSync(sFile); return `Deleted ${sName} (backup: ${show(backup)}).${still}` },
     }], sApply, out, err, failed, plan)
   }
 
@@ -1002,7 +1020,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const servers = readServers(dir)
     if (servers.kind === 'refused') out(`Model servers: ${sName} ${SERVERS_REASONS[servers.reason]}, so no agent can use a server.\n`)
     else if (servers.kind === 'present') {
-      const users = serverUsers(dir)
+      const users = serverUsers(dir).on
       for (const [server, entry] of Object.entries(servers.servers)) out(`${serverLine(server, entry, users.get(server) ?? [])}\n`)
     }
     return existing.kind === 'refused' ? 1 : 0

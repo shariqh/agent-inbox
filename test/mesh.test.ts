@@ -1732,6 +1732,30 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(readdirSync(t.dir)).toEqual([])
   })
 
+  it('add --json says applied only for the --apply it parsed, not for a value that reads "--apply"', async () => {
+    const a = await agent()
+    const t = setup()
+    // a token file named "--apply", given relative to the working folder: --token-file takes the word, so this is a dry run
+    const cwd = dirname(t.tokenFile)
+    writeFileSync(join(cwd, '--apply'), `${TOKEN}\n`, { mode: 0o600 })
+    const tsx = join(REPO, 'node_modules', 'tsx', 'dist', 'loader.mjs')
+    const child = spawn(process.execPath, ['--import', `file://${tsx}`, join(REPO, 'src', 'meshctl.ts'), 'add', a.url, '--token-file', '--apply', '--json'],
+      { cwd, env: { PATH: process.env['PATH'], HOME: t.dir, AGENT_INBOX_MESH_DIR: t.dir }, stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (d: Buffer) => { out += d })
+    child.stderr.on('data', (d: Buffer) => { err += d })
+    const code = await new Promise<number | null>((done) => child.on('close', done))
+    expect([code, err]).toEqual([0, ''])
+    expect(out).not.toContain(TOKEN)
+    const p = plan({ code: 0, out, err })
+    expect(p.applied).toBe(false)
+    expect(p.steps[0]).toMatch(/^Would copy the bearer token in /)
+    expect(existsSync(meshFile(t.dir))).toBe(false)
+    // the same through runAdd, with the parsed --apply: applied
+    expect(plan(await t.add(a.url, '--token-file', t.tokenFile, '--json', '--apply')).applied).toBe(true)
+  }, 30_000)
+
   it('the usage and docs/mesh-call.md name add --json, --expect-pin, remove --json and every card field', async () => {
     const t = setup()
     const usage = (await t.add('--bogus')).err

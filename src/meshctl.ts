@@ -1540,12 +1540,14 @@ type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' 
 export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number> {
   if (!args.includes('--json')) return addAgent(args, io)
   const json = planCapture(io)
-  const code = await addAgent(args, json.io, json.plan)
-  json.print(code, args.includes('--apply'))
+  // `applied` follows the --apply the parser took, never the word: a flag's value can be "--apply"
+  const parsed = { apply: false }
+  const code = await addAgent(args, json.io, json.plan, parsed)
+  json.print(code, parsed.apply)
   return code
 }
 
-async function addAgent(args: string[], io: MeshctlIo, plan?: Plan): Promise<number> {
+async function addAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { apply: boolean }): Promise<number> {
   const env = io.env ?? process.env
   const home = io.home ?? homedir()
   const now = io.now ?? (() => new Date())
@@ -1582,6 +1584,7 @@ async function addAgent(args: string[], io: MeshctlIo, plan?: Plan): Promise<num
   }
   // --expect-pin (D2): the pin of the card that was looked at, as the dry run prints it
   if (cardUrl === undefined || (id !== undefined && move !== undefined) || (expectPin !== undefined && !/^[0-9a-f]{64}$/.test(expectPin))) return usage()
+  if (parsed) parsed.apply = apply
   const idBad = id === undefined ? undefined : idRefusal(id)
   if (idBad) return refuse(idBad)
   const moveBad = move === undefined ? undefined : idRefusal(move)

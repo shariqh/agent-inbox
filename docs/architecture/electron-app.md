@@ -128,15 +128,37 @@ writer of the mesh folder, with all of its own checks.
   (`server add <name> --claude-code`: Claude Code on this Mac, a name and nothing else),
   `adopt-server { name, from }` (`server add <name> --from <agent> --move`), `set-server { name, baseUrl?, key? }`,
   `remove-server { name }`, `enable-model-agent { agent, server, model }` (`unslop` or
-  `unslop-code`), `enable-request-post { endpoint, token }` and `disable { agent }` (never
-  `--purge`). Main checks every value before anything runs: exactly the operation's keys, a server
-  name `^[a-z0-9][a-z0-9-]{0,39}$`, a model `^[A-Za-z0-9._:/-]{1,64}$`, an `http:` or `https:` URL
-  with no credentials, space or control character and at most 2048 characters, `apply` a boolean,
-  and no value starting with `-`. `meshctl` applies its own stricter rules after.
+  `unslop-code`), `enable-request-post { endpoint, token }`, `disable { agent }` (never
+  `--purge`), and three for an agent added by its card address (add step 2):
+  `check-agent { address, token? }` (`add <address> [--token-file <path>] --json`: add's dry run
+  with no `--id`; it takes no `apply` and never writes), `add-agent { address, id, pin, token? }`
+  (`add <address> --id <id> [--token-file <path>] --expect-pin <pin> --json`, never `--move`) and
+  `remove-agent { id }` (`remove <id> --json`). Main checks every value before anything runs: exactly
+  the operation's keys, a server name `^[a-z0-9][a-z0-9-]{0,39}$`, a model
+  `^[A-Za-z0-9._:/-]{1,64}$`, an `http:` or `https:` URL with no credentials, space or control
+  character and at most 2048 characters, `apply` a boolean, and no value starting with `-`. The
+  agent operations have four rules of their own, copied from add's (`src/mesh-entry.ts`): an
+  `address` is `http://127.0.0.1:<port>` or `https://` on a lower-case DNS name of at most 253
+  characters whose last label starts with a letter, with an optional plain path (no `.` or `..`
+  segment, percent sign, query or fragment), a port 1-65535 and never 80 on loopback or 443 on a
+  name, and at most 2048 characters in all; an `id` is `^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$` and
+  not a built-in agent's name; a `pin` is 64 lower-case hex characters; a `token` handle goes only
+  with a loopback `address`, else the request is `invalid`. Tests run tables of addresses and ids
+  through main's rules and add's own, which must agree. `meshctl` applies its own stricter rules
+  after. `check-agent` and `add-agent` make the command fetch the card (a `*.ts.net` address also
+  asks Tailscale for this Mac's tailnet), inside the same 30 second limit.
 - **Answers.** The `--json` output is parsed and rebuilt field by field: a plan or apply is
   `{ ok, applied, steps, refused?, notes? }`, `servers` is `{ ok, servers: [{ name, kind, baseUrl,
   key, agents }], inline, refused? }` with `key` one of `file|command|env|none`, and `check-server` is
-  `{ ok, reachable, failure?, models, skipped, refused?, kind? }`. A row's `kind` is `claude-code`
+  `{ ok, reachable, failure?, models, skipped, refused?, kind? }`. `check-agent` and `add-agent`
+  answer the kind `add`: the plan plus `card?`, add's card summary rebuilt field by field (`id?`,
+  `name?`, `description?`, `version?`, `publisher?`, `reach` one of `loopback|tailnet|public`,
+  `endpoint` by the address rule and loopback exactly when `reach` is, `signed`, `keysNew?`, at most
+  16 `skills` of `{ id, name?, description? }`, and `pin`). Card text is cut (a name, version,
+  publisher or skill id or name at 162 UTF-16 units, a description at 602, a skill's at 402); any
+  card string holding a control character, or any field breaking its rule, fails the whole answer as
+  `output`, refused or not. A plan with no refusal must carry a card with an id; a refusal may come
+  without a card (one before the card was pinned). A row's `kind` is `claude-code`
   when the command's row says so, else `http` (also for a row with no `kind`, as a command older than
   the Claude Code kind prints it); a Claude Code row's `baseUrl` is `""`. A check carries `kind` only
   when the command's JSON names a valid one, so the page falls back on its own server list. Any other
@@ -150,7 +172,7 @@ writer of the mesh folder, with all of its own checks.
   `unsupported`, `environment`, `not-installed`, `unsafe`, `unrecognized`, `stale`, `outdated`
   (exit 2 and no JSON: an older install without the command), `output`, `timeout`, `failed`,
   `cancelled`. The preload rebuilds every answer again against the same shapes, with the same
-  defaults; a test pins its key kinds, server kinds and failure words equal to main's.
+  defaults; a test pins its key kinds, server kinds, failure words and reach words equal to main's.
 - **Files by handle.** A key or token file is chosen in main's own picker on the window
   (`chooseFile('key' | 'token')`, one file, one picker at a time). Main keeps the absolute path under
   a random 16-byte hex handle and answers `{ ok, handle, name }`, `name` being the base name cut to 80

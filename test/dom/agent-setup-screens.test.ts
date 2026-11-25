@@ -988,6 +988,105 @@ describe('setting up an agent (D4)', () => {
   })
 })
 
+describe('setting up an agent on a Claude Code server (Claude Code D4)', () => {
+  const options = () => [...select('model').options].map((o) => o.textContent)
+  const why = () => setup().querySelector<HTMLElement>('.ms-model-why')!
+
+  it('the models are haiku, sonnet and opus in that order, whatever order the check answers', async () => {
+    const { bridge } = await boot({ bridge: { servers: [claudeServer('claude')] } })
+    bridge.s.answers['check-server'] = () => checkedClaude()
+    await enter()
+    click(buttonLabelled('Set up', offer('unslop-code')!))
+    await settle()
+    expect(select('server').value).toBe('claude')
+    expect(bridge.ops()).toEqual([['check-server', { name: 'claude' }]])
+    expect(options()).toEqual(['Choose a model', 'haiku', 'sonnet', 'opus'])
+    expect([shown(select('model')), shown(field('model')), shown(why())]).toEqual([true, false, false])
+    choose(select('model'), 'opus')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect([...setup().querySelectorAll('.ms-steps li')].map((li) => li.textContent)[0]).toBe('Save its settings: server claude, model opus.')
+    expect(bridge.ops().at(-1)).toEqual(['enable-model-agent', { agent: 'unslop-code', server: 'claude', model: 'opus', apply: false }])
+  })
+
+  it.each([
+    ['no-program', () => checkedClaude('no-program'), 'Claude Code was not found on this Mac.'],
+    ['signed-out', () => checkedClaude('signed-out'), 'Claude Code is not signed in, or could not start from the app. Run claude in a terminal and sign in.'],
+    ['timeout', () => checkedClaude('timeout'), 'Claude Code did not answer in time.'],
+    ['timeout with no kind named', () => checkedClaude('timeout', { kind: false }), 'Claude Code did not answer in time.'],
+    ['a bridge reason', () => ({ ok: false, reason: 'timeout' }), 'The command did not answer in time.'],
+    ['a refusal', () => meshProcess.meshAnswer('check', JSON.stringify({ server: 'claude', refused: 'the server claude is not in servers.json' }), 1) as Json, 'the server claude is not in servers.json'],
+  ] as Array<[string, () => Json, string]>)('a check that fails (%s) still offers the three, with its own words under the list; the person picks one and goes on', async (_label, answer, words) => {
+    const { bridge } = await boot({ bridge: { servers: [claudeServer('claude'), server('lab')] } })
+    await enter()
+    click(offer('unslop-code')!.querySelector('.ma-description'))
+    await settle()
+    bridge.s.answers['check-server'] = answer
+    choose(select('server'), 'claude')
+    await settle()
+    expect(options()).toEqual(['Choose a model', 'haiku', 'sonnet', 'opus'])
+    expect([shown(select('model')), shown(field('model'))]).toEqual([true, false])
+    expect(why().textContent).toBe(words)
+    expect(shown(why())).toBe(true)
+    expect(select('model').disabled).toBe(false)
+    expect(document.activeElement).toBe(select('model'))
+    choose(select('model'), 'sonnet')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(bridge.ops().at(-1)).toEqual(['enable-model-agent', { agent: 'unslop-code', server: 'claude', model: 'sonnet', apply: false }])
+    expect(shown(setup().querySelector('.ms-review'))).toBe(true)
+    // the row says the same, back on the home
+    click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+    await settle()
+    click(setup().querySelector('.map-back'))
+    await settle()
+    expect(row('claude')!.querySelector('.ms-row-note')?.textContent).toBe(words)
+  })
+
+  it('an address server’s failed check still gives the typed field: the fixed list is Claude Code’s only', async () => {
+    const { bridge } = await boot({ bridge: { servers: [claudeServer('claude'), server('lab')] } })
+    await enter()
+    click(offer('unslop-code')!.querySelector('.ma-description'))
+    await settle()
+    bridge.s.answers['check-server'] = () => checked('timeout')
+    choose(select('server'), 'lab')
+    await settle()
+    expect([shown(select('model')), shown(field('model'))]).toEqual([false, true])
+    expect(why().textContent).toBe('The server did not answer in time.')
+    // and a list from an address server keeps its own names, in its own order
+    bridge.s.answers['check-server'] = () => checked(undefined, ['opus', 'haiku'])
+    choose(select('server'), 'claude')
+    await settle()
+    bridge.s.answers['check-server'] = () => checked(undefined, ['zeta', 'alpha'])
+    choose(select('server'), 'lab')
+    await settle()
+    expect(options()).toEqual(['Choose a model', 'zeta', 'alpha'])
+    expect(shown(why())).toBe(false)
+  })
+
+  it('Add a server… from the form adds a Claude Code server and comes back with it chosen and its three models', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Set up', offer('unslop-code')!))
+    await settle()
+    choose(select('server'), select('server').options[1]!.value)
+    await settle()
+    const claude = setup().querySelector<HTMLInputElement>('input[name="msKind"][value="claude-code"]')!
+    claude.checked = true
+    claude.dispatchEvent(new window.Event('change', { bubbles: true }))
+    await settle()
+    type(field('name'), 'claude')
+    bridge.s.servers = [claudeServer('claude')]
+    bridge.s.answers['check-server'] = () => checkedClaude()
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect(title().textContent).toBe('unslop-code')
+    expect(select('server').value).toBe('claude')
+    expect(options()).toEqual(['Choose a model', 'haiku', 'sonnet', 'opus'])
+    expect(bridge.ops().map(([op]) => op)).toEqual(['add-claude-server', 'add-claude-server', 'check-server'])
+  })
+})
+
 describe('an agent that is on (D5)', () => {
   async function openAgent(name: string, servers: Json[] = []) {
     const booted = await boot({ agents: [on('unslop-code'), on('request-post', { where: 'tailnet' })], available: [OFFERED['unslop']!], bridge: { servers } })

@@ -23,6 +23,8 @@ const KEYS = { file: 'key file', command: 'key from a command', env: 'key from a
 const CLAUDE = 'claude-code'
 const CLAUDE_FACTS = 'Claude Code on this Mac · sends text to Anthropic'
 const CLAUDE_HINT = 'Uses the Claude Code you are signed in to. No key to enter.'
+// a Claude Code server's models, in the page's own order whatever order its check answers
+const CLAUDE_MODELS = ['haiku', 'sonnet', 'opus']
 // Add a server's "What kind" choice, in its order; an address server is chosen when the page opens
 const SERVER_KINDS = [[CLAUDE, 'Claude Code on this Mac'], ['http', 'A server at an address']]
 // D6: the bridge's failure words; a cancel says nothing, every other reason names itself
@@ -85,13 +87,18 @@ function problem(answer) {
 const failedCheck = (answer) => Boolean(answer) && typeof answer === 'object' && answer.ok !== true && typeof answer.reason !== 'string'
   && !answer.refused && typeof answer.failure === 'string' && (Object.hasOwn(CHECKS, answer.failure) || Object.hasOwn(CLAUDE_CHECKS, answer.failure))
 
+/** Whether a check is of a Claude Code server: by the kind its answer names, else by the page's row for it. */
+function claudeCheck(answer, server) {
+  const named = answer && typeof answer === 'object' ? answer.kind : undefined
+  return named === CLAUDE || (named !== 'http' && server?.kind === CLAUDE)
+}
+
 /**
  * A check's result in words. `server`: the page's row for it, for its kind when the answer names
  * none and for where its key comes from when the key could not be read.
  */
 function checkText(answer, server) {
-  const named = answer && typeof answer === 'object' ? answer.kind : undefined
-  const claude = named === CLAUDE || (named !== 'http' && server?.kind === CLAUDE)
+  const claude = claudeCheck(answer, server)
   if (!failedCheck(answer)) {
     const words = problem(answer)
     if (words !== null) return words
@@ -801,8 +808,9 @@ export function installMeshSetup(deps) {
     els.form.querySelector('.ms-model-label').htmlFor = typing ? typed.id : list.id
     setHidden(list, typing)
     setHidden(typed, !typing)
-    setText(why, typing ? model.why : '')
-    setHidden(why, !typing || !model.why)
+    // why the server could not be asked: beside the typed field, or under a Claude Code server's fixed list
+    setText(why, model.why)
+    setHidden(why, !model.why)
     const choices = model.state === 'asking' ? [['', 'asking the server…']]
       : model.state === 'list' ? [...(model.models.length > 1 ? [['', 'Choose a model']] : []), ...model.models.map((name) => [name, name])]
         : [['', page.values.server ? '' : 'Choose a server first']]
@@ -820,7 +828,8 @@ export function installMeshSetup(deps) {
   }
 
   // Model: the chosen server's list, asked by check-server; a field to type it in when it cannot be asked.
-  // `focus`: the person chose the server, so focus goes on to the model; else it stays where it is.
+  // A Claude Code server's list is the page's own three, also when its check fails, with the check's
+  // words under it. `focus`: the person chose the server, so focus goes on to the model; else it stays.
   function askModels(name, { focus }) {
     const mine = page
     const ask = async () => {
@@ -832,6 +841,10 @@ export function installMeshSetup(deps) {
         notes.set(name, said)
         if (page !== mine || page.values.server !== name) return
         const reached = !failedCheck(answer) && problem(answer) === null && answer.reachable === true
+        if (claudeCheck(answer, serverOf(name))) {
+          page.model = { server: name, state: 'list', models: CLAUDE_MODELS, why: reached ? '' : said }
+          return
+        }
         const models = reached ? strings(answer.models) : []
         if (models.length) {
           page.model = { server: name, state: 'list', models, why: '' }

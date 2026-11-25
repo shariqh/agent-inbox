@@ -31,6 +31,8 @@ export function installMeshSetup(deps: {
   turnedOff: () => void
   /** check this one agent now, as its page's Refresh does */
   check: (name: string) => void
+  /** show the page from its top: a set-up page that opens does not keep the scroll it was opened from */
+  toTop: () => void
 }): {
   usable(): boolean
   refreshAvailable(): Promise<boolean>

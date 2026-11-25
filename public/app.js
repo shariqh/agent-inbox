@@ -863,6 +863,7 @@ const meshSetup = installMeshSetup({
   turnedOn: (name) => openMeshAgent(`mesh.json:${name}`, name, { focus: true, pending: true }),
   // an agent just turned on is checked once, as the agent page's Refresh checks it
   check: (name) => { meshRefresh(name) },
+  toTop: scrollPageToTop,
   turnedOff: () => {
     meshAgentPage.close()
     paintAgentCards()
@@ -909,6 +910,12 @@ const chatsView = installChatsView({
     if (findRowsByKey.has(rowKey)) findKept.add(rowKey)
   },
 })
+// A page that opens in the Agent cards tab shows from its top, as a go-to destination does
+// (focusKeyboardPanel): the page scrolls as a whole in the wide and the narrow layout alike, and
+// the top bar sticks over what a kept scroll position would leave of it.
+function scrollPageToTop() {
+  if (window.scrollY !== 0) window.scrollTo(0, 0)
+}
 // The Agent cards tab's two views: the grid, or one agent's page in its place (D3).
 function paintAgentCards() {
   const tab = document.querySelector('#tabs .tab[data-tab="cards"]')
@@ -944,6 +951,7 @@ function openMeshAgent(key, name, { focus = false, pending = false } = {}) {
   meshAgentPage.open(key, name, { pending })
   if (activeTab !== 'cards') selectTab('cards')
   paintAgentCards()
+  scrollPageToTop()
   if (focus) document.querySelector('#agentPage .map-back')?.focus({ preventScroll: true })
   reloadAndPaint()
 }

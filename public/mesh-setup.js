@@ -74,7 +74,7 @@ function httpAddress(text) {
  *   home: () => HTMLElement | null, setupPage: () => HTMLElement | null, agentPage: () => HTMLElement | null,
  *   panel: () => HTMLElement | null, heading: () => HTMLElement | null, active: () => boolean,
  *   changed: () => void, reload: () => void, turnedOn: (name: string) => void, turnedOff: () => void,
- *   check: (name: string) => void}} deps
+ *   check: (name: string) => void, toTop: () => void}} deps
  */
 export function installMeshSetup(deps) {
   const doc = deps.doc ?? globalThis.document
@@ -454,6 +454,7 @@ export function installMeshSetup(deps) {
   function show() {
     els = null
     changed()
+    deps.toTop()
     els?.first?.focus({ preventScroll: true })
   }
 

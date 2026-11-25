@@ -259,6 +259,83 @@ describe('adding a server (D3)', () => {
   })
 })
 
+describe('a page that opens shows from its top (F4)', () => {
+  // the page scrolls as a whole in both layouts (nothing inside it has its own scrollbar), so the
+  // page's own scroll position is what a page opened lower down would keep
+  function scrolledDown() {
+    const original = Object.getOwnPropertyDescriptor(window, 'scrollY')
+    let offset = 300
+    Object.defineProperty(window, 'scrollY', { configurable: true, get: () => offset })
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => { offset = 0 })
+    return {
+      scrollTo,
+      down: () => { offset = 300 },
+      restore: () => {
+        if (original) Object.defineProperty(window, 'scrollY', original)
+        else Reflect.deleteProperty(window, 'scrollY')
+        scrollTo.mockRestore()
+      },
+    }
+  }
+
+  it('Add a server, Make it a server, Set up and Change server open at the top; going back does not scroll', async () => {
+    const { bridge } = await boot({ agents: [on('unslop-code')], available: [OFFERED['request-post']!], bridge: { servers: [server('local', { agents: ['unslop-code'] })], inline: ['unslop'] } })
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await enter()
+    const scroll = scrolledDown()
+    try {
+      const opens: Array<[string, () => void]> = [
+        ['Add a model server', () => click(buttonLabelled('Add a server', home()))],
+        ['Make it a server', () => click(buttonLabelled('Make it a server', inlineRow('unslop')!))],
+        ['request-post', () => click(buttonLabelled('Set up', offer('request-post')!))],
+      ]
+      for (const [name, open] of opens) {
+        scroll.down()
+        scroll.scrollTo.mockClear()
+        open()
+        await settle()
+        expect(title().textContent, name).toBe(name)
+        expect(window.scrollY, name).toBe(0)
+        scroll.scrollTo.mockClear()
+        click(setup().querySelector('.map-back'))
+        await settle()
+        expect(scroll.scrollTo, `back from ${name}`).not.toHaveBeenCalled()
+      }
+      click(card('unslop-code'))
+      await settle()
+      scroll.down()
+      click(buttonLabelled('Change server', agentPage().querySelector('.ms-foot')!))
+      await settle()
+      expect(title().textContent).toBe('unslop-code')
+      expect(shown(setup())).toBe(true)
+      expect(window.scrollY).toBe(0)
+      expect(bridge.ops().some(([op]) => op !== 'check-server')).toBe(false)
+    } finally {
+      scroll.restore()
+    }
+  })
+
+  it('the agent’s page that replaces the set-up page after Turn on opens at the top too', async () => {
+    await boot({ bridge: { servers: [server('local')] } })
+    await enter()
+    click(buttonLabelled('Set up', offer('unslop-code')!))
+    await settle()
+    choose(select('model'), 'model-a')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    const scroll = scrolledDown()
+    try {
+      scroll.scrollTo.mockClear()
+      click(buttonLabelled('Turn on', setup()))
+      await settle()
+      expect(shown(agentPage())).toBe(true)
+      expect(window.scrollY).toBe(0)
+    } finally {
+      scroll.restore()
+    }
+  })
+})
+
 describe('focus after Save (F1)', () => {
   // the real bridge answers after a command's time, and Chrome drops focus from a control a repaint disables
   async function saveSlowly(bridge: Awaited<ReturnType<typeof boot>>['bridge']) {

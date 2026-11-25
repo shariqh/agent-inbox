@@ -55,8 +55,9 @@
 //   meshctl request-post file|status|wait …  its shim's command (src/request-post-client.ts)
 //
 // `server …` (model servers step 1) keeps <mesh dir>/mesh/servers.json: each model server once, by
-// name, with its address and key source; a local agent's profile names one instead of holding
-// baseUrl and apiKey. enable, disable and server add|set|remove take --json: one plan object.
+// name, with its address and key source, or as Claude Code on this Mac (`--claude-code`: no address,
+// no key); a local agent's profile names one instead of holding baseUrl and apiKey. enable, disable
+// and server add|set|remove take --json: one plan object.
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, `unslop-code` its own
@@ -122,6 +123,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl server list [--json]
        agent-inbox-meshctl server add <name> --base-url <url> (--key-file <path> | --key-env <NAME> | --no-key) [--apply]
        agent-inbox-meshctl server add <name> --from unslop|unslop-code [--move] [--apply]
+       agent-inbox-meshctl server add <name> --claude-code [--apply]
        agent-inbox-meshctl server set <name> [--base-url <url>] [--key-file <path> | --key-env <NAME> | --no-key] [--apply]
        agent-inbox-meshctl server remove <name> [--apply]
        agent-inbox-meshctl server check <name> [--json]
@@ -147,6 +149,10 @@ stays, with a backup); --model <name> sets the model. server add --from <agent> 
 agent's inline settings into a server. server check asks the server which models it has (GET
 <address>/v1/models, no redirect, 10 seconds) and writes nothing. No server command prints a key,
 a key file's path, a key command or a key variable's name (docs/model-servers.md).
+server add <name> --claude-code adds Claude Code on this Mac: no address and no key; its model calls
+run the claude program in print mode (the text goes to Anthropic through your Claude sign-in), its
+models are haiku, sonnet and opus (sonnet unless --model says otherwise), and server check reads
+only whether claude is signed in. No command prints the claude program's path.
 enable --request-post copies the per-device bearer token from --token-file (never printed);
 the endpoint is ${ENDPOINT_RULE}; a tailnet name must be on this Mac's tailnet (read from
 tailscale status), never another tailnet or a Funnel host (docs/request-post.md).
@@ -465,6 +471,8 @@ const objectOf = (value: unknown): Record<string, unknown> | undefined =>
 const LOCAL_AGENTS = ['unslop', 'unslop-code'] as const
 type LocalAgent = typeof LOCAL_AGENTS[number]
 type BackendChoice = { server?: string; model?: string }
+/** The models of a Claude Code server, as `--model` takes them. */
+const CLAUDE_MODELS = ['haiku', 'sonnet', 'opus']
 const profileFile = (dir: string, agent: LocalAgent): string => join(dir, 'mesh', 'wrappers', `${agent}.json`)
 const SERVER_NAME_RULE = 'a server name is 1 to 40 lower-case letters, digits or "-", starting with a letter or digit'
 
@@ -744,7 +752,9 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   const sFile = serversFile(dir)
   const sName = show(sFile)
   // enable's --server and --model (D5): the server must be in servers.json, the model a plain name
-  const backendChoice = (): BackendChoice | { refused: string } => {
+  // a Claude Code server (Claude Code D2) takes haiku, sonnet or opus only: with no --model, a
+  // profile's model is kept when it is already one of them, else it becomes sonnet
+  const backendChoice = (profilePath: string): BackendChoice | { refused: string } => {
     const server = values.get('--server')
     const model = values.get('--model')
     if (model !== undefined && !MODEL_NAME.test(model)) return { refused: 'a model name is 1 to 64 letters, digits, ".", "_", ":", "/" or "-"' }
@@ -753,7 +763,16 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const read = readServers(dir)
     if (read.kind === 'refused') return { refused: `${sName} ${SERVERS_REASONS[read.reason]}` }
     if (read.kind === 'missing' || !Object.hasOwn(read.servers, server)) return { refused: `the server ${server} is not in ${sName}: meshctl server add ${server} adds it` }
-    return { server, model }
+    if (!isClaudeServer(read.servers[server]!)) return { server, model }
+    if (model !== undefined) return CLAUDE_MODELS.includes(model) ? { server, model } : { refused: `the server ${server} is Claude Code on this Mac: its models are haiku, sonnet and opus` }
+    const existing = readProfile(profilePath)
+    const kept = typeof existing === 'object' && typeof existing.p['model'] === 'string' && CLAUDE_MODELS.includes(existing.p['model'])
+    return { server, model: kept ? undefined : 'sonnet' }
+  }
+  /** Whether `server` is a Claude Code server in servers.json. */
+  const claudeServer = (server: string): boolean => {
+    const read = readServers(dir)
+    return read.kind === 'present' && Object.hasOwn(read.servers, server) && isClaudeServer(read.servers[server]!)
   }
   // the one change enable makes to an existing profile (D5): server and model set, the inline
   // baseUrl and apiKey removed, every other key kept, a backup beside it; it names keys, never values
@@ -792,7 +811,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
         if (value === undefined || opts.has(arg)) return usage()
         opts.set(arg, value)
       } else if (arg.startsWith('-')) {
-        if (switches.has(arg) || !['--apply', '--json', '--no-key', '--move'].includes(arg)) return usage()
+        if (switches.has(arg) || !['--apply', '--json', '--no-key', '--move', '--claude-code'].includes(arg)) return usage()
         switches.add(arg)
       } else names.push(arg)
     }
@@ -800,7 +819,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const allowed = {
       list: [[], ['--json']],
       add: [['--base-url', '--key-file', '--key-env', '--from'],
-        ['--apply', '--json', '--no-key', '--move']],
+        ['--apply', '--json', '--no-key', '--move', '--claude-code']],
       set: [['--base-url', '--key-file', '--key-env'], ['--apply', '--json', '--no-key']],
       remove: [[], ['--apply', '--json']],
     }
@@ -814,7 +833,10 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     if (sub === 'list') {
       const users = serverUsers(dir).on
       const listed = read.kind === 'present' ? read.servers : {}
-      const rows = Object.entries(listed).map(([name, entry]) => ({ name, baseUrl: isClaudeServer(entry) ? '' : entry.baseUrl, key: keyKind(entry), agents: users.get(name) ?? [] }))
+      const rows = Object.entries(listed).map(([name, entry]) => ({
+        // a Claude Code row keeps baseUrl "" and key "none", the shape an older app's bridge requires
+        name, kind: isClaudeServer(entry) ? 'claude-code' : 'http', baseUrl: isClaudeServer(entry) ? '' : entry.baseUrl, key: keyKind(entry), agents: users.get(name) ?? [],
+      }))
       const inline = LOCAL_AGENTS.filter((agent) => {
         const profile = readProfile(profileFile(dir, agent))
         return typeof profile === 'object' && inlineSettings(profile.p) !== undefined
@@ -847,6 +869,10 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     // the key option of add and set: a key source, null for --no-key, undefined when none is given
     const keyGiven = [opts.has('--key-file'), opts.has('--key-env'), switches.has('--no-key')].filter(Boolean).length
     if (keyGiven > 1) return usage()
+    // --claude-code (Claude Code D2) stands alone: no address, no key option, no --from (add's only
+    // value options) and no --move
+    const claude = switches.has('--claude-code')
+    if (claude && (opts.size || switches.has('--no-key') || switches.has('--move'))) return usage()
     let key: KeySource | null | undefined
     if (opts.has('--key-file')) {
       const bad = keyFileRefusal(opts.get('--key-file')!)
@@ -861,16 +887,19 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
 
     if (sub === 'add') {
       const from = opts.get('--from')
-      if (from === undefined ? url === undefined || !keyGiven || switches.has('--move') : url !== undefined || keyGiven) return usage()
+      if (!claude && (from === undefined ? url === undefined || !keyGiven || switches.has('--move') : url !== undefined || keyGiven)) return usage()
       if (Object.hasOwn(current, server)) return refuse(`the server ${server} is already in ${sName}: meshctl server set changes it`)
       if (Object.keys(current).length >= SERVERS_MAX) return refuse(`${sName} already holds ${SERVERS_MAX} servers, the most it may`)
       const steps: Step[] = []
-      const create = (what: string, done: string): Step => ({
-        dry: present ? `Would add the server ${server} to ${sName}, ${what}, keeping every other server (and a backup beside it).` : `Would create ${sName} (0600) with the server ${server}, ${what}.`,
+      const create = (what: string, done: string, sep = ','): Step => ({
+        dry: present ? `Would add the server ${server} to ${sName}${sep} ${what}, keeping every other server (and a backup beside it).` : `Would create ${sName} (0600) with the server ${server}${sep} ${what}.`,
         run: () => `Added the server ${server} to ${sName}${writeServers({ ...current, [server]: entry }, present)}${done}.`,
       })
       let entry: ServerEntry
-      if (from === undefined) {
+      if (claude) {
+        entry = { kind: 'claude-code' }
+        steps.push(create('Claude Code on this Mac (its model calls run the claude program; the text goes to Anthropic)', ': Claude Code on this Mac', ':'))
+      } else if (from === undefined) {
         if (urlBad) return refuse(urlBad)
         entry = { baseUrl: url!, ...(key ? { apiKey: key } : {}) }
         steps.push(create(`at ${entry.baseUrl}, key: ${keyKind(entry)}`, `: at ${entry.baseUrl}, key: ${keyKind(entry)}`))
@@ -1182,13 +1211,15 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     }
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
     if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
-    const choice = backendChoice()
-    if ('refused' in choice) return refuse(choice.refused)
     const code = unslopCodePaths(dir)
+    const choice = backendChoice(code.profile)
+    if ('refused' in choice) return refuse(choice.refused)
     const start = [node, wrap, '--agent', 'openai-compatible', '--profile', 'unslop-code']
     // --server names a server; without it the profile takes unslop's backend, inline or the server it names (D5)
     const backend: Backend | undefined = choice.server !== undefined ? { server: choice.server } : unslopBackend(paths.profile)
-    const template = codeProfileTemplate(start, backend, choice.model)
+    // a Claude Code server taken from unslop's profile, with no --model, gets sonnet (Claude Code D2)
+    const copiedClaude = choice.server === undefined && choice.model === undefined && backend !== undefined && 'server' in backend && claudeServer(backend.server)
+    const template = codeProfileTemplate(start, backend, copiedClaude ? 'sonnet' : choice.model)
     // the dry run shows where the backend comes from, never the URL or the key source
     const hidden = '(taken from the unslop profile; not printed)'
     const shownTemplate = backend && 'baseUrl' in backend ? codeProfileTemplate(start, { baseUrl: hidden, ...(Object.hasOwn(backend, 'apiKey') ? { apiKey: hidden } : {}) }, choice.model) : template
@@ -1294,7 +1325,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     }
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
     if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
-    const choice = backendChoice()
+    const choice = backendChoice(paths.profile)
     if ('refused' in choice) return refuse(choice.refused)
     const changed = exists(paths.profile) && (choice.server !== undefined || choice.model !== undefined) ? changeProfile(paths.profile, choice) : undefined
     if (changed && 'refused' in changed) return refuse(changed.refused)

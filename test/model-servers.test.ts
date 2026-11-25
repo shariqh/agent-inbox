@@ -155,6 +155,14 @@ describe('meshctl server add, set and remove (model servers D1, D4, D8)', () => 
       ['add', 'box', '--base-url', 'https://box.example', '--no-key', '--move'],
       ['add', 'box', '--from', 'unslop', '--base-url', 'https://box.example'],
       ['add', 'box', '--from', 'unslop', '--no-key'],
+      ['add', 'cc', '--claude-code', '--base-url', 'https://box.example'],
+      ['add', 'cc', '--claude-code', '--no-key'],
+      ['add', 'cc', '--claude-code', '--key-env', 'K'],
+      ['add', 'cc', '--claude-code', '--key-file', '/nonexistent/key'],
+      ['add', 'cc', '--claude-code', '--from', 'unslop'],
+      ['add', 'cc', '--claude-code', '--move'],
+      ['set', 'cc', '--claude-code'],
+      ['list', '--claude-code'],
       ['add', '--base-url', 'https://box.example', '--no-key'],
       ['add', 'a', 'b', '--base-url', 'https://box.example', '--no-key'],
       ['set', 'box'],
@@ -276,8 +284,8 @@ describe('an agent that is off does not hold a server', () => {
     meshOn(t.dir, 'unslop')
     const list = JSON.parse(t.run('server', 'list', '--json').out)
     expect(list.servers).toEqual([
-      { name: 'box', baseUrl: 'https://box.example', key: 'none', agents: [] },
-      { name: 'other', baseUrl: 'https://other.example', key: 'none', agents: ['unslop'] },
+      { name: 'box', kind: 'http', baseUrl: 'https://box.example', key: 'none', agents: [] },
+      { name: 'other', kind: 'http', baseUrl: 'https://other.example', key: 'none', agents: ['unslop'] },
     ])
     const dry = t.run('server', 'remove', 'box')
     expect(dry.code, dry.err).toBe(0)
@@ -316,10 +324,10 @@ describe('meshctl server list and status (D4, D7)', () => {
     ].join('\n'))
     expect(JSON.parse(t.run('server', 'list', '--json').out)).toEqual({
       servers: [
-        { name: 'box', baseUrl: 'https://box.example/llm', key: 'file', agents: ['unslop-code'] },
-        { name: 'cmd', baseUrl: 'https://cmd.example', key: 'command', agents: [] },
-        { name: 'env', baseUrl: 'https://env.example', key: 'env', agents: [] },
-        { name: 'open', baseUrl: 'http://127.0.0.1:8080', key: 'none', agents: [] },
+        { name: 'box', kind: 'http', baseUrl: 'https://box.example/llm', key: 'file', agents: ['unslop-code'] },
+        { name: 'cmd', kind: 'http', baseUrl: 'https://cmd.example', key: 'command', agents: [] },
+        { name: 'env', kind: 'http', baseUrl: 'https://env.example', key: 'env', agents: [] },
+        { name: 'open', kind: 'http', baseUrl: 'http://127.0.0.1:8080', key: 'none', agents: [] },
       ],
       inline: ['unslop'],
     })
@@ -665,5 +673,90 @@ describe('meshctl server check of a Claude Code server (Claude Code D2)', () => 
       const text = await check(t.dir, ['cc'], { PATH: fake.bin }, 1500)
       expect(text.out, what).toBe(`Server cc (Claude Code on this Mac): ${failure === 'timeout' ? 'timeout (no whole answer within 10 seconds)' : 'not signed in (run claude once and sign in)'}.\n`)
     }
+  })
+})
+
+describe('meshctl add, set, list, status and enable with a Claude Code server (Claude Code D2)', () => {
+  it('add --claude-code is a dry run, then writes { "kind": "claude-code" }; list, status and --json say what it is', () => {
+    const t = setup()
+    const dry = t.run('server', 'add', 'cc', '--claude-code')
+    expect(dry.code, dry.err).toBe(0)
+    expect(dry.out).toBe(`Dry run.\n1/1 Would create ${serversFile(t.dir)} (0600) with the server cc: Claude Code on this Mac (its model calls run the claude program; the text goes to Anthropic).\nNothing changed. Re-run with --apply.\n`)
+    expect(listing(t.dir)).toEqual([])
+    serversJson(t.dir, { box: { baseUrl: 'https://box.example/llm', apiKey: { file: t.keyFile } } })
+    const plan = JSON.parse(t.run('server', 'add', 'cc', '--claude-code', '--json').out)
+    expect(plan).toEqual({ applied: false, steps: [`Would add the server cc to ${serversFile(t.dir)}: Claude Code on this Mac (its model calls run the claude program; the text goes to Anthropic), keeping every other server (and a backup beside it).`] })
+    const on = t.run('server', 'add', 'cc', '--claude-code', '--apply')
+    expect(on.code, on.err).toBe(0)
+    expect(on.out).toMatch(/^1\/1 Added the server cc to .*servers\.json \(backup: .*\): Claude Code on this Mac\.\n$/)
+    expect(read(serversFile(t.dir)).servers).toEqual({ box: { baseUrl: 'https://box.example/llm', apiKey: { file: t.keyFile } }, cc: { kind: 'claude-code' } })
+    expect(mode(serversFile(t.dir))).toBe('600')
+    expect(t.run('server', 'add', 'cc', '--claude-code').err).toBe(`Refused: the server cc is already in ${serversFile(t.dir)}: meshctl server set changes it. Nothing changed.\n`)
+
+    profile(t.dir, 'unslop-code', { server: 'cc', model: 'sonnet' })
+    meshOn(t.dir, 'unslop-code')
+    expect(t.run('server', 'list').out).toBe([
+      `Model servers in ${serversFile(t.dir)}:`,
+      'Server box: https://box.example/llm; key: file; agents: none.',
+      'Server cc: Claude Code on this Mac; agents: unslop-code.', '',
+    ].join('\n'))
+    expect(JSON.parse(t.run('server', 'list', '--json').out)).toEqual({
+      servers: [
+        { name: 'box', kind: 'http', baseUrl: 'https://box.example/llm', key: 'file', agents: [] },
+        { name: 'cc', kind: 'claude-code', baseUrl: '', key: 'none', agents: ['unslop-code'] },
+      ],
+      inline: [],
+    })
+    const status = t.run('status').out
+    expect(status).toContain('Unslop-code profile: names the server cc.\n')
+    expect(status).toContain('Server cc: Claude Code on this Mac; agents: unslop-code.\n')
+  })
+
+  it('set on a Claude Code server is refused: it has no address or key to change', () => {
+    const t = setup()
+    serversJson(t.dir, { cc: { kind: 'claude-code' } })
+    const before = readFileSync(serversFile(t.dir), 'utf8')
+    for (const args of [['--base-url', 'https://box.example'], ['--no-key'], ['--base-url', 'http://not-loopback.example']]) {
+      const r = t.run('server', 'set', 'cc', ...args, '--apply')
+      expect([r.code, r.err], args.join(' ')).toEqual([1, 'Refused: the server cc is Claude Code on this Mac: it has no address or key to change. Nothing changed.\n'])
+    }
+    expect(t.run('server', 'set', 'cc').code).toBe(2)
+    expect(readFileSync(serversFile(t.dir), 'utf8')).toBe(before)
+    // remove works as for any server
+    expect(t.run('server', 'remove', 'cc', '--apply').code).toBe(0)
+  })
+
+  it('enable --server <claude-code>: haiku, sonnet or opus only; sonnet by default, a valid existing model kept', () => {
+    const t = setup()
+    serversJson(t.dir, { cc: { kind: 'claude-code' }, box: { baseUrl: 'https://box.example' } })
+    const refused = t.enable('unslop-code', '--server', 'cc', '--model', 'coder-next', '--apply')
+    expect([refused.code, refused.err]).toEqual([1, 'Refused: the server cc is Claude Code on this Mac: its models are haiku, sonnet and opus. Nothing changed.\n'])
+    expect(t.enable('unslop-code', '--server', 'cc', '--apply').code).toBe(0)
+    const codePath = join(t.dir, 'mesh', 'wrappers', 'unslop-code.json')
+    expect(read(codePath)).toMatchObject({ server: 'cc', model: 'sonnet' })
+    // an existing profile: a model outside the three becomes sonnet, one of them is kept
+    const unslop = profile(t.dir, 'unslop', { skill: '/rules', server: 'box', model: 'chat-long' })
+    const dry = t.enable('unslop', '--server', 'cc')
+    expect(dry.out).toContain(`Would change the profile ${unslop} (keeping a backup beside it): set server and model; every other key stays.\n`)
+    expect(t.enable('unslop', '--server', 'cc', '--apply').code).toBe(0)
+    expect(read(unslop)).toEqual({ skill: '/rules', server: 'cc', model: 'sonnet' })
+    expect(t.enable('unslop', '--server', 'cc', '--model', 'opus', '--apply').code).toBe(0)
+    expect(read(unslop).model).toBe('opus')
+    profile(t.dir, 'unslop', { skill: '/rules', server: 'box', model: 'haiku' })
+    expect(t.enable('unslop', '--server', 'cc', '--apply').out).toContain('set server.')
+    expect(read(unslop)).toEqual({ skill: '/rules', server: 'cc', model: 'haiku' })
+    // an address server: unchanged, any model name
+    expect(t.enable('unslop', '--server', 'box', '--model', 'coder-next', '--apply').code).toBe(0)
+    expect(read(unslop).model).toBe('coder-next')
+  })
+
+  it('enable --unslop-code copies unslop\'s Claude Code server with sonnet when no model is given', () => {
+    const t = setup()
+    serversJson(t.dir, { cc: { kind: 'claude-code' } })
+    profile(t.dir, 'unslop', { skill: '/rules', server: 'cc', model: 'opus' })
+    const dry = t.enable('unslop-code')
+    expect(dry.out).toContain('naming the server cc, as ')
+    expect(t.enable('unslop-code', '--apply').code).toBe(0)
+    expect(read(join(t.dir, 'mesh', 'wrappers', 'unslop-code.json'))).toMatchObject({ server: 'cc', model: 'sonnet' })
   })
 })

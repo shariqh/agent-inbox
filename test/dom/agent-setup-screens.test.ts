@@ -747,6 +747,29 @@ describe('an agent that is on (D5)', () => {
     expect(offer('request-post')).not.toBeNull()
   })
 
+  it('while the Turn off question is open the foot’s Turn off and Change server are disabled, and enabled again when it closes (F7)', async () => {
+    await openAgent('unslop-code', [server('local', { agents: ['unslop-code'] })])
+    const actions = () => foot().querySelector<HTMLElement>('.ms-actions')!
+    const turnOff = () => buttonLabelled('Turn off', actions())!
+    const change = () => buttonLabelled('Change server', actions())!
+    expect([turnOff().disabled, change().disabled]).toEqual([false, false])
+    const places = [turnOff().getBoundingClientRect().top, change().getBoundingClientRect().top]
+    click(turnOff())
+    await settle()
+    const ask = foot().querySelector<HTMLElement>('.ms-ask')!
+    expect(shown(ask)).toBe(true)
+    expect([turnOff().disabled, change().disabled]).toEqual([true, true])
+    expect(shown(actions())).toBe(true)
+    expect([turnOff().getBoundingClientRect().top, change().getBoundingClientRect().top]).toEqual(places)
+    expect(buttonLabelled('Turn off', ask)!.disabled).toBe(false)
+    await pollTick()
+    expect([turnOff().disabled, change().disabled]).toEqual([true, true])
+    click(buttonLabelled('Cancel', ask))
+    await settle()
+    expect([turnOff().disabled, change().disabled]).toEqual([false, false])
+    expect(document.activeElement).toBe(turnOff())
+  })
+
   it('a refused Turn off shows its words in the foot and keeps the agent', async () => {
     const { bridge } = await openAgent('request-post')
     bridge.s.answers['disable'] = () => ({ ok: false, applied: false, steps: [], refused: 'request-post is not on' })

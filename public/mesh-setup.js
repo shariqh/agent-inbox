@@ -968,9 +968,10 @@ export function installMeshSetup(deps) {
     if (el.parentNode !== agentPage || agentPage.lastElementChild !== el) agentPage.append(el)
     const change = el.querySelector('.ms-change')
     setHidden(change, !MODEL_AGENTS.has(name))
-    setDisabled(change, busy())
+    // while the question is open its own buttons answer it: the foot's two stay where they are, disabled
+    setDisabled(change, busy() || foot.asking)
     const off = el.querySelector('.ms-off')
-    setDisabled(off, busy())
+    setDisabled(off, busy() || foot.asking)
     setHidden(el.querySelector('.ms-ask'), !foot.asking)
     setText(el.querySelector('.ms-ask-text'), `Turn off ${name}? Its settings and run records are kept.`)
     const confirm = el.querySelector('.ms-off-confirm')

@@ -6121,7 +6121,7 @@ let activeTab = DEFAULT_TAB
 // single routing entry point: state + DOM together, so no caller can set one
 // without the other
 function selectTab(id, { paint = true, open = true } = {}) {
-  // the Agent cards tab exists only while the mesh is on: a key, link or stale caller does nothing
+  // the Agent cards tab exists only while it shows (agentCardsShown): a key, link or stale caller does nothing
   if (!TAB_IDS.includes(id) || (id === 'cards' && !agentCardsShown())) return
   const from = activeTab
   // Choosing a tab supersedes a deep link still waiting on older history or

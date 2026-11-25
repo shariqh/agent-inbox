@@ -104,8 +104,8 @@ matches the shell's `COPILOT_HOME` against. The flow and its refusals are in `dr
 
 **The mesh bridge (agent setup in the app, step 2a).** `agentInboxMesh` lets the local page ask main
 to run one of a fixed list of `meshctl` operations, so the app can set up model servers and local
-agents with the same command a person would type, as a dry run first. Nothing on the page uses it
-yet. The rule: the page never supplies a command, a path or a secret, and `meshctl` stays the only
+agents with the same command a person would type, as a dry run first. The Agent cards tab's set-up
+screens use it (step 2b, `public/mesh-setup.js`). The rule: the page never supplies a command, a path or a secret, and `meshctl` stays the only
 writer of the mesh folder, with all of its own checks.
 
 - **What runs.** The program the person's own shim names, `<mesh dir>/bin/meshctl` (the mesh dir by

@@ -290,7 +290,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `paintAgentCards()` in `public/app.js` from `paintAmbient()` (so from `load()` and
   `reloadAndPaint()` only) and when a `/api/version` read lands. The tab is `hidden`
   (`.tab[hidden]` beats `.tab`'s `display`) unless the last `/api/version` carried `mesh` and no
-  `on: false` body came since (`meshWanted()`), or it is the current tab, so a passive read that
+  `on: false` body came since (`meshWanted()`), or the local window's mesh bridge says it is
+  available on this Mac's own page (`meshSetup.usable()`, step 2b), or it is the current tab, so a passive read that
   turns the mesh off never takes the page from under the person: the grid goes, "The mesh is off
   on this Mac." shows, and the tab hides once they leave. `selectTab('cards')` returns without
   effect while it is hidden, so `G M` (in the keys table and the keyboard help), `#cards` and a
@@ -368,8 +369,35 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   reaches the DOM only through `textContent` and attribute values: no `img`, no `href`, no
   request to a card's URL. The open agent, inner tab, Card JSON state and rows shown are
   window-local, never persisted (a reload starts with no page open), and join `frameInputs()`
-  through `meshAgentPage.state()`. Nothing in the tab reaches attention, and with no `mesh` the
-  page's requests are unchanged.
+  through `meshAgentPage.state()`. Nothing in the tab reaches attention, and with no `mesh` and no
+  bridge the page's requests are unchanged.
+  **Set-up screens** (agent setup in the app, step 2b; `public/mesh-setup.js`, painted by
+  `paintAgentCards()`). `GET /api/mesh/agents` also carries `available: [{ name, blurb, needs }]`,
+  the drawn built-ins `mesh.json` does not name (from `mesh.json` alone, on and off), and the read
+  runs while the bridge is usable even with the mesh off, so with no agent on **Yours** says "No
+  agent is on yet." in place of the grid. After Yours come **Marketplace** (while a drawn
+  built-in is off: the same `ma-grid` cards, a `<div class="ma-card ms-offer">` each, with its
+  `blurb`, what it needs and **Set up**, or unslop's line that it is set up in a terminal; without
+  the bridge no button and one line, "Set these up in the app on the Mac that runs your agents.")
+  and, with the bridge only, **Model servers**: one row per server from `run('servers', {})` (asked
+  on entering the tab, on Yours's Refresh and after every operation that changed something, never
+  by a poll) with **Check** and **Remove** (asked in place, the row grows), a row per inline agent
+  with **Make it a server**, and **Add a server**. A set-up page opens in `#agentSetup` in place of
+  the grid or an agent's page (the top bar's title names it; **←** and Escape outside a field go
+  back to where it was opened, focus on the control that opened it): adding a server
+  (`add-server`), making an agent's settings a server (`adopt-server`), and an agent's form
+  (`enable-model-agent` with a server list ending in "Add a server…" and a model list from
+  `check-server`, a text field when the server cannot be asked; `enable-request-post` with an
+  address and a token file). Every writing operation runs with `apply: false` first; the form's
+  **Check** shows the dry run's steps as text under "Turning it on will", then **Turn on**; a
+  refusal's own words replace them. An agent's page that is on has a foot with **Turn off**
+  (asked in place, then `disable`) and, for unslop and unslop-code, **Change server**. Files are
+  picked by `chooseFile()`, which answers a handle and a base name; the handle goes back to main and
+  is never drawn. The bridge's failure reasons have fixed sentences in the module. The open page,
+  its values, the row asking "Remove?" and the running operation are the module's state, joined to
+  `frameInputs()` by `meshSetup.state()`; a repaint updates text, disabled states and option lists
+  in place, so it never closes a page, clears a field or moves focus. One operation runs at a time:
+  every control that starts one is disabled meanwhile and the pressed one says what it is doing.
 - The sidebar's Sessions line (`#sessionsIndicator`, #454, where the Live footer strip
   was) is the one session signal on every tab: `sessionsSummary` (`public/livebar.js`)
   over the GLOBAL `lastData.activity`, never the lens or closure ("N working · M

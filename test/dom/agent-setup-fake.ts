@@ -14,8 +14,13 @@ export const OFFERED: Record<string, Json> = {
 }
 export const ALL_OFFERED = [OFFERED['unslop']!, OFFERED['unslop-code']!, OFFERED['request-post']!]
 
-// a row as the command prints it: an address server with no kind, as a command older than the Claude Code kind prints it
-export const server = (name: string, over: Json = {}): Json => ({ name, baseUrl: `http://127.0.0.1:8080/${name}`, key: 'none', agents: [], ...over })
+// an address server's row as the command prints it, kind and all
+export const server = (name: string, over: Json = {}): Json => ({ name, kind: 'http', baseUrl: `http://127.0.0.1:8080/${name}`, key: 'none', agents: [], ...over })
+// the same row as a command older than the Claude Code kind prints it: no kind
+export const olderServer = (name: string, over: Json = {}): Json => {
+  const { kind: _kind, ...row } = server(name, over)
+  return row
+}
 // Claude Code on this Mac, as the command prints its row: no address, no key
 export const claudeServer = (name: string, over: Json = {}): Json => ({ name, kind: 'claude-code', baseUrl: '', key: 'none', agents: [], ...over })
 // the models a Claude Code server answers, in the command's own (sorted) order
@@ -38,7 +43,7 @@ export const HANDLE = 'a1'.repeat(16)
  */
 export const checked = (failure?: string, models: string[] = ['model-a', 'model-b']): Json =>
   meshProcess.meshAnswer('check', JSON.stringify({
-    server: 'local', baseUrl: 'http://127.0.0.1:8080/local', key: 'none', reachable: failure === undefined,
+    server: 'local', kind: 'http', baseUrl: 'http://127.0.0.1:8080/local', key: 'none', reachable: failure === undefined,
     ...(failure === undefined ? {} : { failure }), models: failure === undefined ? models : [], skipped: 0,
   }), failure === undefined ? 0 : 1) as Json
 

@@ -14,7 +14,7 @@ import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
 import meshProcess from '../../electron/mesh-process.cjs'
-import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, checkedClaude, claudeServer, fakeBridge, planned, server } from './agent-setup-fake.js'
+import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, checkedClaude, claudeServer, fakeBridge, olderServer, planned, server } from './agent-setup-fake.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -698,7 +698,7 @@ describe('Check and Remove on a server’s row (D3)', () => {
     for (const [failure, words] of Object.entries(WORDS)) {
       const answer = checked(failure)
       // the app's answer for a check that ran and failed: not ok, the failure, and no reason
-      expect(answer, failure).toEqual({ ok: false, reachable: false, failure, models: [], skipped: 0 })
+      expect(answer, failure).toEqual({ ok: false, reachable: false, failure, models: [], skipped: 0, kind: 'http' })
       bridge.s.answers['check-server'] = () => answer
       click(buttonLabelled('Check', row('local')!))
       await settle()
@@ -836,7 +836,7 @@ describe('a Claude Code server in Model servers (Claude Code D2)', () => {
   })
 
   it('a list from a command older than the Claude Code kind still shows, every row as an address server', async () => {
-    const { bridge } = await boot({ bridge: { servers: [server('local', { key: 'file', agents: ['unslop'] }), server('lab')] } })
+    const { bridge } = await boot({ bridge: { servers: [olderServer('local', { key: 'file', agents: ['unslop'] }), olderServer('lab')] } })
     await enter()
     // the rows carry no kind, as such a command prints them; the bridge's own shaper makes them address servers
     expect(bridge.s.servers.every((one) => !('kind' in one))).toBe(true)
@@ -878,6 +878,21 @@ describe('a Claude Code server in Model servers (Claude Code D2)', () => {
     click(buttonLabelled('Check', row('lab')!))
     await settle()
     expect(note('lab').textContent).toBe('reachable · 2 models')
+  })
+
+  it('a check that names http goes by its own kind, whatever the page’s row says (U6)', async () => {
+    const { bridge } = await boot({ bridge: { servers: [claudeServer('claude'), server('lab')] } })
+    await enter()
+    // an address server's check, as the command prints it: kind http
+    expect(checked()).toMatchObject({ kind: 'http' })
+    bridge.s.answers['check-server'] = () => checked()
+    click(buttonLabelled('Check', row('claude')!))
+    await settle()
+    expect(note('claude').textContent).toBe('reachable · 2 models')
+    bridge.s.answers['check-server'] = () => checked('timeout')
+    click(buttonLabelled('Check', row('claude')!))
+    await settle()
+    expect(note('claude').textContent).toBe('The server did not answer in time.')
   })
 
   it('a check that names no kind goes by the server list: Claude Code’s words on its row', async () => {
@@ -1213,6 +1228,38 @@ describe('setting up an agent on a Claude Code server (Claude Code D4)', () => {
     click(buttonLabelled('Check', setup()))
     await settle()
     expect(message().textContent).toBe('Type the model’s name.')
+  })
+
+  it('Change server on an agent that uses a Claude Code server: its server chosen, the three models, and the change runs (U6)', async () => {
+    const { bridge } = await boot({
+      agents: [on('unslop-code', { model: 'sonnet' })], available: [OFFERED['unslop']!],
+      bridge: { servers: [claudeServer('claude', { agents: ['unslop-code'] }), server('lab')] },
+    })
+    bridge.s.answers['check-server'] = () => checkedClaude()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await enter()
+    click(card('unslop-code'))
+    await settle()
+    click(buttonLabelled('Change server', agentPage().querySelector('.ms-foot')!))
+    await settle()
+    expect(select('server').value).toBe('claude')
+    expect(options()).toEqual(['Choose a model', 'haiku', 'sonnet', 'opus'])
+    expect(shown(why())).toBe(false)
+    choose(select('model'), 'sonnet')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect([...setup().querySelectorAll('.ms-steps li')].map((li) => li.textContent)).toEqual([
+      'Point unslop-code at server claude, model sonnet.',
+      'Keep a backup of its old settings.',
+    ])
+    click(buttonLabelled('Change server', setup()))
+    await settle()
+    expect(bridge.ops()).toEqual([
+      ['check-server', { name: 'claude' }],
+      ['enable-model-agent', { agent: 'unslop-code', server: 'claude', model: 'sonnet', apply: false }],
+      ['enable-model-agent', { agent: 'unslop-code', server: 'claude', model: 'sonnet', apply: true }],
+    ])
+    expect(shown(agentPage())).toBe(true)
   })
 
   it('Add a server… from the form adds a Claude Code server and comes back with it chosen and its three models', async () => {

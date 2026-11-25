@@ -31,7 +31,10 @@ All of these are refused before the SDK sees the request:
 - any request with an `Origin` header, and a `Host` other than `127.0.0.1:<port>` (403);
 - a missing or wrong bearer token, compared in constant time (401);
 - an `A2A-Version` other than `1.0` or `1.0.<n>` (-32009);
-- a body over 16 KiB, or one that takes longer than 10 seconds to arrive (413);
+- a body over 16 KiB, or one that takes longer than 10 seconds to arrive (413). An agent that takes
+  longer texts passes its own limit in bytes as `startKitAgent({ ..., bodyMax })` (or `startFrontDoor`'s
+  `bodyMax`). The limit counts the JSON request, so leave room for escapes: a text of 64 KiB can take up to
+  six times that once its control characters are escaped;
 - more than 16 open connections.
 
 The JSON-RPC request is then rebuilt from an allowlist. `SendMessage` and `SendStreamingMessage`
@@ -93,6 +96,11 @@ export const echo: Run = async (input, _options, _signal, onState) => {
 ```ts
 agent = await startKitAgent({ agent: 'echo', meshDir: meshDir(env), port, token: readToken(tokenFile), card: echoCard, run: echo, write: (line) => write(`${line}\n`) })
 ```
+
+What `startKitAgent()` returns has `port`, `url`, `open()` (the tasks still open), `stop()` and
+`idleMs()`: the milliseconds since the last request that carried the right token, or 0 while a task is
+open. An agent with its own lifecycle reads it for an idle exit, as made agents do
+([docs/made-agents.md](made-agents.md)).
 
 `startKitAgent()` installs the output guard itself, before the port opens, and you cannot turn it
 off: from then on `console` and the process's error and warning handlers write only fixed lines,
@@ -194,6 +202,7 @@ startKitAgent({ ..., request: REQUEST })
 
 - **Lifecycle.** The example runs until a signal arrives. Web search adds its own: it starts only
   while `mesh.json` names its endpoint, and it exits when that changes or after 30 idle minutes.
+  The made-agent runner does the same with `idleMs()`.
 - **Anything but loopback.** The front door listens on `127.0.0.1` and checks `Host` against it.
   Serving on your tailnet or a public name needs TLS in front of it; `meshctl add` takes a public
   name when the card is signed and publishable (#534, [`docs/mesh-call.md`](mesh-call.md)).

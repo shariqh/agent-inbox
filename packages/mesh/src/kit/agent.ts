@@ -38,8 +38,11 @@ export type KitAgentOptions = {
   log?: (entry: Json) => void
   /** Where the output guard's fixed lines go, one per call without a newline; stderr by default. */
   write?: (line: string) => void
+  /** The largest request body in bytes, JSON escapes included; 16 KiB when not given. */
+  bodyMax?: number
 }
-export type KitAgent = { port: number; url: string; open(): number; stop(): Promise<void> }
+/** `idleMs()` is the time since the last authorised request, 0 while a task is open: what an idle exit reads. */
+export type KitAgent = { port: number; url: string; open(): number; idleMs(): number; stop(): Promise<void> }
 
 // The guard is per process: the first start installs it, and an uncaught error fails every
 // running agent's open tasks with the fixed reason "internal", then exits 1.
@@ -62,12 +65,12 @@ export async function startKitAgent(o: KitAgentOptions): Promise<KitAgent> {
   const keys = loadSigningKeys(o.meshDir, o.agent)
   const executor = createExecutor(o.run, o.log ?? (() => {}), { artifact: o.agent, extension: o.request?.extensions[0] })
   const door = await startFrontDoor({
-    port: o.port, tokens: [o.token], executor, busy: () => executor.open() > 0, request: o.request, proofLabel: o.proofLabel,
+    port: o.port, tokens: [o.token], executor, busy: () => executor.open() > 0, request: o.request, proofLabel: o.proofLabel, bodyMax: o.bodyMax,
     card: (url) => servedCard((listed) => o.card(url, listed), keys),
   })
   running.add(executor)
   return {
-    port: door.port, url: door.url, open: () => executor.open(),
+    port: door.port, url: door.url, open: () => executor.open(), idleMs: () => door.idleMs(),
     stop: async () => {
       running.delete(executor)
       executor.failAll('agent-stopped')

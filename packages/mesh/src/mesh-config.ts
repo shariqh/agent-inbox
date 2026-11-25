@@ -65,7 +65,8 @@ export function readMesh(file: string): MeshRead {
 // `<mesh dir>/mesh/servers.json`, by the rule src/mesh-config.ts's readServers applies (the cases in
 // test/fixtures/servers-json/ hold both to the same verdicts): a regular file this user owns with
 // no group or other bits, at most 64 KiB, `{ "schema": 1, "servers": { "<name>": { "baseUrl",
-// "apiKey"? } } }` with nothing else, at most 32 servers. Refused whole on any broken rule.
+// "apiKey"? } or { "kind": "claude-code" } } }` with nothing else, at most 32 servers. Refused whole
+// on any broken rule.
 
 const SERVERS_SCHEMA = 1
 const SERVERS_FILE_MAX = 64 * 1024
@@ -74,9 +75,13 @@ export const SERVER_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const PRINTABLE = /^[^\x00-\x1f\x7f]{0,4096}$/
 
-export type ServerEntry = { baseUrl: string; apiKey?: KeySource }
+/** A model server: an address with an optional key source, or Claude Code on this Mac (no address, no key). */
+export type ServerEntry = { baseUrl: string; apiKey?: KeySource } | { kind: 'claude-code' }
 export type ServersReason = 'not-regular' | 'not-private' | 'too-large' | 'unreadable' | 'not-json' | 'not-object' | 'no-schema' | 'newer-schema'
-  | 'unknown-key' | 'no-servers' | 'too-many' | 'bad-name' | 'bad-entry' | 'bad-base-url' | 'bad-api-key'
+  | 'unknown-key' | 'no-servers' | 'too-many' | 'bad-name' | 'bad-entry' | 'bad-kind' | 'bad-base-url' | 'bad-api-key'
+
+/** Whether `entry` is Claude Code on this Mac: its model calls run the claude program, with no address and no key. */
+export const isClaudeServer = (entry: ServerEntry): entry is { kind: 'claude-code' } => 'kind' in entry
 export type ServersRead =
   | { kind: 'missing' }
   | { kind: 'refused'; reason: ServersReason }
@@ -128,7 +133,12 @@ function parseServers(text: string): ServersRead {
     if (!SERVER_NAME.test(name)) return { kind: 'refused', reason: 'bad-name' }
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { kind: 'refused', reason: 'bad-entry' }
     const e = entry as Record<string, unknown>
-    if (Object.keys(e).some((key) => key !== 'baseUrl' && key !== 'apiKey')) return { kind: 'refused', reason: 'unknown-key' }
+    if (Object.keys(e).some((key) => key !== 'baseUrl' && key !== 'apiKey' && key !== 'kind')) return { kind: 'refused', reason: 'unknown-key' }
+    if (Object.hasOwn(e, 'kind')) {
+      if (e['kind'] !== 'claude-code' || Object.hasOwn(e, 'baseUrl') || Object.hasOwn(e, 'apiKey')) return { kind: 'refused', reason: 'bad-kind' }
+      servers[name] = { kind: 'claude-code' }
+      continue
+    }
     if (!baseUrlOk(e['baseUrl'])) return { kind: 'refused', reason: 'bad-base-url' }
     if (Object.hasOwn(e, 'apiKey') && !isKeySource(e['apiKey'])) return { kind: 'refused', reason: 'bad-api-key' }
     servers[name] = { baseUrl: e['baseUrl'] as string, ...(Object.hasOwn(e, 'apiKey') ? { apiKey: e['apiKey'] as KeySource } : {}) }

@@ -10,7 +10,7 @@ import type { ClientRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { MODEL_NAME, SERVERS_REASONS, SERVER_NAME, keyKind, meshDir, readPrivate, readServers, serversFile } from './mesh-config.js'
+import { MODEL_NAME, SERVERS_REASONS, SERVER_NAME, isClaudeServer, keyKind, meshDir, readPrivate, readServers, serversFile } from './mesh-config.js'
 import type { KeySource } from './mesh-config.js'
 
 export const SERVER_CHECK_USAGE = 'usage: agent-inbox-meshctl server check <name> [--json]\n'
@@ -133,6 +133,7 @@ export async function runServerCheck(args: string[], io: ServerCheckIo = {}): Pr
   if (read.kind === 'refused') return refuse(`${shownFile} ${SERVERS_REASONS[read.reason]}`)
   if (!Object.hasOwn(read.servers, name)) return refuse(`the server ${name} is not in ${shownFile}: meshctl server list lists them`)
   const entry = read.servers[name]!
+  if (isClaudeServer(entry)) return refuse(`the server ${name} is Claude Code on this Mac, which this build cannot check`)
   const url = new URL(entry.baseUrl)
   url.pathname = `${url.pathname.replace(/\/+$/, '')}/v1/models`
   const key = entry.apiKey === undefined ? undefined : readKey(entry.apiKey, env, home)

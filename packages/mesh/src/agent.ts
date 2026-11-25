@@ -18,7 +18,7 @@ import type { Post, Sampling } from './backend.js'
 import { ConfigError, appendPrivate, localDate, readPrivate, writePrivate } from './files.js'
 import { fixed, home, readApiKey, strings } from './key-source.js'
 import type { KeySource } from './key-source.js'
-import { SERVER_NAME, meshDir, meshFile, readMesh, readServers } from './mesh-config.js'
+import { SERVER_NAME, isClaudeServer, meshDir, meshFile, readMesh, readServers } from './mesh-config.js'
 import type { ServerEntry, ServersRead } from './mesh-config.js'
 import { createRulesLoader } from './rules.js'
 import { codeSkill, unslopSkill } from './skills.js'
@@ -70,7 +70,7 @@ const SERVERS_REFUSED: Record<Extract<ServersRead, { kind: 'refused' }>['reason'
   unreadable: 'cannot be read', 'not-json': 'is not valid JSON', 'not-object': 'is not a JSON object', 'no-schema': 'has no valid "schema"',
   'newer-schema': 'was written by a newer Agent Inbox', 'unknown-key': 'holds a key this build does not know', 'no-servers': 'has no "servers" object',
   'too-many': 'holds too many servers', 'bad-name': 'holds a bad server name', 'bad-entry': 'holds a server that is not an object',
-  'bad-base-url': 'holds a bad baseUrl', 'bad-api-key': 'holds a bad apiKey',
+  'bad-kind': 'holds a kind this build does not know', 'bad-base-url': 'holds a bad baseUrl', 'bad-api-key': 'holds a bad apiKey',
 }
 
 /** The entry of the model server `server` in mesh/servers.json; a refusal names the server, never a value. */
@@ -81,8 +81,8 @@ function serverEntry(dir: string, server: string): ServerEntry {
   if (!Object.hasOwn(read.servers, server)) throw new ConfigError(`the profile names the server ${server}, which mesh/servers.json does not hold: run meshctl server list`)
   return read.servers[server]!
 }
-/** What the gate compares: the entry's address and key source. */
-const entryKey = (entry: ServerEntry): string => JSON.stringify([entry.baseUrl, entry.apiKey ?? null])
+/** What the gate compares: the entry's address and key source, or its kind. */
+const entryKey = (entry: ServerEntry): string => JSON.stringify(isClaudeServer(entry) ? ['claude-code'] : [entry.baseUrl, entry.apiKey ?? null])
 
 /** Resolves the server a profile names (startAgent records what it resolved, for the gate). */
 type Lookup = (server: string) => ServerEntry
@@ -98,7 +98,9 @@ function backendOf(p: BackendProfile & { server?: unknown }, agent: AgentName, l
   }
   if (named) {
     if (typeof p.server !== 'string' || !SERVER_NAME.test(p.server)) throw new ConfigError(`the ${agent} profile's \`server\` is not a server name`)
-    return lookup(p.server)
+    const entry = lookup(p.server)
+    if (isClaudeServer(entry)) throw new ConfigError(`the ${agent} profile names the server ${p.server}, which is Claude Code on this Mac: this build cannot use it`)
+    return entry
   }
   if (typeof p.baseUrl !== 'string') throw new ConfigError(`the ${agent} profile needs a \`baseUrl\` or a \`server\``)
   fixed(() => checkBaseUrl(p.baseUrl))

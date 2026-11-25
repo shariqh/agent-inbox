@@ -73,7 +73,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { LookupFunction } from 'node:net'
 import { fileURLToPath } from 'node:url'
-import { MESH_SCHEMA, MODEL_NAME, SERVERS_MAX, SERVERS_REASONS, SERVER_NAME, baseUrlRefusal, cardCopyFile, inTailnet, isKeySource, keyKind, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readPrivate, readServers, readTokenFile, removeCardCopy, requestPostEndpoint, serversFile, serversText, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
+import { MESH_SCHEMA, MODEL_NAME, SERVERS_MAX, SERVERS_REASONS, SERVER_NAME, baseUrlRefusal, cardCopyFile, inTailnet, isClaudeServer, isKeySource, keyKind, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readPrivate, readServers, readTokenFile, removeCardCopy, requestPostEndpoint, serversFile, serversText, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
 import type { KeySource, MeshDocument, MeshRead, ServerEntry } from './mesh-config.js'
 import { addSummary, cardEndpoint, cardSha256, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine } from './mesh-add.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
@@ -518,7 +518,7 @@ function serverUsers(dir: string): { on: Map<string, LocalAgent[]>; kept: Map<st
 
 /** One line per server, for `server list` and `status`: its name, address, key kind and the agents naming it. */
 const serverLine = (name: string, entry: ServerEntry, agents: string[]): string =>
-  `Server ${name}: ${entry.baseUrl}; key: ${keyKind(entry)}; agents: ${agents.length ? agents.join(', ') : 'none'}.`
+  `Server ${name}: ${isClaudeServer(entry) ? 'Claude Code on this Mac' : `${entry.baseUrl}; key: ${keyKind(entry)}`}; agents: ${agents.length ? agents.join(', ') : 'none'}.`
 
 /**
  * The profile with `server` in place of its inline baseUrl and apiKey (when a server is given) and
@@ -813,7 +813,8 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
 
     if (sub === 'list') {
       const users = serverUsers(dir).on
-      const rows = read.kind === 'present' ? Object.entries(read.servers).map(([name, entry]) => ({ name, baseUrl: entry.baseUrl, key: keyKind(entry), agents: users.get(name) ?? [] })) : []
+      const listed = read.kind === 'present' ? read.servers : {}
+      const rows = Object.entries(listed).map(([name, entry]) => ({ name, baseUrl: isClaudeServer(entry) ? '' : entry.baseUrl, key: keyKind(entry), agents: users.get(name) ?? [] }))
       const inline = LOCAL_AGENTS.filter((agent) => {
         const profile = readProfile(profileFile(dir, agent))
         return typeof profile === 'object' && inlineSettings(profile.p) !== undefined
@@ -826,7 +827,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
       if (refused) out(`Model servers: ${refused}, so no agent can use a server. Fix or remove it by hand.\n`)
       else if (read.kind === 'missing') out(`No model servers: ${sName} is missing (meshctl server add <name> --base-url <url> adds one).\n`)
       else if (!rows.length) out(`No model servers in ${sName}.\n`)
-      else out(`Model servers in ${sName}:\n${rows.map((row) => `${serverLine(row.name, read.kind === 'present' ? read.servers[row.name]! : { baseUrl: row.baseUrl }, row.agents)}\n`).join('')}`)
+      else out(`Model servers in ${sName}:\n${rows.map((row) => `${serverLine(row.name, listed[row.name]!, row.agents)}\n`).join('')}`)
       if (inline.length) out(`Inline settings: the ${inline.join(' and ')} profile${inline.length === 1 ? ' holds' : 's hold'} baseUrl itself (meshctl server add <name> --from <agent> --move turns that into a server).\n`)
       return refused ? 1 : 0
     }
@@ -907,10 +908,11 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     if (sub === 'set') {
       if (url === undefined && !keyGiven) return usage()
       if (!Object.hasOwn(current, server)) return refuse(`the server ${server} is not in ${sName}: meshctl server add adds it`)
-      if (urlBad) return refuse(urlBad)
       const old = current[server]!
+      if (isClaudeServer(old)) return refuse(`the server ${server} is Claude Code on this Mac: it has no address or key to change`)
+      if (urlBad) return refuse(urlBad)
       const apiKey = keyGiven ? key ?? undefined : old.apiKey
-      const entry: ServerEntry = { baseUrl: url ?? old.baseUrl, ...(apiKey ? { apiKey } : {}) }
+      const entry = { baseUrl: url ?? old.baseUrl, ...(apiKey ? { apiKey } : {}) }
       const changes = [
         ...(entry.baseUrl !== old.baseUrl ? [`address to ${entry.baseUrl}`] : []),
         ...(JSON.stringify(entry.apiKey ?? null) !== JSON.stringify(old.apiKey ?? null) ? [`key to ${keyKind(entry)}`] : []),

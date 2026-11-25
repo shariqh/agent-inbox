@@ -40,6 +40,12 @@ const WORD_MAX = 40
 const BASE_URL_MAX = 2048
 const MODELS_MAX = 50
 const MODEL_MAX = 64
+// an added agent's card summary: card text cut in UTF-16 units (the command caps it at 80, 300
+// and 200 characters plus `…`, so these leave room for characters outside the BMP), 16 skills
+const CARD_WORD_MAX = 162
+const CARD_TEXT_MAX = 602
+const SKILL_TEXT_MAX = 402
+const SKILLS_MAX = 16
 
 const MARKER = /^# agent-inbox meshctl shim \(#540\), kind=(runtime|checkout), written by install-agents\.sh\. Do not edit\.$/
 // a single-quoted absolute path with no quote, backslash, `$`, backtick or control character
@@ -59,6 +65,20 @@ const SERVER_KINDS = new Set(['http', 'claude-code'])
 // a check's failure: the address kind's five, and Claude Code's program not found or not signed in
 const CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model-server', 'timeout', 'key', 'no-program', 'signed-out'])
 const PURPOSES = new Set(['key', 'token'])
+// where an added agent runs, as add's card summary says it
+const REACHES = new Set(['loopback', 'tailnet', 'public'])
+
+// add's own rules (src/mesh-entry.ts addedPlace and idRefusal), copied: this file loads only
+// Node's own modules. An address is http://127.0.0.1:<port> or https:// on a DNS name of at most
+// 253 characters, as written (lower case, no written-out default port), with an optional plain path.
+const LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+const PLAIN_PATH = '(?:/(?!\\.\\.?(?:/|$))[A-Za-z0-9._~-]+)*/?'
+const LOOPBACK_PLACE = new RegExp(`^http://127\\.0\\.0\\.1:([1-9]\\d{0,4})${PLAIN_PATH}$`)
+const NAMED_PLACE = new RegExp(`^https://((?:${LABEL}\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(?::([1-9]\\d{0,4}))?${PLAIN_PATH}$`)
+const AGENT_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
+const BUILT_IN_AGENTS = new Set(['unslop', 'unslop-code', 'request-post', 'web-search'])
+const PIN = /^[0-9a-f]{64}$/
+const LOOPBACK_PREFIX = 'http://127.0.0.1:'
 
 /**
  * Every word a refusal or failure carries, and nothing else.
@@ -177,6 +197,21 @@ function isUrl(value) {
   }
 }
 
+/**
+ * An added agent's card address (or its endpoint), by add's own rule: a loopback port is 1-65535
+ * and never 80, a name's port never 443; plus this bridge's own cap of 2048 characters.
+ */
+function isPlace(value) {
+  if (typeof value !== 'string' || value.length > URL_MAX) return false
+  const loopback = LOOPBACK_PLACE.exec(value)
+  const named = loopback ? null : NAMED_PLACE.exec(value)
+  if (!loopback && !named) return false
+  const port = loopback ? loopback[1] : named[2]
+  if (port !== undefined && (Number(port) > 65535 || Number(port) === (loopback ? 80 : 443))) return false
+  return loopback !== null || named[1].length <= 253
+}
+
+const isAgentId = (value) => typeof value === 'string' && AGENT_ID.test(value) && !BUILT_IN_AGENTS.has(value)
 const isServer = (value) => typeof value === 'string' && SERVER_NAME.test(value)
 const isModel = (value) => typeof value === 'string' && MODEL_NAME.test(value) && !value.startsWith('-')
 const isKey = (value) => value === 'none' || (typeof value === 'string' && HANDLE.test(value))
@@ -212,10 +247,25 @@ const OPERATIONS = Object.freeze({
   },
   // never --purge
   disable: { kind: 'plan', required: ['agent', 'apply'], argv: (v) => ['disable', `--${v.agent}`, '--json'] },
+  // an agent by its card address: the check is add's dry run with no --id (it fetches the card once
+  // and writes nothing, so it takes no apply); the add names the checked id and pin, never --move
+  'check-agent': {
+    kind: 'add', required: ['address'], optional: ['token'],
+    argv: (v, file) => ['add', v.address, ...tokenArgs(v.token, file), '--json'],
+  },
+  'add-agent': {
+    kind: 'add', required: ['address', 'id', 'pin', 'apply'], optional: ['token'],
+    argv: (v, file) => ['add', v.address, '--id', v.id, ...tokenArgs(v.token, file), '--expect-pin', v.pin, '--json'],
+  },
+  'remove-agent': { kind: 'plan', required: ['id', 'apply'], argv: (v) => ['remove', v.id, '--json'] },
 })
 
 function keyArgs(key, file) {
   return key === 'none' ? ['--no-key'] : ['--key-file', file(key, 'key')]
+}
+
+function tokenArgs(token, file) {
+  return token === undefined ? [] : ['--token-file', file(token, 'token')]
 }
 
 const RULES = {
@@ -228,6 +278,9 @@ const RULES = {
   token: (value) => typeof value === 'string' && HANDLE.test(value),
   from: (value) => MODEL_AGENTS.has(value),
   apply: (value) => typeof value === 'boolean',
+  address: isPlace,
+  id: isAgentId,
+  pin: (value) => typeof value === 'string' && PIN.test(value),
 }
 const AGENT_RULES = { 'enable-model-agent': MODEL_AGENTS, disable: DISABLE_AGENTS }
 
@@ -251,6 +304,8 @@ function checkedValues(operation, values) {
   }
   // set-server changes the address, the key source, or both
   if (operation === 'set-server' && out.baseUrl === undefined && out.key === undefined) return null
+  // a token file goes only to an agent on this Mac: a remote agent that needs one is added in a terminal
+  if (out.address !== undefined && out.token !== undefined && !out.address.startsWith(LOOPBACK_PREFIX)) return null
   return out
 }
 
@@ -329,7 +384,67 @@ function checkAnswer(parsed, code) {
   return out
 }
 
-const ANSWERS = { plan: planAnswer, servers: serversAnswer, check: checkAnswer }
+// Card text: a string with no control character, cut; null when it is not one. The command has
+// already cleaned it, so a control character means the output is not what it prints.
+const cardText = (value, max) => (typeof value === 'string' && !CONTROL.test(value) ? cut(value, max) : null)
+
+function cardSkill(raw) {
+  if (!isPlainObject(raw)) return null
+  const id = cardText(raw.id, CARD_WORD_MAX)
+  if (id === null) return null
+  const out = { id }
+  for (const [key, max] of [['name', CARD_WORD_MAX], ['description', SKILL_TEXT_MAX]]) {
+    if (raw[key] === undefined) continue
+    const text = cardText(raw[key], max)
+    if (text === null) return null
+    out[key] = text
+  }
+  return out
+}
+
+/** add's card summary rebuilt field by field, or null when any field breaks its rule. */
+function addCard(raw) {
+  if (!isPlainObject(raw)) return null
+  const out = {}
+  if (raw.id !== undefined) {
+    if (!isAgentId(raw.id)) return null
+    out.id = raw.id
+  }
+  for (const [key, max] of [['name', CARD_WORD_MAX], ['description', CARD_TEXT_MAX], ['version', CARD_WORD_MAX], ['publisher', CARD_WORD_MAX]]) {
+    if (raw[key] === undefined) continue
+    const text = cardText(raw[key], max)
+    if (text === null) return null
+    out[key] = text
+  }
+  // the endpoint passed the address rule, and only an endpoint on this Mac is a loopback one
+  if (!REACHES.has(raw.reach) || !isPlace(raw.endpoint) || (raw.reach === 'loopback') !== raw.endpoint.startsWith(LOOPBACK_PREFIX)) return null
+  if (typeof raw.signed !== 'boolean' || (raw.keysNew !== undefined && typeof raw.keysNew !== 'boolean')) return null
+  if (!Array.isArray(raw.skills) || typeof raw.pin !== 'string' || !PIN.test(raw.pin)) return null
+  const skills = raw.skills.slice(0, SKILLS_MAX).map(cardSkill)
+  if (skills.includes(null)) return null
+  out.reach = raw.reach
+  out.endpoint = raw.endpoint
+  out.signed = raw.signed
+  if (raw.keysNew !== undefined) out.keysNew = raw.keysNew
+  out.skills = skills
+  out.pin = raw.pin
+  return out
+}
+
+/**
+ * An add's plan and its card. A card that breaks a rule fails the answer, refused or not; a plan
+ * with no refusal carries a card with an id (the one it adds), and a refusal may come without one.
+ */
+function addAnswer(parsed, code) {
+  const plan = planAnswer(parsed, code)
+  if (plan.reason !== undefined) return plan
+  if (parsed.card === undefined) return plan.refused === undefined ? failure('output') : plan
+  const card = addCard(parsed.card)
+  if (!card || (plan.refused === undefined && card.id === undefined)) return failure('output')
+  return { ...plan, card }
+}
+
+const ANSWERS = { plan: planAnswer, servers: serversAnswer, check: checkAnswer, add: addAnswer }
 
 /** The answer for meshctl's stdout and exit code: its one JSON object rebuilt for `kind`, or a failure word. */
 function meshAnswer(kind, stdout, code) {
@@ -572,5 +687,5 @@ function registerMeshIpc({ ipcMain, bridge, settled, isGranted }) {
 }
 
 module.exports = {
-  CHECK_FAILURES, KEY_KINDS, OPERATIONS, REASONS, SERVER_KINDS, createFileHandles, createMeshBridge, meshAnswer, meshArgv, meshDirOf, meshEnv, readShim, registerMeshIpc, runMeshctl,
+  CHECK_FAILURES, KEY_KINDS, OPERATIONS, REACHES, REASONS, SERVER_KINDS, createFileHandles, createMeshBridge, meshAnswer, meshArgv, meshDirOf, meshEnv, readShim, registerMeshIpc, runMeshctl,
 }

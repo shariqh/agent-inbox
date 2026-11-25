@@ -10,6 +10,7 @@ import { PassThrough } from 'node:stream'
 import vm from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import meshProcess from '../electron/mesh-process.cjs'
+import { addedPlace, idRefusal } from '../src/mesh-entry.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const { createFileHandles, createMeshBridge, meshAnswer, meshArgv, meshDirOf, meshEnv, readShim, registerMeshIpc, runMeshctl } = meshProcess
@@ -21,6 +22,7 @@ const UID = process.getuid!()
 const MARKER = (kind: string) => `# agent-inbox meshctl shim (#540), kind=${kind}, written by install-agents.sh. Do not edit.`
 const KEY_HANDLE = 'a'.repeat(32)
 const TOKEN_HANDLE = 'b'.repeat(32)
+const PIN = 'f55799f06b5b4117d471de6f7c40cd931bd3bd6aaf93672b071d911d9debd0b3'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -186,6 +188,17 @@ describe('meshArgv: each fixed operation maps to exactly one argv', () => {
       ['enable', '--request-post', '--endpoint', 'https://studio.tail1234.ts.net/a2a', '--token-file', '/Users/me/token', '--json'], 'plan'],
     ['disable', { agent: 'request-post', apply: true }, ['disable', '--request-post', '--json', '--apply'], 'plan'],
     ['disable', { agent: 'unslop', apply: false }, ['disable', '--unslop', '--json'], 'plan'],
+    // adding an agent by its card address: Check is a dry run with no --id; Add names the checked id and pin
+    ['check-agent', { address: 'https://studio.tailnet-example.ts.net/pdf/.well-known/agent-card.json' },
+      ['add', 'https://studio.tailnet-example.ts.net/pdf/.well-known/agent-card.json', '--json'], 'add'],
+    ['check-agent', { address: 'http://127.0.0.1:8080/.well-known/agent-card.json', token: TOKEN_HANDLE },
+      ['add', 'http://127.0.0.1:8080/.well-known/agent-card.json', '--token-file', '/Users/me/token', '--json'], 'add'],
+    ['add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'pdf-reader', pin: PIN, apply: true },
+      ['add', 'https://hub.example.ts.net/a2a', '--id', 'pdf-reader', '--expect-pin', PIN, '--json', '--apply'], 'add'],
+    ['add-agent', { address: 'http://127.0.0.1:9000', id: 'echo', pin: PIN, token: TOKEN_HANDLE, apply: false },
+      ['add', 'http://127.0.0.1:9000', '--id', 'echo', '--token-file', '/Users/me/token', '--expect-pin', PIN, '--json'], 'add'],
+    ['remove-agent', { id: 'pdf-reader', apply: false }, ['remove', 'pdf-reader', '--json'], 'plan'],
+    ['remove-agent', { id: 'pdf-reader', apply: true }, ['remove', 'pdf-reader', '--json', '--apply'], 'plan'],
   ] as const)('%s %j', (operation, values, expected, kind) => {
     expect(argv(operation, values)).toEqual({ argv: expected, kind })
   })
@@ -236,14 +249,71 @@ describe('meshArgv: each fixed operation maps to exactly one argv', () => {
     ['add-server', { name: 'box', baseUrl: 'https://m.example', key: 'A'.repeat(32), apply: false }],
     ['add-server', { name: 'box', baseUrl: 'https://m.example', key: 'env:BOX', apply: false }],
     ['enable-request-post', { endpoint: 'https://h.example', token: 'none', apply: false }],
+    // adding an agent: Check never writes, Add needs the checked id and pin, Remove an id and apply
+    ['check-agent', {}], ['check-agent', { address: 'https://hub.example.ts.net/a2a', apply: false }],
+    ['check-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub' }],
+    ['add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub', apply: true }],
+    ['add-agent', { address: 'https://hub.example.ts.net/a2a', pin: PIN, apply: true }],
+    ['add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub', pin: PIN }],
+    ['add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub', pin: PIN, apply: true, move: 'hub' }],
+    ['remove-agent', { id: 'hub' }], ['remove-agent', { id: 'hub', apply: true, purge: true }],
+    // a pin is 64 lower-case hex characters
+    ...[PIN.toUpperCase(), PIN.slice(1), `${PIN}0`, `-${PIN.slice(1)}`, '', 7].map((pin) => ['add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub', pin, apply: false }]),
+    // a token file goes only with an agent on this Mac
+    ['check-agent', { address: 'https://hub.example.ts.net/a2a', token: TOKEN_HANDLE }],
+    ['add-agent', { address: 'https://example.org/a2a', id: 'hub', pin: PIN, token: TOKEN_HANDLE, apply: false }],
+    ['check-agent', { address: 'http://127.0.0.1:8080', token: 'none' }],
+    ['check-agent', { address: 'http://127.0.0.1:8080', token: '/Users/me/token' }],
   ] as Array<[unknown, unknown]>)('refuses %j %j', (operation, values) => {
     expect(argv(operation, values)).toEqual({ reason: 'invalid' })
+  })
+
+  // the address rule is add's own (src/mesh-entry.ts addedPlace), copied: the bridge loads nothing but Node's modules
+  const host253 = `${Array.from({ length: 4 }, () => 'a'.repeat(61)).join('.')}.abcde`
+  it.each([
+    'http://127.0.0.1:8080', 'http://127.0.0.1:8080/', 'http://127.0.0.1:1/.well-known/agent-card.json', 'http://127.0.0.1:65535/a', 'http://127.0.0.1:443/a',
+    'https://studio.tailnet-example.ts.net/pdf/.well-known/agent-card.json', 'https://hub.example.ts.net:8443/a2a', 'https://example.org', 'https://example.org:80/a',
+    'https://a.example.org:1/x', 'https://x1.example/a/b_c~d.e-f', 'https://studio.tailnet-example.ts.net/a/', `https://${'a'.repeat(63)}.example`, `https://${host253}/a`,
+    'https://1.2.3.example', 'https://a--b.example/.well-known/agent-card.json', 'https://example.org/a.b/..c/.d',
+    'http://127.0.0.1', 'http://127.0.0.1:', 'http://127.0.0.1:80/a', 'http://127.0.0.1:0', 'http://127.0.0.1:65536', 'http://127.0.0.1:08080', 'http://127.0.0.1:99999',
+    'http://localhost:8080', 'http://127.0.0.2:8080', 'https://127.0.0.1:8443', 'http://example.org', 'https://example.org:443', 'https://example.org:0', 'https://example.org:65536',
+    'https://Example.org', 'https://example', 'https://example.123', 'https://-a.example', 'https://a-.example', `https://${'a'.repeat(64)}.example`, `https://${host253}f/a`,
+    'https://example.org/a?b=c', 'https://example.org/a#x', 'https://example.org/./a', 'https://example.org/../a', 'https://example.org/a/..', 'https://example.org/a/.',
+    'https://example.org//a', 'https://example.org/a%20b', 'https://user@example.org', 'https://user:pass@example.org', 'ftp://example.org', ' https://example.org',
+    'https://example.org/ a', 'https://example.org/\n', '', 'https://example.org.', 'https://ex_ample.org', 'HTTPS://example.org', '-https://example.org', 'https://example.org/é',
+  ])('an address is accepted exactly where add’s own rule accepts it: %s', (address) => {
+    expect(address.length).toBeLessThan(2048)
+    // a port past 65535 makes addedPlace's own URL parse throw: the command never accepts it either
+    let accepted = false
+    try {
+      accepted = !('refused' in addedPlace(address))
+    } catch { /* not accepted */ }
+    expect(argv('check-agent', { address }), address).toEqual(accepted ? { argv: ['add', address, '--json'], kind: 'add' } : { reason: 'invalid' })
+  })
+
+  it('caps an address at 2048 characters of its own, which add’s rule does not', () => {
+    const at = (length: number) => `http://127.0.0.1:8080/${'a'.repeat(length - 'http://127.0.0.1:8080/'.length)}`
+    expect('refused' in addedPlace(at(2049))).toBe(false)
+    expect(argv('check-agent', { address: at(2048) })).toEqual({ argv: ['add', at(2048), '--json'], kind: 'add' })
+    expect(argv('check-agent', { address: at(2049) })).toEqual({ reason: 'invalid' })
+  })
+
+  // the id rule is add's own (idRefusal): never a built-in agent's name
+  it.each([
+    'a', '0', 'pdf-reader', 'echo2', 'a-b', 'a'.repeat(40), 'a--b',
+    '', 'A', 'Pdf', '-a', 'a-', 'a'.repeat(41), 'a_b', 'a b', 'é', 'a.b', 'unslop', 'unslop-code', 'request-post', 'web-search',
+  ])('an id is accepted exactly where add’s own rule accepts it: %j', (id) => {
+    const accepted = idRefusal(id) === undefined
+    expect(argv('remove-agent', { id, apply: false })).toEqual(accepted ? { argv: ['remove', id, '--json'], kind: 'plan' } : { reason: 'invalid' })
+    expect(argv('add-agent', { address: 'https://example.org/a2a', id, pin: PIN, apply: false })).toEqual(accepted
+      ? { argv: ['add', 'https://example.org/a2a', '--id', id, '--expect-pin', PIN, '--json'], kind: 'add' } : { reason: 'invalid' })
   })
 
   it('refuses a handle it does not know, or one chosen for the other purpose', () => {
     expect(argv('add-server', { name: 'box', baseUrl: 'https://m.example', key: 'c'.repeat(32), apply: false })).toEqual({ reason: 'handle' })
     expect(argv('add-server', { name: 'box', baseUrl: 'https://m.example', key: TOKEN_HANDLE, apply: false })).toEqual({ reason: 'handle' })
     expect(argv('enable-request-post', { endpoint: 'https://h.example', token: KEY_HANDLE, apply: false })).toEqual({ reason: 'handle' })
+    expect(argv('check-agent', { address: 'http://127.0.0.1:8080', token: KEY_HANDLE })).toEqual({ reason: 'handle' })
   })
 })
 
@@ -323,6 +393,88 @@ describe('meshAnswer: meshctl’s JSON rebuilt field by field', () => {
       expect(meshAnswer('check', JSON.stringify({ server: 'box', kind, reachable: true, models: [], skipped: 0 }), 0), String(kind)).toEqual({ ok: false, reason: 'output' })
     }
     expect(meshAnswer('check', JSON.stringify({ server: 'claude', kind: 'claude-code', reachable: false, failure: 'not-installed', models: [], skipped: 0 }), 1)).toEqual({ ok: false, reason: 'output' })
+  })
+
+  // `add --json`'s card (docs/mesh-call.md), as the command prints it
+  const CARD = {
+    id: 'pdf-reader', name: 'pdf-reader', description: 'Reads a PDF and answers questions about it.', version: '1.0.0', publisher: 'Example Labs',
+    reach: 'tailnet', endpoint: 'https://studio.tailnet-example.ts.net/pdf/a2a', signed: true, keysNew: true,
+    skills: [{ id: 'read', name: 'read', description: 'Reads one PDF.' }, { id: 'ask' }], pin: PIN,
+  }
+  const STEPS = ['Would keep the card as /Users/me/.agent-inbox/mesh/cards/pdf-reader.json (0600) for the app to show.', 'Would replace /Users/me/.agent-inbox/mesh.json (keeping a backup beside it):']
+  const add = (value: unknown, code = 0) => meshAnswer('add', JSON.stringify(value), code)
+
+  it('rebuilds an add’s plan with its card, field by field, dropping anything else', () => {
+    expect(add({ applied: false, steps: STEPS, card: { ...CARD, tokenFile: '/Users/me/token', extra: 1 }, body: 'x' })).toEqual({ ok: true, applied: false, steps: STEPS, card: CARD })
+    const { keysNew: _new, description: _d, version: _v, publisher: _p, ...bare } = CARD
+    expect(add({ applied: false, steps: STEPS, card: { ...bare, signed: false, reach: 'loopback', endpoint: 'http://127.0.0.1:9000/a2a', skills: [] } }))
+      .toEqual({ ok: true, applied: false, steps: STEPS, card: { ...bare, signed: false, reach: 'loopback', endpoint: 'http://127.0.0.1:9000/a2a', skills: [] } })
+    expect(Object.keys((add({ applied: false, steps: STEPS, card: CARD }) as { card: object }).card)).toEqual(Object.keys(CARD))
+    // an applied add, with its approval note
+    expect(add({ applied: true, steps: ['Kept the card.'], notes: ['This --apply is your approval for pdf-reader (D14).'], card: CARD }))
+      .toEqual({ ok: true, applied: true, steps: ['Kept the card.'], notes: ['This --apply is your approval for pdf-reader (D14).'], card: CARD })
+  })
+
+  it('a refusal before the card is pinned has no card; one after it keeps a valid card', () => {
+    const before = add({ applied: false, steps: [], refused: 'the address is outside the rule. Nothing changed.' }, 1)
+    expect(before).toEqual({ ok: false, applied: false, steps: [], refused: 'the address is outside the rule. Nothing changed.' })
+    expect(before).not.toHaveProperty('card')
+    const changed = 'the card is not the one that was checked (its pin differs): check it again. Nothing changed.'
+    expect(add({ applied: false, steps: [], refused: changed, card: CARD }, 1)).toEqual({ ok: false, applied: false, steps: [], refused: changed, card: CARD })
+    // a derived id that is unusable: the card comes without an id
+    const { id: _id, ...noId } = CARD
+    expect(add({ applied: false, steps: [], refused: 'the card’s name makes no usable id: pass --id <id>. Nothing changed.', card: noId }, 1))
+      .toEqual({ ok: false, applied: false, steps: [], refused: 'the card’s name makes no usable id: pass --id <id>. Nothing changed.', card: noId })
+    // a failed step keeps its card
+    expect(add({ applied: false, steps: [], refused: 'Failed at step 1/3. Steps before it are done.', card: CARD }, 1)).toMatchObject({ ok: false, card: CARD })
+  })
+
+  it('cuts card text to its caps, never half a surrogate pair, and keeps the first 16 skills', () => {
+    const answer = add({ applied: false, steps: [], card: {
+      ...CARD, name: 'n'.repeat(200), version: 'v'.repeat(200), publisher: `${'p'.repeat(161)}😀`, description: 'd'.repeat(700),
+      skills: Array.from({ length: 20 }, (_, i) => ({ id: `${i}${'i'.repeat(200)}`, name: 'k'.repeat(200), description: 's'.repeat(500) })),
+    } }) as { card: Record<string, unknown> }
+    expect([answer.card['name'], answer.card['version'], answer.card['publisher'], answer.card['description']]).toEqual(['n'.repeat(162), 'v'.repeat(162), 'p'.repeat(161), 'd'.repeat(602)])
+    const skills = answer.card['skills'] as Array<Record<string, string>>
+    expect(skills).toHaveLength(16)
+    expect(skills[0]).toEqual({ id: `0${'i'.repeat(161)}`, name: 'k'.repeat(162), description: 's'.repeat(402) })
+  })
+
+  it.each([
+    ['a control character in the name', { name: 'pdf\u0007reader' }],
+    ['a line break in the description', { description: 'Reads\nPDFs' }],
+    ['a C1 control in the publisher', { publisher: 'Example\u0085Labs' }],
+    ['a control in a skill', { skills: [{ id: 'read', description: 'one\u0000' }] }],
+    ['a skill with no id', { skills: [{ name: 'read' }] }],
+    ['a skill that is text', { skills: ['read'] }],
+    ['skills that are not a list', { skills: 'read' }],
+    ['a name that is not text', { name: 7 }],
+    ['an unknown reach', { reach: 'lan' }],
+    ['no reach', { reach: undefined }],
+    ['a loopback reach on a name', { reach: 'loopback' }],
+    ['a tailnet reach on this Mac', { endpoint: 'http://127.0.0.1:9000/a2a' }],
+    ['an endpoint outside the rule', { endpoint: 'https://studio.tailnet-example.ts.net/a2a?x=1' }],
+    ['an endpoint past 2048 characters', { reach: 'loopback', endpoint: `http://127.0.0.1:9000/${'a'.repeat(2030)}` }],
+    ['signed that is not a boolean', { signed: 'yes' }],
+    ['keysNew that is not a boolean', { keysNew: 1 }],
+    ['an upper-case pin', { pin: PIN.toUpperCase() }],
+    ['a short pin', { pin: PIN.slice(2) }],
+    ['a built-in id', { id: 'unslop' }],
+    ['an id outside the rule', { id: 'PDF reader' }],
+  ] as Array<[string, Record<string, unknown>]>)('a card with %s fails the whole answer as output, refused or not', (_label, over) => {
+    const card = { ...CARD, ...over }
+    expect(add({ applied: false, steps: STEPS, card })).toEqual({ ok: false, reason: 'output' })
+    expect(add({ applied: false, steps: [], refused: 'the card is not the one that was checked (its pin differs): check it again. Nothing changed.', card }, 1)).toEqual({ ok: false, reason: 'output' })
+  })
+
+  it('a plan with no refusal must carry a card with an id', () => {
+    const { id: _id, ...noId } = CARD
+    expect(add({ applied: false, steps: STEPS })).toEqual({ ok: false, reason: 'output' })
+    expect(add({ applied: false, steps: STEPS, card: noId })).toEqual({ ok: false, reason: 'output' })
+    expect(add({ applied: false, steps: STEPS, card: null })).toEqual({ ok: false, reason: 'output' })
+    expect(add({ applied: false, steps: [], refused: 'x', card: null }, 1)).toEqual({ ok: false, reason: 'output' })
+    expect(meshAnswer('add', '', 2)).toEqual({ ok: false, reason: 'outdated' })
+    expect(meshAnswer('add', '{"applied":false,"steps":"x","card":{}}', 0)).toEqual({ ok: false, reason: 'output' })
   })
 
   it('answers output for anything but its one JSON object, and outdated for a usage error', () => {
@@ -495,6 +647,18 @@ describe('createMeshBridge: the gates, the handles and a run', () => {
     const b = bridgeFixture({ answer: PLAN })
     await expect(b.bridge.run('add-claude-server', { name: 'claude', apply: true })).resolves.toEqual({ ok: true, applied: false, steps: ['Would add the server box.'] })
     expect(b.spawned.map((args) => args[1])).toEqual([[b.script, 'server', 'add', 'claude', '--claude-code', '--json', '--apply']])
+  })
+
+  it('checks an agent on this Mac with a chosen token file, and refuses that file for an agent elsewhere before anything runs', async () => {
+    const card = { id: 'echo', name: 'Echo', reach: 'loopback', endpoint: 'http://127.0.0.1:9000/a2a', signed: false, skills: [], pin: PIN }
+    const b = bridgeFixture({ answer: JSON.stringify({ applied: false, steps: ['Would copy the bearer token.'], card }) })
+    b.chosen.push('/Users/me/echo.token')
+    const chosen = await b.bridge.chooseFile('token') as { handle: string }
+    await expect(b.bridge.run('check-agent', { address: 'https://hub.example.ts.net/a2a', token: chosen.handle })).resolves.toEqual({ ok: false, reason: 'invalid' })
+    expect(b.spawned).toEqual([])
+    await expect(b.bridge.run('check-agent', { address: 'http://127.0.0.1:9000/card', token: chosen.handle }))
+      .resolves.toEqual({ ok: true, applied: false, steps: ['Would copy the bearer token.'], card })
+    expect(b.spawned.map((args) => args[1])).toEqual([[b.script, 'add', 'http://127.0.0.1:9000/card', '--token-file', '/Users/me/echo.token', '--json']])
   })
 
   it('refuses every invalid request before anything is read or spawned', async () => {
@@ -793,6 +957,54 @@ describe('agentInboxMesh: the page’s bridge', () => {
     expect(await run('check-server', { ok: true, reachable: true, models: [], skipped: 0, kind: 'ollama' })).toEqual({ ok: false, reason: 'failed' })
   })
 
+  it('sends the three agent operations with exactly their values, and refuses any other key', async () => {
+    const { mesh, invoke } = loadPreload(() => null)
+    await mesh.run('check-agent', { address: 'http://127.0.0.1:9000/card', token: TOKEN_HANDLE })
+    await mesh.run('add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub', pin: PIN, apply: true })
+    await mesh.run('remove-agent', { id: 'hub', apply: false })
+    expect(invoke.mock.calls).toEqual([
+      ['agent-inbox:mesh-run', 'check-agent', { address: 'http://127.0.0.1:9000/card', token: TOKEN_HANDLE }],
+      ['agent-inbox:mesh-run', 'add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub', pin: PIN, apply: true }],
+      ['agent-inbox:mesh-run', 'remove-agent', { id: 'hub', apply: false }],
+    ])
+    for (const [operation, values] of [
+      ['check-agent', { address: 'https://hub.example.ts.net/a2a', apply: true }], ['add-agent', { address: 'https://hub.example.ts.net/a2a', id: 'hub', pin: PIN, apply: true, move: 'hub' }],
+      ['remove-agent', { id: 'hub', apply: false, purge: true }], ['check-agent', { address: 'x'.repeat(2049) }],
+    ] as const) {
+      expect(await mesh.run(operation, values), operation).toEqual({ ok: false, reason: 'invalid' })
+    }
+    expect(invoke).toHaveBeenCalledTimes(3)
+  })
+
+  it('rebuilds an add’s answer with its card, as main does: its own fields and caps, and nothing else', async () => {
+    const card = {
+      id: 'pdf-reader', name: 'n'.repeat(200), description: 'd'.repeat(700), version: '1.0.0', publisher: 'Example Labs', reach: 'tailnet',
+      endpoint: 'https://studio.tailnet-example.ts.net/pdf/a2a', signed: true, keysNew: true, pin: PIN, tokenFile: '/Users/me/token',
+      skills: [...Array.from({ length: 20 }, (_, i) => ({ id: `s${i}`, name: 'k'.repeat(200), description: 'x'.repeat(500), tags: ['t'] }))],
+    }
+    const value = { ok: true, applied: false, steps: ['Would keep the card.'], card, extra: 1 }
+    const run = async (operation: string, answer: unknown) => loadPreload(() => answer).mesh.run(operation, operation === 'remove-agent' ? { id: 'hub', apply: false } : { address: 'https://hub.example.ts.net/a2a' })
+    const rebuilt = await run('check-agent', value) as { card: Record<string, unknown> }
+    expect(rebuilt).toEqual({
+      ok: true, applied: false, steps: ['Would keep the card.'],
+      card: {
+        id: 'pdf-reader', name: 'n'.repeat(162), description: 'd'.repeat(602), version: '1.0.0', publisher: 'Example Labs', reach: 'tailnet',
+        endpoint: 'https://studio.tailnet-example.ts.net/pdf/a2a', signed: true, keysNew: true,
+        skills: Array.from({ length: 16 }, (_, i) => ({ id: `s${i}`, name: 'k'.repeat(162), description: 'x'.repeat(402) })), pin: PIN,
+      },
+    })
+    // a refusal with no card keeps no card key; a refusal with one keeps it
+    expect(await run('add-agent', { ok: false, applied: false, steps: [], refused: 'check it again. Nothing changed.' })).toEqual({ ok: false, applied: false, steps: [], refused: 'check it again. Nothing changed.' })
+    expect(await run('add-agent', { ...value, ok: false, refused: 'check it again. Nothing changed.' })).toMatchObject({ refused: 'check it again. Nothing changed.', card: { id: 'pdf-reader' } })
+    // a card that breaks a rule, or a plan with no refusal and no card id, is failed
+    for (const bad of [{ reach: 'lan' }, { pin: PIN.toUpperCase() }, { signed: 'yes' }, { skills: 'read' }, { name: 7 }, { id: undefined }, { endpoint: 7 }]) {
+      expect(await run('check-agent', { ...value, card: { ...card, ...bad } }), JSON.stringify(bad)).toEqual({ ok: false, reason: 'failed' })
+    }
+    expect(await run('check-agent', { ok: true, applied: false, steps: [] })).toEqual({ ok: false, reason: 'failed' })
+    // removing is a plan: any card is dropped
+    expect(await run('remove-agent', { ok: true, applied: false, steps: ['Would remove hub.'], card })).toEqual({ ok: true, applied: false, steps: ['Would remove hub.'] })
+  })
+
   it('answers failed for a rejected call or an unexpected shape, and passes on only its own refusal words', async () => {
     const thrown = loadPreload(() => { throw new Error('gone') })
     expect(await thrown.mesh.available()).toEqual({ available: false, reason: 'failed' })
@@ -834,6 +1046,8 @@ describe('agentInboxMesh: the page’s bridge', () => {
     expect([...literal('MESH_KEYS')].sort()).toEqual([...meshProcess.KEY_KINDS].sort())
     expect([...literal('MESH_SERVER_KINDS')].sort()).toEqual([...meshProcess.SERVER_KINDS].sort())
     expect([...literal('MESH_CHECK_FAILURES')].sort()).toEqual([...meshProcess.CHECK_FAILURES].sort())
+    expect([...literal('MESH_REACHES')].sort()).toEqual([...meshProcess.REACHES].sort())
+    expect([...meshProcess.REACHES].sort()).toEqual(['loopback', 'public', 'tailnet'])
     expect([...meshProcess.SERVER_KINDS].sort()).toEqual(['claude-code', 'http'])
     expect([...meshProcess.CHECK_FAILURES].sort()).toEqual(['key', 'no-program', 'not-a-model-server', 'signed-out', 'timeout', 'unauthorized', 'unreachable'])
   })

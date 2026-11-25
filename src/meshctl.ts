@@ -34,6 +34,8 @@
 //   meshctl add <card-url> --move <id> [--token-file <path>] [--expect-pin <sha256>] [--json] [--apply]
 //                                            the same agent (its card's id) at a new endpoint (#537)
 //   meshctl remove <id> [--json] [--apply]   take an added agent out again
+//   meshctl new <id> --from <card file> [--try <file>] [--checkout <path>] [--json] [--apply]
+//                                            make an agent from a card file (src/mesh-made.ts)
 //   meshctl key create|show|rotate|retire <agent> [--apply]
 //                                            an agent's card-signing key (src/mesh-keys.ts, #536)
 //   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
@@ -67,18 +69,21 @@
 // `call` one table for every added agent (0, 11-16, 4), in docs/mesh-call.md, and `check`
 // its own (0, 17, 15, 4), in the same page.
 // The entry appends one run record per client run (src/mesh-runs.ts, cards view V5 §5).
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
+import { createServer as createNetServer } from 'node:net'
 import type { LookupFunction } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, MODEL_NAME, SERVERS_MAX, SERVERS_REASONS, SERVER_NAME, baseUrlRefusal, cardCopyFile, inTailnet, isClaudeServer, isKeySource, keyKind, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readPrivate, readServers, readTokenFile, removeCardCopy, requestPostEndpoint, serversFile, serversText, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
 import type { KeySource, MeshDocument, MeshRead, ServerEntry } from './mesh-config.js'
-import { addSummary, cardEndpoint, cardSha256, cardSummary, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine, type CardSummary } from './mesh-add.js'
+import { addSummary, cardEndpoint, cardSha256, cardSummary, checkedCard, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine, type CardSummary } from './mesh-add.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
+import { frameResult } from './agent-result.js'
+import { madePaths, parseMadeCard, serverKinds } from './mesh-made.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunCollector } from './mesh-runs.js'
@@ -112,6 +117,7 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
        agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
        agent-inbox-meshctl remove <id> [--json] [--apply]
+       agent-inbox-meshctl new <id> --from <card file> [--try <file>] [--checkout <path>] [--json] [--apply]
        agent-inbox-meshctl key create|show|rotate|retire <agent> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
@@ -128,10 +134,10 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl server remove <name> [--apply]
        agent-inbox-meshctl server check <name> [--json]
 
-Without --apply, enable, disable, add, remove, forget-runs, skills, key and server add|set|remove are dry runs: they print what they would do.
+Without --apply, enable, disable, add, new, remove, forget-runs, skills, key and server add|set|remove are dry runs: they print what they would do.
 enable, disable, add, remove and server add|set|remove also take --json: they print one JSON object,
 { "applied", "steps", "refused"?, "notes"? }, each step its first line as the text prints it;
-add's also has "card", the card's summary as cleaned fields (docs/mesh-call.md).
+add's also has "card", the card's summary as cleaned fields (docs/mesh-call.md); new takes --json too, with the same "card".
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
@@ -178,6 +184,12 @@ A card whose agent id an entry holds, signed by a key that entry pinned, is that
 endpoint: add moves it. add --move <id> moves agents.<id> to the card URL given, signed or not:
 the card must declare the entry's agentId and match its pin; only the card URL and endpoint
 change (and the token copy, with --token-file), so the pin and run records stay.
+new makes an agent from a card file a chat wrote (name, description, instructions, server, model):
+the one shared runner in packages/mesh serves it (the checkout needs packages/mesh built), sending
+each request to that model server with the instructions. A dry run shows its card and pin; --try
+<file> sends the sample and the instructions to the server and prints the answer; --apply writes its
+description, token and start profile, starts it, and adds it as add would. call starts it when it is
+not running; remove takes it out with its files (docs/made-agents.md).
 key create|show|rotate|retire <agent> manages <mesh dir>/mesh/keys/<agent>.jwk, the agent's
 card-signing key (0600, never printed; show prints the public key and its thumbprint).
 call sends one request to an added agent: it checks the card pin and, on loopback, the agent's
@@ -653,6 +665,11 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   }
   if (command === 'add') {
     // async: the entry below runs it (runAdd)
+    err(USAGE)
+    return 4
+  }
+  if (command === 'new') {
+    // async: the entry below runs it (runNew)
     err(USAGE)
     return 4
   }
@@ -1770,6 +1787,174 @@ async function addAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
   return code
 }
 
+// ── made agents (agents a chat makes, step 1) ──────────────────────────────
+// `new <id> --from <card file>` makes an agent from a card file (src/mesh-made.ts holds its rule):
+// the one shared runner in packages/mesh serves it, and to the rest of the mesh it is an agent
+// `add` added by its loopback card address, plus its description and start profile.
+
+/** The ports a made agent may take: the lowest one free. */
+const MADE_PORTS = [4430, 4499] as const
+const MADE_START_MS = 10_000
+const RUNNER_CARD_MS = 10_000
+const RUNNER_TRY_MS = 300_000
+
+/** Whether nothing listens on 127.0.0.1:`port`: it binds the port and lets it go. */
+const portFree = (port: number): Promise<boolean> => new Promise((done) => {
+  const server = createNetServer()
+  server.once('error', () => done(false))
+  server.listen(port, '127.0.0.1', () => server.close(() => done(true)))
+})
+
+/** The lowest port from 4430 to 4499 that no mesh.json endpoint names and nothing listens on. */
+async function madePort(agents: Record<string, unknown>): Promise<number | undefined> {
+  const used = new Set(Object.values(agents).map((value) => {
+    const endpoint = objectOf(value)?.['endpoint']
+    return typeof endpoint === 'string' ? Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})(?:\/|$)/.exec(endpoint)?.[1]) : NaN
+  }))
+  for (let port = MADE_PORTS[0]; port <= MADE_PORTS[1]; port++) if (!used.has(port) && await portFree(port)) return port
+  return undefined
+}
+
+/** One run of the made-agent runner in a mode that serves nothing (--card, --try): its exit code and output. */
+function runRunner(node: string, runner: string, args: string[], env: NodeJS.ProcessEnv, dir: string, timeoutMs: number): Promise<{ code: number | null; out: string; err: string }> {
+  return new Promise((done) => {
+    execFile(node, [runner, ...args], { env: { ...env, AGENT_INBOX_MESH_DIR: dir }, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' }, (error, out, err) => {
+      done({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0, out, err })
+    })
+  })
+}
+
+/** The runner's one line on stderr (its last, after any warning Node printed), without control characters. */
+const runnerLine = (err: string): string => (err.trim().split('\n').at(-1) ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 300) || 'it printed nothing'
+
+/**
+ * `new <id> --from <card file> [--try <file>] [--checkout <path>] [--json] [--apply]` (agents a chat
+ * makes, D3): checks the card file, picks the port, asks the runner for the card the agent will have
+ * (no network) and prints add's summary of it and its pin. `--try` (dry run only) has the runner
+ * make one model call with the sample and prints the answer framed as call frames one. With
+ * `--apply` it writes the description, a new caller token and the start profile, starts the runner,
+ * waits for its identity proof, and adds it by the same code `add` runs, with the pin it showed.
+ * A step that fails undoes every step before it.
+ */
+export async function runNew(args: string[], io: MeshctlIo = {}): Promise<number> {
+  if (!args.includes('--json')) return newAgent(args, io)
+  const json = planCapture(io)
+  const parsed = { apply: false }
+  const code = await newAgent(args, json.io, json.plan, parsed)
+  json.print(code, parsed.apply)
+  return code
+}
+
+async function newAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { apply: boolean }): Promise<number> {
+  const env = io.env ?? process.env
+  const home = io.home ?? homedir()
+  const out = io.out ?? ((text: string) => { process.stdout.write(text) })
+  const err = io.err ?? ((text: string) => { process.stderr.write(text) })
+  const usage = (): number => { err(USAGE); return 2 }
+  const refuse = (reason: string): number => { err(`Refused: ${reason}. Nothing changed.\n`); return 1 }
+  const show = (path: string): string => shown(path, home)
+
+  let id: string | undefined
+  const values = new Map<string, string>()
+  let apply = false
+  let asJson = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === '--apply' && !apply) apply = true
+    else if (arg === '--json' && plan && !asJson) asJson = true
+    else if (arg === '--try' || arg === '--checkout' || arg === `--from`) {
+      const value = args[++i]
+      if (value === undefined || values.has(arg)) return usage()
+      values.set(arg, value)
+    } else if (!arg.startsWith('-') && id === undefined) id = arg
+    else return usage()
+  }
+  const from = values.get('--from')
+  const sample = values.get('--try')
+  // --try is a dry run's: it changes nothing, and its answer is text, never a plan
+  if (id === undefined || from === undefined || (sample !== undefined && (apply || asJson))) return usage()
+  if (parsed) parsed.apply = apply
+
+  const idBad = idRefusal(id)
+  if (idBad) return refuse(idBad)
+  if (id.endsWith('-next')) return refuse('an id ending in -next is kept for a signing key\'s rotation, so the agent could not start: pick another id')
+  const dir = resolve(meshDir(env, home))
+  const file = meshFile(dir)
+  const name = shown(file, home)
+  const existing = readMesh(file)
+  if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+  const agents = existing.kind === 'present' && existing.doc['agents'] !== undefined ? objectOf(existing.doc['agents']) : {}
+  if (!agents) return refuse(`${name} has an "agents" value that is not an object`)
+  if (Object.hasOwn(agents, id)) return refuse(`the id ${id} is already in ${name}, and new never replaces an entry: meshctl remove ${id} --apply first`)
+
+  const cardFile = resolve(from)
+  let text: string
+  try {
+    if (!lstatSync(cardFile).isFile()) throw new Error('not a file')
+    text = readFileSync(cardFile, 'utf8')
+  } catch {
+    return refuse('the card file cannot be read: pass a regular file')
+  }
+  const servers = readServers(dir)
+  if (servers.kind === 'refused') return refuse(`${show(serversFile(dir))} ${SERVERS_REASONS[servers.reason]}`)
+  const read = parseMadeCard(text, id, serverKinds(dir))
+  if ('refused' in read) return refuse(read.refused)
+  const card = read.card
+
+  const repo = fileURLToPath(new URL('..', import.meta.url))
+  const checkout = resolve(values.get('--checkout') ?? repo)
+  const runner = join(checkout, 'packages', 'mesh', 'dist', 'made-agent.js')
+  // enable --unslop's check and words
+  if (!isFile(runner)) {
+    return refuse(isFile(join(checkout, 'packages', 'mesh', 'package.json'))
+      ? `${show(runner)} is missing: run npm ci && npm run build in ${show(join(checkout, 'packages', 'mesh'))} (Node 24)`
+      : `${show(checkout)} is not an agent-inbox checkout: pass --checkout <path of one>`)
+  }
+  const node = io.node ?? process.execPath
+  if ([node, runner, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
+  const port = await madePort(agents)
+  if (port === undefined) return refuse(`no port from ${MADE_PORTS[0]} to ${MADE_PORTS[1]} is free: every one is a mesh.json endpoint or taken`)
+
+  // the card the agent will have, from the runner itself, with no network
+  const printed = await runRunner(node, runner, ['--card', `--from`, cardFile, '--port', String(port)], env, dir, RUNNER_CARD_MS)
+  let shownCard: Record<string, unknown> | undefined
+  try {
+    if (printed.code === 0) shownCard = objectOf(JSON.parse(printed.out))
+  } catch { /* below */ }
+  if (!shownCard) return refuse(`the runner could not print the card (${runnerLine(printed.err)})`)
+  const checked = checkedCard(shownCard)
+  if (checked.reason !== undefined) return refuse(`the runner printed a card add would refuse: ${checked.reason}`)
+  const pin = cardSha256(shownCard)
+  const endpoint = `http://127.0.0.1:${port}/`
+  const cardUrl = `http://127.0.0.1:${port}/.well-known/agent-card.json`
+  const signed = 'signed' in checked.signatures
+  if (plan) plan.card = cardSummary(shownCard, { id, reach: 'loopback', endpoint, signed, keysNew: undefined, pin })
+  else out(addSummary(shownCard, { cardUrl, endpoint, reach: 'loopback', token: true, pin, profile: checked.profile, signed: signedLine(checked.signatures, `the key ${id} has on this Mac`) }))
+
+  if (sample !== undefined) {
+    out(`This sends the sample and the instructions to the server ${card.server}.\n`)
+    const tried = await runRunner(node, runner, ['--try', `--from`, cardFile, '--input', resolve(sample)], env, dir, RUNNER_TRY_MS)
+    if (tried.code !== 0) {
+      err(`${runnerLine(tried.err)}\n`)
+      return 1
+    }
+    out(frameResult(tried.out, { agent: id, cardSha256: pin }))
+  }
+
+  const paths = madePaths(dir, id)
+  const token = join(dir, 'mesh', 'tokens', id)
+  const start = [node, runner, '--id', id]
+  const steps: Step[] = [
+    { dry: `Would write the description ${show(paths.description)} (0600): ${id}, on the server ${card.server} with the model ${card.model}; its instructions are not printed.`, run: () => '' },
+    { dry: `Would write a new random caller token to ${show(token)} (0600).`, run: () => '' },
+    { dry: `Would write the start profile ${show(paths.profile)} (0600): port ${port}, start ${JSON.stringify(start)}.`, run: () => '' },
+    { dry: `Would start the agent from that profile (its log: ${show(paths.log)}) and wait up to ${MADE_START_MS / 1000} s for it to prove it holds its token at ${endpoint}.`, run: () => '' },
+    { dry: `Would add it as meshctl add ${cardUrl} --id ${id} --token-file ${show(token)} --expect-pin ${pin} does: the token copy, the card copy and agents.${id} in ${name}.`, run: () => '' },
+  ]
+  if (!apply) return runSteps(steps, false, out, err, '', plan)
+  return refuse('--apply is not built yet')
+}
+
 /**
  * `check` (#538), and `check <id>` (Agent cards step 1, D6): an added agent's id stands for its
  * entry's card URL. When the card fetched there still matches the entry's pin, its card copy is
@@ -1869,6 +2054,7 @@ if (isMain) {
   process.exitCode = command === 'unslop' || command === 'unslop-code' || command === 'request-post' || command === 'call'
     ? await runClient(command, rest, { env: process.env, home: homedir(), stdin: process.stdin, out: (text) => { process.stdout.write(text) }, err: (text) => { process.stderr.write(text) } })
     : command === 'add' ? await runAdd(rest)
+      : command === 'new' ? await runNew(rest)
       : command === 'server' && rest[0] === 'check' ? await runServerCheck(rest.slice(1))
       : command === 'check' ? await runCheckCommand(rest, { tailnet: magicDnsSuffix })
         : runMeshctl(process.argv.slice(2))

@@ -420,12 +420,42 @@ function requestPostPaths(dir: string) {
 type Step = { dry: string; run: () => string; lock?: true }
 
 /**
- * A plan a program reads (model servers D6): with --json, enable, disable and server add|set|remove
- * print one object, `{ applied, steps, refused?, notes? }`, where each step is its first line as
- * the text prints it (never a profile's body, a template or a shim's text).
+ * A plan a program reads (model servers D6): with --json, enable, disable, remove and server
+ * add|set|remove print one object, `{ applied, steps, refused?, notes? }`, where each step is its
+ * first line as the text prints it (never a profile's body, a template or a shim's text).
  */
 type Plan = { steps: string[]; notes: string[]; refused?: string }
 const firstLine = (text: string): string => text.split('\n', 1)[0]!
+
+/**
+ * With --json the text goes into the plan: a refusal as `refused`, any other line as a note; a
+ * usage error stays the usage text on stderr, with no JSON. `print` writes the one object.
+ */
+function planCapture(io: MeshctlIo): { plan: Plan; io: MeshctlIo; print: (code: number, apply: boolean) => void } {
+  const plan: Plan = { steps: [], notes: [] }
+  const usageText: string[] = []
+  const captured: MeshctlIo = {
+    ...io,
+    out: (text) => { plan.notes.push(text.trim()) },
+    err: (text) => {
+      if (text.startsWith('usage:')) usageText.push(text)
+      else if (/^(Refused: |Failed at step )/.test(text)) plan.refused ??= text.replace(/^Refused: /, '').trim()
+      else plan.notes.push(text.replace(/^Note: /, '').trim())
+    },
+  }
+  const print = (code: number, apply: boolean): void => {
+    const out = io.out ?? ((text: string) => { process.stdout.write(text) })
+    const err = io.err ?? ((text: string) => { process.stderr.write(text) })
+    if (code === 2) err(usageText.join(''))
+    else {
+      out(`${JSON.stringify({
+        applied: apply && code === 0, steps: plan.steps,
+        ...(plan.refused === undefined ? {} : { refused: plan.refused }), ...(plan.notes.length ? { notes: plan.notes } : {}),
+      })}\n`)
+    }
+  }
+  return { plan, io: captured, print }
+}
 
 function runSteps(steps: Step[], apply: boolean, out: (text: string) => void, err: (text: string) => void, failed: string, plan?: Plan): number {
   const n = steps.length
@@ -565,37 +595,17 @@ function keyFileRefusal(path: string): string | undefined {
   return undefined
 }
 
-/** Whether a command takes --json for a plan (D6): enable, disable and server add|set|remove. */
+/**
+ * Whether a command takes --json for a plan (D6): enable, disable, remove and server add|set|remove.
+ * add takes it too, in runAdd (it is async, and this path answers add with 4).
+ */
 const wantsPlan = (argv: string[]): boolean => argv.includes('--json')
-  && (argv[0] === 'enable' || argv[0] === 'disable' || (argv[0] === 'server' && ['add', 'set', 'remove'].includes(argv[1] ?? '')))
+  && (argv[0] === 'enable' || argv[0] === 'disable' || argv[0] === 'remove' || (argv[0] === 'server' && ['add', 'set', 'remove'].includes(argv[1] ?? '')))
 
 export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
-  const plan: Plan | undefined = wantsPlan(argv) ? { steps: [], notes: [] } : undefined
-  let code: number
-  if (!plan) code = meshctl(argv, io)
-  else {
-    // with --json the text goes into the plan: a refusal as `refused`, any other line as a note;
-    // a usage error stays the usage text on stderr, with no JSON
-    const usageText: string[] = []
-    code = meshctl(argv, {
-      ...io,
-      out: (text) => { plan.notes.push(text.trim()) },
-      err: (text) => {
-        if (text.startsWith('usage:')) usageText.push(text)
-        else if (/^(Refused: |Failed at step )/.test(text)) plan.refused ??= text.replace(/^Refused: /, '').trim()
-        else plan.notes.push(text.replace(/^Note: /, '').trim())
-      },
-    }, plan)
-    const out = io.out ?? ((text: string) => { process.stdout.write(text) })
-    const err = io.err ?? ((text: string) => { process.stderr.write(text) })
-    if (code === 2) err(usageText.join(''))
-    else {
-      out(`${JSON.stringify({
-        applied: argv.includes('--apply') && code === 0, steps: plan.steps,
-        ...(plan.refused === undefined ? {} : { refused: plan.refused }), ...(plan.notes.length ? { notes: plan.notes } : {}),
-      })}\n`)
-    }
-  }
+  const json = wantsPlan(argv) ? planCapture(io) : undefined
+  const code = json ? meshctl(argv, json.io, json.plan) : meshctl(argv, io)
+  json?.print(code, argv.includes('--apply'))
   // deleting expired run records is housekeeping, not a configuration change, so a dry run
   // does it too (cards view V5 §5.6)
   if ((argv[0] === 'enable' || argv[0] === 'disable') && code !== 2) {
@@ -668,7 +678,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     } else if (flags.has(arg)) return usage()
     else flags.add(arg)
   }
-  // --json (D6) is enable's and disable's only; runMeshctl prints the plan
+  // --json (D6) is enable's, disable's and remove's only; runMeshctl prints the plan
   if (flags.delete('--json') && !plan) return usage()
   // --server and --model (D5) are enable --unslop's and --unslop-code's only
   if ((values.has('--server') || values.has('--model')) && !(command === 'enable' && (flags.has('--unslop') || flags.has('--unslop-code')))) return usage()
@@ -1066,8 +1076,8 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   }
 
   if (command === 'remove') {
-    const ids = rest.filter((arg) => arg !== '--apply')
-    if (ids.length !== 1 || rest.length > 2 || ids[0]!.startsWith('-')) return usage()
+    const ids = rest.filter((arg) => arg !== '--apply' && arg !== '--json')
+    if (ids.length !== 1 || rest.length > 3 || ids[0]!.startsWith('-')) return usage()
     const id = ids[0]!
     const bad = idRefusal(id)
     if (bad) return refuse(BUILT_IN_AGENTS.includes(id) ? `${id} is a built-in agent: meshctl disable turns it off` : bad)
@@ -1106,7 +1116,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
       out(`${id} is not in ${name}. Nothing to do.\n`)
       return 0
     }
-    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
+    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.', plan)
   }
 
   if (command === 'enable' && !unslop && !requestPost && !unslopCode) {

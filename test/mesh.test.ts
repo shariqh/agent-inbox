@@ -1410,6 +1410,62 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     t.run('status')
     expect(a.connections()).toBe(connections)
   })
+
+  // add and remove --json (add an agent by its card address, step 1): the app reads one JSON object
+  type Plan = { applied: boolean; steps: string[]; refused?: string; notes?: string[]; card?: Record<string, unknown> }
+  const plan = (r: { code: number; out: string; err: string }): Plan => {
+    expect(r.err).toBe('')
+    expect(r.out.endsWith('}\n') && r.out.split('\n')).toHaveLength(2)
+    return JSON.parse(r.out)
+  }
+  // the fake card servers listen on a random port, and the scratch folders and the pin change per run
+  const placeheld = (text: string, a: { origin: string }, dir: string, pin = '') =>
+    text.replaceAll(a.origin, 'http://127.0.0.1:<port>').replaceAll(dir, '<dir>').replaceAll(pin || '\0', '<pin>')
+
+  it('remove --json prints one plan object, and its text form stays byte for byte', async () => {
+    const a = await agent()
+    const t = setup('{"schema":1,"console":{"relay":false}}\n')
+    expect((await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const written = readFileSync(meshFile(t.dir), 'utf8')
+    const dry = t.run('remove', 'echo')
+    expect([dry.code, dry.err, placeheld(dry.out, a, t.dir)]).toEqual([0, '', [
+      'Dry run.',
+      '1/3 Would remove agents.echo from <dir>/mesh.json, keeping every other key (and a backup beside it).',
+      '2/3 Would delete the token copy <dir>/mesh/tokens/echo.',
+      '3/3 Would delete the card copy <dir>/mesh/cards/echo.json.',
+      'Nothing changed. Re-run with --apply.', '',
+    ].join('\n')])
+    const asJson = t.run('remove', 'echo', '--json')
+    expect(asJson.code).toBe(0)
+    expect(plan(asJson)).toEqual({ applied: false, steps: [
+      `Would remove agents.echo from ${meshFile(t.dir)}, keeping every other key (and a backup beside it).`,
+      `Would delete the token copy ${join(t.dir, 'mesh', 'tokens', 'echo')}.`,
+      `Would delete the card copy ${join(t.dir, 'mesh', 'cards', 'echo.json')}.`,
+    ] })
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe(written)
+    // refusals keep their words in `refused`, exit 1
+    writeFileSync(meshFile(t.dir), JSON.stringify({ ...JSON.parse(written), agents: { mine: { endpoint: 'x' }, echo: JSON.parse(written).agents.echo } }))
+    const mine = t.run('remove', 'mine', '--json', '--apply')
+    expect([mine.code, plan(mine)]).toEqual([1, { applied: false, steps: [], refused: 'agents.mine was not written by meshctl add, so remove leaves it alone. Nothing changed.' }])
+    const builtIn = t.run('remove', '--json', 'unslop')
+    expect([builtIn.code, plan(builtIn)]).toEqual([1, { applied: false, steps: [], refused: 'unslop is a built-in agent: meshctl disable turns it off. Nothing changed.' }])
+    // --apply carries out the steps, and a second run has nothing to do
+    const off = t.run('remove', 'echo', '--apply', '--json')
+    expect(off.code).toBe(0)
+    expect(plan(off)).toEqual({ applied: true, steps: [
+      expect.stringMatching(new RegExp(`^Removed agents\\.echo from ${meshFile(t.dir)} \\(backup: .*\\)\\.$`)),
+      `Deleted ${join(t.dir, 'mesh', 'tokens', 'echo')}.`,
+      `Deleted ${join(t.dir, 'mesh', 'cards', 'echo.json')}.`,
+    ] })
+    expect(Object.keys(json(t.dir).agents)).toEqual(['mine'])
+    expect(plan(t.run('remove', 'echo', '--json', '--apply'))).toEqual({ applied: true, steps: [], notes: [`echo is not in ${meshFile(t.dir)}. Nothing to do.`] })
+    // a usage error prints the usage on stderr and no JSON
+    for (const argv of [['remove', '--json'], ['remove', 'a', 'b', '--json'], ['remove', 'a', '--json', '--json'], ['remove', 'a', '--purge', '--json']]) {
+      const bad = t.run(...argv)
+      expect([bad.code, bad.out], argv.join(' ')).toEqual([2, ''])
+      expect(bad.err).toContain('usage: agent-inbox-meshctl')
+    }
+  })
 })
 
 describe('no new dependency (design §2.3, §2.4c)', () => {

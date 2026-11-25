@@ -260,6 +260,130 @@ describe('adding a server (D3)', () => {
   })
 })
 
+describe('adding a Claude Code server (Claude Code D3)', () => {
+  const kindRadio = (value: string) => setup().querySelector<HTMLInputElement>(`input[type="radio"][name="msKind"][value="${value}"]`)!
+  const pick = (radio: HTMLInputElement) => {
+    radio.checked = true
+    radio.dispatchEvent(new window.Event('change', { bubbles: true }))
+  }
+  const address = () => field('baseUrl')!.closest<HTMLElement>('.ms-field')!
+  const keyChoice = () => setup().querySelector<HTMLInputElement>('input[name="msKey"]')!.closest<HTMLElement>('.ms-choice')!
+  const quiet = () => [...setup().querySelectorAll<HTMLElement>('.ms-hint')].find((el) => el.textContent === 'Uses the Claude Code you are signed in to. No key to enter.')
+
+  it('asks What kind above the Name, an address server chosen, and focus on Name as before', async () => {
+    await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    expect(document.activeElement).toBe(field('name'))
+    const choice = kindRadio('http').closest<HTMLElement>('fieldset')!
+    expect(choice.querySelector('legend')?.textContent).toBe('What kind')
+    expect([...choice.querySelectorAll('label')].map((el) => el.textContent?.trim())).toEqual(['Claude Code on this Mac', 'A server at an address'])
+    expect([kindRadio('claude-code').checked, kindRadio('http').checked]).toEqual([false, true])
+    // the choice comes before the Name field
+    expect(choice.compareDocumentPosition(field('name')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect([shown(address()), shown(keyChoice())]).toEqual([true, true])
+    expect(quiet()).toBeDefined()
+    expect(shown(quiet())).toBe(false)
+  })
+
+  it('Claude Code on this Mac: only the Name and one quiet line; Save runs add-claude-server dry, then applied, then checks the new row', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    pick(kindRadio('claude-code'))
+    await settle()
+    expect([shown(address()), shown(keyChoice()), shown(buttonLabelled('Choose file…', setup()))]).toEqual([false, false, false])
+    expect(shown(quiet())).toBe(true)
+    // the quiet line sits under the Name
+    expect(field('name')!.compareDocumentPosition(quiet()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    type(field('name'), 'claude')
+    bridge.s.servers = [claudeServer('claude')]
+    bridge.s.answers['check-server'] = () => checkedClaude()
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect(bridge.ops()).toEqual([
+      ['add-claude-server', { name: 'claude', apply: false }],
+      ['add-claude-server', { name: 'claude', apply: true }],
+      ['check-server', { name: 'claude' }],
+    ])
+    expect(shown(setup())).toBe(false)
+    expect(row('claude')!.querySelector('.ms-row-facts')?.textContent).toBe('Claude Code on this Mac · sends text to Anthropic')
+    expect(row('claude')!.querySelector('.ms-row-note')?.textContent).toBe('ready · signed in · 3 models')
+    expect(document.activeElement).toBe(buttonLabelled('Check', row('claude')!))
+  })
+
+  it('switching the kind back and forth loses nothing typed or chosen; the hidden fields are not checked; Save sends the kind shown', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    type(field('name'), 'Not A Name')
+    type(field('baseUrl'), 'ftp://not-an-address')
+    pick(setup().querySelector<HTMLInputElement>('input[name="msKey"][value="file"]')!)
+    await settle()
+    click(buttonLabelled('Choose file…', setup()))
+    await settle()
+    pick(kindRadio('claude-code'))
+    await settle()
+    // the name is still checked, the address and the key are not
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect(message().textContent).toBe('Use lower-case letters, digits and hyphens for the name.')
+    type(field('name'), 'claude')
+    pick(kindRadio('http'))
+    await settle()
+    expect([field('name')!.value, field('baseUrl')!.value]).toEqual(['claude', 'ftp://not-an-address'])
+    expect(setup().querySelector<HTMLInputElement>('input[name="msKey"][value="file"]')!.checked).toBe(true)
+    expect(setup().querySelector('.ms-file-name')?.textContent).toBe('server.key')
+    expect([shown(address()), shown(keyChoice()), shown(quiet())]).toEqual([true, true, false])
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect(message().textContent).toBe('Enter the address, starting with http:// or https://.')
+    expect(bridge.ops()).toEqual([])
+    pick(kindRadio('claude-code'))
+    await settle()
+    bridge.s.answers['add-claude-server'] = () => meshProcess.meshAnswer('plan', JSON.stringify({ applied: false, steps: [], refused: 'the server <b>claude</b> is already in servers.json' }), 1) as Json
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect(bridge.ops()).toEqual([['add-claude-server', { name: 'claude', apply: false }]])
+    expect(message().textContent).toBe('the server <b>claude</b> is already in servers.json')
+    expect(message().querySelector('b')).toBeNull()
+    expect(document.activeElement).toBe(buttonLabelled('Save', setup()))
+  })
+
+  it('a repaint while Claude Code is chosen keeps the choice, the Name and focus', async () => {
+    const { bridge, mesh } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    pick(kindRadio('claude-code'))
+    await settle()
+    type(field('name'), 'claude')
+    field('name')!.focus()
+    const before = field('name')
+    mesh.s.version = { agents: 1 }
+    mesh.s.body = { on: true, agents: [on('unslop')], others: 0, available: [OFFERED['unslop-code']!, OFFERED['request-post']!] }
+    await pollTick()
+    await pollTick()
+    expect(field('name')).toBe(before)
+    expect(field('name')!.value).toBe('claude')
+    expect(kindRadio('claude-code').checked).toBe(true)
+    expect([shown(address()), shown(keyChoice()), shown(quiet())]).toEqual([false, false, true])
+    expect(document.activeElement).toBe(before)
+    expect(bridge.ops()).toEqual([])
+  })
+
+  it('the hidden Address and Key leave the layout: a rule hides a hidden field or choice, inside the set-up slice', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '..', '..', 'public', 'style.css'), 'utf8')
+    const mine = css.slice(css.indexOf('agent setup in the app (step 2b)'), css.indexOf('/* Run history (cards view V5d)'))
+    const hiding = /([^{}]*)\{\s*display:\s*none;\s*\}/g
+    const selectors = [...mine.matchAll(hiding)].flatMap((m) => m[1]!.split(',').map((one) => one.trim()))
+    expect(selectors).toEqual(expect.arrayContaining(['.ms-field[hidden]', '.ms-choice[hidden]']))
+  })
+})
+
 describe('a page that opens shows from its top (F4)', () => {
   // the page scrolls as a whole in both layouts (nothing inside it has its own scrollbar), so the
   // page's own scroll position is what a page opened lower down would keep

@@ -2262,7 +2262,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ms-section { margin-top: 28px; }
 .ms-section[hidden], .ms-section .ms-line[hidden], .ms-rows[hidden], .ms-row-note[hidden], .ms-ask[hidden], .ms-btn[hidden],
 .ms-terminal[hidden], .ms-file-name[hidden], .ms-message[hidden], .ms-actions[hidden], .ms-review[hidden], .ms-review [hidden],
-.ms-field [hidden] { display: none; }
+.ms-field [hidden], .ms-field[hidden], .ms-choice[hidden] { display: none; }
 .ms-line { margin: 8px 0 0; padding: 0 4px; color: var(--app-muted); font-size: 12px; }
 .ms-btn:disabled { cursor: default; opacity: .55; }
 .ms-primary { border-color: var(--app-border-strong); }

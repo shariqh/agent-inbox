@@ -22,6 +22,9 @@ const KEYS = { file: 'key file', command: 'key from a command', env: 'key from a
 // names each row's kind (and a check's, when the command does); any other row is a server at an address.
 const CLAUDE = 'claude-code'
 const CLAUDE_FACTS = 'Claude Code on this Mac · sends text to Anthropic'
+const CLAUDE_HINT = 'Uses the Claude Code you are signed in to. No key to enter.'
+// Add a server's "What kind" choice, in its order; an address server is chosen when the page opens
+const SERVER_KINDS = [[CLAUDE, 'Claude Code on this Mac'], ['http', 'A server at an address']]
 // D6: the bridge's failure words; a cancel says nothing, every other reason names itself
 const REASONS = {
   'not-installed': 'The mesh command is not installed on this Mac. Run Setup first.',
@@ -485,7 +488,8 @@ export function installMeshSetup(deps) {
   function blank(kind, extra) {
     return {
       kind, opener: null, back: null, agent: null, change: false, message: '', review: null, file: null,
-      values: { name: '', baseUrl: '', key: 'none', server: '', model: '', endpoint: '' },
+      // `kind`: Add a server's "What kind" choice, not the page's own kind
+      values: { name: '', kind: 'http', baseUrl: '', key: 'none', server: '', model: '', endpoint: '' },
       model: { server: '', state: 'idle', models: [], why: '' },
       ...extra,
     }
@@ -582,6 +586,28 @@ export function installMeshSetup(deps) {
     return wrap
   }
 
+  // A fieldset of radios, its choice kept in the page's values: a repaint never rebuilds it
+  function radios(legend, name, key, options) {
+    const choice = make('fieldset', 'ms-choice')
+    choice.append(make('legend', 'ms-label', legend))
+    for (const [value, text] of options) {
+      const option = make('label', 'ms-radio')
+      const radio = make('input')
+      radio.type = 'radio'
+      radio.name = name
+      radio.value = value
+      radio.checked = page.values[key] === value
+      radio.addEventListener('change', () => {
+        if (!page || !radio.checked) return
+        page.values[key] = value
+        changed()
+      })
+      option.append(radio, doc.createTextNode(` ${text}`))
+      choice.append(option)
+    }
+    return choice
+  }
+
   function build(root) {
     const title = page.kind === 'add' ? 'Add a model server' : page.kind === 'adopt' ? 'Make it a server' : page.agent
     // it goes back to where the page came from: an agent's form, the agent's own page, or the grid
@@ -594,35 +620,22 @@ export function installMeshSetup(deps) {
     form.noValidate = true
     form.setAttribute('aria-label', title)
     form.addEventListener('submit', (event) => event.preventDefault())
-    const refs = { root, form, first: null, server: null }
+    const refs = { root, form, first: null, server: null, address: null, key: null, claudeHint: null }
     const fields = make('div', 'ms-fields')
     const actions = make('div', 'ms-actions')
     if (page.kind === 'add' || page.kind === 'adopt') {
       if (page.kind === 'adopt') fields.append(make('p', 'ms-hint', `Saves ${page.agent}’s own address and key as a server.`))
+      if (page.kind === 'add') fields.append(radios('What kind', 'msKind', 'kind', SERVER_KINDS))
       const name = input('name', page.values.name)
       fields.append(field('Name', name, 'Lower-case letters, digits and hyphens.'))
       refs.first = name
       if (page.kind === 'add') {
-        fields.append(field('Address', input('baseUrl', page.values.baseUrl)))
-        const choice = make('fieldset', 'ms-choice')
-        choice.append(make('legend', 'ms-label', 'Key'))
-        for (const [value, text] of [['none', 'No key'], ['file', 'Key file']]) {
-          const option = make('label', 'ms-radio')
-          const radio = make('input')
-          radio.type = 'radio'
-          radio.name = 'msKey'
-          radio.value = value
-          radio.checked = page.values.key === value
-          radio.addEventListener('change', () => {
-            if (!page || !radio.checked) return
-            page.values.key = value
-            changed()
-          })
-          option.append(radio, doc.createTextNode(` ${text}`))
-          choice.append(option)
-        }
-        choice.append(chooser('key'))
-        fields.append(choice)
+        // Claude Code needs only the name: the address and the key hide (and are not checked) while it is chosen
+        refs.claudeHint = make('p', 'ms-hint', CLAUDE_HINT)
+        refs.address = field('Address', input('baseUrl', page.values.baseUrl))
+        refs.key = radios('Key', 'msKey', 'key', [['none', 'No key'], ['file', 'Key file']])
+        refs.key.append(chooser('key'))
+        fields.append(refs.claudeHint, refs.address, refs.key)
       }
       actions.append(button('ms-save ms-primary', 'Save'))
       actions.firstChild.addEventListener('click', () => save())
@@ -713,6 +726,12 @@ export function installMeshSetup(deps) {
     const message = els.form.querySelector('.ms-message')
     setText(message, page.message)
     setHidden(message, !page.message)
+    if (els.address) {
+      const claude = page.values.kind === CLAUDE
+      setHidden(els.claudeHint, !claude)
+      setHidden(els.address, claude)
+      setHidden(els.key, claude)
+    }
     const choose = els.form.querySelector('.ms-choose')
     if (choose) {
       setDisabled(choose, disabled)
@@ -895,18 +914,19 @@ export function installMeshSetup(deps) {
   async function save() {
     if (!page || busy()) return
     const name = page.values.name.trim()
+    const address = page.kind === 'add' && page.values.kind !== CLAUDE
     const words = !SERVER_NAME.test(name) ? 'Use lower-case letters, digits and hyphens for the name.'
-      : page.kind === 'add' && !httpAddress(page.values.baseUrl.trim()) ? 'Enter the address, starting with http:// or https://.'
-        : page.kind === 'add' && page.values.key === 'file' && !page.file ? 'Choose the key file.' : ''
+      : address && !httpAddress(page.values.baseUrl.trim()) ? 'Enter the address, starting with http:// or https://.'
+        : address && page.values.key === 'file' && !page.file ? 'Choose the key file.' : ''
     if (words) {
       page.message = words
       changed()
       return
     }
     const mine = page
-    const values = page.kind === 'add'
-      ? ['add-server', { name, baseUrl: page.values.baseUrl.trim(), key: page.values.key === 'file' ? page.file.handle : 'none' }]
-      : ['adopt-server', { name, from: page.agent }]
+    const values = address ? ['add-server', { name, baseUrl: page.values.baseUrl.trim(), key: page.values.key === 'file' ? page.file.handle : 'none' }]
+      : page.kind === 'add' ? ['add-claude-server', { name }]
+        : ['adopt-server', { name, from: page.agent }]
     page.message = ''
     let done = false
     await act('save', async () => {

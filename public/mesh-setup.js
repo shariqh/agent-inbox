@@ -606,7 +606,10 @@ export function installMeshSetup(deps) {
     const apply = button('ms-apply ms-primary', page.change ? 'Change server' : 'Turn on')
     const reviewBack = button('ms-review-back', 'Back')
     reviewActions.append(apply, reviewBack)
-    review.append(heading, make('ul', 'ms-steps'), make('p', 'ms-refused'), reviewActions)
+    // the page's own short summary, a quiet line, the buttons, and the command's own lines closed under them
+    const exact = make('details', 'ms-exact')
+    exact.append(make('summary', '', 'Exact steps'), make('ul', 'ms-exact-steps'))
+    review.append(heading, make('ul', 'ms-steps'), make('p', 'ms-refused'), make('p', 'ms-hint ms-nothing', 'Nothing has changed yet.'), reviewActions, exact)
     apply.addEventListener('click', () => applyAgent())
     reviewBack.addEventListener('click', () => {
       if (!page || busy()) return
@@ -619,6 +622,17 @@ export function installMeshSetup(deps) {
     form.append(fields, message, actions, review)
     root.replaceChildren(backButton, form)
     return refs
+  }
+
+  // What turning it on (or changing the server) does, in the page's own words, from what the person chose
+  function summary() {
+    const { agent, change, values } = page
+    if (MODEL_AGENTS.has(agent)) {
+      return change
+        ? [`Point ${agent} at server ${values.server}, model ${values.model}.`, 'Keep a backup of its old settings.']
+        : [`Save its settings: server ${values.server}, model ${values.model}.`, 'Add the command that you and your chats run.', `Add ${agent} to your agents.`]
+    }
+    return ['Keep a private copy of the token.', 'Add the command that you and your chats run.', `Add ${agent} to your agents.`]
   }
 
   function paintPage(root) {
@@ -653,13 +667,15 @@ export function installMeshSetup(deps) {
     if (page.review) {
       const refused = page.review.refused ?? ''
       setHidden(review.querySelector('.ms-review-title'), Boolean(refused))
-      const steps = review.querySelector('.ms-steps')
-      const lines = refused ? [] : [...page.review.steps, ...page.review.notes]
-      if (steps.dataset.key !== JSON.stringify(lines)) {
-        steps.dataset.key = JSON.stringify(lines)
-        steps.replaceChildren(...lines.map((line) => make('li', '', line)))
+      for (const [selector, lines] of [['.ms-steps', refused ? [] : summary()], ['.ms-exact-steps', refused ? [] : [...page.review.steps, ...page.review.notes]]]) {
+        const list = review.querySelector(selector)
+        if (list.dataset.key === JSON.stringify(lines)) continue
+        list.dataset.key = JSON.stringify(lines)
+        list.replaceChildren(...lines.map((line) => make('li', '', line)))
       }
-      setHidden(steps, Boolean(refused))
+      setHidden(review.querySelector('.ms-steps'), Boolean(refused))
+      setHidden(review.querySelector('.ms-nothing'), Boolean(refused))
+      setHidden(review.querySelector('.ms-exact'), Boolean(refused))
       const words = review.querySelector('.ms-refused')
       setText(words, refused)
       setHidden(words, !refused)

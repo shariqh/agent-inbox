@@ -2295,6 +2295,10 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ms-review-title { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .ms-steps { margin: 0 0 10px; padding-left: 18px; overflow-wrap: anywhere; }
 .ms-refused { margin: 0 0 10px; overflow-wrap: anywhere; }
+.ms-review .ms-nothing { margin: 0 0 10px; }
+.ms-exact { margin-top: 12px; }
+.ms-exact summary { color: var(--app-muted); font-size: 12px; cursor: pointer; }
+.ms-exact-steps { margin: 6px 0 0; padding-left: 18px; color: var(--app-muted); font-size: 12px; overflow-wrap: anywhere; }
 .ms-foot { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--app-border); }
 .ms-foot .ms-ask-text { flex: 1 1 220px; min-width: 0; }
 .ms-foot .ms-message { margin-top: 8px; }

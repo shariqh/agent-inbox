@@ -417,7 +417,19 @@ describe('setting up an agent (D4)', () => {
     const review = setup().querySelector<HTMLElement>('.ms-review')!
     expect(shown(review)).toBe(true)
     expect(review.querySelector('.ms-review-title')?.textContent).toBe('Turning it on will')
-    expect([...review.querySelectorAll('li')].map((li) => li.textContent)).toEqual(['Add unslop-code to mesh.json', '<img src=x onerror=alert(1)>', 'Restart nothing'])
+    expect([...review.querySelectorAll('.ms-steps li')].map((li) => li.textContent)).toEqual([
+      'Save its settings: server local, model model-b.',
+      'Add the command that you and your chats run.',
+      'Add unslop-code to your agents.',
+    ])
+    expect(review.querySelector('.ms-nothing')?.textContent).toBe('Nothing has changed yet.')
+    // the command's own lines are closed under the buttons, set as text
+    const exact = review.querySelector<HTMLDetailsElement>('details.ms-exact')!
+    expect(exact.querySelector('summary')?.textContent).toBe('Exact steps')
+    expect(exact.open).toBe(false)
+    expect([...exact.querySelectorAll('li')].map((li) => li.textContent)).toEqual(['Add unslop-code to mesh.json', '<img src=x onerror=alert(1)>', 'Restart nothing'])
+    expect(review.lastElementChild).toBe(exact)
+    expect(buttonLabelled('Turn on', review)!.compareDocumentPosition(exact) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(document.querySelector('#cards img')).toBeNull()
     expect(document.activeElement).toBe(buttonLabelled('Turn on', review))
     // the form waits under the check: its fields are not editable until Back
@@ -511,7 +523,9 @@ describe('setting up an agent (D4)', () => {
     await settle()
     const review = setup().querySelector<HTMLElement>('.ms-review')!
     expect(review.querySelector('.ms-refused')?.textContent).toBe('unslop-code is already on')
-    expect(review.textContent).not.toContain('never shown')
+    expect(shown(review.querySelector('.ms-steps'))).toBe(false)
+    expect(shown(review.querySelector('.ms-nothing'))).toBe(false)
+    expect(shown(review.querySelector('.ms-exact'))).toBe(false)
     expect(shown(review.querySelector('.ms-review-title'))).toBe(false)
     expect(shown(buttonLabelled('Turn on', review))).toBe(false)
     expect(document.activeElement).toBe(buttonLabelled('Back', review))
@@ -544,6 +558,12 @@ describe('setting up an agent (D4)', () => {
     expect(document.body.innerHTML).not.toContain(HANDLE)
     click(buttonLabelled('Check', setup()))
     await settle()
+    expect(setup().querySelector('.ms-review-title')?.textContent).toBe('Turning it on will')
+    expect([...setup().querySelectorAll('.ms-steps li')].map((li) => li.textContent)).toEqual([
+      'Keep a private copy of the token.',
+      'Add the command that you and your chats run.',
+      'Add request-post to your agents.',
+    ])
     click(buttonLabelled('Turn on', setup()))
     await settle()
     expect(bridge.ops()).toEqual([
@@ -631,6 +651,10 @@ describe('an agent that is on (D5)', () => {
     click(buttonLabelled('Check', setup()))
     await settle()
     expect(setup().querySelector('.ms-review-title')?.textContent).toBe('Changing the server will')
+    expect([...setup().querySelectorAll('.ms-steps li')].map((li) => li.textContent)).toEqual([
+      'Point unslop-code at server lab, model model-a.',
+      'Keep a backup of its old settings.',
+    ])
     click(buttonLabelled('Change server', setup()))
     await settle()
     expect(bridge.ops()).toEqual([

@@ -83,7 +83,7 @@ import { addSummary, cardEndpoint, cardSha256, cardSummary, checkedCard, fetchAd
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
 import { frameResult } from './agent-result.js'
-import { madeLog, madePaths, madeProfile, parseMadeCard, serverKinds } from './mesh-made.js'
+import { madeDescription, madeLog, madePaths, madeProfile, parseMadeCard, serverKinds } from './mesh-made.js'
 import { meshLink } from './mesh-identity.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
@@ -555,12 +555,13 @@ function localAgentsOn(dir: string): Set<LocalAgent> {
 }
 
 /**
- * The local agents whose profiles name each server: `on` the ones that are on, which is who uses
- * the server; `kept` the ones that are off, whose profile `disable` kept. Only `on` holds a server.
+ * The agents that name each server: `on` the ones that are on, which is who uses the server (the
+ * local agents mesh.json turns on, and the made agents it holds an entry for, whose description names
+ * the server); `kept` the local agents that are off, whose profile `disable` kept. Only `on` holds a server.
  */
-function serverUsers(dir: string): { on: Map<string, LocalAgent[]>; kept: Map<string, LocalAgent[]> } {
-  const on = new Map<string, LocalAgent[]>()
-  const kept = new Map<string, LocalAgent[]>()
+function serverUsers(dir: string): { on: Map<string, string[]>; kept: Map<string, string[]> } {
+  const on = new Map<string, string[]>()
+  const kept = new Map<string, string[]>()
   const running = localAgentsOn(dir)
   for (const agent of LOCAL_AGENTS) {
     const read = readProfile(profileFile(dir, agent))
@@ -568,6 +569,14 @@ function serverUsers(dir: string): { on: Map<string, LocalAgent[]>; kept: Map<st
     if (server === undefined) continue
     const into = running.has(agent) ? on : kept
     into.set(server, [...(into.get(server) ?? []), agent])
+  }
+  // made agents (agents a chat makes, D6): on while their entry exists
+  const mesh = readMesh(meshFile(dir))
+  const agents = mesh.kind === 'present' ? objectOf(mesh.doc['agents']) ?? {} : {}
+  for (const id of Object.keys(agents)) {
+    const read = addedEntry(id, agents[id])
+    const made = read === undefined || read === 'invalid' ? undefined : madeDescription(dir, id)
+    if (typeof made === 'object') on.set(made.card.server, [...(on.get(made.card.server) ?? []), id])
   }
   return { on, kept }
 }
@@ -1008,8 +1017,15 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     }
     const naming = serverUsers(dir)
     const users = naming.on.get(server) ?? []
-    if (users.length) {
+    const madeUsers = users.filter((agent) => !(LOCAL_AGENTS as readonly string[]).includes(agent))
+    if (users.length && !madeUsers.length) {
       return refuse(`the server ${server} is named by the ${users.join(' and ')} profile${users.length === 1 ? '' : 's'}: point ${users.length === 1 ? 'it' : 'them'} at another server first (meshctl enable --<agent> --server <name>)`)
+    }
+    if (users.length) {
+      const local = users.filter((agent) => !madeUsers.includes(agent))
+      const who = [...(local.length ? [`the ${local.join(' and ')} profile${local.length === 1 ? '' : 's'}`] : []), `the made agent${madeUsers.length === 1 ? '' : 's'} ${madeUsers.join(' and ')}`].join(' and ')
+      const fixes = [...(local.length ? [`point ${local.length === 1 ? 'that profile' : 'those profiles'} at another server (meshctl enable --<agent> --server <name>)`] : []), `remove ${madeUsers.length === 1 ? 'that agent' : 'those agents'} (meshctl remove <id> --apply)`].join(' and ')
+      return refuse(`the server ${server} is named by ${who}: ${fixes} first`)
     }
     // an agent that is off keeps its profile; it does not hold the server, and says so
     const kept = naming.kept.get(server) ?? []
@@ -1081,12 +1097,20 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const rp = requestPostPaths(dir)
     const rpState = rpEndpoint ? `on at ${rpEndpoint}` : rpEntry === undefined ? 'off' : `off (agents.request-post.endpoint is not ${ENDPOINT_RULE})`
     out(`Request-post: ${rpState}. Token: ${has(rp.token)}; shim ${show(rp.shim)}: ${has(rp.shim)}.\n`)
+    // a made agent (D6) says so, with its server and model; never its instructions or a path
+    const madeWords = (id: string): string => {
+      const made = madePaths(dir, id)
+      if (!exists(made.description) && !(exists(made.profile) && madeProfile(dir, id) !== 'missing')) return ''
+      const read = madeDescription(dir, id)
+      return typeof read === 'object' ? `; made here, on the server ${read.card.server} with the model ${read.card.model}`
+        : `; made here, but its description ${read === 'missing' ? 'is missing' : 'cannot be read or breaks the rule'} (meshctl remove ${id} --apply, then make it again)`
+    }
     // an id or field that breaks its rule is never echoed: it is a hand edit, and could hold anything
     for (const { id, read } of added) {
       const who = idRefusal(id) ? 'an entry with an id meshctl add refuses' : id
       out(read === 'invalid'
         ? `Added agent ${who}: off (the entry breaks meshctl add's rules; remove it and add it again).\n`
-        : `Added agent ${id}: at ${read.endpoint}${read.agentId === undefined ? '' : ` (agent id ${read.agentId})`}; card pin ${read.cardSha256.slice(0, 12)}…; token: ${read.tokenFile === undefined ? 'none' : has(read.tokenFile)}.\n`)
+        : `Added agent ${id}: at ${read.endpoint}${read.agentId === undefined ? '' : ` (agent id ${read.agentId})`}; card pin ${read.cardSha256.slice(0, 12)}…; token: ${read.tokenFile === undefined ? 'none' : has(read.tokenFile)}${madeWords(id)}.\n`)
     }
     // one line per model server (D7); a missing servers.json prints nothing
     const servers = readServers(dir)

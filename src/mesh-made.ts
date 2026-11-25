@@ -108,3 +108,15 @@ export function madeProfile(dir: string, id: string): { port: number } | 'missin
 
 /** A made agent's log files (its start log and its day logs), by name; `id` passed the id rule. */
 export const madeLog = (id: string): RegExp => new RegExp(`^${id}-(?:\\d{4}-\\d{2}-\\d{2}|agent)\\.log$`)
+
+/** The stored description of `id` (status, the server commands): its card, or why it cannot be read. */
+export function madeDescription(dir: string, id: string): { card: MadeCard } | 'missing' | 'refused' {
+  let text: string
+  try {
+    text = readPrivate(madePaths(dir, id).description)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'refused'
+  }
+  const read = parseMadeCard(text, id, serverKinds(dir), true)
+  return 'card' in read ? read : 'refused'
+}

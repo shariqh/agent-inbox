@@ -368,3 +368,31 @@ describe('meshctl remove of a made agent (D5)', () => {
     expect(files(t.dir)).toEqual(['mesh', 'mesh/servers.json'])
   })
 })
+
+describe('status and the model servers see made agents (D6)', () => {
+  it('status says the agent was made here, with its server and model; server list counts it; server remove is blocked while it uses the server', async () => {
+    const t = setup()
+    expect((await t.make([ID, '--from', t.card({ ...EXAMPLE, server: 'box', model: 'chat-long' }), '--apply'])).code).toBe(0)
+    const port = Number(/"port": (\d+)/.exec(readFileSync(join(t.dir, 'mesh', 'wrappers', `${ID}.json`), 'utf8'))![1])
+    const status = t.ctl('status')
+    expect(status.code).toBe(0)
+    expect(status.out).toContain(`Added agent ${ID}: at http://127.0.0.1:${port}/ (agent id agent-inbox.invalid/made/${ID}); card pin `)
+    expect(status.out).toMatch(new RegExp(`; token: present; made here, on the server box with the model chat-long\\.\\n`))
+    expect(status.out).toContain('Server box: https://box.example; key: none; agents: action-items.')
+    expect(status.out).toContain('Server claude: Claude Code on this Mac; agents: none.')
+    expect(status.out).not.toContain('meeting notes')
+    expect(JSON.parse(t.ctl('server', 'list', '--json').out).servers).toEqual([
+      { name: 'claude', kind: 'claude-code', baseUrl: '', key: 'none', agents: [] },
+      { name: 'box', kind: 'http', baseUrl: 'https://box.example', key: 'none', agents: [ID] },
+    ])
+    const blocked = t.ctl('server', 'remove', 'box', '--apply')
+    expect([blocked.code, blocked.err]).toEqual([1, `Refused: the server box is named by the made agent ${ID}: remove that agent (meshctl remove <id> --apply) first. Nothing changed.\n`])
+    // a description that breaks the rule is said, never echoed
+    privateFile(join(t.dir, 'mesh', 'agents', `${ID}.json`), '{"schema":1,"secret":"sk-ant-CANARY0123456789"}')
+    const broken = t.ctl('status')
+    expect(broken.out).toContain(`made here, but its description cannot be read or breaks the rule (meshctl remove ${ID} --apply, then make it again).`)
+    expect(broken.out).not.toContain('CANARY')
+    expect(t.ctl('remove', ID, '--apply').code).toBe(0)
+    expect(t.ctl('server', 'remove', 'box', '--apply').code).toBe(0)
+  }, 30_000)
+})

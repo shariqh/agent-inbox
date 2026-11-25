@@ -707,7 +707,7 @@ registerChatResumeIpc({
 
 // ── the mesh bridge (agent setup in the app, step 2a) ──────────────────────
 // The owned viewer's page asks main to run one operation off a fixed list with the person's own
-// meshctl (electron/mesh-process.cjs): main checks every value, builds the argv itself, and runs
+// mesh command line (electron/mesh-process.cjs): main checks every value, builds the argv itself, and runs
 // the node and script the person's shim names, with no shell. A key or token file is chosen in
 // this picker, on the window, and the page only ever holds a handle for it. The grant is the
 // window's file grant (the owned viewer), revoked with it; one run at a time, of its own gate, and

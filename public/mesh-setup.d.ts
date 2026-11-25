@@ -27,7 +27,7 @@ export function installMeshSetup(deps: {
   reload: () => void
   /** an agent was turned on: show its own page */
   turnedOn: (name: string) => void
-  /** the open agent was turned off: back to the tab's home */
+  /** the open agent was turned off or removed: back to the tab's home */
   turnedOff: () => void
   /** an agent was added by its card address: show its own page */
   added: (id: string) => void
@@ -42,6 +42,6 @@ export function installMeshSetup(deps: {
   open(): boolean
   title(): string | null
   back(): boolean
-  paint(input: { body: any; agent: { name: string } | null }): void
+  paint(input: { body: any; agent: { name: string; added?: boolean } | null }): void
   state(): number
 }

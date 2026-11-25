@@ -940,8 +940,9 @@ function paintAgentCards() {
   // the page, from the same body, whether or not mesh is still on (it then says the agent left)
   meshAgentPage.paint(lastData?.mesh ?? null, Date.now(), lastData?.runs ?? null)
   const current = meshAgentPage.current()
-  const agent = current && body?.on === true && Array.isArray(body.agents) ? body.agents.find((a) => String(a.key) === current.key && a.kind !== 'added') : null
-  meshSetup.paint({ body: input?.body ?? null, agent: agent ? { name: String(agent.name) } : null })
+  const agent = current && body?.on === true && Array.isArray(body.agents) ? body.agents.find((a) => String(a.key) === current.key) : null
+  // an added agent's foot offers Remove, a built-in's Change server and Turn off
+  meshSetup.paint({ body: input?.body ?? null, agent: agent ? (agent.kind === 'added' ? { name: String(agent.name), added: true } : { name: String(agent.name) }) : null })
   if (activeTab === 'cards' && !document.getElementById('cards').hidden) paintPageHeading('cards')
 }
 // A card's press, a deep link: the agent's page in the Agent cards tab, painted at once from the

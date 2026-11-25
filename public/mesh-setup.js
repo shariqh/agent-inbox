@@ -1,7 +1,7 @@
 // Agent setup in the app, step 2b: the Agent cards tab's Marketplace and Model servers sections,
 // the set-up pages that open in the tab in place of an agent's page (add a server, make an agent's
 // own settings a server, set up an agent, add an agent by its card address), and the foot of an
-// agent's page (Change server, Turn off). Everything runs through the local window's mesh bridge (`agentInboxMesh`, step 2a), a dry
+// agent's page (Change server, Turn off; Remove for an added agent). Everything runs through the local window's mesh bridge (`agentInboxMesh`, step 2a), a dry
 // run first; another Mac's page and a browser have no bridge and see the Marketplace only.
 //
 // House rules: what came from the bridge, the command or a server is set as text, never markup. An
@@ -178,7 +178,7 @@ export function installMeshSetup(deps) {
   let removing = null
   // the open set-up page, or null; the agent page's foot
   let page = null
-  const foot = { agent: null, asking: false, message: '' }
+  const foot = { agent: null, added: false, asking: false, message: '' }
   // an agent just turned on (or given another server), until it shows in the tab's data and is checked once
   let fresh = null
   let version = 0
@@ -1169,15 +1169,17 @@ export function installMeshSetup(deps) {
     if (footEl) return footEl
     footEl = make('div', 'ms-foot')
     const actions = make('div', 'ms-actions')
-    actions.append(button('ms-change', 'Change server'), button('ms-off', 'Turn off'))
+    actions.append(button('ms-change', 'Change server'), button('ms-off', 'Turn off'), button('ms-remove-agent', 'Remove'))
     const ask = make('div', 'ms-ask')
     ask.append(make('span', 'ms-ask-text'), button('ms-off-confirm', 'Turn off'), button('ms-off-cancel', 'Cancel'))
     footEl.append(actions, ask, make('p', 'ms-message'))
     footEl.addEventListener('click', (event) => {
       const control = event.target instanceof doc.defaultView.Element ? event.target.closest('button') : null
       if (!control || control.disabled || !foot.agent) return
+      // the question's own Cancel goes back to the button that asked it: Turn off, or an added agent's Remove
+      const asker = foot.added ? '.ms-remove-agent' : '.ms-off'
       if (control.classList.contains('ms-change')) openAgent(foot.agent, { change: true, opener: () => footEl.querySelector('.ms-change') })
-      else if (control.classList.contains('ms-off')) {
+      else if (control.classList.contains('ms-off') || control.classList.contains('ms-remove-agent')) {
         foot.asking = true
         foot.message = ''
         changed()
@@ -1185,8 +1187,11 @@ export function installMeshSetup(deps) {
       } else if (control.classList.contains('ms-off-cancel')) {
         foot.asking = false
         changed()
-        settleFocus(() => footEl.querySelector('.ms-off'))
-      } else if (control.classList.contains('ms-off-confirm')) turnOff(foot.agent)
+        settleFocus(() => footEl.querySelector(asker))
+      } else if (control.classList.contains('ms-off-confirm')) {
+        if (foot.added) removeAgent(foot.agent)
+        else turnOff(foot.agent)
+      }
     })
     return footEl
   }
@@ -1214,30 +1219,59 @@ export function installMeshSetup(deps) {
     await listServers()
   }
 
+  // An added agent's Remove (D5): remove's dry run, then the real one; an id no longer there counts as removed
+  async function removeAgent(id) {
+    let done = false
+    await act('remove-agent', async () => {
+      for (const apply of [false, true]) {
+        const words = problem(await call('remove-agent', { id, apply }))
+        if (words === null) continue
+        foot.asking = false
+        foot.message = words
+        return
+      }
+      done = true
+    })
+    if (!done) {
+      settleFocus(() => footEl?.querySelector('.ms-remove-agent'))
+      return
+    }
+    foot.asking = false
+    foot.message = ''
+    deps.turnedOff()
+    deps.reload()
+  }
+
   function paintFoot(agentPage, agent) {
     const el = footElement()
-    const name = agent && OFFERS.has(agent.name) ? agent.name : null
-    if (foot.agent !== name) {
+    const added = agent?.added === true
+    const name = agent && (added || OFFERS.has(agent.name)) ? agent.name : null
+    if (foot.agent !== name || foot.added !== added) {
       foot.agent = name
+      foot.added = added
       foot.asking = false
       foot.message = ''
     }
-    // only with the bridge, and only for a built-in agent that is on
+    // only with the bridge, and only for a built-in agent that is on or an agent added by its address
     if (!usable() || !name) {
       el.remove()
       return
     }
     if (el.parentNode !== agentPage || agentPage.lastElementChild !== el) agentPage.append(el)
     const change = el.querySelector('.ms-change')
-    setHidden(change, !MODEL_AGENTS.has(name))
-    // while the question is open its own buttons answer it: the foot's two stay where they are, disabled
+    setHidden(change, added || !MODEL_AGENTS.has(name))
+    // while the question is open its own buttons answer it: the foot's buttons stay where they are, disabled
     setDisabled(change, busy() || foot.asking)
     const off = el.querySelector('.ms-off')
+    setHidden(off, added)
     setDisabled(off, busy() || foot.asking)
+    const remove = el.querySelector('.ms-remove-agent')
+    setHidden(remove, !added)
+    setDisabled(remove, busy() || foot.asking)
     setHidden(el.querySelector('.ms-ask'), !foot.asking)
-    setText(el.querySelector('.ms-ask-text'), `Turn off ${name}? Its settings and run records are kept.`)
+    setText(el.querySelector('.ms-ask-text'), added ? `Remove ${name}? Its run records go too.` : `Turn off ${name}? Its settings and run records are kept.`)
     const confirm = el.querySelector('.ms-off-confirm')
-    setText(confirm, label('off', 'Turn off', 'Turning off…'))
+    setText(confirm, added ? label('remove-agent', 'Remove', 'Removing…') : label('off', 'Turn off', 'Turning off…'))
     setDisabled(confirm, busy())
     setDisabled(el.querySelector('.ms-off-cancel'), busy())
     const message = el.querySelector('.ms-message')

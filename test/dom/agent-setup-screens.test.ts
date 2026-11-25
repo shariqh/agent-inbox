@@ -1816,12 +1816,106 @@ describe('an agent that is on (D5)', () => {
     expect(document.activeElement).toBe(buttonLabelled('Change server', foot()))
   })
 
-  it('an added agent has no foot', async () => {
-    await boot({ agents: [agent('echo', { kind: 'added', where: 'public', state: 'added', checkedAt: null })], available: [] })
+})
+
+describe('an added agent’s page: Remove (add step 2, D5)', () => {
+  const added = (name = 'pdf-reader') => agent(name, { kind: 'added', where: 'tailnet', endpoint: 'https://studio.tailnet-example.ts.net/pdf/a2a', state: 'added', checkedAt: null })
+  async function openAdded(bridge: Parameters<typeof fakeBridge>[0] | null = {}) {
+    const booted = await boot({ agents: [added(), on('unslop-code')], available: [OFFERED['unslop']!], bridge })
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
     await enter()
-    click(card('echo'))
+    click(card('pdf-reader'))
+    await settle()
+    return booted
+  }
+  const foot = () => agentPage().querySelector<HTMLElement>('.ms-foot')!
+  const actions = () => foot().querySelector<HTMLElement>('.ms-actions')!
+  const ask = () => foot().querySelector<HTMLElement>('.ms-ask')!
+
+  it('its foot holds only Remove, which asks in place with focus on Cancel; Cancel puts focus back on Remove', async () => {
+    const { bridge } = await openAdded()
+    expect(agentPage().querySelector('.map-badge')?.textContent).toBe('Added by you')
+    expect([...actions().querySelectorAll('button')].filter(shown).map((b) => b.textContent)).toEqual(['Remove'])
+    const remove = buttonLabelled('Remove', actions())!
+    expect(remove.classList.contains('ms-remove-agent')).toBe(true)
+    expect(shown(ask())).toBe(false)
+    click(remove)
+    await settle()
+    expect(shown(ask())).toBe(true)
+    expect(ask().querySelector('.ms-ask-text')?.textContent).toBe('Remove pdf-reader? Its run records go too.')
+    expect([...ask().querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Remove', 'Cancel'])
+    expect(document.activeElement).toBe(buttonLabelled('Cancel', ask()))
+    expect(remove.disabled).toBe(true)
+    await pollTick()
+    expect(remove.disabled).toBe(true)
+    click(buttonLabelled('Cancel', ask()))
+    await settle()
+    expect(shown(ask())).toBe(false)
+    expect(remove.disabled).toBe(false)
+    expect(document.activeElement).toBe(remove)
+    expect(bridge.ops()).toEqual([])
+  })
+
+  it('Remove runs remove-agent dry then applied, then back to the grid with focus on the tab’s heading, and the tab reads again', async () => {
+    const { bridge, mesh } = await openAdded()
+    click(buttonLabelled('Remove', actions()))
+    await settle()
+    const release = bridge.hold()
+    click(buttonLabelled('Remove', ask()))
+    await settle()
+    expect(buttonLabelled('Removing…', ask())!.disabled).toBe(true)
+    expect(buttonLabelled('Cancel', ask())!.disabled).toBe(true)
+    mesh.s.body = { on: true, agents: [on('unslop-code')], others: 0, available: [OFFERED['unslop']!] }
+    release()
+    await settle()
+    expect(bridge.ops()).toEqual([['remove-agent', { id: 'pdf-reader', apply: false }], ['remove-agent', { id: 'pdf-reader', apply: true }]])
+    expect(shown(agentPage())).toBe(false)
+    expect(shown(home())).toBe(true)
+    expect(document.activeElement).toBe(title())
+    await pollTick()
+    expect(card('pdf-reader')).toBeUndefined()
+  })
+
+  it('a refusal shows its words in the foot with focus on Remove, and the agent stays', async () => {
+    const { bridge } = await openAdded()
+    bridge.s.answers['remove-agent'] = () => meshProcess.meshAnswer('plan', JSON.stringify({ applied: false, steps: [], refused: 'agents.pdf-reader was not written by add. Nothing changed.' }), 1) as Json
+    click(buttonLabelled('Remove', actions()))
+    await settle()
+    click(buttonLabelled('Remove', ask()))
+    await settle()
+    expect(foot().querySelector('.ms-message')?.textContent).toBe('agents.pdf-reader was not written by add. Nothing changed.')
+    expect(shown(ask())).toBe(false)
+    expect(shown(agentPage())).toBe(true)
+    expect(document.activeElement).toBe(buttonLabelled('Remove', actions()))
+    expect(bridge.ops()).toEqual([['remove-agent', { id: 'pdf-reader', apply: false }]])
+  })
+
+  it('an id the command no longer finds counts as removed', async () => {
+    const { bridge } = await openAdded()
+    bridge.s.answers['remove-agent'] = () => meshProcess.meshAnswer('plan', JSON.stringify({ applied: false, steps: [], notes: ['pdf-reader is not in mesh.json. Nothing to do.'] }), 0) as Json
+    click(buttonLabelled('Remove', actions()))
+    await settle()
+    click(buttonLabelled('Remove', ask()))
+    await settle()
+    expect(bridge.ops().map(([op]) => op)).toEqual(['remove-agent', 'remove-agent'])
+    expect(shown(agentPage())).toBe(false)
+  })
+
+  it('without the bridge an added agent has no foot, and a built-in’s foot is as before', async () => {
+    await boot({ agents: [added()], available: [], bridge: null })
+    await enter()
+    click(card('pdf-reader'))
     await settle()
     expect(agentPage().querySelector('.ms-foot')).toBeNull()
+  })
+
+  it('a built-in agent’s foot has no Remove', async () => {
+    await openAdded()
+    click(agentPage().querySelector('.map-back'))
+    await settle()
+    click(card('unslop-code'))
+    await settle()
+    expect([...actions().querySelectorAll('button')].filter(shown).map((b) => b.textContent)).toEqual(['Change server', 'Turn off'])
   })
 })
 

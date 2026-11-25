@@ -5,13 +5,15 @@ export type MeshReason =
   | 'outdated' | 'output' | 'timeout' | 'failed' | 'cancelled'
 export type MeshFailure = { ok: false; reason: MeshReason }
 export type MeshPlan = { ok: boolean; applied: boolean; steps: string[]; refused?: string; notes?: string[] }
+export type MeshServerKind = 'http' | 'claude-code'
 export type MeshServers = {
   ok: boolean
-  servers: Array<{ name: string; baseUrl: string; key: 'file' | 'command' | 'env' | 'none'; agents: string[] }>
+  servers: Array<{ name: string; kind: MeshServerKind; baseUrl: string; key: 'file' | 'command' | 'env' | 'none'; agents: string[] }>
   inline: string[]
   refused?: string
 }
-export type MeshCheck = { ok: boolean; reachable: boolean; failure?: string; models: string[]; skipped: number; refused?: string }
+export type MeshCheckFailure = 'unreachable' | 'unauthorized' | 'not-a-model-server' | 'timeout' | 'key' | 'no-program' | 'signed-out'
+export type MeshCheck = { ok: boolean; reachable: boolean; failure?: MeshCheckFailure; models: string[]; skipped: number; refused?: string; kind?: MeshServerKind }
 export type MeshAnswer = MeshPlan | MeshServers | MeshCheck | MeshFailure
 export type MeshKind = 'plan' | 'servers' | 'check'
 export type MeshAvailability = { available: true } | { available: false; reason: MeshReason }
@@ -19,6 +21,9 @@ export type MeshChosen = { ok: true; handle: string; name: string } | MeshFailur
 
 export const OPERATIONS: Readonly<Record<string, { kind: MeshKind; required: string[]; optional?: string[] }>>
 export const REASONS: ReadonlySet<string>
+export const KEY_KINDS: ReadonlySet<string>
+export const SERVER_KINDS: ReadonlySet<string>
+export const CHECK_FAILURES: ReadonlySet<string>
 
 export function meshDirOf(env: Record<string, string | undefined>, home: string): { dir: string } | { reason: 'environment' }
 export function meshEnv(env: Record<string, string | undefined>): Record<string, string>

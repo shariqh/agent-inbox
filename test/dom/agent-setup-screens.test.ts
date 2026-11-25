@@ -432,7 +432,7 @@ describe('Check and Remove on a server’s row (D3)', () => {
   })
 
   it('Remove asks in place, Cancel puts it back, and a refusal shows in the row', async () => {
-    const { bridge } = await boot({ bridge: { servers: [server('local', { agents: ['unslop-code'] })] } })
+    const { bridge } = await boot({ bridge: { servers: [server('local')] } })
     await enter()
     const ask = () => row('local')!.querySelector<HTMLElement>('.ms-ask')!
     expect(shown(ask())).toBe(false)
@@ -457,6 +457,44 @@ describe('Check and Remove on a server’s row (D3)', () => {
     expect(bridge.ops()).toEqual([['remove-server', { name: 'local', apply: false }]])
     expect(row('local')!.querySelector('.ms-row-note')?.textContent).toBe('unslop-code still uses local')
     expect(shown(ask())).toBe(false)
+  })
+
+  it('a server an agent still uses is not removed: the row says to change their server first, and nothing runs (F6)', async () => {
+    const { bridge } = await boot({ bridge: { servers: [server('main', { agents: ['unslop'] }), server('both', { agents: ['unslop', 'unslop-code'] }), server('free')] } })
+    await enter()
+    const note = (name: string) => row(name)!.querySelector<HTMLElement>('.ms-row-note')!
+    const remove = (name: string) => buttonLabelled('Remove', row(name)!.querySelector('.ms-row-actions')!)!
+    click(remove('main'))
+    await settle()
+    expect(note('main').textContent).toBe('unslop still uses this server. Change its server first.')
+    expect(shown(note('main'))).toBe(true)
+    expect(shown(row('main')!.querySelector('.ms-ask'))).toBe(false)
+    click(remove('both'))
+    await settle()
+    expect(note('both').textContent).toBe('unslop, unslop-code still use this server. Change their server first.')
+    expect(shown(row('both')!.querySelector('.ms-ask'))).toBe(false)
+    expect(bridge.ops()).toEqual([])
+    // a server no agent uses keeps the question
+    click(remove('free'))
+    await settle()
+    expect(row('free')!.querySelector('.ms-ask-text')?.textContent).toBe('Remove free?')
+    expect(shown(row('free')!.querySelector('.ms-ask'))).toBe(true)
+  })
+
+  it('the "still uses" line goes once no agent uses the server and Remove asks its question', async () => {
+    const { bridge } = await boot({ bridge: { servers: [server('main', { agents: ['unslop'] })] } })
+    await enter()
+    const remove = () => buttonLabelled('Remove', row('main')!.querySelector('.ms-row-actions')!)!
+    click(remove())
+    await settle()
+    expect(row('main')!.querySelector('.ms-row-note')?.textContent).toContain('still uses this server')
+    bridge.s.servers = [server('main')]
+    click(document.querySelector('#cards .ma-refresh'))
+    await settle()
+    click(remove())
+    await settle()
+    expect(row('main')!.querySelector('.ms-row-note')?.textContent).toBe('')
+    expect(shown(row('main')!.querySelector('.ms-ask'))).toBe(true)
   })
 
   it('a removal runs dry then applied, and the row leaves', async () => {

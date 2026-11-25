@@ -89,6 +89,8 @@ export function installMeshSetup(deps) {
   let queued = null
   // a server row's last check or refusal, by name (an inline agent's by `inline:<agent>`); the row asking "Remove?"
   const notes = new Map()
+  // the "still use this server" line a Remove press wrote into a row's note, to take it away once no agent uses it
+  const usedNotes = new Map()
   let removing = null
   // the open set-up page, or null; the agent page's foot
   let page = null
@@ -293,6 +295,18 @@ export function installMeshSetup(deps) {
         openAdopt(agent, { opener: () => rowEls.get(`inline:${agent}`)?.querySelector('.ms-adopt') ?? null })
       } else if (control.classList.contains('ms-check')) checkRow(name)
       else if (control.classList.contains('ms-remove')) {
+        const users = strings(servers?.list?.find((server) => server.name === name)?.agents)
+        if (users.length) {
+          // agents still use it: nothing runs and nothing is asked; the row says what to do first
+          const words = users.length === 1 ? `${users[0]} still uses this server. Change its server first.` : `${users.join(', ')} still use this server. Change their server first.`
+          notes.set(name, words)
+          usedNotes.set(name, words)
+          changed()
+          return
+        }
+        // an earlier "still use" line is out of date now
+        if (usedNotes.has(name) && notes.get(name) === usedNotes.get(name)) notes.delete(name)
+        usedNotes.delete(name)
         removing = name
         changed()
         settleFocus(() => rowEls.get(name)?.querySelector('.ms-cancel'))

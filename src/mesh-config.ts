@@ -379,14 +379,16 @@ const CLAUDE_SYSTEM_PATHS = ['/opt/homebrew/bin/claude', '/usr/local/bin/claude'
 /**
  * The claude program (Claude Code as a model server, D4): the first candidate that is a regular
  * file the user may execute, among `<dir>/claude` for each absolute folder on `env.PATH`, then
- * `fixed`, then `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin`. Its real path is
+ * `fixed`, then `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin` (only when `home` is
+ * absolute). Its real path is
  * returned (the usual install is a link) when it is owned by this user or root and neither group
  * nor others may write it; the first candidate found decides, so an untrusted one gives undefined
  * rather than a later one. The path is never printed, logged or put in any output.
  */
 export function findClaude(env: NodeJS.ProcessEnv, home: string, fixed: readonly string[] = CLAUDE_SYSTEM_PATHS): string | undefined {
   const fromPath = (env['PATH'] ?? '').split(':').filter((dir) => dir && isAbsolute(dir)).map((dir) => join(dir, 'claude'))
-  const inHome = ['.local/bin/claude', '.claude/local/claude', '.npm-global/bin/claude'].map((rel) => join(home, rel))
+  // an empty or relative home would make relative candidates, found from whatever folder this runs in
+  const inHome = isAbsolute(home) ? ['.local/bin/claude', '.claude/local/claude', '.npm-global/bin/claude'].map((rel) => join(home, rel)) : []
   for (const candidate of [...fromPath, ...fixed, ...inHome]) {
     let real: string
     try {

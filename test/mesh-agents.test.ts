@@ -88,6 +88,14 @@ function setup(mesh: unknown, extra: Partial<MeshAgentsOpts> = {}) {
   const write = (doc: unknown) => writeFileSync(join(dir, 'mesh.json'), JSON.stringify(doc))
   return { dir, clock, app, plain, agents, post, write }
 }
+// step 2b (D8): the built-ins mesh.json does not name, carried whether or not the mesh is on
+const OFFERED: Record<string, Json> = {
+  unslop: { name: 'unslop', blurb: 'Copy-edits public text by the unslop rules.', needs: 'model-server' },
+  'unslop-code': { name: 'unslop-code', blurb: 'Removes the comments an AI coding agent adds to code.', needs: 'model-server' },
+  'request-post': { name: 'request-post', blurb: 'Files a post request with your publishing service.', needs: 'address-and-token' },
+}
+const ALL_OFFERED = [OFFERED['unslop'], OFFERED['unslop-code'], OFFERED['request-post']]
+const OFF_BODY = { on: false, agents: [], available: ALL_OFFERED }
 const unslopAt = (port: number) => ({ schema: 1, agents: { unslop: { endpoint: `http://127.0.0.1:${port}`, profile: 'unslop' } } })
 const requestPostAt = (endpoint: string) => ({ schema: 1, agents: { 'request-post': { endpoint } } })
 const tailnetTo127: LookupFunction = (_host, options, callback) => {
@@ -113,7 +121,7 @@ describe('off means off (design §2.5, §3.3)', () => {
       const on = await s.app.request('/api/version')
       const off = await s.plain.request('/api/version')
       expect(await on.text(), label).toBe(await off.text())
-      expect(await s.agents(), label).toEqual({ on: false, agents: [] })
+      expect(await s.agents(), label).toEqual(OFF_BODY)
       expect(await (await s.post({ trigger: 'refresh' })).json(), label).toEqual({ ok: true })
       expect(await (await s.post({ trigger: 'refresh', name: 'unslop' })).json(), label).toEqual({ ok: false, error: 'not configured' })
     }
@@ -435,6 +443,29 @@ describe('unslop\'s usage line (design §4.6, V4)', () => {
   })
 })
 
+describe('the built-ins that are not on (agent setup in the app, step 2b, D8)', () => {
+  it('lists each drawn built-in mesh.json does not name, from mesh.json alone, on and off, and changes nothing else', async () => {
+    const agent = await serve(UNSLOP)
+    const s = setup({ schema: 1, agents: { unslop: { endpoint: `http://127.0.0.1:${agent.port}`, profile: 'unslop' }, 'web-search': { endpoint: 'http://127.0.0.1:4430' } } })
+    const body = await s.agents()
+    expect(body.available).toEqual([OFFERED['unslop-code'], OFFERED['request-post']])
+    // the same keys as before, with `available` added last
+    expect(Object.keys(body)).toEqual(['on', 'agents', 'others', 'available'])
+    expect(body.agents.map((a: Json) => a.name)).toEqual(['unslop'])
+    // an invalid endpoint is still configured: on, so not offered
+    s.write({ schema: 1, agents: { unslop: { endpoint: 'http://localhost:1' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421' }, 'request-post': { endpoint: 'https://svc.tailnet-example.ts.net' } } })
+    s.clock.t += 5_000
+    expect((await s.agents()).available).toEqual([])
+    // the mesh off: every drawn built-in; /api/version says nothing about them
+    s.write({ schema: 1, agents: {} })
+    s.clock.t += 5_000
+    expect(await s.agents()).toEqual(OFF_BODY)
+    expect(await (await s.app.request('/api/version')).text()).toBe(await (await s.plain.request('/api/version')).text())
+    // reading never connects
+    expect(agent.connections).toBe(0)
+  })
+})
+
 describe('the routes (design §4.5, §4.7)', () => {
   it('GET is conditional: 304 between triggers, a new tag after one', async () => {
     const s = setup(unslopAt((await serve(UNSLOP)).port))
@@ -497,7 +528,7 @@ describe('run history (cards view V5 §5.7, slice V5b)', () => {
     s.write({ schema: 1, agents: {} })
     s.clock.t += 5_000
     expect(await (await runs(s, 'unslop')).json()).toEqual({ on: false, runs: [] })
-    expect(await s.agents()).toEqual({ on: false, agents: [] })
+    expect(await s.agents()).toEqual(OFF_BODY)
   })
 
   it('a missing or unknown name is 400; a known one mesh.json does not configure is ok:false', async () => {
@@ -698,11 +729,11 @@ describe('added agents (Agent cards step 1, D6)', () => {
     // web-search alone is a built-in this view does not draw yet: off, and no runs route
     const search = setup({ schema: 1, agents: { 'web-search': { endpoint: 'http://127.0.0.1:4430' } } })
     expect(await (await search.app.request('/api/version')).text()).toBe(await (await search.plain.request('/api/version')).text())
-    expect(await search.agents()).toEqual({ on: false, agents: [] })
+    expect(await search.agents()).toEqual(OFF_BODY)
     // only invalid entries: off, byte-identical
     const off = setup({ schema: 1, agents: { bad: entry({ cardSha256: 'nope' }) } })
     expect(await (await off.app.request('/api/version')).text()).toBe(await (await off.plain.request('/api/version')).text())
-    expect(await off.agents()).toEqual({ on: false, agents: [] })
+    expect(await off.agents()).toEqual(OFF_BODY)
   })
 
   it('runs: an added agent’s records are read and its lastRun shown; the forget command names its id', async () => {

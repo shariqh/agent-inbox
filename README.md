@@ -29,7 +29,7 @@ share one SQLite database on your machine.
 | **Action-aware responses** | Recommended options, free-text answers, snooze, pin for later, clarify, and decline controls |
 | **Durable plans** | Tracking boards with stable rows, progress, next steps, outcomes, and human-owned actions |
 | **Agents view** | Ambient status for every connected session and its current work without turning activity into alerts |
-| **Agent cards** | With the mesh on, a tab of your A2A agent cards, built in or added by you, each with its state, its card and its recent runs; never a count or an alert |
+| **Agent cards** | A tab of your A2A agent cards, built in or added by you, each with its state, its card and its recent runs; in the app, also where you set up the built-in agents and their model servers; never a count or an alert |
 | **Session messages** | Write to a running session, and see before you send whether it arrives now or at the session's next check |
 | **Session launcher** | On macOS, start Copilot CLI sessions from the app, each in its own git worktree, approve their tool calls from the inbox, and message, park, resume or take them over from their session cards. Off until you turn it on |
 | **Dual-host setup** | Audited installers and instructions for GitHub Copilot CLI and Claude Code |
@@ -316,7 +316,8 @@ plan's bar, an outcome), the project and an age. A note or a finished item opens
 place with its full card; an open ask goes to Home and a plan to Plans. The Find tab
 counts notes you have not seen; they count as seen when shown under the Notes chip with no query typed.
 
-**Agent cards** (`G M`) is a tab only while the mesh is on (`mesh.json` names an agent). Its
+**Agent cards** (`G M`) is a tab while the mesh is on (`mesh.json` names an agent), and in the
+app's own window also before that, once the installed mesh command can be run from the app. Its
 **Yours** section shows one card for every A2A agent set up on this Mac: the
 built-in ones (unslop, unslop-code and request-post) and the ones you added with `meshctl add`, each with its state, one line of what
 its card says it does, where it runs, its version and a **Built in** or **Added by you** tag.
@@ -325,6 +326,18 @@ nothing else does. An agent you added is never contacted by the app: its card co
 copy `meshctl add` keeps, and `meshctl check <id>` writes that copy for an agent added before
 it existed; its page has no Refresh and says so. A link `#cards/<name>` opens that agent's page. Click a card to open its page in the same tab (its runs, its card's details and
 the raw Card JSON); **← Agent cards** or `Esc` goes back. The tab never carries a count.
+
+In the app's own window the tab also sets agents up, with the same command you would type, a dry
+run first. **Marketplace** lists the built-in agents that are off: **Set up** on unslop-code asks
+for a model server and a model (the list comes from the server), and on request-post for the
+service's address and its token file; **Check** shows what turning it on will do, then **Turn on**.
+unslop's rules folder is still set in a terminal (see [`docs/unslop.md`](docs/unslop.md)).
+**Model servers** lists each server with **Check** (is it reachable, how many models) and
+**Remove**, **Add a server** (a name, an address, and no key or a key file you pick), and **Make it
+a server** for an agent whose settings hold their own address. An agent that is on has **Turn
+off** at the foot of its page, and unslop and unslop-code **Change server**. A key or token file is
+picked in the app's own file dialog; the page sees only its name. In a browser, or showing another
+Mac's Inbox, the Marketplace is a list only.
 
 The **Chats** chip (`G C`) lists the Claude Code and Copilot CLI chats on this Mac, newest
 first; the field matches their title, project, branch and folder, never what was said in
@@ -520,7 +533,7 @@ Letters do not run shortcuts while you are typing or using a select.
 | `G D` / `G I` / `G P` / `G F` | Home / Needs you (the first request on Home) / Plans / Find |
 | `G N` / `G H` | Find with Notes / Find with All, the query cleared and the list focused |
 | `G C` | Find with Chats, the query cleared and the field focused |
-| `G M` | Agent cards, while the mesh is on |
+| `G M` | Agent cards, while the tab shows |
 | `G S` / `G O` / `G A` / `G L` | Settings / project picker / agent filter / Sessions (the Agents view) |
 | `Cmd/Ctrl K` or `/` | Focus search (on Find, Find’s own field) |
 | `J` / `K`, then `Enter` | Move through the queue and expand an item |
@@ -760,7 +773,7 @@ adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--app
 `npm run meshctl -- call <id>` calls it (#530; see [`docs/mesh-call.md`](docs/mesh-call.md)).
 The two local agents can share one model backend: `npm run meshctl -- server add <name> …` adds a
 model server once, and each agent's profile names it (see [`docs/model-servers.md`](docs/model-servers.md)).
-The app's **Agent cards** tab shows the agents `mesh.json` turns on: the three built-in ones (unslop, unslop-code and request-post) and the ones you added.
+The app's **Agent cards** tab shows the agents `mesh.json` turns on: the three built-in ones (unslop, unslop-code and request-post) and the ones you added. In the app it also adds model servers and turns unslop-code and request-post on and off, through the same command.
 To write such an agent on `@a2a-js/sdk`, start from the agent kit and its example
 ([`docs/agent-kit.md`](docs/agent-kit.md), #539).
 `npm run meshctl -- status`

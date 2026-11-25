@@ -19,6 +19,8 @@ const AUTH = {
 // [id, label]; the first is the default each time an agent opens (V5 §4)
 const INNER = [['runs', 'Run history'], ['details', 'Details']]
 const GONE = 'This agent is not in mesh.json any more'
+// step 2b (D4): an agent the app has just turned on, until the viewer's next read names it
+const PENDING = 'Turned on. Its details show in a moment.'
 
 const ago = (ms) => (relMs(Math.max(0, ms)) === 'moments' ? 'just now' : `${relMs(Math.max(0, ms))} ago`)
 const clock = (at) => {
@@ -200,7 +202,10 @@ export function installMeshAgentPage(deps) {
     const agent = body?.on === true && Array.isArray(body.agents) ? body.agents.find((a) => String(a.key) === current.key) : undefined
     // a deep link names its agent before the first read: the name shows, and no line says it left
     if (agent && current.name !== String(agent.name)) current = { ...current, name: String(agent.name) }
-    setHidden(page.querySelector('.map-gone'), Boolean(agent) || !body)
+    if (agent && current.pending) current = { key: current.key, name: current.name }
+    const gone = page.querySelector('.map-gone')
+    setText(gone, current.pending ? PENDING : GONE)
+    setHidden(gone, Boolean(agent) || (!body && !current.pending))
     setHidden(page.querySelector('.ma-stale'), !(agent && input?.stale))
     paintInner(page)
     lastRuns = runsInput
@@ -242,8 +247,11 @@ export function installMeshAgentPage(deps) {
 
   return {
     paint,
-    /** Opens `key` in the one slot, replacing any other; each open starts on the default inner tab. */
-    open(key, name) {
+    /**
+     * Opens `key` in the one slot, replacing any other; each open starts on the default inner tab.
+     * `pending`: the app has just turned it on, so until a read names it the page says so, not that it left.
+     */
+    open(key, name, { pending = false } = {}) {
       runs.reset(current?.key !== key)
       if (current?.key !== key) {
         // another agent's lines never show under this one's name
@@ -254,7 +262,7 @@ export function installMeshAgentPage(deps) {
         }
         lastJson = null
       }
-      current = { key, name }
+      current = pending ? { key, name, pending: true } : { key, name }
       inner = INNER[0][0]
     },
     close() { current = null },

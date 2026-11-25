@@ -245,8 +245,13 @@ with the same fix words as unslop. The page's usage line reads `<mesh dir>/mesh/
 counted apart from unslop's. Run history reads `<mesh dir>/mesh/runs/unslop-code-<date>.jsonl`: each row
 says its outcome (cleaned, nothing to remove, refused, busy, failed, unavailable or interrupted) and, in
 its details, the files sent, the comment lines removed, the suggestions, the kilobytes sent, the model
-and the timings. A row never holds a path or any text. The app has no control for this agent yet: turn
-it on and off with `meshctl`.
+and the timings. A row never holds a path or any text.
+
+In the app's own window the tab also turns it on and off with the same commands: **Set up** on its
+Marketplace card picks a model server and a model (from the server's list, or typed when the server
+cannot be asked), **Check** shows the dry run's steps, and **Turn on** applies them. Once it is on,
+its page has **Change server** and **Turn off** (`disable` without `--purge`). The terminal steps
+above and below do the same.
 
 ## Turn it off
 

@@ -48,6 +48,8 @@ const BLURB: Record<Agent, string> = {
   'unslop-code': 'Removes the comments an AI coding agent adds to code.',
   'request-post': 'Files a post request with your publishing service.',
 }
+// what each built-in needs before it can be turned on, for the Agent cards tab's Marketplace (step 2b, D8)
+const NEEDS: Record<Agent, 'model-server' | 'address-and-token'> = { unslop: 'model-server', 'unslop-code': 'model-server', 'request-post': 'address-and-token' }
 const UNCHECKED: Result = { state: 'unchecked', reason: 'press Refresh', fix: null, checkedAt: null, card: null }
 const OFF = { on: false, agents: [] }
 const BUDGET_MAX = 4 * 1024
@@ -351,6 +353,9 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
     }
   }
 
+  // step 2b (D8): the built-ins mesh.json does not name, from mesh.json alone, whether or not the mesh is on
+  const offered = (cfg: Config | null) => AGENTS.filter((name) => !cfg?.recs.has(name)).map((name) => ({ name, blurb: BLURB[name], needs: NEEDS[name] }))
+
   return {
     version: () => {
       const cfg = read()
@@ -358,11 +363,11 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
     },
     body: () => {
       const cfg = read()
-      if (!cfg) return OFF
+      if (!cfg) return { ...OFF, available: offered(null) }
       const today = localDate(now())
       const agents = [...[...cfg.recs.values()].map((rec) => view(rec, today)), ...[...cfg.added.values()].map(addedView)]
       // D6: what to do about entries that are neither built in nor a valid added one
-      return { on: true, agents: agents.sort((a, b) => a.name.localeCompare(b.name)), others: cfg.others, ...(cfg.others ? { othersFix: 'run meshctl status' } : {}) }
+      return { on: true, agents: agents.sort((a, b) => a.name.localeCompare(b.name)), others: cfg.others, ...(cfg.others ? { othersFix: 'run meshctl status' } : {}), available: offered(cfg) }
     },
     trigger: async (trigger, name) => {
       const cfg = read()

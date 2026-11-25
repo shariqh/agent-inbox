@@ -80,6 +80,11 @@ function serversJson(dir: string, list: Record<string, unknown>, fileMode = 0o60
   writeFileSync(serversFile(dir), JSON.stringify({ schema: 1, servers: list }))
   chmodSync(serversFile(dir), fileMode)
 }
+/** mesh.json naming these local agents: they are on, so they are who uses a server. */
+function meshOn(dir: string, ...agents: Array<'unslop' | 'unslop-code'>): void {
+  const ports = { unslop: 4420, 'unslop-code': 4421 }
+  writeFileSync(join(dir, 'mesh.json'), `${JSON.stringify({ schema: 1, agents: Object.fromEntries(agents.map((a) => [a, { endpoint: `http://127.0.0.1:${ports[a]}`, profile: a }])) }, null, 2)}\n`, { mode: 0o600 })
+}
 const backups = (folder: string, base: string): string[] => existsSync(folder) ? readdirSync(folder).filter((f) => f.startsWith(`${base}.bak-`)) : []
 
 const INLINE = { _about: 'x', skill: '/rules', baseUrl: 'https://inline.example/llm', apiKey: { env: ENV_MARK }, model: 'chat-long', sampling: { temperature: 0.2 }, terms: ['Acme'], start: ['/node', '/wrap.js'] }
@@ -226,6 +231,7 @@ describe('meshctl server add, set and remove (model servers D1, D4, D8)', () => 
     const t = setup()
     serversJson(t.dir, { box: { baseUrl: 'https://box.example', apiKey: { env: ENV_MARK } }, other: { baseUrl: 'https://other.example' } })
     profile(t.dir, 'unslop-code', { server: 'box', model: 'coder-next' })
+    meshOn(t.dir, 'unslop-code')
     const dry = t.run('server', 'set', 'box', '--base-url', 'https://moved.example/llm', '--key-file', t.keyFile)
     expect(dry.out).toContain(`1/1 Would change the server box in ${serversFile(t.dir)} (keeping a backup beside it): address to https://moved.example/llm and key to file. The unslop-code profile names it: its agent stops within a minute and starts with the new settings on the next call.\n`)
     const on = t.run('server', 'set', 'box', '--base-url', 'https://moved.example/llm', '--key-file', t.keyFile, '--apply')
@@ -243,6 +249,7 @@ describe('meshctl server add, set and remove (model servers D1, D4, D8)', () => 
     serversJson(t.dir, { box: { baseUrl: 'https://box.example' }, other: { baseUrl: 'https://other.example' } })
     profile(t.dir, 'unslop', { skill: '/rules', server: 'box' })
     profile(t.dir, 'unslop-code', { server: 'box' })
+    meshOn(t.dir, 'unslop', 'unslop-code')
     expect(t.run('server', 'remove', 'box', '--apply').err)
       .toBe('Refused: the server box is named by the unslop and unslop-code profiles: point them at another server first (meshctl enable --<agent> --server <name>). Nothing changed.\n')
     expect(t.run('server', 'remove', 'gone').out).toBe(`The server gone is not in ${serversFile(t.dir)}. Nothing to do.\n`)
@@ -259,6 +266,30 @@ describe('meshctl server add, set and remove (model servers D1, D4, D8)', () => 
   })
 })
 
+describe('an agent that is off does not hold a server', () => {
+  it('its kept profile is not listed as a user, and remove goes through and says the kept settings still name it', () => {
+    const t = setup()
+    serversJson(t.dir, { box: { baseUrl: 'https://box.example' }, other: { baseUrl: 'https://other.example' } })
+    // unslop-code was turned off: disable keeps its profile, which still names the server
+    profile(t.dir, 'unslop-code', { server: 'box', model: 'coder-next' })
+    profile(t.dir, 'unslop', { skill: '/rules', server: 'other' })
+    meshOn(t.dir, 'unslop')
+    const list = JSON.parse(t.run('server', 'list', '--json').out)
+    expect(list.servers).toEqual([
+      { name: 'box', baseUrl: 'https://box.example', key: 'none', agents: [] },
+      { name: 'other', baseUrl: 'https://other.example', key: 'none', agents: ['unslop'] },
+    ])
+    const dry = t.run('server', 'remove', 'box')
+    expect(dry.code, dry.err).toBe(0)
+    expect(dry.out).toContain('Would remove the server box from')
+    expect(dry.out).toContain('The kept settings of unslop-code still name it: turning that agent on again needs --server <name>.')
+    expect(t.run('server', 'remove', 'box', '--apply').code).toBe(0)
+    expect(Object.keys(read(serversFile(t.dir)).servers)).toEqual(['other'])
+    // the agent that is on still holds its server
+    expect(t.run('server', 'remove', 'other', '--apply').err).toMatch(/^Refused: the server other is named by the unslop profile/)
+  })
+})
+
 describe('meshctl server list and status (D4, D7)', () => {
   it('lists each server with its address, key kind and agents, and the agents with inline settings apart', () => {
     const t = setup()
@@ -272,6 +303,7 @@ describe('meshctl server list and status (D4, D7)', () => {
     })
     profile(t.dir, 'unslop', INLINE)
     profile(t.dir, 'unslop-code', { server: 'box', model: 'coder-next' })
+    meshOn(t.dir, 'unslop-code')
     const text = t.run('server', 'list')
     expect(text.code).toBe(0)
     expect(text.out).toBe([
@@ -453,6 +485,7 @@ describe('--json: a plan a program can read (D6)', () => {
   it('server add, set and remove print one object too, with no key path, variable name or other value', () => {
     const t = setup()
     profile(t.dir, 'unslop', INLINE)
+    meshOn(t.dir, 'unslop')
     const dry = plan(t.run('server', 'add', 'box', '--from', 'unslop', '--move', '--json'))
     expect(dry).toEqual({ applied: false, steps: [
       `Would create ${serversFile(t.dir)} (0600) with the server box, taking baseUrl and the apiKey source from ${join(t.dir, 'mesh', 'wrappers', 'unslop.json')} (not printed).`,

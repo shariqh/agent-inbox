@@ -19,7 +19,6 @@ const CLAUDE_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG'
 /** One call's ceiling, whatever time the task has left. */
 export const CALL_MAX_MS = 120_000
 const STDOUT_MAX = 1024 * 1024
-const KILL_GRACE_MS = 2000
 /** The callers' own default speed: a shaped rate never reads below it. */
 const FLOOR_TOKENS_PER_S = 44
 
@@ -27,6 +26,8 @@ export type ClaudePostOptions = { program: string; env: NodeJS.ProcessEnv; cwd: 
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined)
+/** A token figure: a safe integer of at least 0. */
+const count = (v: unknown): number | undefined => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : undefined)
 
 /** The model and the first system and user messages of a requestBody, or undefined. */
 function request(body: string): { model: string; system: string; user: string } | undefined {
@@ -36,7 +37,8 @@ function request(body: string): { model: string; system: string; user: string } 
     const system = messages.find((m) => m.role === 'system')?.content
     const user = messages.find((m) => m.role === 'user')?.content
     const model = parsed.model
-    return typeof model === 'string' && typeof system === 'string' && typeof user === 'string' ? { model, system, user } : undefined
+    // only the three model names reach --model, whatever the caller checked
+    return typeof model === 'string' && CLAUDE_MODELS.includes(model) && typeof system === 'string' && typeof user === 'string' ? { model, system, user } : undefined
   } catch {
     return undefined
   }
@@ -44,9 +46,10 @@ function request(body: string): { model: string; system: string; user: string } 
 
 /**
  * The HttpReply for the program's stdout, or undefined when it is not the one JSON object. An
- * answer becomes an OpenAI-shaped 200; an error a bare status (its sentence is dropped).
+ * answer becomes an OpenAI-shaped 200, but only from a program that exited 0; an error a bare
+ * status whatever the exit code (its sentence is dropped).
  */
-function reply(stdout: string, wallMs: number): HttpReply | undefined {
+function reply(stdout: string, exitCode: number | null, wallMs: number): HttpReply | undefined {
   let out: Record<string, unknown>
   try {
     const parsed: unknown = JSON.parse(stdout)
@@ -59,9 +62,9 @@ function reply(stdout: string, wallMs: number): HttpReply | undefined {
     const status = out.api_error_status
     return { status: Number.isInteger(status) && (status as number) >= 400 && (status as number) <= 599 ? (status as number) : 400, body: '{}' }
   }
-  if (out.is_error !== false || typeof out.result !== 'string') return undefined
+  if (out.is_error !== false || typeof out.result !== 'string' || exitCode !== 0) return undefined
   const usage = obj(out.usage)
-  const [input, created, read, output] = [num(usage.input_tokens), num(usage.cache_creation_input_tokens), num(usage.cache_read_input_tokens), num(usage.output_tokens)]
+  const [input, created, read, output] = [count(usage.input_tokens), count(usage.cache_creation_input_tokens), count(usage.cache_read_input_tokens), count(usage.output_tokens)]
   const counts = {
     ...(input !== undefined && created !== undefined && read !== undefined ? { prompt_tokens: input + created + read } : {}),
     ...(output !== undefined ? { completion_tokens: output } : {}),
@@ -99,12 +102,9 @@ export function claudePost(options: ClaudePostOptions): Post {
       return reject(transportError('unreachable'))
     }
     let settled = false
-    let killer: NodeJS.Timeout | undefined
-    const stop = (): void => {
-      child.kill('SIGTERM')
-      killer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS)
-      killer.unref()
-    }
+    // killed outright: the program holds nothing worth a graceful stop, and the agent may exit
+    // before a grace timer would fire, leaving a child that ignored SIGTERM running
+    const stop = (): void => { child.kill('SIGKILL') }
     const finish = (error?: Error, value?: HttpReply): void => {
       if (settled) return
       settled = true
@@ -132,10 +132,9 @@ export function claudePost(options: ClaudePostOptions): Post {
     child.stderr?.resume()
     child.stdin?.on('error', () => {})
     child.on('error', () => finish(transportError('unreachable')))
-    child.on('close', () => {
-      clearTimeout(killer)
+    child.on('close', (code: number | null) => {
       if (settled) return
-      const got = reply(Buffer.concat(chunks).toString('utf8'), performance.now() - started)
+      const got = reply(Buffer.concat(chunks).toString('utf8'), code, performance.now() - started)
       if (got) finish(undefined, got)
       else finish(transportError('unreachable'))
     })

@@ -35,7 +35,9 @@ const record = (stdin) => {
   const seen = fs.existsSync(seenFile) ? JSON.parse(fs.readFileSync(seenFile, 'utf8')) : []
   before = seen.length
   seen.push({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, stdin, pid: process.pid })
-  fs.writeFileSync(seenFile, JSON.stringify(seen))
+  // written whole, then renamed, so a test never reads half of it
+  fs.writeFileSync(seenFile + '.tmp', JSON.stringify(seen))
+  fs.renameSync(seenFile + '.tmp', seenFile)
 }
 if (b.stubborn) process.on('SIGTERM', () => {})
 const answer = () => {

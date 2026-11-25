@@ -41,6 +41,31 @@ const ENV = {
 }
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+/** The fake's pid once it has recorded itself (its SIGTERM trap is set by then). */
+async function pidOf(f: ReturnType<typeof fakeClaude>): Promise<number> {
+  for (let i = 0; i < 250 && !f.seen().length; i++) await wait(20)
+  const [seen] = f.seen()
+  if (!seen) throw new Error('the fake never started')
+  return seen.pid
+}
+/** Whether `pid` is gone within a second. */
+async function deadSoon(pid: number): Promise<boolean> {
+  for (let i = 0; i < 50 && alive(pid); i++) await wait(20)
+  return !alive(pid)
+}
+type FakeChild = EventEmitter & { stdout: PassThrough; stderr: PassThrough; stdin: PassThrough; killed: string[]; kill: (s: string) => boolean; answer: (stdout: string, code: number) => void }
+/** A spawn seam whose children answer when the test says. */
+function fakeChildren(): { spawn: typeof import('node:child_process').spawn; children: FakeChild[] } {
+  const children: FakeChild[] = []
+  const spawn = (() => {
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), killed: [] as string[] }) as FakeChild
+    child.kill = (signal: string) => { child.killed.push(signal); return true }
+    child.answer = (stdout, code) => { child.stdout.end(stdout); child.emit('close', code, null) }
+    children.push(child)
+    return child
+  }) as unknown as typeof import('node:child_process').spawn
+  return { spawn, children }
+}
 const reasonOf = (p: Promise<unknown>): Promise<string | undefined> => p.then(() => undefined, (e: { reason?: string }) => e.reason)
 
 describe('claudePost (Claude Code D3)', () => {
@@ -66,25 +91,32 @@ describe('claudePost (Claude Code D3)', () => {
     expect(classify(reply)).toMatchObject({ ok: true, content: 'the answer', promptTokens: 17, completionTokens: 7 })
   })
 
-  it('shapes the timings: 3 output tokens after 2000 ms of API time read as 44 tokens a second and book no load', async () => {
+  it('shapes the timings: 3 output tokens after 2000 ms of API time read as 44 tokens a second', async () => {
     const f = fake({ stdout: answered('{"remove":[]}', { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 3 }, 2000) })
-    const post = claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })
-    const reply = classify(await post(URL_ANY, body(), {}, { timeoutMs: 10_000 }))
+    const reply = classify(await claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 }))
     if (!reply.ok || !reply.timings) throw new Error('expected an answer with timings')
     expect(reply.completionTokens).toBe(3)
     expect(reply.timings.predictedN / (reply.timings.predictedMs / 1000)).toBe(44)
-    // through unslop-code: the clock moves 2000 ms per call (the API time); the gap stays under a second
+  })
+
+  it('counts the start-up as prompt time: 3500 ms of wall time and 2000 of API time give prompt_ms 1500, and no load is booked', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    const { spawn, children } = fakeChildren()
+    const call = claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn })(URL_ANY, body(), {}, { timeoutMs: 10_000 })
+    await vi.advanceTimersByTimeAsync(3500)
+    children[0]!.answer(JSON.stringify(answered('{"suggest":[]}', { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 3 }, 2000)), 0)
+    const reply = await call
+    vi.useRealTimers()
+    expect(JSON.parse(reply.body).timings).toEqual({ prompt_ms: 1500, predicted_ms: 2000, predicted_n: 88 })
+    // through unslop-code, whose own clock sees the same 3500 ms per call: the gap is 0, not 1500
     let clock = 0
-    const timed: Post = async (...args) => {
-      const got = await post(...args)
-      clock += 2000
-      return got
+    const timed: Post = async () => {
+      clock += 3500
+      return reply
     }
     const result = await runCodeSlop({ files: [{ path: 'a.ts', text: 'export const a = 1 // one\n', added: [1] }] }, { profile: { baseUrl: PROFILE.baseUrl, model: 'sonnet' }, post: timed, now: () => clock })
-    expect(result.code).toBe(0)
-    expect(result.calls).toBeGreaterThan(0)
-    expect(result.ms.load).toBe(0)
-    expect(result.ms.model).toBe(2000 * result.calls)
+    expect(result).toMatchObject({ code: 0, calls: 1 })
+    expect(result.ms).toMatchObject({ load: 0, model: 3500 })
   })
 
   it('leaves out counts and timings it was not given, never inventing them', async () => {
@@ -95,6 +127,19 @@ describe('claudePost (Claude Code D3)', () => {
     const bare = JSON.parse((await claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 })).body)
     expect(bare.usage).toBeUndefined()
     expect(bare.timings).toEqual({ prompt_ms: expect.any(Number), predicted_ms: 500, predicted_n: 22 })
+    // a figure that is not a count of at least 0 is left out; a prompt count needs all three input figures
+    const cases: Array<[Record<string, unknown>, unknown]> = [
+      [{ input_tokens: '5', cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: -2 }, undefined],
+      [{ input_tokens: 5, cache_creation_input_tokens: 1.5, cache_read_input_tokens: 0, output_tokens: 2 }, { completion_tokens: 2 }],
+      [{ input_tokens: -5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: null }, undefined],
+      [{ input_tokens: 5, output_tokens: 2 }, { completion_tokens: 2 }],
+      [{ input_tokens: 5, cache_creation_input_tokens: 1, cache_read_input_tokens: 2, output_tokens: 1e308 }, { prompt_tokens: 8 }],
+    ]
+    for (const [usage, expected] of cases) {
+      f.set({ stdout: answered('ok', usage as Record<string, number>, 500) })
+      const got = JSON.parse((await claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 })).body)
+      expect(got.usage, JSON.stringify(usage)).toEqual(expected)
+    }
   })
 
   it('an error object (exit 1) is a bare status, never an answer: its sentence is dropped; 429 fails, 5xx is busy', async () => {
@@ -115,13 +160,18 @@ describe('claudePost (Claude Code D3)', () => {
       expect(reply, String(api)).toEqual({ status, body: '{}' })
       expect(classify(reply), String(api)).toEqual({ ok: false, outcome, reason })
     }
+    // an error object is an error whatever the exit code
+    const zero = fake({ stdout: failed(429, SENTENCE), code: 0 })
+    expect(await claudePost({ program: zero.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 })).toEqual({ status: 429, body: '{}' })
   })
 
   it('no JSON object, another shape, an exit with nothing, a missing program or a refused spawn: unreachable', async () => {
-    const shapes: unknown[] = ['not json PLANTED', '[1,2]', 'null', { is_error: false, result: 7 }, { is_error: 'no', result: 'x' }, { result: 'x' }, '']
-    for (const stdout of shapes) {
-      const f = fake({ stdout })
-      expect(await reasonOf(claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 })), JSON.stringify(stdout)).toBe('unreachable')
+    const shapes: Array<[unknown, number]> = [['not json PLANTED', 0], ['[1,2]', 0], ['null', 0], [{ is_error: false, result: 7 }, 0], [{ is_error: 'no', result: 'x' }, 0], [{ result: 'x' }, 0], ['', 0],
+      // an answer from a program that then exits non-zero is not an answer
+      [answered('PLANTED answer'), 1], [answered('PLANTED answer'), 2]]
+    for (const [stdout, code] of shapes) {
+      const f = fake({ stdout, code })
+      expect(await reasonOf(claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 })), `${JSON.stringify(stdout)} exit ${code}`).toBe('unreachable')
     }
     expect(await reasonOf(claudePost({ program: join(scratch('claude-none-'), 'claude'), env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 }))).toBe('unreachable')
     const throwing = (() => { throw new Error('ERR_INVALID_ARG_VALUE') }) as unknown as typeof import('node:child_process').spawn
@@ -130,36 +180,41 @@ describe('claudePost (Claude Code D3)', () => {
     let spawned = 0
     const counting = ((..._args: unknown[]) => { spawned++; throw new Error('x') }) as unknown as typeof import('node:child_process').spawn
     expect(await reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn: counting })(URL_ANY, '{"model":"sonnet","messages":[]}', {}, { timeoutMs: 10_000 }))).toBe('invalid')
+    // so is a model that is not haiku, sonnet or opus
+    for (const model of ['coder-next', '--dangerously-skip-permissions', 'Sonnet', '']) {
+      const text = requestBody({ ...PROFILE, model }, [{ role: 'system', content: 's' }, { role: 'user', content: 'u' }], 512)
+      expect(await reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn: counting })(URL_ANY, text, {}, { timeoutMs: 10_000 })), model).toBe('invalid')
+    }
     expect(spawned).toBe(0)
   })
 
-  it('a hang is killed at the time limit (deadline), a stubborn one by SIGKILL two seconds later', async () => {
-    const f = fake({ hang: true })
-    const post = claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })
-    const started = Date.now()
-    expect(await reasonOf(post(URL_ANY, body(), {}, { timeoutMs: 400 }))).toBe('deadline')
-    expect(Date.now() - started).toBeLessThan(3000)
-    await wait(300)
-    expect(alive(f.seen()[0]!.pid)).toBe(false)
-
-    const s = fake({ hang: true, stubborn: true })
-    expect(await reasonOf(claudePost({ program: s.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 400 }))).toBe('deadline')
-    await wait(200)
-    const pid = s.seen()[0]!.pid
-    expect(alive(pid)).toBe(true)
-    await wait(2500)
-    expect(alive(pid)).toBe(false)
-  }, 15_000)
+  it('a hang is killed with SIGKILL at the time limit (deadline), one that ignores SIGTERM too', async () => {
+    for (const stubborn of [false, true]) {
+      const f = fake({ hang: true, stubborn })
+      const started = Date.now()
+      expect(await reasonOf(claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 2000 })), String(stubborn)).toBe('deadline')
+      expect(Date.now() - started).toBeLessThan(5000)
+      const pid = await pidOf(f)
+      expect(await deadSoon(pid), String(stubborn)).toBe(true)
+    }
+  }, 20_000)
 
   it('the abort signal kills it (aborted); an already aborted signal spawns nothing', async () => {
     const f = fake({ hang: true })
     const controller = new AbortController()
     const call = claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000, signal: controller.signal })
-    for (let i = 0; i < 100 && !f.seen().length; i++) await wait(20)
+    const pid = await pidOf(f)
     controller.abort()
     expect(await reasonOf(call)).toBe('aborted')
-    await wait(300)
-    expect(alive(f.seen()[0]!.pid)).toBe(false)
+    expect(await deadSoon(pid)).toBe(true)
+    // one that ignores SIGTERM is killed at once too: its trap is set before it records itself
+    const s = fake({ hang: true, stubborn: true })
+    const stop = new AbortController()
+    const stubborn = claudePost({ program: s.program, env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000, signal: stop.signal })
+    const stubbornPid = await pidOf(s)
+    stop.abort()
+    expect(await reasonOf(stubborn)).toBe('aborted')
+    expect(await deadSoon(stubbornPid)).toBe(true)
     let spawned = 0
     const counting = ((..._args: unknown[]) => { spawned++; throw new Error('x') }) as unknown as typeof import('node:child_process').spawn
     expect(await reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn: counting })(URL_ANY, body(), {}, { timeoutMs: 10_000, signal: AbortSignal.abort() }))).toBe('aborted')
@@ -178,31 +233,25 @@ describe('claudePost (Claude Code D3)', () => {
     const f = fake({ stdout: answered('{"suggest":[]}'), hangAfter: 1 })
     const claude = claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })
     // the 120 s cap of one call, at test scale
-    const capped: Post = (url, text, headers, o) => claude(url, text, headers, { ...o, timeoutMs: Math.min(o.timeoutMs, 500) })
+    const capped: Post = (url, text, headers, o) => claude(url, text, headers, { ...o, timeoutMs: Math.min(o.timeoutMs, 2000) })
     const files = [{ path: 'a.ts', text: 'export const a = 1 // one\n', added: [1] }, { path: 'b.ts', text: 'export const b = 2 // two\n', added: [1] }, { path: 'c.ts', text: 'export const c = 3\n', added: [1] }]
     const result = await runCodeSlop({ files }, { profile: { baseUrl: PROFILE.baseUrl, model: 'sonnet' }, post: capped })
     expect(result).toMatchObject({ code: 0, status: 'unchanged', reason: 'budget', calls: 2 })
     expect(result.files.map((r) => r.status)).toEqual(['unchanged', 'not-reached', 'not-reached'])
-    await wait(300)
-    expect(f.seen().map((s) => alive(s.pid))).toEqual([false, false])
-  })
+    expect(f.seen()).toHaveLength(2)
+    for (const s of f.seen()) expect(await deadSoon(s.pid)).toBe(true)
+  }, 15_000)
 
   it('caps one call at 120 seconds whatever time the task has left', async () => {
     vi.useFakeTimers()
-    const children: Array<EventEmitter & { kill: (s: string) => boolean; killed: string[] }> = []
-    const spawn = (() => {
-      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), killed: [] as string[] })
-      const full = Object.assign(child, { kill: (signal: string) => { child.killed.push(signal); return true } })
-      children.push(full)
-      return full
-    }) as unknown as typeof import('node:child_process').spawn
+    const { spawn, children } = fakeChildren()
     const call = reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn })(URL_ANY, body(), {}, { timeoutMs: 600_000 }))
     await vi.advanceTimersByTimeAsync(CALL_MAX_MS - 1)
     expect(children[0]!.killed).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
     expect(await call).toBe('deadline')
-    expect(children[0]!.killed).toEqual(['SIGTERM'])
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(children[0]!.killed).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(children[0]!.killed).toEqual(['SIGKILL'])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(children[0]!.killed).toEqual(['SIGKILL'])
   })
 })

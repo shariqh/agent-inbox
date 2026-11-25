@@ -4,7 +4,8 @@
 // scratch folders with AGENT_INBOX_MESH_DIR and HOME pinned; every server is a local fake on
 // 127.0.0.1 with a port the system picks. No model, no real server.
 import { afterEach, describe, expect, it } from 'vitest'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -613,12 +614,12 @@ describe('meshctl server check (D4)', () => {
 // first on PATH; no test runs a real claude, and the fixed system places are passed as [].
 const PLANTED_ACCOUNT = 'planted-account@example.invalid'
 /** A fake claude: records its argv, cwd and environment, then prints `stdout` and exits `code` (or hangs). */
-function fakeClaude(behaviour: { stdout?: string; code?: number; hang?: boolean }): { bin: string; program: string; seen: string } {
+function fakeClaude(behaviour: { stdout?: string; code?: number; hang?: boolean; stubborn?: boolean }): { bin: string; program: string; seen: string } {
   const bin = scratchDir('claude-bin-')
   const program = join(bin, 'claude')
   const seen = join(bin, 'seen.json')
   writeFileSync(program, `#!${process.execPath}
-require('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }))
+${behaviour.stubborn ? "process.on('SIGTERM', () => {})\n" : ''}require('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }))
 ${behaviour.hang ? 'setTimeout(() => {}, 60_000)' : `process.stdout.write(${JSON.stringify(behaviour.stdout ?? '')}); process.exitCode = ${behaviour.code ?? 0}`}
 `)
   chmodSync(program, 0o755)
@@ -646,11 +647,22 @@ describe('meshctl server check of a Claude Code server (Claude Code D2)', () => 
     expect([text.code, text.out]).toEqual([0, 'Server cc (Claude Code on this Mac): ready; signed in; 3 models.\n  haiku\n  opus\n  sonnet\n'])
     const seen = read(fake.seen)
     expect(seen.argv).toEqual(['auth', 'status', '--json'])
+    expect(seen.cwd).toBe(realpathSync(tmpdir()))
     expect(Object.keys(seen.env).filter((name) => !name.startsWith('__CF') && name !== 'PWD' && name !== 'SHLVL' && name !== '_').sort()).toEqual(['HOME', 'PATH'])
     expect(JSON.stringify(seen.env)).not.toContain(KEY_VALUE)
     const json = await check(t.dir, ['cc', '--json'], env)
     expect([json.code, JSON.parse(json.out)]).toEqual([0, { server: 'cc', kind: 'claude-code', baseUrl: '', key: 'none', reachable: true, models: ['haiku', 'opus', 'sonnet'], skipped: 0 }])
   })
+
+  it('a program that ignores SIGTERM is killed at the limit: timeout, exit 1, never a hang', async () => {
+    const t = setup()
+    serversJson(t.dir, { cc: { kind: 'claude-code' } })
+    const fake = fakeClaude({ hang: true, stubborn: true })
+    const started = Date.now()
+    const r = await check(t.dir, ['cc', '--json'], { PATH: fake.bin }, 1500)
+    expect([r.code, JSON.parse(r.out).failure]).toEqual([1, 'timeout'])
+    expect(Date.now() - started).toBeLessThan(6000)
+  }, 15_000)
 
   it('no program, not signed in, not JSON, a failed run, too much output and a hang: the right word, exit 1, nothing of its output printed', async () => {
     const t = setup()

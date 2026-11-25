@@ -54,8 +54,9 @@ const CLAUDE_ENV = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG'
 /** Whether the claude program says it is signed in: `<program> auth status --json`, reading only `loggedIn`. */
 function claudeSignedIn(program: string, env: NodeJS.ProcessEnv, ms: number): true | Failure {
   const childEnv = Object.fromEntries(CLAUDE_ENV.filter((name) => env[name] !== undefined).map((name) => [name, env[name]]))
-  // a fixed argv, no shell, stdin and stderr ignored; its output is parsed, never printed
-  const run = spawnSync(program, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: ms, maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'ignore'], env: childEnv, cwd: tmpdir() })
+  // a fixed argv, no shell, stdin and stderr ignored; its output is parsed, never printed. spawnSync
+  // returns only once the child has exited, so the limit kills it outright: SIGTERM could be ignored
+  const run = spawnSync(program, ['auth', 'status', '--json'], { encoding: 'utf8', timeout: ms, killSignal: 'SIGKILL', maxBuffer: 64 * 1024, stdio: ['ignore', 'pipe', 'ignore'], env: childEnv, cwd: tmpdir() })
   if ((run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') return 'timeout'
   if (run.error || run.status !== 0) return 'signed-out'
   try {

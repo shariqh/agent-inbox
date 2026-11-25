@@ -375,6 +375,77 @@ describe('adding a Claude Code server (Claude Code D3)', () => {
     expect(bridge.ops()).toEqual([])
   })
 
+  it('the quiet line describes the Name field while it shows, and only then (U2)', async () => {
+    await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    expect(field('name')!.hasAttribute('aria-describedby')).toBe(false)
+    pick(kindRadio('claude-code'))
+    await settle()
+    expect(quiet()!.id).not.toBe('')
+    expect(field('name')!.getAttribute('aria-describedby')).toBe(quiet()!.id)
+    expect(document.getElementById(quiet()!.id)).toBe(quiet())
+    pick(kindRadio('http'))
+    await settle()
+    expect(field('name')!.hasAttribute('aria-describedby')).toBe(false)
+  })
+
+  it('changing What kind clears a message left under the form (U3)', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    type(field('name'), 'claude')
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect(message().textContent).toBe('Enter the address, starting with http:// or https://.')
+    pick(kindRadio('claude-code'))
+    await settle()
+    expect(message().textContent).toBe('')
+    expect(shown(message())).toBe(false)
+    expect(bridge.ops()).toEqual([])
+  })
+
+  it('a Save in flight disables both kind radios until it ends (U6)', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    pick(kindRadio('claude-code'))
+    await settle()
+    type(field('name'), 'claude')
+    const release = bridge.hold()
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect([kindRadio('claude-code').disabled, kindRadio('http').disabled]).toEqual([true, true])
+    expect(buttonLabelled('Saving…', setup())!.disabled).toBe(true)
+    release()
+    await settle()
+    expect(bridge.ops().map(([op]) => op)).toEqual(['add-claude-server', 'add-claude-server', 'check-server'])
+  })
+
+  it('switching to Claude Code and back to an address with a valid address, Save sends add-server (U6)', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    type(field('name'), 'local')
+    pick(kindRadio('claude-code'))
+    await settle()
+    pick(kindRadio('http'))
+    await settle()
+    type(field('baseUrl'), 'http://127.0.0.1:8080/v1')
+    bridge.s.servers = [server('local', { kind: 'http', baseUrl: 'http://127.0.0.1:8080/v1' })]
+    click(buttonLabelled('Save', setup()))
+    await settle()
+    expect(bridge.ops()).toEqual([
+      ['add-server', { name: 'local', baseUrl: 'http://127.0.0.1:8080/v1', key: 'none', apply: false }],
+      ['add-server', { name: 'local', baseUrl: 'http://127.0.0.1:8080/v1', key: 'none', apply: true }],
+      ['check-server', { name: 'local' }],
+    ])
+  })
+
   it('the hidden Address and Key leave the layout: a rule hides a hidden field or choice, inside the set-up slice', () => {
     const css = readFileSync(resolve(import.meta.dirname, '..', '..', 'public', 'style.css'), 'utf8')
     const mine = css.slice(css.indexOf('agent setup in the app (step 2b)'), css.indexOf('/* Run history (cards view V5d)'))
@@ -1120,6 +1191,28 @@ describe('setting up an agent on a Claude Code server (Claude Code D4)', () => {
     await settle()
     expect(options()).toEqual(['Choose a model', 'zeta', 'alpha'])
     expect(shown(why())).toBe(false)
+  })
+
+  it('the typed model field follows a server change: an old typed name never shows under a new server (U4)', async () => {
+    const { bridge } = await boot({ bridge: { servers: [claudeServer('claude'), server('lab')] } })
+    await enter()
+    click(offer('unslop-code')!.querySelector('.ma-description'))
+    await settle()
+    bridge.s.answers['check-server'] = () => checked('unreachable')
+    choose(select('server'), 'lab')
+    await settle()
+    type(field('model'), 'foo')
+    bridge.s.answers['check-server'] = () => checkedClaude()
+    choose(select('server'), 'claude')
+    await settle()
+    bridge.s.answers['check-server'] = () => checked('unreachable')
+    choose(select('server'), 'lab')
+    await settle()
+    expect(shown(field('model'))).toBe(true)
+    expect(field('model')!.value).toBe('')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(message().textContent).toBe('Type the model’s name.')
   })
 
   it('Add a server… from the form adds a Claude Code server and comes back with it chosen and its three models', async () => {

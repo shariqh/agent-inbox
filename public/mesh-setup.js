@@ -617,6 +617,8 @@ export function installMeshSetup(deps) {
       radio.addEventListener('change', () => {
         if (!page || !radio.checked) return
         page.values[key] = value
+        // a message about the other kind's fields is out of date once they hide
+        if (key === 'kind') page.message = ''
         changed()
       })
       option.append(radio, doc.createTextNode(` ${text}`))
@@ -649,6 +651,7 @@ export function installMeshSetup(deps) {
       if (page.kind === 'add') {
         // Claude Code needs only the name: the address and the key hide (and are not checked) while it is chosen
         refs.claudeHint = make('p', 'ms-hint', CLAUDE_HINT)
+        refs.claudeHint.id = 'meshClaudeHint'
         refs.address = field('Address', input('baseUrl', page.values.baseUrl))
         refs.key = radios('Key', 'msKey', 'key', [['none', 'No key'], ['file', 'Key file']])
         refs.key.append(chooser('key'))
@@ -748,6 +751,9 @@ export function installMeshSetup(deps) {
       setHidden(els.claudeHint, !claude)
       setHidden(els.address, claude)
       setHidden(els.key, claude)
+      // the quiet line describes the Name field while it shows
+      if (claude && els.first.getAttribute('aria-describedby') !== els.claudeHint.id) els.first.setAttribute('aria-describedby', els.claudeHint.id)
+      else if (!claude && els.first.hasAttribute('aria-describedby')) els.first.removeAttribute('aria-describedby')
     }
     const choose = els.form.querySelector('.ms-choose')
     if (choose) {
@@ -818,6 +824,8 @@ export function installMeshSetup(deps) {
     els.form.querySelector('.ms-model-label').htmlFor = typing ? typed.id : list.id
     setHidden(list, typing)
     setHidden(typed, !typing)
+    // the field shows the model the page holds: a server change resets it, and a person typing keeps theirs
+    if (typed.value !== page.values.model && doc.activeElement !== typed) typed.value = page.values.model
     // why the server could not be asked: beside the typed field, or under a Claude Code server's fixed list
     setText(why, model.why)
     setHidden(why, !model.why)

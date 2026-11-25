@@ -148,7 +148,8 @@ export function installMeshAgents(deps = {}) {
     const grid = make('ul', 'ma-grid')
     grid.setAttribute('role', 'list')
     grid.setAttribute('aria-labelledby', 'meshAgentsTitle')
-    root.append(head, make('p', 'ma-stale', 'could not read; showing what was last read'), grid, make('p', 'ma-others'))
+    // step 2b (D2): with no agent on, one quiet line in place of the grid
+    root.append(head, make('p', 'ma-stale', 'could not read; showing what was last read'), make('p', 'ma-empty', 'No agent is on yet.'), grid, make('p', 'ma-others'))
     refresh.addEventListener('click', () => deps.onRefresh?.())
     grid.addEventListener('click', (event) => {
       const card = event.target instanceof doc.defaultView.Element ? event.target.closest('.ma-card') : null
@@ -238,6 +239,7 @@ export function installMeshAgents(deps = {}) {
 
   /**
    * Mounts the section in `slot` while there is a body to show; with none (the mesh off) no section exists.
+   * A body with no agent (the mesh off while the app can set one up) shows one line in place of the grid.
    * @param {Element} slot @param {{body: any, stale: boolean} | null} input @param {number} nowMs
    * @param {string | null} [openKey] the agent whose page is open, whose card carries aria-current
    */
@@ -249,7 +251,9 @@ export function installMeshAgents(deps = {}) {
     const section = element()
     if (section.parentNode !== slot) slot.append(section)
     const model = meshRows(input.body, nowMs)
-    setText(section.querySelector('.ma-count'), model.count)
+    setText(section.querySelector('.ma-count'), model.rows.length ? model.count : '')
+    setHidden(section.querySelector('.ma-empty'), model.rows.length > 0)
+    setHidden(section.querySelector('.ma-grid'), !model.rows.length)
     setText(section.querySelector('.ma-checked'), model.checked)
     setHidden(section.querySelector('.ma-checked'), !model.checked)
     setHidden(section.querySelector('.ma-stale'), !input.stale)

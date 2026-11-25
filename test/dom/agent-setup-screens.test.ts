@@ -14,7 +14,7 @@ import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
 import meshProcess from '../../electron/mesh-process.cjs'
-import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, checkedClaude, claudeServer, fakeBridge, server } from './agent-setup-fake.js'
+import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, checkedClaude, claudeServer, fakeBridge, planned, server } from './agent-setup-fake.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -513,6 +513,64 @@ describe('focus after Save (F1)', () => {
     await saveSlowly(bridge)
     expect(row('local')).toBeNull()
     expect(document.activeElement).toBe(buttonLabelled('Add a server', home()))
+  })
+})
+
+describe('focus after an applied change (U1)', () => {
+  // as focus after Save: the real bridge answers after a command's time, and Chrome drops focus from a disabled control
+  async function pressSlowly(bridge: Awaited<ReturnType<typeof boot>>['bridge'], control: HTMLElement) {
+    bridge.s.delay = 8
+    const stop = blurWhenDisabled()
+    try {
+      click(control)
+      await vi.advanceTimersByTimeAsync(2000)
+      await settle()
+      await pollTick()
+      await vi.advanceTimersByTimeAsync(2000)
+      await settle()
+    } finally {
+      stop()
+    }
+  }
+
+  it('Change server: focus lands back on the agent page’s Change server, never on the body', async () => {
+    const { bridge } = await boot({ agents: [on('unslop-code')], available: [OFFERED['unslop']!], bridge: { servers: [server('local', { agents: ['unslop-code'] }), server('lab')] } })
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await enter()
+    click(card('unslop-code'))
+    await settle()
+    const foot = () => agentPage().querySelector<HTMLElement>('.ms-foot')!
+    click(buttonLabelled('Change server', foot()))
+    await settle()
+    choose(select('server'), 'lab')
+    await settle()
+    choose(select('model'), 'model-a')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    await pressSlowly(bridge, buttonLabelled('Change server', setup())!)
+    expect(bridge.ops().filter(([op, values]) => op === 'enable-model-agent' && values['apply'] === true)).toHaveLength(1)
+    expect(shown(agentPage())).toBe(true)
+    expect(document.activeElement).not.toBe(document.body)
+    expect(document.activeElement).toBe(buttonLabelled('Change server', foot()))
+  })
+
+  it('Turn on from the Marketplace: focus lands on the agent’s page, never on the body', async () => {
+    const { bridge, mesh } = await boot({ bridge: { servers: [server('local')] } })
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await enter()
+    click(buttonLabelled('Set up', offer('unslop-code')!))
+    await settle()
+    choose(select('model'), 'model-a')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    bridge.s.answers['enable-model-agent'] = (values) => values['apply'] === true
+      ? (mesh.s.version = { agents: 1 }, mesh.s.body = { on: true, agents: [on('unslop-code', { state: 'unchecked', reason: 'press Refresh' })], others: 0, available: [OFFERED['unslop']!, OFFERED['request-post']!] }, planned(true))
+      : planned(false)
+    await pressSlowly(bridge, buttonLabelled('Turn on', setup())!)
+    expect(shown(agentPage())).toBe(true)
+    expect(document.activeElement).not.toBe(document.body)
+    expect(agentPage().contains(document.activeElement)).toBe(true)
+    expect(document.activeElement).toBe(agentPage().querySelector('.map-back'))
   })
 })
 

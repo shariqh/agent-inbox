@@ -187,6 +187,16 @@ export function installMeshSetup(deps) {
     if (nowhere || (!lost && deps.panel()?.contains(active))) el.focus({ preventScroll: true })
   }
 
+  // Focus once an operation's last repaint is done: onto `want` when focus went nowhere (Chrome drops
+  // it to the body from a control a repaint disabled, such as the foot's while the servers are read)
+  // or still sits where it was `parked`; a person who moved it meanwhile keeps it.
+  function landAfter(want, parked) {
+    const el = typeof want === 'function' ? want() : want
+    const active = doc.activeElement
+    if (!el?.isConnected || active === el) return
+    if (!active || active === doc.body || !active.isConnected || active === parked) el.focus({ preventScroll: true })
+  }
+
   async function call(operation, values) {
     try {
       return await deps.bridge().run(operation, values)
@@ -916,12 +926,17 @@ export function installMeshSetup(deps) {
     page = null
     els = null
     fresh = mine.agent
+    // back on the agent's page: Change server's own control, or the new agent page's back control
+    const want = () => (mine.change ? mine.opener?.() ?? deps.heading() : deps.agentPage()?.querySelector('.map-back') ?? deps.heading())
     if (mine.change) {
       changed()
-      settleFocus(() => mine.opener?.() ?? deps.heading())
+      settleFocus(want)
     } else deps.turnedOn(mine.agent)
+    const parked = doc.activeElement
     deps.reload()
+    // reading the servers disables the foot's controls, which drops focus from Change server
     await listServers()
+    landAfter(want, parked)
   }
 
   async function save() {
@@ -974,12 +989,7 @@ export function installMeshSetup(deps) {
     }
     // Focus goes to the new server's row once it is painted, else to Add a server; a person who
     // moved it meanwhile keeps it. It lands again after the check, which disables the row's button.
-    const land = () => {
-      const el = rowEls.get(name)?.querySelector('.ms-check') ?? serverSection?.querySelector('.ms-add')
-      const active = doc.activeElement
-      if (!el?.isConnected || active === el) return
-      if (!active || active === doc.body || !active.isConnected || active === parked) el.focus({ preventScroll: true })
-    }
+    const land = () => landAfter(() => rowEls.get(name)?.querySelector('.ms-check') ?? serverSection?.querySelector('.ms-add'), parked)
     land()
     await checkRow(name, { focus: false })
     land()

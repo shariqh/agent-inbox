@@ -260,8 +260,9 @@ reported as not reached. unslop gives the original back.
 
 ## Output for programs (`--json`)
 
-`enable`, `disable`, `server add`, `server set` and `server remove` take `--json`. They then print
-one JSON object and nothing else, with the same exit codes:
+`enable`, `disable`, `add`, `remove`, `server add`, `server set` and `server remove` take `--json`.
+They then print one JSON object and nothing else, with the same exit codes (`add` adds `card`, a
+summary of the card: [`docs/mesh-call.md`](mesh-call.md#output-for-programs-add---json---expect-pin-and-remove---json)):
 
 ```json
 { "applied": false, "steps": ["Would add the server box to …/servers.json, at https://models.example/llm, key: file, keeping every other server (and a backup beside it)."] }

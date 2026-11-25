@@ -1638,6 +1638,22 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(readdirSync(t.dir)).toEqual([])
   })
 
+  it('the usage and docs/mesh-call.md name add --json, --expect-pin, remove --json and every card field', async () => {
+    const t = setup()
+    const usage = (await t.add('--bogus')).err
+    expect(usage).toContain('add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]')
+    expect(usage).toContain('add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]')
+    expect(usage).toContain('remove <id> [--json] [--apply]')
+    expect(usage).toContain('enable, disable, add, remove and server add|set|remove also take --json')
+    const doc = readFileSync(join(REPO, 'docs', 'mesh-call.md'), 'utf8')
+    const signed = await signedAgent(K1, (c) => { c.provider = { organization: 'Example Org' } })
+    const c = plan(await t.add(signed.url, '--id', 'echo', '--token-file', t.tokenFile, '--json')).card!
+    for (const key of Object.keys(c)) expect(doc, key).toContain(`| \`${key}\` |`)
+    // the example object has the same fields in the same order
+    const example = /```json\n(\{"applied".*\})\n```/.exec(doc)
+    expect(Object.keys(JSON.parse(example![1]!).card)).toEqual(Object.keys(c))
+  })
+
   it('add --json: a refusal before the fetch carries no card, one after it carries the card; usage stays text', async () => {
     const a = await agent()
     const t = setup('{"schema":1}\n')

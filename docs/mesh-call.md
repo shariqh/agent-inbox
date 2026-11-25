@@ -223,6 +223,63 @@ thumbprint to list in the card's profile `keys`; `meshctl key show <agent>` prin
 `meshctl key rotate <agent> --apply` adds a next key to list and sign with beside the current one
 for at least 30 days, and `meshctl key retire <agent> --apply` then drops the old one.
 
+## Output for programs: `add --json`, `--expect-pin` and `remove --json`
+
+A program that adds an agent for a person (the app, step 2 of adding an agent by its card
+address) runs `add` twice: a dry run to show the card, then `--apply` for the card the person
+looked at.
+
+```sh
+npm run --silent meshctl -- add <card-url> --json                                     # look
+npm run --silent meshctl -- add <card-url> --expect-pin <the pin it showed> --json --apply  # add that card
+npm run --silent meshctl -- remove my-agent --json --apply
+```
+
+- `--json` on `add` and `remove` prints one JSON object on stdout and nothing else, with the same
+  exit codes (0 done or a dry run, 1 refused or a step failed). A usage error (2) prints the usage
+  on stderr and no JSON. The object is the plan the other `--json` commands print
+  ([`docs/model-servers.md`](model-servers.md#output-for-programs---json)):
+  `{ "applied", "steps", "refused"?, "notes"? }`, each step its first line (the dry run's
+  `mesh.json` step gives its first line, never the file). `refused` is the refusal's words
+  without the leading `Refused: `. `add` adds `"card"`, last.
+- `--expect-pin <sha256>` (64 lower-case hex characters, the `pin` of the card that was shown)
+  refuses a card whose pin differs, before any other refusal and in the dry run too: `the card is
+  not the one that was checked (its pin differs): check it again`. Nothing is written, and with
+  `--json` the card just fetched comes with the refusal, so it can be shown again. Anything else
+  as the value is a usage error. It works with `--move` too.
+- `card` is there once the card is fetched, passed its checks and is pinned: in a dry run, an
+  applied add, a failed step and every refusal after that point (a different pin, an agent id an
+  entry holds, a derived id that is taken or unusable). It is missing from every refusal before
+  it (an address outside the rule, a loopback card URL without `--token-file`, a taken `--id`, a
+  card that cannot be fetched or fails its checks). Without `--json` the summary block is printed
+  instead, and under `--json` it is not a note.
+
+The `card` fields. Those marked *card text* come from the card and are unverified: each is
+cleaned as the summary cleans it (a tab or line break becomes a space, every other control,
+format or invisible character becomes U+FFFD) and capped, with a cut value ending in `…`, but
+without the summary's quote marks. Show them as plain text, never as markup or links.
+
+| Field | What it is |
+|---|---|
+| `id` | The local id the agent gets: `--id`, else the `--move` target (or the entry a signed move moves), else the id the card's name makes. Missing when there is none (the name makes no usable id). |
+| `name` | *Card text*, at most 80 characters. |
+| `description` | *Card text*, at most 300; missing when the card has none. |
+| `version` | *Card text*, at most 80; missing when the card has none. |
+| `publisher` | *Card text*: the card's `provider.organization`, at most 80; missing when the card has none. |
+| `reach` | `loopback`, `tailnet` (this Mac's tailnet) or `public`. |
+| `endpoint` | The endpoint the entry would hold (it passed the address rule). |
+| `signed` | Whether a key the card lists signed it. |
+| `keysNew` | Only for a signed card, once known: true when the summary says its key is new to this Mac (trusted from then on if you `--apply`). |
+| `skills` | At most 16 of `{ "id", "name"?, "description"? }`, all *card text*: the id bare when it is plain (letters, digits, `.`, `_`, `-`, up to 64), else cleaned and capped at 80; name 80, description 200. |
+| `pin` | The card pin, 64 lower-case hex characters: the value `--expect-pin` takes. |
+
+No token, token file path, key or other path is in `card`. A dry run for a signed card on this
+Mac's tailnet:
+
+```json
+{"applied":false,"steps":["Would keep the card as ~/.agent-inbox/mesh/cards/echo-agent.json (0600) for the app to show.","Would create ~/.agent-inbox/mesh.json:"],"card":{"id":"echo-agent","name":"Echo Agent","description":"Echoes one text.","version":"1.0.0","publisher":"Example Org","reach":"tailnet","endpoint":"https://echo.tailnet-example.ts.net/a2a","signed":true,"keysNew":true,"skills":[{"id":"echo","name":"echo","description":"Echo one text."}],"pin":"f55799f06b5b4117d471de6f7c40cd931bd3bd6aaf93672b071d911d9debd0b3"}}
+```
+
 ## Checking a card before anyone adds it: `meshctl check`
 
 `meshctl check` tells whoever writes an agent whether `meshctl add` will accept it, and whether

@@ -29,11 +29,11 @@
 //   meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--json] [--apply]
 //   meshctl disable --unslop-code [--purge] [--apply]
 //   meshctl disable --request-post [--purge] [--apply]
-//   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
+//   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
 //                                            add an A2A agent this repo doesn't ship (#529)
-//   meshctl add <card-url> --move <id> [--token-file <path>] [--apply]
+//   meshctl add <card-url> --move <id> [--token-file <path>] [--expect-pin <sha256>] [--json] [--apply]
 //                                            the same agent (its card's id) at a new endpoint (#537)
-//   meshctl remove <id> [--apply]            take an added agent out again
+//   meshctl remove <id> [--json] [--apply]   take an added agent out again
 //   meshctl key create|show|rotate|retire <agent> [--apply]
 //                                            an agent's card-signing key (src/mesh-keys.ts, #536)
 //   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
@@ -56,8 +56,8 @@
 //
 // `server …` (model servers step 1) keeps <mesh dir>/mesh/servers.json: each model server once, by
 // name, with its address and key source, or as Claude Code on this Mac (`--claude-code`: no address,
-// no key); a local agent's profile names one instead of holding baseUrl and apiKey. enable, disable
-// and server add|set|remove take --json: one plan object.
+// no key); a local agent's profile names one instead of holding baseUrl and apiKey. enable, disable,
+// add, remove and server add|set|remove take --json: one plan object.
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, `unslop-code` its own
@@ -109,9 +109,9 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable --unslop-code [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
-       agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
-       agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--apply]
-       agent-inbox-meshctl remove <id> [--apply]
+       agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
+       agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
+       agent-inbox-meshctl remove <id> [--json] [--apply]
        agent-inbox-meshctl key create|show|rotate|retire <agent> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
@@ -129,8 +129,9 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl server check <name> [--json]
 
 Without --apply, enable, disable, add, remove, forget-runs, skills, key and server add|set|remove are dry runs: they print what they would do.
-enable, disable and server add|set|remove also take --json: they print one JSON object,
-{ "applied", "steps", "refused"?, "notes"? }, each step its first line as the text prints it.
+enable, disable, add, remove and server add|set|remove also take --json: they print one JSON object,
+{ "applied", "steps", "refused"?, "notes"? }, each step its first line as the text prints it;
+add's also has "card", the card's summary as cleaned fields (docs/mesh-call.md).
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
@@ -171,6 +172,8 @@ add verifies the card's signatures (ES256, ES384 or EdDSA by a key the card's pr
 refuses the card; an unsigned card is allowed on loopback and this Mac's tailnet only. The keys
 the card lists are pinned in the entry (trust on first use);
 --key-thumbprint <t> refuses a card not signed by the key with that RFC 7638 thumbprint.
+--expect-pin <sha256> refuses a card whose pin is not the one given (a dry run prints it), so
+add takes only the card that was looked at.
 A card whose agent id an entry holds, signed by a key that entry pinned, is that agent at a new
 endpoint: add moves it. add --move <id> moves agents.<id> to the card URL given, signed or not:
 the card must declare the entry's agentId and match its pin; only the card URL and endpoint
@@ -1514,7 +1517,7 @@ function magicDnsSuffix(): string | undefined {
 type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' | 'err'>
 
 /**
- * `add <card-url> [--id <id> | --move <id>] [--token-file <path>] [--apply]` (#529, mesh design
+ * `add <card-url> [--id <id> | --move <id>] [--token-file <path>] [--expect-pin <sha256>] [--json] [--apply]` (#529, mesh design
  * §6.7, D13–D17): fetches and checks the card, applies the endpoint rule and, with `--apply`,
  * copies the token (0600, never printed) and writes `agents.<id>` = { card, endpoint, tokenFile?,
  * cardSha256, agentId? }, keeping every other key and a backup. It never replaces an entry or takes

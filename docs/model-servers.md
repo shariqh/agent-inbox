@@ -41,6 +41,29 @@ an agent's inline settings into a server (`server add --from <agent> --move`). S
 unslop-code, or **Change server** on its page, picks a server and a model from the server's own
 list. The commands below stay the way to do everything else.
 
+### A key the app cannot read
+
+The app runs these commands with a short fixed environment (`PATH`, `HOME`, and a few others), not
+your shell's. So **Check** in the app can fail on a key where `server check` in a terminal works:
+
+- A key from a variable is never visible to the app. **Check** says the key is in a shell variable.
+- A key from a command works only if the command needs nothing from your shell. A command that
+  reads a token from a variable gives no key there, and **Check** says the key's command gave no key.
+
+You can still set up an agent on that server in the app: it asks you to type the model's name
+instead of picking it from the server's list.
+
+To let the app read the key too, use a key file (`server set <name> --key-file …`), or make the
+command load your shell's settings first. With zsh, put `/bin/zsh -c 'exec "$@"' zsh` in front of
+the command:
+
+```json
+"apiKey": { "command": ["/bin/zsh", "-c", "exec \"$@\"", "zsh", "/usr/local/bin/keytool", "read", "box"] }
+```
+
+A zsh started this way reads `~/.zshenv` and no other startup file of yours, so the variable the
+command needs must be set there.
+
 ## How an agent names a server
 
 A local agent's profile (`<mesh dir>/mesh/wrappers/unslop.json` or `unslop-code.json`) holds

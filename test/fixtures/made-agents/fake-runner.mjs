@@ -4,7 +4,7 @@
 // core only: --card prints a card of the same shape, --try prints a fixed answer, and --id serves
 // the card with the identity proof and answers SendMessage, reading the same files the real one
 // reads. FAKE_RUNNER (in the environment it inherits) bends it: `card-fail`, `try-fail`,
-// `no-listen`, `other-card`. It records its pid under <mesh dir>/fake-pids/ so a test can stop it,
+// `no-listen`, `other-card`, `unproven` (it answers without the identity proof, as another process on the port would). It records its pid under <mesh dir>/fake-pids/ so a test can stop it,
 // and it stops once its mesh.json entry, seen once, is gone or names another port.
 import { createHmac } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -62,7 +62,7 @@ if (args[0] === '--card') {
     req.on('end', () => {
       if (req.method === 'GET') {
         const nonce = req.headers['a2a-mesh-challenge']
-        const proof = typeof nonce === 'string' ? { 'a2a-mesh-proof': createHmac('sha256', token).update(`a2a-mesh/v1\n${nonce}`).digest('base64url') } : {}
+        const proof = typeof nonce === 'string' && mode !== 'unproven' ? { 'a2a-mesh-proof': createHmac('sha256', token).update(`a2a-mesh/v1\n${nonce}`).digest('base64url') } : {}
         return void res.writeHead(200, { 'content-type': 'application/json', ...proof }).end(served)
       }
       if (req.headers.authorization !== `Bearer ${token}`) return void res.writeHead(401).end()

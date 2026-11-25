@@ -3,7 +3,7 @@
 // points at a scratch checkout whose runner is test/fixtures/made-agents/fake-runner.mjs (the real
 // runner is proven end to end in packages/mesh/test/made-agent.test.ts). Tests pin HOME and the
 // mesh folder to scratch folders, run no real claude and contact no network but loopback.
-import { copyFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { runNew } from '../src/meshctl.js'
@@ -15,7 +15,13 @@ const ID = 'action-items'
 const INSTRUCTIONS = 'You are given meeting notes. List each action item on its own line: the task, then the owner in brackets. If there are none, say so. Do not add anything that is not in the notes.'
 const EXAMPLE = { name: ID, description: 'Turns meeting notes into a list of action items.', instructions: INSTRUCTIONS, server: 'claude', model: 'sonnet' }
 
+const meshes: string[] = []
+/** The pids of the fake runners a mesh folder's agents started. */
+const runners = (dir: string): number[] => { try { return readdirSync(join(dir, 'fake-pids')).map((f) => Number(f.split('-').at(-1))) } catch { return [] } }
+const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
+
 afterEach(() => {
+  for (const dir of meshes.splice(0)) for (const pid of runners(dir)) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
   removeScratchDirs()
 })
 
@@ -38,6 +44,7 @@ const files = (dir: string): string[] => readdirSync(dir, { recursive: true }).m
 /** A mesh folder whose servers.json holds `claude` (Claude Code on this Mac) and `box` (an address). */
 function setup() {
   const dir = scratchDir('made-mesh-')
+  meshes.push(dir)
   const home = scratchDir('made-home-')
   privateFile(join(dir, 'mesh', 'servers.json'), JSON.stringify({ schema: 1, servers: { claude: { kind: 'claude-code' }, box: { baseUrl: 'https://box.example' } } }))
   const where = checkout()
@@ -167,5 +174,89 @@ describe('meshctl new --try (D3)', () => {
     expect(r.err).toBe('made-agent: the try failed: the server box is busy (backend-5xx): try again later\n')
     expect(r.out).not.toContain('Untrusted result')
     expect(r.out).not.toContain('Dry run.')
+  })
+})
+
+const waitFor = async (check: () => boolean, ms = 5000): Promise<boolean> => {
+  for (const until = Date.now() + ms; Date.now() < until; await new Promise((done) => setTimeout(done, 50))) if (check()) return true
+  return check()
+}
+
+describe('meshctl new --apply (D3)', () => {
+  it('writes the description, token and start profile (0600), starts the runner, and adds it with the pin the dry run showed', async () => {
+    const t = setup()
+    const card = t.card()
+    const dry = await t.make([ID, '--from', card])
+    const pin = /Card pin   sha256 ([0-9a-f]{64})/.exec(dry.out)![1]!
+    const r = await t.make([ID, '--from', card, '--apply'])
+    expect([r.code, r.err]).toEqual([0, ''])
+    const port = Number(/Endpoint   http:\/\/127\.0\.0\.1:(\d+)\//.exec(r.out)![1])
+    const tail = r.out.slice(r.out.indexOf('1/5 ')).replaceAll(String(port), '<port>').replaceAll(t.dir, '<dir>').split('\n')
+    expect(tail).toEqual([
+      '1/5 Wrote <dir>/mesh/agents/action-items.json.',
+      '2/5 Wrote <dir>/mesh/tokens/action-items.',
+      '3/5 Wrote <dir>/mesh/wrappers/action-items.json.',
+      '4/5 Started action-items at http://127.0.0.1:<port>/: it proved it holds its token.',
+      '5/5 Added action-items: Copied the token to <dir>/mesh/tokens/action-items. Kept the card as <dir>/mesh/cards/action-items.json. Wrote <dir>/mesh.json: action-items is added at http://127.0.0.1:<port>/.',
+      'This --apply is your approval for action-items (D14). meshctl call action-items < request calls it; meshctl remove action-items --apply takes it out.', '',
+    ])
+    const mode = (path: string): number => statSync(path).mode & 0o777
+    const description = join(t.dir, 'mesh', 'agents', `${ID}.json`)
+    const profile = join(t.dir, 'mesh', 'wrappers', `${ID}.json`)
+    const token = join(t.dir, 'mesh', 'tokens', ID)
+    expect([mode(description), mode(profile), mode(token), mode(join(t.dir, 'mesh', 'agents'))]).toEqual([0o600, 0o600, 0o600, 0o700])
+    expect(JSON.parse(readFileSync(description, 'utf8'))).toEqual({ schema: 1, ...EXAMPLE })
+    expect(JSON.parse(readFileSync(profile, 'utf8'))).toEqual({ made: true, port, start: [process.execPath, join(t.where, 'packages', 'mesh', 'dist', 'made-agent.js'), '--id', ID] })
+    const secret = readFileSync(token, 'utf8').trim()
+    expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(r.out + r.err).not.toContain(secret)
+    expect(JSON.parse(readFileSync(join(t.dir, 'mesh.json'), 'utf8'))).toEqual({ schema: 1, agents: { [ID]: {
+      card: `http://127.0.0.1:${port}/.well-known/agent-card.json`, endpoint: `http://127.0.0.1:${port}/`, tokenFile: token, cardSha256: pin, agentId: `agent-inbox.invalid/made/${ID}`,
+    } } })
+    expect(JSON.parse(readFileSync(join(t.dir, 'mesh', 'cards', `${ID}.json`), 'utf8')).name).toBe(ID)
+    expect(runners(t.dir).filter(alive)).toHaveLength(1)
+    // a second new of the same id is refused: add never replaces
+    expect((await t.make([ID, '--from', card, '--apply'])).err).toMatch(/is already in .*mesh\.json, and new never replaces an entry: meshctl remove action-items --apply first/)
+  })
+
+  it('--json --apply prints one object with the five steps, applied', async () => {
+    const t = setup()
+    const r = await t.make([ID, '--from', t.card(), '--apply', '--json'])
+    expect([r.code, r.err]).toEqual([0, ''])
+    const plan = JSON.parse(r.out)
+    expect(plan.applied).toBe(true)
+    expect(plan.steps.map((s: string) => s.split(' ')[0])).toEqual(['Wrote', 'Wrote', 'Wrote', 'Started', 'Added'])
+    expect(plan.notes).toEqual([expect.stringMatching(/^This --apply is your approval for action-items/)])
+  })
+
+  it('a runner that cannot start, another process on the port, or a card that differs from the one shown: every step is undone and the refusal says what happened', async () => {
+    for (const [mode, step, words] of [
+      ['no-listen', 4, /^Failed at step 4\/5: the agent did not start; see .*mesh\/logs\/action-items-agent\.log\. Every step before it was undone/],
+      ['unproven', 4, /^Failed at step 4\/5: another process answers at http:\/\/127\.0\.0\.1:\d+\/: it did not prove it holds action-items's token\. Every step before it was undone/],
+      ['other-card', 5, /^Failed at step 5\/5: add refused it: the card is not the one that was checked \(its pin differs\): check it again\. Every step before it was undone/],
+    ] as const) {
+      const t = setup()
+      writeFileSync(join(t.dir, 'mesh.json'), '{"schema":1,"console":{"relay":false}}\n')
+      const r = await t.make([ID, '--from', t.card(), '--apply'], { FAKE_RUNNER: mode })
+      expect([mode, r.code], r.err).toEqual([mode, 1])
+      expect(r.err).toMatch(words)
+      expect(r.out).toContain(`${step - 1}/5 `)
+      expect(readFileSync(join(t.dir, 'mesh.json'), 'utf8')).toBe('{"schema":1,"console":{"relay":false}}\n')
+      for (const gone of [join('mesh', 'agents', `${ID}.json`), join('mesh', 'wrappers', `${ID}.json`), join('mesh', 'tokens', ID), join('mesh', 'cards', `${ID}.json`)]) {
+        expect(files(t.dir), `${mode}: ${gone}`).not.toContain(gone)
+      }
+      expect(await waitFor(() => runners(t.dir).filter(alive).length === 0), mode).toBe(true)
+    }
+  }, 60_000)
+
+  it('the files a killed new left (a description, token and profile with no entry) are replaced by the next new', async () => {
+    const t = setup()
+    privateFile(join(t.dir, 'mesh', 'agents', `${ID}.json`), '{"left":"behind"}')
+    privateFile(join(t.dir, 'mesh', 'tokens', ID), 'old-token-old-token-old-token-old-token\n')
+    privateFile(join(t.dir, 'mesh', 'wrappers', `${ID}.json`), '{"made":true,"port":4498,"start":["/bin/false"]}')
+    const r = await t.make([ID, '--from', t.card(), '--apply'])
+    expect([r.code, r.err]).toEqual([0, ''])
+    expect(JSON.parse(readFileSync(join(t.dir, 'mesh', 'agents', `${ID}.json`), 'utf8'))).toEqual({ schema: 1, ...EXAMPLE })
+    expect(readFileSync(join(t.dir, 'mesh', 'tokens', ID), 'utf8')).not.toContain('old-token')
   })
 })

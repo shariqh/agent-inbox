@@ -84,6 +84,7 @@ import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from '
 import { THUMBPRINT } from './card-signature.js'
 import { frameResult } from './agent-result.js'
 import { madePaths, parseMadeCard, serverKinds } from './mesh-made.js'
+import { meshLink } from './mesh-identity.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
 import type { RunCollector } from './mesh-runs.js'
@@ -93,7 +94,7 @@ import { SKILL_TARGETS, holdSetupLock, skillPlan } from './mesh-skills.js'
 import type { SkillTarget } from './mesh-skills.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
-import { UNSLOP_USAGE, runUnslop } from './unslop-client.js'
+import { UNSLOP_USAGE, getCard, runUnslop, startAgent } from './unslop-client.js'
 import type { UnslopIo } from './unslop-client.js'
 import { UNSLOP_CODE_USAGE, runUnslopCode } from './unslop-code-client.js'
 import { SERVER_CHECK_USAGE, runServerCheck } from './mesh-server-check.js'
@@ -1942,18 +1943,94 @@ async function newAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
   }
 
   const paths = madePaths(dir, id)
-  const token = join(dir, 'mesh', 'tokens', id)
+  const tokens = join(dir, 'mesh', 'tokens')
+  const token = join(tokens, id)
   const start = [node, runner, '--id', id]
-  const steps: Step[] = [
-    { dry: `Would write the description ${show(paths.description)} (0600): ${id}, on the server ${card.server} with the model ${card.model}; its instructions are not printed.`, run: () => '' },
-    { dry: `Would write a new random caller token to ${show(token)} (0600).`, run: () => '' },
-    { dry: `Would write the start profile ${show(paths.profile)} (0600): port ${port}, start ${JSON.stringify(start)}.`, run: () => '' },
-    { dry: `Would start the agent from that profile (its log: ${show(paths.log)}) and wait up to ${MADE_START_MS / 1000} s for it to prove it holds its token at ${endpoint}.`, run: () => '' },
-    { dry: `Would add it as meshctl add ${cardUrl} --id ${id} --token-file ${show(token)} --expect-pin ${pin} does: the token copy, the card copy and agents.${id} in ${name}.`, run: () => '' },
+  // what this run wrote and started, undone in reverse when a later step fails: a made agent is
+  // never left half made (files a killed new left are replaced here, and remove deletes them)
+  const written: string[] = []
+  let started: { stop: () => void } | undefined
+  const write = (path: string, text: string): void => {
+    mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 })
+    writeAtomic(path, text, 0o600)
+    written.push(path)
+  }
+  const undo = (): void => {
+    started?.stop()
+    // add's card copy, when add stopped after it
+    try { removeCardCopy(dir, id) } catch { /* none */ }
+    for (const path of written.reverse()) {
+      try { unlinkSync(path) } catch { /* gone */ }
+    }
+  }
+  let secret = ''
+  const steps: Array<{ dry: string; run: () => string | Promise<string> }> = [
+    {
+      dry: `Would write the description ${show(paths.description)} (0600): ${id}, on the server ${card.server} with the model ${card.model}; its instructions are not printed.`,
+      run: () => { write(paths.description, `${JSON.stringify({ schema: 1, ...card }, null, 2)}\n`); return `Wrote ${show(paths.description)}.` },
+    },
+    {
+      dry: `Would write a new random caller token to ${show(token)} (0600).`,
+      run: () => { secret = randomBytes(32).toString('base64url'); write(token, `${secret}\n`); return `Wrote ${show(token)}.` },
+    },
+    {
+      dry: `Would write the start profile ${show(paths.profile)} (0600): port ${port}, start ${JSON.stringify(start)}.`,
+      run: () => { write(paths.profile, `${JSON.stringify({ made: true, port, start }, null, 2)}\n`); return `Wrote ${show(paths.profile)}.` },
+    },
+    {
+      dry: `Would start the agent from that profile (its log: ${show(paths.log)}) and wait up to ${MADE_START_MS / 1000} s for it to prove it holds its token at ${endpoint}.`,
+      run: async () => {
+        const s = startAgent(dir, { env }, id, `meshctl remove ${id} --apply, then make it again`)
+        if (typeof s === 'string') throw new StepFailure(`the agent could not be started: ${s}`)
+        started = s
+        const link = meshLink(port, secret, 'a2a-mesh')
+        try {
+          for (const until = Date.now() + MADE_START_MS; Date.now() < until;) {
+            const gone = s.exited()
+            const got = await getCard(link)
+            if (got.kind === 'ok') return `Started ${id} at ${endpoint}: it proved it holds its token.`
+            // an answer without the proof is another process on the port
+            if (got.kind === 'unproven') throw new StepFailure(`another process answers at ${endpoint}: it did not prove it holds ${id}'s token`)
+            if (gone) break
+            await new Promise((done) => setTimeout(done, 200))
+          }
+        } finally {
+          link.close()
+        }
+        throw new StepFailure(`the agent did not start; see ${show(s.log)}`)
+      },
+    },
+    {
+      dry: `Would add it as meshctl add ${cardUrl} --id ${id} --token-file ${show(token)} --expect-pin ${pin} does: the token copy, the card copy and agents.${id} in ${name}.`,
+      // add's own code path, with the pin the dry run showed: the card added is the card shown
+      run: async () => {
+        const added: Plan = { steps: [], notes: [] }
+        const said: string[] = []
+        const code = await addAgent([cardUrl, '--id', id, '--token-file', token, '--expect-pin', pin, '--apply'], { ...io, out: () => {}, err: (text) => said.push(text) }, added)
+        if (code !== 0) throw new StepFailure(`add refused it: ${(added.refused ?? said.join(' ')).replace(/^Refused: /, '').replace(/\.? ?Nothing changed\.\s*$/, '').trim()}`)
+        return `Added ${id}: ${added.steps.join(' ')}`
+      },
+    },
   ]
-  if (!apply) return runSteps(steps, false, out, err, '', plan)
-  return refuse('--apply is not built yet')
+  if (!apply) return runSteps(steps.map((step) => ({ dry: step.dry, run: () => '' })), false, out, err, '', plan)
+  const n = steps.length
+  for (const [i, step] of steps.entries()) {
+    try {
+      const line = await step.run()
+      if (plan) plan.steps.push(firstLine(line))
+      else out(`${i + 1}/${n} ${line}\n`)
+    } catch (error) {
+      undo()
+      err(`Failed at step ${i + 1}/${n}: ${error instanceof StepFailure ? error.message : 'it could not be done'}. Every step before it was undone (the agent stopped, the files this run wrote removed), so nothing changed.\n`)
+      return 1
+    }
+  }
+  out(`This --apply is your approval for ${id} (D14). meshctl call ${id} < request calls it; meshctl remove ${id} --apply takes it out.\n`)
+  return 0
 }
+
+/** A failed step of new's --apply, in words for the person. */
+class StepFailure extends Error {}
 
 /**
  * `check` (#538), and `check <id>` (Agent cards step 1, D6): an added agent's id stands for its

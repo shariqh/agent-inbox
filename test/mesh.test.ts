@@ -1840,7 +1840,7 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     }
     // meshctl, its unslop and request-post clients, the config module and the card rule are Node core plus each other only
     const local = (file: string) => [...code(file).matchAll(SPECIFIERS)].map((m) => m[2]!).filter((spec) => !spec.startsWith('node:'))
-    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-entry.js', './card-signature.js', './agent-result.js', './mesh-made.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './unslop-code-client.js', './mesh-server-check.js', './public-address.js', './version.js'])
+    expect(local('src/meshctl.ts')).toEqual(['./mesh-config.js', './mesh-config.js', './mesh-add.js', './mesh-entry.js', './card-signature.js', './agent-result.js', './mesh-made.js', './mesh-identity.js', './mesh-keys.js', './mesh-runs.js', './mesh-runs.js', './mesh-call.js', './mesh-check.js', './mesh-skills.js', './mesh-skills.js', './request-post-client.js', './request-post-client.js', './unslop-client.js', './unslop-client.js', './unslop-code-client.js', './mesh-server-check.js', './public-address.js', './version.js'])
     // made agents (agents a chat makes, step 1): the card file rule and the readers, the config reader only
     expect([...code('src/mesh-made.ts').matchAll(SPECIFIERS)].map((m) => m[2]!)).toEqual(['node:path', './mesh-config.js'])
     // meshctl server check (model servers D4): one GET to the server's own address, and a key command through child_process

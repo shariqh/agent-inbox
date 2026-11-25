@@ -10,7 +10,8 @@ import type { HttpReply, Post } from '../src/backend.js'
 import { QUESTIONS, windows } from '../src/code-prompt.js'
 import type { Question } from '../src/code-prompt.js'
 import { ANSWER_TOKENS, runCodeSlop } from '../src/unslop-code.js'
-import type { CodeFile, CodeSlopEnv, CodeSlopLog, CodeSlopTask } from '../src/unslop-code.js'
+import type { CodeFile, CodeSlopEnv, CodeSlopLog, CodeSlopResult, CodeSlopTask } from '../src/unslop-code.js'
+import { codeSkill } from '../src/skills.js'
 
 const MARKER = 'Zq7marker'
 const lines = (...l: string[]): string => `${l.join('\n')}\n`
@@ -318,6 +319,44 @@ describe('calls and tokens (Claude Code D6)', () => {
     expect(plain.tokens).toEqual({ in: 0, out: 12 * plain.calls })
     const none: Post = async () => ({ status: 200, body: JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"suggest":[]}' } }] }) })
     expect(await runCodeSlop(task([fileB]), setup(none).env)).not.toHaveProperty('tokens')
+  })
+})
+
+describe('token counts that are not plain counts (Claude Code D6)', () => {
+  const counted = (usage: Record<string, unknown>): HttpReply => {
+    const body = JSON.parse(ok('{"suggest":[]}').body) as Record<string, unknown>
+    return { status: 200, body: JSON.stringify({ ...body, usage }) }
+  }
+  const run = async (replies: HttpReply[]): Promise<{ result: CodeSlopResult; logs: CodeSlopLog[]; data: Record<string, unknown> }> => {
+    let i = 0
+    // after the listed replies, answers that report no counts
+    const post: Post = async () => replies[i++] ?? counted({})
+    const { env, logs } = setup(post)
+    const result = await runCodeSlop(task([fileB, { ...fileB, path: 'lib/other.js' }]), env)
+    const data = codeSkill({ run: async () => result }).outcome(result).data as Record<string, unknown>
+    return { result, logs, data }
+  }
+
+  it('a negative, fractional or huge figure never reaches the result, the log or the data part', async () => {
+    for (const usage of [{ prompt_tokens: -5, completion_tokens: 1.5 }, { prompt_tokens: 1e308, completion_tokens: 1e308 }, { prompt_tokens: '7', completion_tokens: null }]) {
+      const { result, logs, data } = await run([counted(usage)])
+      expect(result, JSON.stringify(usage)).not.toHaveProperty('tokens')
+      expect(logs[0]).not.toHaveProperty('tokens')
+      expect(data).not.toHaveProperty('tokens')
+    }
+    // plain counts beside bad ones: only the plain ones are summed
+    const mixed = await run([counted({ prompt_tokens: 100, completion_tokens: -1 }), counted({ prompt_tokens: 2.5, completion_tokens: 7 })])
+    expect(mixed.result.tokens).toEqual({ in: 100, out: 7 })
+    expect(mixed.logs[0]!.tokens).toEqual({ in: 100, out: 7 })
+    expect(mixed.data.tokens).toEqual({ in: 100, out: 7 })
+  })
+
+  it('stops adding once a sum would pass the largest safe integer, keeping the last safe sum', async () => {
+    const big = Number.MAX_SAFE_INTEGER - 10
+    const { result, logs } = await run([counted({ prompt_tokens: big, completion_tokens: 3 }), counted({ prompt_tokens: 20, completion_tokens: 4 })])
+    expect(result.tokens).toEqual({ in: big, out: 7 })
+    expect(logs[0]!.tokens).toEqual({ in: big, out: 7 })
+    expect(Number.isSafeInteger(result.tokens!.in)).toBe(true)
   })
 })
 

@@ -117,6 +117,8 @@ export const post: Post = (url, body, headers, { timeoutMs, signal }) => new Pro
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+/** A token figure: a safe integer of at least 0, anything else is no figure at all. */
+const count = (v: unknown): number | undefined => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : undefined)
 
 // §7.1: any 5xx is busy (a model load that failed while image work holds the
 // GPU); a truncated, empty or reasoning-only answer, or any tool call, keeps
@@ -141,15 +143,21 @@ export function classify(http: HttpReply): Reply {
   const t = obj(obj(json).timings)
   const [promptMs, predictedMs, predictedN] = [num(t.prompt_ms), num(t.predicted_ms), num(t.predicted_n)]
   const usage = obj(obj(json).usage)
-  const promptTokens = num(usage.prompt_tokens)
+  const promptTokens = count(usage.prompt_tokens)
   return {
-    ok: true, content, ...(promptTokens === undefined ? {} : { promptTokens }), completionTokens: num(usage.completion_tokens),
+    ok: true, content, ...(promptTokens === undefined ? {} : { promptTokens }), completionTokens: count(usage.completion_tokens),
     ...(predictedMs && predictedN ? { timings: { promptMs: promptMs ?? 0, predictedMs, predictedN } } : {}),
   }
 }
 
-/** Adds one ok reply's counts to a run's tokens: undefined until a reply reports either count. */
+/**
+ * Adds one ok reply's counts to a run's tokens: undefined until a reply reports either count. Only
+ * a safe integer of at least 0 counts, and a sum that would pass the largest safe integer stays at
+ * its last safe value.
+ */
 export function addTokens(tokens: Tokens | undefined, reply: { promptTokens?: number; completionTokens?: number }): Tokens | undefined {
-  if (reply.promptTokens === undefined && reply.completionTokens === undefined) return tokens
-  return { in: (tokens?.in ?? 0) + (reply.promptTokens ?? 0), out: (tokens?.out ?? 0) + (reply.completionTokens ?? 0) }
+  const [prompt, completion] = [count(reply.promptTokens), count(reply.completionTokens)]
+  if (prompt === undefined && completion === undefined) return tokens
+  const add = (sum: number, more: number | undefined): number => (more !== undefined && sum <= Number.MAX_SAFE_INTEGER - more ? sum + more : sum)
+  return { in: add(tokens?.in ?? 0, prompt), out: add(tokens?.out ?? 0, completion) }
 }

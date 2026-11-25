@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path'
 import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
-import { ALL_OFFERED, HANDLE, OFFERED, fakeBridge, server } from './agent-setup-fake.js'
+import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, fakeBridge, server } from './agent-setup-fake.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -208,7 +208,7 @@ describe('adding a server (D3)', () => {
     expect(title().textContent).toBe('Agent cards')
     expect(row('local')!.querySelector('.ms-row-note')?.textContent).toBe('reachable · 2 models')
     expect(row('local')!.querySelector('.ms-row-facts')?.textContent).toBe('http://127.0.0.1:8080/v1 · key file')
-    expect(document.activeElement).toBe(buttonLabelled('Add a server', home()))
+    expect(document.activeElement).toBe(buttonLabelled('Check', row('local')!))
   })
 
   it('shows a refusal’s own words under the form as text, and never runs the real one', async () => {
@@ -256,6 +256,61 @@ describe('adding a server (D3)', () => {
     expect(shown(home())).toBe(true)
     expect(document.activeElement).toBe(buttonLabelled('Add a server', home()))
     expect(bridge.ops()).toEqual([])
+  })
+})
+
+describe('focus after Save (F1)', () => {
+  // the real bridge answers after a command's time, and Chrome drops focus from a control a repaint disables
+  async function saveSlowly(bridge: Awaited<ReturnType<typeof boot>>['bridge']) {
+    bridge.s.delay = 8
+    const stop = blurWhenDisabled()
+    try {
+      click(buttonLabelled('Save', setup()))
+      await vi.advanceTimersByTimeAsync(400)
+      await settle()
+    } finally {
+      stop()
+    }
+  }
+
+  it('Add a model server: focus lands on the new row’s Check button once the row is painted', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    type(field('name'), 'local')
+    type(field('baseUrl'), 'http://127.0.0.1:8080/v1')
+    bridge.s.servers = [server('local', { baseUrl: 'http://127.0.0.1:8080/v1' })]
+    await saveSlowly(bridge)
+    expect(shown(row('local'))).toBe(true)
+    expect(row('local')!.querySelector('.ms-row-note')?.textContent).toBe('reachable · 2 models')
+    expect(document.activeElement).toBe(buttonLabelled('Check', row('local')!))
+  })
+
+  it('Make it a server: focus lands on the new row’s Check button', async () => {
+    const { bridge } = await boot({ bridge: { inline: ['unslop-code'] } })
+    await enter()
+    click(buttonLabelled('Make it a server', inlineRow('unslop-code')!))
+    await settle()
+    type(field('name'), 'coder')
+    bridge.s.servers = [server('coder', { agents: ['unslop-code'] })]
+    bridge.s.inline = []
+    await saveSlowly(bridge)
+    expect(inlineRow('unslop-code')).toBeNull()
+    expect(document.activeElement).toBe(buttonLabelled('Check', row('coder')!))
+  })
+
+  it('a server list that cannot be read leaves focus on Add a server', async () => {
+    const { bridge } = await boot()
+    await enter()
+    click(buttonLabelled('Add a server', home()))
+    await settle()
+    type(field('name'), 'local')
+    type(field('baseUrl'), 'http://127.0.0.1:8080/v1')
+    bridge.s.answers['servers'] = () => ({ ok: false, reason: 'timeout' })
+    await saveSlowly(bridge)
+    expect(row('local')).toBeNull()
+    expect(document.activeElement).toBe(buttonLabelled('Add a server', home()))
   })
 })
 

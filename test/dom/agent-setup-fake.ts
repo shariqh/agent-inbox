@@ -27,12 +27,15 @@ export function fakeBridge(init: { available?: Json; servers?: Json[]; inline?: 
     answers: {} as Record<string, (values: Json) => Json>,
     // while set, every run waits for it
     hold: null as null | Promise<void>,
+    // milliseconds every run takes before it answers, as the real bridge's does (it runs a command)
+    delay: 0,
     file: { ok: true, handle: HANDLE, name: 'server.key' } as Json,
   }
   const value = {
     available: async () => s.available,
     run: async (operation: string, values: Json) => {
       s.calls.push([operation, values])
+      if (s.delay) await new Promise<void>((done) => { setTimeout(done, s.delay) })
       if (s.hold) await s.hold
       const answer = s.answers[operation]
       if (answer) return answer(values)
@@ -60,4 +63,23 @@ export function fakeBridge(init: { available?: Json; servers?: Json[]; inline?: 
       }
     },
   }
+}
+
+/**
+ * Chrome drops focus to the body when the focused control becomes disabled; jsdom does not. This makes
+ * jsdom do it, so a test sees what the real app does when a repaint disables the focused button.
+ * Returns the function that stops it.
+ */
+export function blurWhenDisabled(): () => void {
+  const watch = new MutationObserver(() => {
+    const active = document.activeElement
+    if (!(active instanceof HTMLButtonElement) || !active.disabled) return
+    // jsdom will not blur a disabled control: enable it for the blur, then disable it again
+    active.disabled = false
+    active.blur()
+    active.disabled = true
+    watch.takeRecords()
+  })
+  watch.observe(document.body, { attributes: true, attributeFilter: ['disabled'], subtree: true })
+  return () => watch.disconnect()
 }

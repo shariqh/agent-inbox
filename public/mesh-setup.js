@@ -842,15 +842,25 @@ export function installMeshSetup(deps) {
       before.review = null
     }
     back()
+    // where back() put focus; a repaint that disables a focused control drops it to the body
+    const parked = doc.activeElement
     deps.reload()
     await listServers()
     if (before && page === before) {
       askModels(name, { focus: false })
       return
     }
-    // an adopted agent's row has left: focus goes to the new server's row
-    settleFocus(() => rowEls.get(name)?.querySelector('.ms-check'), { lost: true })
+    // Focus goes to the new server's row once it is painted, else to Add a server; a person who
+    // moved it meanwhile keeps it. It lands again after the check, which disables the row's button.
+    const land = () => {
+      const el = rowEls.get(name)?.querySelector('.ms-check') ?? serverSection?.querySelector('.ms-add')
+      const active = doc.activeElement
+      if (!el?.isConnected || active === el) return
+      if (!active || active === doc.body || !active.isConnected || active === parked) el.focus({ preventScroll: true })
+    }
+    land()
     await checkRow(name, { focus: false })
+    land()
   }
 
   // ── the foot of an agent's page ────────────────────────────────────────────

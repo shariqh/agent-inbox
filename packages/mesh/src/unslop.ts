@@ -57,7 +57,8 @@ export type UnslopEnv = {
 }
 
 export const INPUT_MAX = 12 * 1024
-export const TASK_MS = 270_000
+/** A task's own limit: a client --timeout of up to 600 s is honoured (Claude Code D5). */
+export const TASK_MS = 600_000
 const DEFAULT_TOKENS_PER_S = 44
 // a gap this long between the request and the box's own prompt+predict time is a model load
 const LOAD_GAP_MS = 1000

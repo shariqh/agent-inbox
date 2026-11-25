@@ -154,7 +154,8 @@ rely on that screen: never run the command on files that hold secrets or custome
 - A file over 256 KiB is left out and named on stderr.
 - The request stays under the agent's 4 MiB limit: files that do not fit are left out and named.
 - The agent's own limits apply too: 200 tasks and 180 model-minutes a day, counted apart from
-  unslop's, and 270 seconds of work per task.
+  unslop's, and 600 seconds of work per task, less 5 seconds kept for the answer to reach the
+  command within its `--timeout`.
 
 ### Exit codes
 

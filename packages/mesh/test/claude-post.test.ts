@@ -174,6 +174,19 @@ describe('claudePost (Claude Code D3)', () => {
     expect(reply.status).toBe(200)
   })
 
+  it('a hung call is killed at its limit and the run ends as budget, keeping the files already decided (Claude Code D5)', async () => {
+    const f = fake({ stdout: answered('{"suggest":[]}'), hangAfter: 1 })
+    const claude = claudePost({ program: f.program, env: ENV, cwd: scratch('claude-cwd-') })
+    // the 120 s cap of one call, at test scale
+    const capped: Post = (url, text, headers, o) => claude(url, text, headers, { ...o, timeoutMs: Math.min(o.timeoutMs, 500) })
+    const files = [{ path: 'a.ts', text: 'export const a = 1 // one\n', added: [1] }, { path: 'b.ts', text: 'export const b = 2 // two\n', added: [1] }, { path: 'c.ts', text: 'export const c = 3\n', added: [1] }]
+    const result = await runCodeSlop({ files }, { profile: { baseUrl: PROFILE.baseUrl, model: 'sonnet' }, post: capped })
+    expect(result).toMatchObject({ code: 0, status: 'unchanged', reason: 'budget', calls: 2 })
+    expect(result.files.map((r) => r.status)).toEqual(['unchanged', 'not-reached', 'not-reached'])
+    await wait(300)
+    expect(f.seen().map((s) => alive(s.pid))).toEqual([false, false])
+  })
+
   it('caps one call at 120 seconds whatever time the task has left', async () => {
     vi.useFakeTimers()
     const children: Array<EventEmitter & { kill: (s: string) => boolean; killed: string[] }> = []

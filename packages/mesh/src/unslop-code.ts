@@ -163,6 +163,8 @@ export async function runCodeSlop(task: CodeSlopTask, env: CodeSlopEnv): Promise
       http = await (env.post ?? httpPost)(url, requestBody(profile, questionMessages(question, shown), ANSWER_TOKENS), headers, { timeoutMs: left, signal: task.signal })
     } catch (error) {
       const reason = (error as { reason?: TransportReason }).reason
+      // a call that ran out of time ends the run as the budget does: decided files are kept (Claude Code D5)
+      if (reason === 'deadline') return 'time'
       return { code: 13, status: 'failed', reason: reason ? TRANSPORT[reason] : 'unreachable' }
     }
     const wall = now() - sent

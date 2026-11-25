@@ -337,7 +337,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   - **Queue and budget (design §7.2).** One task runs and one waits; a third, or one whose
     estimated wait plus its own estimate (`max_tokens` at 44 tok/s) exceeds its
     `timeoutMs`, is `REJECTED` as busy (12) with `retryAfterMs`. A task gets at most
-    270 s from its start, and never more than what queueing left of its `timeoutMs`. After 200
+    `TASK_MS` (600 s) from its start, and never more than what queueing left of its `timeoutMs`
+    less a 5 s margin, so it answers before the client's own deadline (`budgetOf` in `a2a.ts`:
+    at least 1 s, unless queueing left nothing, when the task ends without a call). After 200
     tasks or 180 model-minutes in a local day, tasks are `REJECTED` "daily-budget" (11).
 - **Turning unslop on and off (U3a, unslop design §4.2-§4.3).** From a checkout, build
   `packages/mesh` (`npm ci && npm run build` there, Node 24), then run
@@ -742,10 +744,10 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     failed), each file's status (`cleaned`, `unchanged`, `skipped`, `not-reached`),
     removed lines, dropped lines with their guard reasons and suggestions, and `patch`,
     the cleaned files' `patchFor` patches joined in the order given. When the time left
-    cannot cover another answer at the observed speed the remaining files are
-    `not-reached` (code 0 with reason `budget`, or 13 `deadline` when no file was
-    decided); a busy or failed backend stops the task, and files already decided keep
-    their results. The log callback gets counts, sizes, timings and class names: never
+    cannot cover another answer at the observed speed, or a call runs out of time (the
+    transport's `deadline`), the remaining files are `not-reached` (code 0 with reason
+    `budget`, or 13 `deadline` when no file was decided); a cancel stays 13 `cancelled`, a
+    busy or failed backend stops the task, and files already decided keep their results. The log callback gets counts, sizes, timings and class names: never
     a path, a line or an answer. Tests: `test/unslop-code.test.ts` (a fake `post`).
   - **Bench S12, live.** `bench/s12/run.ts` runs `runCodeSlop` in-process against a real
     OpenAI-compatible backend, one task per fixture, and scores the results with the
@@ -800,8 +802,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     `REJECTED` with code 11, reason `malformed`, before the budget and with nothing sent
     to the backend; only the known fields reach the task function. The body limit is
     4 MiB (unslop's stays 64 KiB); `runCodeSlop` applies its own limits per file and on
-    the number of files. The queue estimates twelve seconds a file, at most the 270 s
-    task limit.
+    the number of files. The queue estimates twelve seconds a file, at most 270 s
+    (`ESTIMATE_MAX_MS`, the task limit before it rose to 600 s), so admission at the default
+    280 s timeout is as it was.
   - **Result.** On code 0 the task completes with an artifact named `unslop-code`: a
     text part holding the patch (`text/x-diff`; empty when nothing was removed) and a
     data part with the rest of the result (code, status, reason, files, model, calls,

@@ -254,7 +254,8 @@ describe('the backend failing', () => {
       [{ status: 503, body: '{}' }, 12, 'busy', 'backend-5xx'],
       [{ status: 404, body: '{}' }, 13, 'failed', 'backend-http-404'],
       [{ status: 200, body: 'nope' }, 13, 'failed', 'backend-bad-response'],
-      [transportError('deadline'), 13, 'failed', 'deadline'],
+      // a call that ran out of time ends the run as the budget does, keeping what was decided (Claude Code D5)
+      [transportError('deadline'), 0, 'cleaned', 'budget'],
       [transportError('unreachable'), 13, 'failed', 'unreachable'],
     ] as Array<[HttpReply | Error, number, string, string]>) {
       const { post } = fake([['retryAfter', { remove: '{"remove":[3]}', keep: '{"keep":[]}' }], ['total(rows)', { remove: answer }]])
@@ -263,6 +264,13 @@ describe('the backend failing', () => {
       expect(result.files.map((f) => f.status)).toEqual(['cleaned', 'not-reached', 'not-reached'])
       expect(result.patch).toContain('-  // Convert the value to a number')
     }
+  })
+
+  it('a call that runs out of time before any file is decided still fails as deadline', async () => {
+    const { post } = fake([['retryAfter', { remove: transportError('deadline') }]])
+    const result = await runCodeSlop(task([fileA, fileB], { suggest: false }), setup(post).env)
+    expect(result).toMatchObject({ code: 13, status: 'failed', reason: 'deadline', patch: '' })
+    expect(result.files.map((f) => f.status)).toEqual(['not-reached', 'not-reached'])
   })
 
   it('stops on cancel', async () => {

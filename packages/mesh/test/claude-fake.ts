@@ -14,6 +14,8 @@ export type Behaviour = {
   delayMs?: number
   /** never answer */
   hang?: boolean
+  /** answer this many calls, then never answer */
+  hangAfter?: number
   /** ignore SIGTERM */
   stubborn?: boolean
   /** answer without reading stdin */
@@ -27,15 +29,17 @@ const SCRIPT = `
 const fs = require('node:fs'), path = require('node:path')
 const dir = path.dirname(fs.realpathSync(process.argv[1]))
 const b = JSON.parse(fs.readFileSync(path.join(dir, 'behaviour.json'), 'utf8'))
+let before = 0
 const record = (stdin) => {
   const seenFile = path.join(dir, 'seen.json')
   const seen = fs.existsSync(seenFile) ? JSON.parse(fs.readFileSync(seenFile, 'utf8')) : []
+  before = seen.length
   seen.push({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, stdin, pid: process.pid })
   fs.writeFileSync(seenFile, JSON.stringify(seen))
 }
 if (b.stubborn) process.on('SIGTERM', () => {})
 const answer = () => {
-  if (b.hang) return setInterval(() => {}, 1000)
+  if (b.hang || (b.hangAfter !== undefined && before >= b.hangAfter)) return setInterval(() => {}, 1000)
   if (b.flood) process.stdout.write('x'.repeat(b.flood))
   else if (b.stdout !== undefined) process.stdout.write(typeof b.stdout === 'string' ? b.stdout : JSON.stringify(b.stdout))
   process.exitCode = b.code ?? 0

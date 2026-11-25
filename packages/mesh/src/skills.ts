@@ -6,7 +6,6 @@
 import type { Accepted, Skill } from './a2a.js'
 import { maxTokens } from './backend.js'
 import { parseKind } from './screen.js'
-import { TASK_MS } from './unslop.js'
 import type { UnslopResult, UnslopTask } from './unslop.js'
 import type { CodeFile, CodeSlopResult, CodeSlopTask } from './unslop-code.js'
 
@@ -47,6 +46,11 @@ export function unslopSkill(o: {
 export const CODE_EXTENSION = 'urn:agent-inbox:ext:unslop-code:v1'
 /** the queue's estimate per file: three questions at the box's usual speed */
 export const CODE_FILE_MS = 12_000
+/**
+ * The cap on that estimate (Claude Code D5): the 270 s the task limit was, so every task an idle
+ * queue admits at the default 280 s timeout still fits, while the run's own budget may be longer.
+ */
+export const ESTIMATE_MAX_MS = 270_000
 export type CodeInput = { files: CodeFile[]; suggest?: boolean }
 
 const isObject = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -81,7 +85,7 @@ export function codeSkill(o: {
       const input = isObject(part.data) ? codeInput(part.data) : undefined
       if (!input) return { refuse: 'malformed', log: {} }
       const bytesIn = input.files.reduce((sum, f) => sum + Buffer.byteLength(f.text), 0)
-      return { input, estimateMs: Math.min(input.files.length * CODE_FILE_MS, TASK_MS), log: { files: input.files.length, bytesIn } }
+      return { input, estimateMs: Math.min(input.files.length * CODE_FILE_MS, ESTIMATE_MAX_MS), log: { files: input.files.length, bytesIn } }
     },
     run: (input, c, onState) => o.run({ ...input, taskId: c.taskId, queuedMs: c.queuedMs, budgetMs: c.budgetMs, signal: c.signal }, onState),
     outcome: (result) => {

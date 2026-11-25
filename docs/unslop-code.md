@@ -228,8 +228,21 @@ Never send it files that hold secrets or customer material; it skips a file in w
 
 None of these names collides with unslop's: each agent's switch deletes only its own files.
 
-The app's Agent cards tab does not show this agent yet: an `agents.unslop-code` entry is a
-built-in agent it skips, as it does web search.
+## Where it shows in the app
+
+The app's Agent cards tab draws this agent as it draws unslop: a card under **Yours** (tagged
+Built in, with where it runs, its state and the line of what it does), and a page with its Run
+history and its Details. It is drawn once `meshctl enable --unslop-code --apply` has written
+`agents.unslop-code`. The tab checks its card on entering the tab and on Refresh, with the same
+3 s deadline as unslop; when nothing answers it says the agent starts on its first call, which is
+true: nothing starts it ahead of a call. A card that is not unslop-code's (another program on the
+port, or a build whose card the client cannot use) shows as not an agent card or as a mismatch,
+with the same fix words as unslop. The page's usage line reads `<mesh dir>/mesh/unslop-code-budget.json`,
+counted apart from unslop's. Run history reads `<mesh dir>/mesh/runs/unslop-code-<date>.jsonl`: each row
+says its outcome (cleaned, nothing to remove, refused, busy, failed, unavailable or interrupted) and, in
+its details, the files sent, the comment lines removed, the suggestions, the kilobytes sent, the model
+and the timings. A row never holds a path or any text. The app has no control for this agent yet: turn
+it on and off with `meshctl`.
 
 ## Turn it off
 

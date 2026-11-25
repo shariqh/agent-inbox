@@ -316,7 +316,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   directly below goes to the last card), Home/End go to the ends, each with
   `scrollIntoView({ block: 'nearest', inline: 'nearest' })` and no `behavior`; Enter and Space
   are the button's own; J and K stay the session cards' keys. The words: Not checked yet,
-  Checking…, Running for unslop / Reachable for request-post, Not running, Unreachable, Not an
+  Checking…, Running for unslop and unslop-code / Reachable for request-post, Not running, Unreachable, Not an
   agent card, Card does not match this build, Endpoint not accepted, and Added for an agent the
   add command wrote; quiet green for up, neutral grey for unchecked, checking, not running and
   added, amber (`--app-warning`, never the attention colour) for the rest. Below the grid, "1
@@ -335,7 +335,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   title above it, not repeated. For an added agent the row has no "checked" text and no Refresh
   (the app never checks it), and one line, the server's `checkNote`, stands under it; Details has
   no "Checked" line. Under it the `fix`,
-  unslop's usage line and the last run ("Last run 14:02 · ok", "No runs yet"), each in full and
+  the usage line of a local agent (unslop or unslop-code) and the last run ("Last run 14:02 · ok", "No runs yet"), each in full and
   only when there is one. Its inner tablist (`wireTablist(…, 'horizontal')`) holds **Run
   history** (V5d, `public/mesh-runs-tab.js`), the default on every open (the chosen inner tab is
   kept while the page stays open), and **Details**: the card's labelled lines and a nested Card

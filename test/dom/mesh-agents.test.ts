@@ -1515,3 +1515,153 @@ describe('the Agent cards tab: Yours (Agent cards step 1)', () => {
   })
 })
 
+
+// unslop-code (#652, step 3c) is drawn as unslop is: the same card, page and Run history, from the
+// server's own words; only its run rows say `cleaned` and `nothing to remove` where unslop says
+// `rewritten` and `kept original`.
+describe('unslop-code in the Agent cards tab', () => {
+  const CODE_CARD: Json = {
+    name: 'unslop-code', description: 'Removes the comments an AI coding agent added that a maintainer would not write, from changed JavaScript and TypeScript files; returns a patch.', version: '0.3.1',
+    supportedInterfaces: [{ url: 'http://127.0.0.1:4421/', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+    capabilities: {
+      streaming: true, pushNotifications: false,
+      extensions: [{ uri: 'urn:agent-inbox:ext:unslop-code:v1', required: false, params: { api: 1, skillId: 'unslop-code' } }],
+    },
+    securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } },
+    securityRequirements: [{ schemes: { bearer: { list: [] } } }],
+    defaultInputModes: ['application/json'], defaultOutputModes: ['text/x-diff', 'application/json'],
+    skills: [{ id: 'unslop-code', name: 'unslop-code', description: 'Clean the comments a change added', tags: ['code'] }],
+  }
+  const BLURB = 'Removes the comments an AI coding agent adds to code.'
+  const code = (over: Json = {}): Json => ({
+    key: 'mesh.json:unslop-code', name: 'unslop-code', kind: 'built-in', blurb: BLURB, where: 'local', endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code',
+    state: 'not-running', reason: 'starts on its first call', fix: null, checkedAt: at(60_000), card: null, cardJson: null, lastSeen: null, lastRun: null, ...over,
+  })
+  const up = (over: Json = {}) => code({ state: 'up', reason: null, card: summarizeCard(CODE_CARD), cardJson: cardJson(CODE_CARD), ...over })
+  const MIN = 60_000
+  const heading = () => [document.getElementById('pageKicker')?.textContent, document.getElementById('pageTitle')?.textContent]
+  const innerTab = (label: string) => [...page().querySelectorAll<HTMLElement>('.map-tabs [role="tab"]')].find((t) => t.textContent === label)!
+  const panel = () => page().querySelector<HTMLElement>('#agentPagePanel-runs')!
+  const cells = () => [...panel().querySelectorAll<HTMLTableRowElement>('tbody tr')].map((tr) => [...tr.cells].map((td) => td.textContent))
+  const run = (id: string, endedAgo: number, over: Json = {}): Json => ({
+    v: 1, id: id.padEnd(10, 'a'), agent: 'unslop-code', op: 'clean', at: at(endedAgo), ms: 1900, exit: 0, outcome: 'ok',
+    status: 'cleaned', files: 3, bytesIn: 4096, removed: 12, suggestions: 2, model: 'coder-test', timing: { queued: 0, load: 0, model: 800 }, ...over,
+  })
+
+  it('its card sits under Yours beside unslop and request-post: name, state, where, the blurb while no card is known, Built in', async () => {
+    await boot({ mesh: fakeMesh(body(code(), unslop(), requestPost())) })
+    await enter()
+    expect(shown()).toEqual([
+      ['request-post', 'Reachable', 'Remote · tailnet · v0.0.0-fixture', ''],
+      ['unslop', 'Not running', 'Local · v0.3.1 · seen 2h ago', ''],
+      ['unslop-code', 'Not running', 'Local', ''],
+    ])
+    const card = meshRow('unslop-code')!
+    expect(card.querySelector('.ma-description')?.textContent).toBe(BLURB)
+    expect(card.querySelector('.ma-badge')?.textContent).toBe('Built in')
+    expect(card.getAttribute('aria-label')).toBe('unslop-code, Not running, Built in')
+    expect(card.classList.contains('ma-tone-neutral')).toBe(true)
+    // the other two are drawn as they were
+    expect(meshRow('unslop')!.getAttribute('aria-label')).toBe('unslop, Not running, Built in')
+  })
+
+  it('up says Running, with the card\'s own line and version; a mismatch is amber with its fix; a squatter is not an agent card', async () => {
+    const fake = fakeMesh(body(up(), unslop()))
+    await boot({ mesh: fake })
+    await enter()
+    expect(shown().find(([name]) => name === 'unslop-code')).toEqual(['unslop-code', 'Running', 'Local · v0.3.1', ''])
+    expect(meshRow('unslop-code')!.querySelector('.ma-description')?.textContent).toBe(CODE_CARD['description'])
+    fake.s.body = body(code({ state: 'mismatch', reason: 'unslop-code api is not 1', fix: 'rebuild packages/mesh', card: summarizeCard(CODE_CARD) }), unslop())
+    await pollTick()
+    expect(shown().find(([name]) => name === 'unslop-code')).toEqual(['unslop-code', 'Card does not match this build', 'Local · v0.3.1', 'Fix: rebuild packages/mesh'])
+    expect(meshRow('unslop-code')!.classList.contains('ma-tone-amber')).toBe(true)
+    fake.s.body = body(code({ state: 'not-a-card', reason: 'something other than the unslop-code agent answers (HTTP 404)' }), unslop())
+    await pollTick()
+    await openAgent('unslop-code')
+    expect(pageStatus()).toBe('Not an agent card · something other than the unslop-code agent answers (HTTP 404)')
+    // where an agent runs is the server's word, for every agent
+    const where = (agent: Json) => meshRows(body(agent), Date.now()).rows[0]!.facts
+    expect(where(code())).toBe('Local')
+    expect(where(unslop({ lastSeen: null }))).toBe('Local')
+    expect(where(code({ where: 'tailnet' }))).toBe('Remote · tailnet')
+  })
+
+  it('its page: status, the usage line from its own counts, the last run, and Details with its profile and extension', async () => {
+    const ended = at(5 * MIN)
+    await boot({ mesh: fakeMesh(body(up({ usage: { date: '2026-11-09', tasks: 3, modelMs: 150_000 }, lastRun: { at: ended, op: 'clean', outcome: 'ok' } }), unslop())) })
+    await openAgent('unslop-code')
+    expect(heading()).toEqual(['Agent cards', 'unslop-code'])
+    expect([pageStatus(), page().querySelector('.map-badge')?.textContent]).toEqual(['Running', 'Built in'])
+    expect(page().querySelector('.map-usage')?.textContent).toBe('Today: 3 tasks · 3 model-minutes')
+    expect(page().querySelector('.map-lastrun')?.textContent).toBe(`Last run ${hhmm(ended)} · ok`)
+    click(innerTab('Details'))
+    const lines = pageLines()
+    expect(lines).toContainEqual(['Where', 'Local · http://127.0.0.1:4421profile: unslop-code'])
+    expect(lines).toContainEqual(['Extension', 'urn:agent-inbox:ext:unslop-code:v1 · optionalapi 1 · skillId unslop-code'])
+    expect(lines.find(([label]) => label === 'Card name')).toBeUndefined()
+    expect(page().querySelector<HTMLElement>('.ma-json')?.hidden).toBe(false)
+    // no usage key: no line, as for unslop
+    await openAgent('unslop')
+    expect(page().querySelector<HTMLElement>('.map-usage')?.hidden).toBe(true)
+  })
+
+  it('its Run history says its outcomes in unslop\'s shape: cleaned, nothing to remove, refused, busy, failed, unavailable, interrupted', async () => {
+    const fake = fakeMesh(body(up(), unslop()))
+    fake.s.runs = {
+      'unslop-code': [
+        run('a', 1 * MIN),
+        run('b', 2 * MIN, { status: 'unchanged', files: 1, removed: 0, suggestions: 0, bytesIn: 120 }),
+        run('c', 3 * MIN, { exit: 11, outcome: 'refused', reason: 'malformed', status: undefined }),
+        run('d', 4 * MIN, { exit: 12, outcome: 'busy', status: 'busy' }),
+        run('e', 5 * MIN, { exit: 13, outcome: 'failed', status: 'failed', reason: 'timeout' }),
+        run('f', 6 * MIN, { exit: 14, outcome: 'unavailable', status: undefined }),
+        run('g', 7 * MIN, { exit: null, signal: 'SIGINT', outcome: 'interrupted', status: undefined }),
+      ],
+      unslop: [
+        { v: 1, id: 'haaaaaaaaa', agent: 'unslop', op: 'docs', at: at(MIN), ms: 8400, exit: 0, outcome: 'ok', status: 'unchanged' },
+        { v: 1, id: 'iaaaaaaaaa', agent: 'unslop', op: 'docs', at: at(2 * MIN), ms: 8400, exit: 10, outcome: 'kept-original', status: 'kept-original' },
+      ],
+    }
+    await boot({ mesh: fake })
+    await openAgent('unslop-code')
+    const table = cells().map(([, what, outcome, took, details]) => [what, outcome, took, details])
+    expect(table).toEqual([
+      ['clean', 'cleaned', '1.9 s', '3 files · 12 lines removed · 2 suggestions · 4.1 KB · coder-test · model 0.8 s'],
+      ['clean', 'nothing to remove', '1.9 s', '1 file · 0 lines removed · 0 suggestions · 0.1 KB · coder-test · model 0.8 s'],
+      ['clean', 'refused', '1.9 s', '3 files · 12 lines removed · 2 suggestions · 4.1 KB · coder-test · model 0.8 s · malformed'],
+      ['clean', 'busy', '1.9 s', '3 files · 12 lines removed · 2 suggestions · 4.1 KB · coder-test · model 0.8 s'],
+      ['clean', 'failed', '1.9 s', '3 files · 12 lines removed · 2 suggestions · 4.1 KB · coder-test · model 0.8 s · timeout'],
+      ['clean', 'unavailable', '1.9 s', '3 files · 12 lines removed · 2 suggestions · 4.1 KB · coder-test · model 0.8 s'],
+      ['clean', 'interrupted', '1.9 s', '3 files · 12 lines removed · 2 suggestions · 4.1 KB · coder-test · model 0.8 s · SIGINT'],
+    ])
+    const amber = [...panel().querySelectorAll('tbody tr')].map((tr) => tr.querySelector('.mar-outcome')?.classList.contains('mar-amber'))
+    expect(amber).toEqual([false, false, false, false, true, true, true])
+    expect(panel().querySelector('.mar-summary')?.textContent).toMatch(/^Last 7 runs: 2 ok · 1 refused · 1 busy · 1 failed · 1 unavailable · 1 interrupted · median /)
+    expect(panel().querySelector('.mar-command')?.textContent).toBe('npm run meshctl -- forget-runs --unslop-code')
+    // unslop's own rows keep their words
+    await openAgent('unslop')
+    expect(cells().map(([, what, outcome]) => [what, outcome])).toEqual([['docs', 'unchanged'], ['docs', 'kept original']])
+  })
+
+  it('a long wait in the queue or a model load shows; a single file and line read in the singular; text only, never markup', async () => {
+    const fake = fakeMesh(body(up()))
+    fake.s.runs = {
+      'unslop-code': [
+        run('a', MIN, { files: 1, removed: 1, suggestions: 1, timing: { queued: 31_000, load: 4_000, model: 12_000 }, model: '<img src=x onerror=alert(1)>' }),
+        run('b', 2 * MIN, { files: undefined, removed: undefined, suggestions: undefined, bytesIn: undefined, model: undefined, timing: undefined }),
+      ],
+    }
+    const { log } = await boot({ mesh: fake })
+    await openAgent('unslop-code')
+    expect(cells().map((row) => row[4])).toEqual(['1 file · 1 line removed · 1 suggestion · 4.1 KB · <img src=x onerror=alert(1)> · model 12 s · load 4.0 s · queued 31 s', ''])
+    expect(panel().querySelectorAll('img')).toHaveLength(0)
+    expect(log.some((entry) => entry.includes('onerror'))).toBe(false)
+  })
+
+  it('the card\'s last run follows lastRun, and no public file says meshctl or names a client', () => {
+    expect(meshRows(body(code({ lastRun: { at: at(5 * MIN), op: 'clean', outcome: 'refused' } })), Date.now()).rows[0]!.lastrun).toBe(`Last run ${hhmm(at(5 * MIN))} · refused`)
+    for (const file of ['mesh-section.js', 'mesh-agent-page.js', 'mesh-runs-tab.js']) {
+      expect(readFileSync(resolve(REPO, 'public', file), 'utf8'), file).not.toMatch(/unslop-client|unslop-code-client|request-post-client|meshctl/)
+    }
+  })
+})

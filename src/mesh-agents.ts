@@ -5,7 +5,7 @@
 // /api/mesh/agents (one lstat per 5 s at most; no timer, no fs.watch), and fetches each
 // configured agent's card from the configured endpoint only, on a trigger: an open or a
 // Refresh. It never starts an agent, never sends a token and never opens mesh/tokens or
-// mesh/wrappers; the other files it reads are unslop's budget, when unslop is checked, and the
+// mesh/wrappers; the other files it reads are a local agent's budget (unslop, unslop-code), when it is checked, and the
 // run records (cards view V5 §5.7), through mesh-runs.ts's readRuns only. Every user-facing
 // reason, fix and the forget command live here, so no viewer, page or Electron file names the
 // clients or the command (test/mesh.test.ts's text guard).
@@ -27,29 +27,32 @@ import { BUILT_IN_AGENTS, addedEntry, addedPlace, idRefusal } from './mesh-entry
 import { readRuns } from './mesh-runs.js'
 import type { RunsCache, RunsRead } from './mesh-runs.js'
 
-type Agent = 'unslop' | 'request-post'
+type Agent = 'unslop' | 'unslop-code' | 'request-post'
 type State = 'unchecked' | 'checking' | 'up' | 'not-running' | 'unreachable' | 'not-a-card' | 'mismatch' | 'invalid'
 type Where = 'local' | 'tailnet' | 'ssh-tunnel' | 'public' | null
 type Shown = { summary: ReturnType<typeof summarizeCard>; json: string }
 type Usage = { date: string; tasks: number; modelMs: number }
 type Result = { state: State; reason: string | null; fix: string | null; checkedAt: number | null; card: Shown | null }
 
-const AGENTS: readonly Agent[] = ['unslop', 'request-post']
+const AGENTS: readonly Agent[] = ['unslop', 'unslop-code', 'request-post']
 const CARD_MAX = 64 * 1024
 const STAT_EVERY_MS = 5_000
-const DEADLINE_MS: Record<Agent, number> = { unslop: 3_000, 'request-post': 5_000 }
+const DEADLINE_MS: Record<Agent, number> = { unslop: 3_000, 'unslop-code': 3_000, 'request-post': 5_000 }
 const SKIP_MS = { open: 60_000, refresh: 5_000 }
-const FIX: Record<Agent, string> = { unslop: 'rebuild packages/mesh', 'request-post': 'update agent-inbox or the service' }
+const FIX: Record<Agent, string> = { unslop: 'rebuild packages/mesh', 'unslop-code': 'rebuild packages/mesh', 'request-post': 'update agent-inbox or the service' }
+// the local agents: on 127.0.0.1, started by their first call, each with the budget file its own process keeps
+const LOCAL_BUDGET: Partial<Record<Agent, string>> = { unslop: 'unslop-budget.json', 'unslop-code': 'unslop-code-budget.json' }
 // one line a built-in agent's card shows only while no card text is known (never a card's own)
 const BLURB: Record<Agent, string> = {
   unslop: 'Copy-edits public text by the unslop rules.',
+  'unslop-code': 'Removes the comments an AI coding agent adds to code.',
   'request-post': 'Files a post request with your publishing service.',
 }
 const UNCHECKED: Result = { state: 'unchecked', reason: 'press Refresh', fix: null, checkedAt: null, card: null }
 const OFF = { on: false, agents: [] }
 const BUDGET_MAX = 4 * 1024
 // every agent a run record can name; web search is configurable from V5e, so until then it is "not configured"
-const RUN_AGENTS: readonly string[] = ['unslop', 'request-post', 'web-search']
+const RUN_AGENTS: readonly string[] = ['unslop', 'unslop-code', 'request-post', 'web-search']
 const RUNS_SHOWN = 200
 const NO_RUNS: RunsRead = { runs: [], skipped: 0, truncated: false, keptDays: 0 }
 
@@ -62,7 +65,7 @@ function localDate(ms: number): string {
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
 
 /**
- * unslop's own budget file (§4.6), read only: a regular file this user owns, never through a
+ * A local agent's own budget file (§4.6), read only: a regular file this user owns, never through a
  * symlink, at most 4 KiB, exactly `date`, `tasks` and `modelMs` of the right types. Anything
  * else, a missing file included, is null and hides the line.
  */
@@ -132,14 +135,16 @@ export interface MeshAgents {
   runs(name: string): object | undefined
 }
 
+const isLocal = (name: Agent): boolean => name in LOCAL_BUDGET
+
 const where = (name: Agent, endpoint: string | null): Where =>
-  name === 'unslop' ? 'local' : !endpoint ? null : endpoint.startsWith('https:') ? 'tailnet' : 'ssh-tunnel'
+  isLocal(name) ? 'local' : !endpoint ? null : endpoint.startsWith('https:') ? 'tailnet' : 'ssh-tunnel'
 
 const fail = (state: State, reason: string): Omit<Result, 'checkedAt'> => ({ state, reason, fix: null, card: null })
 
 // Fixed words for a failed exchange, never a socket's message (§2.4).
 function failWords(name: Agent, code: string): Omit<Result, 'checkedAt'> {
-  if (code === 'ECONNREFUSED') return name === 'unslop' ? fail('not-running', 'starts on its first call') : fail('unreachable', 'connection refused')
+  if (code === 'ECONNREFUSED') return isLocal(name) ? fail('not-running', 'starts on its first call') : fail('unreachable', 'connection refused')
   if (code === 'timeout') return fail('unreachable', `no answer in ${DEADLINE_MS[name] / 1000} s`)
   if (/^(ENOTFOUND|EAI_)/.test(code)) return fail('unreachable', 'does not resolve (is this Mac on the tailnet?)')
   if (/^(ERR_TLS|ERR_SSL|CERT_|UNABLE_TO|DEPTH_ZERO|SELF_SIGNED|HOSTNAME_MISMATCH)/.test(code)) return fail('unreachable', 'TLS handshake failed')
@@ -147,7 +152,7 @@ function failWords(name: Agent, code: string): Omit<Result, 'checkedAt'> {
 }
 
 function notACard(name: Agent, why: string): Omit<Result, 'checkedAt'> {
-  return fail('not-a-card', name === 'unslop' ? `something other than the unslop agent answers (${why})` : why)
+  return fail('not-a-card', isLocal(name) ? `something other than the ${name} agent answers (${why})` : why)
 }
 
 /**
@@ -211,7 +216,6 @@ function fetchCard(name: Agent, endpoint: string, lookup: LookupFunction | undef
 export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
   const now = opts.now ?? Date.now
   const file = meshFile(opts.dir)
-  const budgetFile = join(opts.dir, 'mesh', 'unslop-budget.json')
   let statAt = -Infinity
   let identity: string | undefined
   let config: Config | null = null
@@ -263,10 +267,10 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
       const name = key as Agent
       const entry = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
       const raw = typeof entry['endpoint'] === 'string' ? entry['endpoint'] : undefined
-      const port = name === 'unslop' ? loopbackPort(raw) : undefined
-      const endpoint = (name === 'unslop' ? port && `http://127.0.0.1:${port}` : requestPostEndpoint(raw)) || null
+      const port = isLocal(name) ? loopbackPort(raw) : undefined
+      const endpoint = (isLocal(name) ? port && `http://127.0.0.1:${port}` : requestPostEndpoint(raw)) || null
       const named = entry['profile']
-      const profile = name === 'unslop' && typeof named === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(named) ? named : null
+      const profile = isLocal(name) && typeof named === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(named) ? named : null
       const old = config?.recs.get(name)
       const rec: Rec = old && old.endpoint === endpoint ? old : {
         name, endpoint, profile, good: null, usage: null, running: null,
@@ -320,8 +324,9 @@ export function meshAgents(opts: MeshAgentsOpts): MeshAgents {
         const at = now()
         if (result.state === 'up' && result.card) rec.good = { at, card: result.card }
         rec.result = { ...result, checkedAt: at }
-        // read when unslop is checked, so a read between triggers repaints nothing (§4.6)
-        if (rec.name === 'unslop') rec.usage = readUsage(budgetFile)
+        // read when the local agent is checked, so a read between triggers repaints nothing (§4.6)
+        const budget = LOCAL_BUDGET[rec.name]
+        if (budget) rec.usage = readUsage(join(opts.dir, 'mesh', budget))
         rec.running = null
       })
     }

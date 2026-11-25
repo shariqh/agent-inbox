@@ -63,7 +63,7 @@ describe('claudePost (Claude Code D3)', () => {
       usage: { prompt_tokens: 17, completion_tokens: 7 },
       timings: { prompt_ms: expect.any(Number), predicted_ms: 900, predicted_n: 40 },
     })
-    expect(classify(reply)).toMatchObject({ ok: true, content: 'the answer', completionTokens: 7 })
+    expect(classify(reply)).toMatchObject({ ok: true, content: 'the answer', promptTokens: 17, completionTokens: 7 })
   })
 
   it('shapes the timings: 3 output tokens after 2000 ms of API time read as 44 tokens a second and book no load', async () => {

@@ -58,6 +58,7 @@ beforeEach(async () => {
       if (mode === '503') return void res.writeHead(503).end('{}')
       const reply = (): void => void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
         choices: [{ finish_reason: mode === 'length' ? 'length' : 'stop', message: { role: 'assistant', content: mode === 'same' ? text : mode === 'drift' ? text.replace('v2.5.0', 'v2.6.0') : text.replace(' really very', '') } }],
+        usage: { prompt_tokens: 120, completion_tokens: 30 },
       }))
       if (mode === 'slow') setTimeout(reply, 600)
       else reply()
@@ -356,7 +357,7 @@ describe('end to end against the agent (design §6.3, §7.3)', () => {
     expect(first.err).toContain('starting the agent')
     expect(first.err).toMatch(/rewritten by chat-long \(attempts: 1, rules [0-9a-f]{12}\)/)
     expect((lstatSync(report).mode & 0o777).toString(8)).toBe('600')
-    expect(JSON.parse(readFileSync(report, 'utf8'))).toMatchObject({ code: 0, status: 'rewritten', model: 'chat-long', attempts: 1, hard: expect.any(Object), ms: expect.any(Object) })
+    expect(JSON.parse(readFileSync(report, 'utf8'))).toMatchObject({ code: 0, status: 'rewritten', model: 'chat-long', attempts: 1, calls: 1, tokens: { in: 120, out: 30 }, hard: expect.any(Object), ms: expect.any(Object) })
     expect(readFileSync(join(dir, 'mesh', 'logs', 'unslop-agent.log'), 'utf8')).toContain('unslop listening')
     expect((lstatSync(join(dir, 'mesh', 'logs', 'unslop-agent.log')).mode & 0o777).toString(8)).toBe('600')
 

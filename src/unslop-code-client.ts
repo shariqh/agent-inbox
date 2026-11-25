@@ -519,6 +519,12 @@ async function unslopCode(args: string[], io: UnslopCodeIo, links: MeshLink[]): 
   }
   const looked = reports.filter((f) => f['status'] === 'cleaned' || f['status'] === 'unchanged').length
   const summary = `looked at ${looked} of ${files.length} file${files.length === 1 ? '' : 's'}: removed ${removed} comment line${removed === 1 ? '' : 's'}, ${suggestions.length} suggestion${suggestions.length === 1 ? '' : 's'}`
+  // the model calls and tokens (Claude Code D6), when the result holds them as plain counts
+  const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0
+  const tokens = obj(result['tokens'])
+  const spent = count(result['calls']) && count(tokens['in']) && count(tokens['out'])
+    ? `; ${result['calls']} call${result['calls'] === 1 ? '' : 's'}, ${tokens['in']} tokens in, ${tokens['out']} out` : ''
+  const ended = (ending: string): string => `${summary}${ending}${spent}.`
   const details = (): void => {
     for (const line of suggestions) io.err(`${line}\n`)
     for (const f of reports) {
@@ -534,7 +540,7 @@ async function unslopCode(args: string[], io: UnslopCodeIo, links: MeshLink[]): 
     const moved = touched.find((path) => !readRegular(join(top, path))?.equals(sent.get(path)!.bytes))
     const refusedApply = (why: string): number => {
       io.out(patch)
-      say(`${summary}; nothing was applied: ${why}.`)
+      say(ended(`; nothing was applied: ${why}`))
       details()
       return 13
     }
@@ -547,12 +553,12 @@ async function unslopCode(args: string[], io: UnslopCodeIo, links: MeshLink[]): 
     const applied = git(false)
     if (applied.error || applied.status !== 0) return refusedApply('git apply failed')
     io.out(patch)
-    say(`${summary}; applied to ${touched.length} file${touched.length === 1 ? '' : 's'}.`)
+    say(ended(`; applied to ${touched.length} file${touched.length === 1 ? '' : 's'}`))
     details()
     return 0
   }
   io.out(patch)
-  say(`${summary}${apply ? '; nothing to apply' : ''}.`)
+  say(ended(apply ? '; nothing to apply' : ''))
   details()
   return 0
 }

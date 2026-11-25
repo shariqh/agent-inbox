@@ -302,6 +302,25 @@ describe('the backend failing', () => {
   })
 })
 
+describe('calls and tokens (Claude Code D6)', () => {
+  it('sums the tokens the replies report into the result and the log; absent when none reported any', async () => {
+    const counted = (content: string, usage: Record<string, number>): HttpReply => {
+      const body = JSON.parse(ok(content).body) as Record<string, unknown>
+      return { status: 200, body: JSON.stringify({ ...body, usage }) }
+    }
+    const { post } = fake([['retryAfter', { remove: counted('{"remove":[3]}', { prompt_tokens: 1000, completion_tokens: 9 }), keep: counted('{"keep":[]}', { prompt_tokens: 800, completion_tokens: 4 }) }]])
+    const { env, logs } = setup(post)
+    const result = await runCodeSlop(task([fileA], { suggest: false }), env)
+    expect(result).toMatchObject({ code: 0, calls: 2, tokens: { in: 1800, out: 13 } })
+    expect(logs[0]).toMatchObject({ calls: 2, tokens: { in: 1800, out: 13 } })
+    // an address server that reports only completion tokens: in stays 0
+    const plain = await runCodeSlop(task([fileB], { suggest: false }), setup(fake([]).post).env)
+    expect(plain.tokens).toEqual({ in: 0, out: 12 * plain.calls })
+    const none: Post = async () => ({ status: 200, body: JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"suggest":[]}' } }] }) })
+    expect(await runCodeSlop(task([fileB]), setup(none).env)).not.toHaveProperty('tokens')
+  })
+})
+
 describe('the log', () => {
   it('holds counts, sizes, timings and class names, never a path, a line or an answer', async () => {
     const text = lines(`// ${MARKER} explains the module`, `export const ${MARKER}Value = 1`, `// ${MARKER} restated`, `console.log('${MARKER}')`)

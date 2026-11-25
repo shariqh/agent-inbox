@@ -245,6 +245,9 @@ describe('a profile that names a Claude Code server (Claude Code D3)', () => {
       expect(Object.keys(call.env).filter((k) => k.startsWith('ANTHROPIC'))).toEqual([])
     }
     expect(readdirSync(cwd)).toEqual([])
+    // the data part carries the calls and the tokens to the client (D6): 17 in and 7 out per call
+    const n = calls.length
+    expect(task.artifacts[0].parts[1].data).toMatchObject({ model: 'haiku', calls: n, tokens: { in: 17 * n, out: 7 * n } })
     expect(logText(dir)).not.toMatch(new RegExp(`${fake.dir}|claude-fake-`))
   })
 

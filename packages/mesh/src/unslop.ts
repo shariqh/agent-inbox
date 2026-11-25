@@ -6,8 +6,8 @@
 // classes and check results only: never text, never a matched value.
 // U2b wraps this in the A2A server (queue, auth, mesh.json gate); U3 the CLI.
 import { randomBytes } from 'node:crypto'
-import { DEFAULT_MODEL, DEFAULT_SAMPLING, checkApiKey, checkBaseUrl, classify, maxTokens, post as httpPost, requestBody } from './backend.js'
-import type { BackendProfile, Post, Sampling, TransportReason } from './backend.js'
+import { DEFAULT_MODEL, DEFAULT_SAMPLING, addTokens, checkApiKey, checkBaseUrl, classify, maxTokens, post as httpPost, requestBody } from './backend.js'
+import type { BackendProfile, Post, Sampling, Tokens, TransportReason } from './backend.js'
 import { checkFidelity } from './fidelity.js'
 import type { Failure, FidelityReport, HardClass } from './fidelity.js'
 import { buildMessages, cleanAnswer } from './prompt.js'
@@ -32,6 +32,10 @@ export type UnslopResult = {
   rulesSha256: string
   model: string
   attempts: number
+  /** the model calls made (Claude Code D6): attempts can count one that the deadline stopped first */
+  calls: number
+  /** the tokens the model replies reported, summed; absent when none reported any */
+  tokens?: Tokens
   hard: Partial<FidelityReport['hard']>
   warnings: FidelityReport['warnings']
   ms: Ms
@@ -39,7 +43,7 @@ export type UnslopResult = {
 export type ReportedFailure = { class: HardClass; kind: Failure['kind']; lost: string[]; added: string[]; moved?: string[] }
 export type UnslopLog = {
   taskId: string; kind?: Kind; bytesIn: number; bytesOut?: number; code: Outcome; status: Status; reason?: string
-  screen?: ScreenClass[]; model: string; rulesSha256: string; attempts: number; hard: Partial<FidelityReport['hard']>
+  screen?: ScreenClass[]; model: string; rulesSha256: string; attempts: number; calls: number; tokens?: Tokens; hard: Partial<FidelityReport['hard']>
   warnings: string[]; failures: Array<Pick<Failure, 'class' | 'kind'>>; ms: Ms
 }
 export type UnslopProfile = {
@@ -82,6 +86,8 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
   const kind = parseKind(task.kind)
   const ms: Ms = { queued: task.queuedMs ?? 0, load: 0, model: 0, check: 0 }
   let attempts = 0
+  let calls = 0
+  let tokens: Tokens | undefined
   let report: FidelityReport | undefined
 
   const end = (code: Outcome, status: Status, extra: Partial<UnslopResult> = {}): UnslopResult => {
@@ -89,13 +95,13 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
       class: f.class, kind: f.kind, lost: capped(f.lost), added: capped(f.added), ...(f.moved ? { moved: capped(f.moved) } : {}),
     }))
     const result: UnslopResult = {
-      code, status, rulesSha256: env.rules.sha256, model: profile.model, attempts,
+      code, status, rulesSha256: env.rules.sha256, model: profile.model, attempts, calls, ...(tokens ? { tokens: { ...tokens } } : {}),
       hard: report?.hard ?? {}, warnings: report?.warnings ?? [], ...(failures?.length ? { failures } : {}), ms, ...extra,
     }
     env.log?.({
       taskId: task.taskId ?? random(8).toString('hex'), kind, bytesIn: Buffer.byteLength(input),
       bytesOut: result.text === undefined ? undefined : Buffer.byteLength(result.text), code, status, reason: result.reason,
-      screen: result.screen, model: result.model, rulesSha256: result.rulesSha256, attempts, hard: result.hard,
+      screen: result.screen, model: result.model, rulesSha256: result.rulesSha256, attempts, calls, ...(result.tokens ? { tokens: result.tokens } : {}), hard: result.hard,
       warnings: result.warnings.map((w) => w.class), failures: (result.failures ?? []).map((f) => ({ class: f.class, kind: f.kind })), ms,
     })
     return result
@@ -137,6 +143,7 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
     const left = deadline - now()
     if (left <= 0) return end(13, 'failed', { reason: 'deadline' })
     const sent = now()
+    calls++
     let http
     try {
       http = await (env.post ?? httpPost)(url, requestBody(profile, buildMessages(env.rules.text, input, nonce, retry), limit), headers, { timeoutMs: left, signal: task.signal })
@@ -151,6 +158,7 @@ export async function runUnslop(task: UnslopTask, env: UnslopEnv): Promise<Unslo
       if (reply.outcome === 'busy') return end(12, 'busy', { reason: reply.reason })
       return reply.outcome === 'failed' ? end(13, 'failed', { reason: reply.reason }) : kept(reply.reason)
     }
+    tokens = addTokens(tokens, reply)
     const gap = reply.timings ? wall - reply.timings.promptMs - reply.timings.predictedMs : 0
     const load = gap > LOAD_GAP_MS ? gap : 0
     ms.load += load

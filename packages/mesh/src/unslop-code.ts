@@ -7,8 +7,8 @@
 // callback receives sizes, timings, counts and class names only: never a path, a
 // line of code or an answer.
 import { randomBytes } from 'node:crypto'
-import { DEFAULT_SAMPLING, checkApiKey, checkBaseUrl, classify, post as httpPost, requestBody } from './backend.js'
-import type { BackendProfile, Post, Sampling, TransportReason } from './backend.js'
+import { DEFAULT_SAMPLING, addTokens, checkApiKey, checkBaseUrl, classify, post as httpPost, requestBody } from './backend.js'
+import type { BackendProfile, Post, Sampling, Tokens, TransportReason } from './backend.js'
 import { lineTexts, questionMessages, windows } from './code-prompt.js'
 import type { Question } from './code-prompt.js'
 import { commentLines, decide, parsePoints, parseSuggestions, patchFor, removeLines, sameProgram, suggestionsFor } from './code-slop.js'
@@ -29,9 +29,11 @@ export type FileResult = {
 export type CodeSlopResult = {
   code: CodeOutcome; status: CodeStatus; reason?: string; patch: string; files: FileResult[]
   model: string; calls: number; ms: { queued: number; load: number; model: number }
+  /** the tokens the model replies reported, summed (Claude Code D6); absent when none reported any */
+  tokens?: Tokens
 }
 export type CodeSlopLog = {
-  taskId: string; code: CodeOutcome; status: CodeStatus; reason?: string; model: string; calls: number
+  taskId: string; code: CodeOutcome; status: CodeStatus; reason?: string; model: string; calls: number; tokens?: Tokens
   files: Array<{ bytes: number; added: number; status: FileStatus; reason?: string; removed: number; dropped: Partial<Record<DropReason, number>>; suggestions: number }>
   ms: CodeSlopResult['ms']
 }
@@ -82,16 +84,17 @@ export async function runCodeSlop(task: CodeSlopTask, env: CodeSlopEnv): Promise
   const ms = { queued: task.queuedMs ?? 0, load: 0, model: 0 }
   const results: FileResult[] = []
   let calls = 0
+  let tokens: Tokens | undefined
 
   const end = (code: CodeOutcome, status: CodeStatus, reason?: string): CodeSlopResult => {
     const files = task.files.slice(0, results.length)
     const result: CodeSlopResult = {
       code, status, ...(reason ? { reason } : {}),
       patch: results.map((r, i) => (r.status === 'cleaned' ? patchFor(r.path, files[i]!.text, removeLines(files[i]!.text, r.removed)) : '')).join(''),
-      files: results, model: profile.model, calls, ms,
+      files: results, model: profile.model, calls, ms, ...(tokens ? { tokens: { ...tokens } } : {}),
     }
     env.log?.({
-      taskId: task.taskId ?? random(8).toString('hex'), code, status, reason, model: profile.model, calls, ms,
+      taskId: task.taskId ?? random(8).toString('hex'), code, status, reason, model: profile.model, calls, ...(tokens ? { tokens: { ...tokens } } : {}), ms,
       files: results.map((r, i) => {
         const dropped: Partial<Record<DropReason, number>> = {}
         for (const d of r.dropped) dropped[d.why] = (dropped[d.why] ?? 0) + 1
@@ -174,6 +177,7 @@ export async function runCodeSlop(task: CodeSlopTask, env: CodeSlopEnv): Promise
       if (reply.outcome === 'busy') return { code: 12, status: 'busy', reason: reply.reason }
       return reply.outcome === 'failed' ? { code: 13, status: 'failed', reason: reply.reason } : null
     }
+    tokens = addTokens(tokens, reply)
     const gap = reply.timings ? wall - reply.timings.promptMs - reply.timings.predictedMs : 0
     const load = gap > LOAD_GAP_MS ? gap : 0
     ms.load += load

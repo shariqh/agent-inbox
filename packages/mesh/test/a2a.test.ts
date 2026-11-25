@@ -155,7 +155,7 @@ const logLines = (dir: string): string => {
   return readdirSync(logs).map((f) => readFileSync(join(logs, f), 'utf8')).join('')
 }
 
-const result = (): RunResult => ({ code: 0, status: 'rewritten', text: 'edited', rulesSha256: '', model: 'm', attempts: 1, hard: {}, warnings: [], ms: { queued: 0, load: 0, model: 5, check: 0 } })
+const result = (): RunResult => ({ code: 0, status: 'rewritten', text: 'edited', rulesSha256: '', model: 'm', attempts: 1, calls: 1, hard: {}, warnings: [], ms: { queued: 0, load: 0, model: 5, check: 0 } })
 type UnslopRun = Parameters<typeof unslopSkill>[0]['run']
 const hang: UnslopRun = (_task, onState) => { onState('editing'); return new Promise(() => {}) }
 const skill = (run: UnslopRun = hang): ReturnType<typeof unslopSkill> => unslopSkill({ rules: () => ({ rulesSha256: '', bytes: 0, loadedAt: '' }), run })

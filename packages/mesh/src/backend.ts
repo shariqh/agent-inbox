@@ -12,9 +12,11 @@ export type BackendProfile = { baseUrl: string; apiKey?: string; model: string; 
 export type Message = { role: 'system' | 'user'; content: string }
 export type HttpReply = { status: number; body: string }
 export type TransportReason = 'unreachable' | 'deadline' | 'aborted' | 'too-large' | 'invalid'
+/** A run's token counts: the sums over the replies that reported either one (each 0 until one does). */
+export type Tokens = { in: number; out: number }
 export type Post = (url: URL, body: string, headers: Record<string, string>, options: { timeoutMs: number; signal?: AbortSignal }) => Promise<HttpReply>
 export type Reply =
-  | { ok: true; content: string; completionTokens?: number; timings?: { promptMs: number; predictedMs: number; predictedN: number } }
+  | { ok: true; content: string; promptTokens?: number; completionTokens?: number; timings?: { promptMs: number; predictedMs: number; predictedN: number } }
   | { ok: false; outcome: 'busy' | 'failed' | 'kept'; reason: string }
 
 export const DEFAULT_MODEL = 'chat-long'
@@ -138,8 +140,16 @@ export function classify(http: HttpReply): Reply {
   if (!content.trim()) return { ok: false, outcome: 'kept', reason: message.reasoning_content ? 'reasoning-only' : 'empty' }
   const t = obj(obj(json).timings)
   const [promptMs, predictedMs, predictedN] = [num(t.prompt_ms), num(t.predicted_ms), num(t.predicted_n)]
+  const usage = obj(obj(json).usage)
+  const promptTokens = num(usage.prompt_tokens)
   return {
-    ok: true, content, completionTokens: num(obj(obj(json).usage).completion_tokens),
+    ok: true, content, ...(promptTokens === undefined ? {} : { promptTokens }), completionTokens: num(usage.completion_tokens),
     ...(predictedMs && predictedN ? { timings: { promptMs: promptMs ?? 0, predictedMs, predictedN } } : {}),
   }
+}
+
+/** Adds one ok reply's counts to a run's tokens: undefined until a reply reports either count. */
+export function addTokens(tokens: Tokens | undefined, reply: { promptTokens?: number; completionTokens?: number }): Tokens | undefined {
+  if (reply.promptTokens === undefined && reply.completionTokens === undefined) return tokens
+  return { in: (tokens?.in ?? 0) + (reply.promptTokens ?? 0), out: (tokens?.out ?? 0) + (reply.completionTokens ?? 0) }
 }

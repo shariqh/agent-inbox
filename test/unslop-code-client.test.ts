@@ -362,6 +362,25 @@ describe('end to end against the agent\'s server', () => {
     expect(a.tasks).toHaveLength(2)
   })
 
+  it('the summary ends with the model calls and tokens when the result holds them, and the report carries them (Claude Code D6)', async () => {
+    const a = await agent((task) => ({ ...(slopRun(task) as CodeSlopResult), calls: 3, tokens: { in: 1800, out: 13 } }))
+    const r = sloppy()
+    const mesh = meshHome(`http://127.0.0.1:${a.port}`)
+    const res = await run(r, mesh, ['--report', 'report.json'])
+    expect(res.code, res.err).toBe(0)
+    expect(res.err.split('\n')[0]).toBe('unslop-code: looked at 2 of 2 files: removed 1 comment line, 1 suggestion; 3 calls, 1800 tokens in, 13 out.')
+    expect(JSON.parse(readFileSync(join(r.dir, 'report.json'), 'utf8'))).toMatchObject({ calls: 3, tokens: { in: 1800, out: 13 } })
+    const applied = await run(r, mesh, ['--apply'])
+    expect(applied.err.split('\n')[0]).toBe('unslop-code: looked at 2 of 2 files: removed 1 comment line, 1 suggestion; applied to 1 file; 3 calls, 1800 tokens in, 13 out.')
+    // counts that are not plain counts are never printed
+    for (const tokens of [{ in: -1, out: 2 }, { in: 1.5, out: 2 }, { in: '9', out: 2 }, { out: 2 }]) {
+      const odd = await agent((task) => ({ ...(slopRun(task) as CodeSlopResult), tokens } as unknown as CodeSlopResult))
+      const again = sloppy()
+      const got = await run(again, meshHome(`http://127.0.0.1:${odd.port}`), [])
+      expect(got.err.split('\n')[0], JSON.stringify(tokens)).toBe('unslop-code: looked at 2 of 2 files: removed 1 comment line, 1 suggestion.')
+    }
+  })
+
   it('--apply applies the patch to the working tree, never the index', async () => {
     const a = await agent()
     const r = sloppy()

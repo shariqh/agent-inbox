@@ -109,10 +109,11 @@ npm run meshctl -- server add box --base-url https://models.example/llm --key-fi
 npm run meshctl -- server add box --base-url https://models.example/llm --key-file ~/.keys/box --apply
 ```
 
-Give exactly one of `--key-file <path>` (an absolute path to a regular file you own, mode 0600;
-meshctl checks it and never reads it), `--key-env <NAME>` or `--no-key`. The dry run says what it
-would write: the name, the address and the key's kind. A name that is already there is refused;
-`server set` changes it.
+For a server at an address, give exactly one of `--key-file <path>` (an absolute path to a regular
+file you own, mode 0600; meshctl checks it and never reads it), `--key-env <NAME>` or `--no-key`.
+The dry run says what it would write: the name, the address and the key's kind. A name that is
+already there is refused; `server set` changes it. A Claude Code server takes none of these: see
+[Claude Code on this Mac](#claude-code-on-this-mac).
 
 ### Turn an agent's inline settings into a server
 
@@ -191,32 +192,11 @@ source gave no usable key, so nothing was sent).
 ## Claude Code on this Mac
 
 A server can be the Claude Code program installed on this Mac instead of an address. It has no
-address and no key: an agent that names it makes each model call by running `claude` once, and
-the call uses your Claude sign-in and your plan's usage, never an API key. The agent's privacy
-screen runs first, exactly as for any other server; what passes it (the draft, or the changed
-lines of code with the agent's questions) goes to Anthropic.
+address and no key. An agent that names it makes each model call by running `claude` once, with
+the account `claude` is signed in with. No `ANTHROPIC_*` variable is passed on.
 
-Each call runs, without a shell, in an empty folder of its own (`<mesh dir>/mesh/claude-cwd`):
-
-```sh
-claude -p --safe-mode --tools "" --system-prompt <the agent's instructions> --model <model> --no-session-persistence --output-format json
-```
-
-with the text on standard input. `-p` prints one answer and exits; `--safe-mode` switches off your
-CLAUDE.md files, skills, plugins, hooks and MCP servers and keeps the sign-in; `--tools ""` gives
-it no tools; `--no-session-persistence` keeps no session; `--output-format json` prints one JSON
-object, whose answer and token counts the agent reads. The program gets only `PATH`, `HOME`,
-`USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG` and `LC_ALL` from the agent's environment, so an
-`ANTHROPIC_*` variable never reaches it. One call may take at most 120 seconds. An error the
-program reports is never taken as an answer; a usage limit (429) fails the task. The program's
-start-up counts as model time in the agent's daily budget.
-
-The agent looks for `claude` in each folder on its `PATH`, then `/opt/homebrew/bin`,
-`/usr/local/bin`, `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin`. The first one found
-must be a file you or root own that no one else may change; otherwise none is used. No command
-prints where it was found.
-
-The models are `haiku`, `sonnet` and `opus`.
+The agent's privacy screen runs first, as for any server. What passes it goes to Anthropic: for
+unslop the draft and its rules, for unslop-code windows of 20 lines around each added line.
 
 ```sh
 npm run meshctl -- server add cc --claude-code
@@ -225,36 +205,58 @@ npm run meshctl -- server check cc
 npm run meshctl -- enable --unslop-code --server cc --apply
 ```
 
-- The dry run of `add` says `Would add the server cc to …/servers.json: Claude Code on this Mac
-  (its model calls run the claude program; the text goes to Anthropic), keeping every other server
-  (and a backup beside it).` `--claude-code` takes no address, key option, `--from` or `--move`.
-- `server check cc` sends nothing over the network and makes no model call: it finds the program
+- `add` is a dry run until `--apply`. It says the server is `Claude Code on this Mac (its model
+  calls run the claude program; the text goes to Anthropic)`. `--claude-code` takes no address,
+  key option, `--from` or `--move`.
+- `server check cc` sends nothing over the network and makes no model call. It finds the program
   and asks it whether you are signed in (`claude auth status`, of which it reads only that). Expect
   `Server cc (Claude Code on this Mac): ready; signed in; 3 models.` and the three names.
-- `enable --server cc` sets the model to `sonnet` unless you give `--model haiku`, `sonnet` or
-  `opus`, or the profile already names one of the three. Any other model name is refused, and an
-  agent whose profile names a Claude Code server with another model refuses to start. A `sampling`
-  key in such a profile is ignored.
+- The models are `haiku`, `sonnet` and `opus`. `enable --server cc` sets `sonnet` unless you give
+  `--model`, or the profile already names one of the three. Any other model name is refused, and
+  a `sampling` key in such a profile is ignored.
 - `server set` is refused for such a server: it has nothing to change. `server remove` works as
   for any server.
 
-A task may run up to 600 seconds. The command's default `--timeout` stays 280; give a longer one,
-up to 600, for a large change. The agent ends about 5 seconds before that, so what it decided
-comes back. The shell that runs the command needs a limit longer than the `--timeout`: with a
-600-second shell limit, use `--timeout 540`. When one call runs out of time, unslop-code keeps the
-files it already decided and reports the rest as not reached.
+### What a call runs
+
+Each call runs without a shell, in an empty folder of its own (`<mesh dir>/mesh/claude-cwd`), with
+the text on standard input:
+
+```sh
+claude -p --safe-mode --tools "" --system-prompt <the agent's instructions> --model <model> --no-session-persistence --output-format json
+```
+
+- `-p` prints one answer and exits, and `--output-format json` makes that one JSON object. The
+  agent reads the answer and the token counts from it.
+- `--safe-mode` switches off your CLAUDE.md files, skills, plugins, hooks and MCP servers, and
+  keeps the sign-in. `--tools ""` gives it no tools. `--no-session-persistence` keeps no session.
+- The program gets only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG` and `LC_ALL`.
+- One call may take at most 120 seconds. An error the program reports is never taken as an
+  answer, and a usage limit (429) fails the task.
+- The program's start-up counts as model time in the agent's daily budget.
+
+The agent looks for `claude` in each folder on its `PATH`, then in `/opt/homebrew/bin`,
+`/usr/local/bin`, `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin`. The first one found
+must be a file you or root own that no one else may change; otherwise none is used. No command
+prints where it was found.
+
+### Time
+
+For any server, a task may run up to 600 seconds. `--timeout` still defaults to 280; give up to
+600 for a large change, and give the shell that runs the command a limit above it. unslop-code
+stops about 5 seconds before the limit and keeps the files it already decided; the rest are
+reported as not reached. unslop gives the original back.
 
 **If something's off**
 
 - `server check` says `no claude program found (looked in PATH and the usual places)` (`no-program`
   in `--json`): install Claude Code, or link `claude` into one of the folders above. An agent that
-  finds none exits at once with `… which is Claude Code on this Mac, but no claude program was
-  found`.
-- It says `not signed in (run claude once and sign in)` (`signed-out`): run `claude` in a terminal
-  and sign in, then check again.
-- An app older than the one that knows this kind shows such a server with a blank address, and
-  its **Check** says `That did not work (output).` when the program is missing or not signed in;
-  `server check` in a terminal says which.
+  finds none exits at once and says so.
+- It says `not signed in (run claude once and sign in)` (`signed-out`): run `claude` in a terminal,
+  sign in, then check again.
+- The app shows such a server with a blank address, and its **Check** says `That did not work
+  (output).`: that version of the app does not know this kind yet. Use `server check` in a
+  terminal until you update the app.
 
 ## Output for programs (`--json`)
 
@@ -285,8 +287,9 @@ its check's `failure` is `no-program`, `signed-out` or `timeout`, and its `model
 ## What is never printed
 
 No command prints a key, a key file's path, a key command or a key variable's name, in any mode,
-JSON included. Nor does any command or agent log print the claude program's path, the text sent to
-it or its answer, or anything from `claude auth status` but whether you are signed in. A server's address is printed only by `server list`, `server check`, `status`, and
+JSON included. No meshctl output, agent log or run record holds the claude program's path, the
+text sent to it or its raw answer, or anything from `claude auth status` but whether you are
+signed in. A server's address is printed only by `server list`, `server check`, `status`, and
 the dry run or result of the `server add` or `server set` that was given it. Model ids from
 `server check` are untrusted text, printed quoted under a fixed header. `disable --purge` of an
 agent never touches `servers.json`.

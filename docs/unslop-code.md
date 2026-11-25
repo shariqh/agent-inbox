@@ -2,8 +2,9 @@
 
 Agent Inbox can run a second local A2A agent, `unslop-code` (#652), beside
 [unslop](unslop.md). After a coding agent writes or edits JavaScript or TypeScript in a git
-repository, the command sends the files the change touched to the agent. A local model
-answers with line numbers only, and code decides: a line goes only when the change added
+repository, the command sends the files the change touched to the agent. The agent's model (a
+local one, or Claude Code on this Mac: see [model servers](model-servers.md)) answers with line
+numbers only, and code decides: a line goes only when the change added
 it, it holds one whole-line `//` comment and nothing else, and the guards in
 `packages/mesh/src/code-slop.ts` allow it. The result is a deletions-only patch. Code is never
 rewritten; other things the model noticed come back as suggestions, which nothing applies.

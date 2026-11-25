@@ -17,7 +17,9 @@ to a running session.
 ![Agent Inbox showing a synthetic decision queue, plan row, response options, and live agents](docs/assets/agent-inbox-overview.png)
 
 The app is local-first infrastructure, not another agent: its core data path has no
-model calls, hosted service, or telemetry. An agent you point at Claude Code sends that agent's text to Anthropic through your own Claude sign-in; Agent Inbox itself still makes no model calls. A stdio MCP server and the desktop viewer
+model calls, hosted service, or telemetry. An agent you point at Claude Code sends
+that agent's text to Anthropic, with the account `claude` is signed in with; Agent
+Inbox itself still makes no model calls. A stdio MCP server and the desktop viewer
 share one SQLite database on your machine.
 
 ## What it does

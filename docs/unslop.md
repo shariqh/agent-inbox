@@ -2,7 +2,8 @@
 
 Agent Inbox can run the `unslop` editing skill as a local A2A agent (#483, mesh phase
 M2a). Copilot CLI, Claude Code or a plain shell sends a public draft to it, and the
-agent edits the draft with a local model by the same `rules.md` the skill uses
+agent edits the draft with the model its [server](model-servers.md) gives it (a local model, or
+Claude Code on this Mac) by the same `rules.md` the skill uses
 in-session. Code, not the model, checks that facts, links, numbers, negations and
 conditions survived the edit. If the check fails twice, you get the original back.
 

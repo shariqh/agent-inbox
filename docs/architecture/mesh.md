@@ -1606,7 +1606,7 @@ app shows it through the bridge (`docs/architecture/electron-app.md`).
   carry `kind` (`http` or `claude-code`); a Claude Code row keeps `baseUrl: ""` and `key: "none"`,
   the shape the released bridge requires.
 - **`server check`** (`src/mesh-server-check.ts`; Node core and the config rule; never reached by
-  the viewer, the frontend or Electron) reads the key from its source, then sends one
+  the viewer or the frontend) of a server at an address reads the key from its source, then sends one
   `GET <baseUrl>/v1/models` through `node:http(s)` (no redirect, no proxy, 10 s for the whole
   check, 256 KiB). A 401 or 403 is `unauthorized`; a redirect, another status, junk or too much is
   `not-a-model-server`; a key source that gives nothing is `key`, and nothing is sent. Only ids

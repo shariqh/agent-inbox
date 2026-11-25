@@ -191,6 +191,11 @@ describe('the example agent (#539)', () => {
     const big = 'y'.repeat(64 * 1024)
     expect((await post(url, send(big))).json.result.task.artifacts[0].parts[0].text).toBe(String(big.length))
     expect(await idle()).toBeLessThan(350)
+    // while a task is open idleMs() is 0, however long it runs (T7)
+    const held = post(url, send('hold'))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(await idle()).toBe(0)
+    expect((await held).json.result.task.artifacts[0].parts[0].text).toBe('4')
   }, 30_000)
 
   it('refuses a usage error with 4 before it guards any output', async () => {

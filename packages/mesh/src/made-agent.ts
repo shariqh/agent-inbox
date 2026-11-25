@@ -27,7 +27,7 @@ import { ConfigError, appendPrivate, localDate, readPrivate } from './files.js'
 import { readApiKey } from './key-source.js'
 import { loadSigningKeys, meshCard, readToken, servedCard, startKitAgent } from './kit/index.js'
 import type { Run, RunResult } from './kit/index.js'
-import { MADE_ID, parseMadeCard } from './made-card.js'
+import { CARD_FILE_MAX, MADE_ID, parseMadeCard } from './made-card.js'
 import type { MadeCard, ServerKind } from './made-card.js'
 import { findClaude, isClaudeServer, meshDir, meshFile, readMesh, readServers } from './mesh-config.js'
 import type { ServerEntry } from './mesh-config.js'
@@ -43,7 +43,10 @@ export const INPUT_MAX = 64 * 1024
 export const BODY_MAX = 6 * INPUT_MAX + 16 * 1024
 export const MAX_TOKENS = 4096
 export type StopReason = 'mesh.json' | 'token' | 'server' | 'idle' | 'signal'
-const BUILT_IN = ['unslop', 'unslop-code', 'request-post', 'web-search']
+/** The built-in agents' names, which a made agent never takes: src/mesh-entry.ts's BUILT_IN_AGENTS (a test holds them equal). */
+export const BUILT_IN: readonly string[] = ['unslop', 'unslop-code', 'request-post', 'web-search']
+/** A try's model call limit: below the 300 s meshctl gives the try's process, so a slow server is said, not killed. */
+export const TRY_MS = 240_000
 /** Never contacted: a Claude Code server's calls run the claude program (claudePost ignores the URL). */
 const CLAUDE_PLACEHOLDER_URL = 'http://127.0.0.1:9/claude-code'
 const TRANSPORT: Record<TransportReason, string> = { unreachable: 'unreachable', deadline: 'deadline', aborted: 'cancelled', 'too-large': 'backend-too-large', invalid: 'backend-request' }
@@ -117,7 +120,7 @@ const busy = (reason: string): RunResult => ({ state: 'rejected', reason, data: 
  * The run of a made agent: the input's limits and the secret screen before any network, then one
  * model call. A Claude Code server takes one task at a time and rejects the others as busy.
  */
-export function madeRun(card: MadeCard, call: Transport, now: () => number = Date.now): Run {
+export function madeRun(card: MadeCard, call: Transport, now: () => number = Date.now, timeoutMs = TASK_MS): Run {
   const system = systemMessage(card.name, card.instructions)
   let running = false
   return async (input, _options, signal) => {
@@ -132,7 +135,7 @@ export function madeRun(card: MadeCard, call: Transport, now: () => number = Dat
       const body = requestBody({ baseUrl: call.url.href, model: card.model, sampling: DEFAULT_SAMPLING }, [{ role: 'system', content: system }, { role: 'user', content: input }], MAX_TOKENS)
       let http
       try {
-        http = await call.post(call.url, body, call.headers, { timeoutMs: TASK_MS, signal })
+        http = await call.post(call.url, body, call.headers, { timeoutMs, signal })
       } catch (error) {
         const reason = (error as { reason?: TransportReason }).reason
         return { state: 'failed', reason: reason ? TRANSPORT[reason] : 'unreachable', log: log() }
@@ -171,6 +174,15 @@ function profilePort(root: string, id: string): number {
     throw new ConfigError(`${id}'s start profile does not name its port: meshctl remove ${id} --apply, then make it again`)
   }
   return port as number
+}
+
+/** The signing keys of `id` (none: the card is unsigned), or a refusal in fixed words: the key loader's own name a path. */
+function signingKeys(dir: string, id: string): ReturnType<typeof loadSigningKeys> {
+  try {
+    return loadSigningKeys(dir, id)
+  } catch {
+    throw new ConfigError(`the signing key of ${id} cannot be read: the keys folder or its key file breaks the key rule (meshctl key show ${id} says why)`)
+  }
 }
 
 /** The stored description of `id`, by the card rule. */
@@ -224,6 +236,8 @@ export async function startMade(o: MadeOptions): Promise<Made> {
     if (!stat.isDirectory() || (process.getuid && stat.uid !== process.getuid()) || stat.mode & 0o077) throw new ConfigError('mesh/claude-cwd must be a folder you own that only you can open (chmod 700 it)')
     return folder
   }
+  // the kit reads the keys again; this read is the one whose refusal is said
+  signingKeys(o.meshDir, id)
   const call = transportFor(entry, card.server, { env, post: o.post, claudePaths: o.claudePaths }, cwd)
   const log = (line: Json): void => {
     try {
@@ -277,9 +291,18 @@ export async function startMade(o: MadeOptions): Promise<Made> {
 
 /** A card file's text, at most 64 KiB from a regular file. */
 function readCardFile(path: string): string {
+  let size: number
   try {
-    if (!lstatSync(path).isFile()) throw new Error('not a file')
-    return readFileSync(path, 'utf8').slice(0, 64 * 1024 + 1)
+    const stat = lstatSync(path)
+    if (!stat.isFile()) throw new Error('not a file')
+    size = stat.size
+  } catch {
+    throw new ConfigError('the card file cannot be read: it must be a regular file')
+  }
+  // the size first: a file over the cap is never read
+  if (size > CARD_FILE_MAX) throw new ConfigError('the card file is larger than 64 KiB')
+  try {
+    return readFileSync(path, 'utf8')
   } catch {
     throw new ConfigError('the card file cannot be read: it must be a regular file')
   }
@@ -297,6 +320,8 @@ function cardFromFile(dir: string, path: string): MadeCard {
   if ('refused' in read) throw new ConfigError(read.refused)
   const bad = idRefusal(read.card.name)
   if (bad) throw new ConfigError(bad)
+  // the instructions go to the model server on every call: never a key or a token among them
+  if (!screen(read.card.instructions, {}, ['secret']).ok) throw new ConfigError('"instructions" hold something shaped like a secret (a key or a token): take it out of the card file')
   return read.card
 }
 
@@ -311,9 +336,11 @@ async function tryCard(dir: string, from: string, input: string, seams: Seams): 
   const card = cardFromFile(dir, from)
   let sample: string
   try {
-    if (!lstatSync(input).isFile()) throw new Error('not a file')
+    const stat = lstatSync(input)
+    if (!stat.isFile()) throw new Error('not a file')
+    // the size first: a sample over the cap is never read
+    if (stat.size > INPUT_MAX) return { refused: TRY_WORDS['too-long']! }
     const bytes = readFileSync(input)
-    if (bytes.length > INPUT_MAX) return { refused: TRY_WORDS['too-long']! }
     sample = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   } catch {
     return { refused: 'the sample cannot be read: it must be a regular file of UTF-8 text' }
@@ -321,8 +348,9 @@ async function tryCard(dir: string, from: string, input: string, seams: Seams): 
   let folder: string | undefined
   try {
     const call = transportFor(serverEntry(dir, card.server), card.server, seams, () => (folder = mkdtempSync(join(tmpdir(), 'made-try-'))))
-    const result = await madeRun(card, call)(sample, {}, new AbortController().signal, () => {})
+    const result = await madeRun(card, call, Date.now, TRY_MS)(sample, {}, new AbortController().signal, () => {})
     if (result.state === 'completed') return { text: result.text }
+    if (result.state === 'failed' && result.reason === 'deadline') return { refused: `the server ${card.server} did not answer within ${TRY_MS / 1000} s: try again later, or with a shorter sample` }
     const words = (result.state === 'rejected' ? TRY_WORDS[result.reason] : undefined) ?? (result.data?.['code'] === 12 ? `the server ${card.server} is busy (${result.reason}): try again later` : `the model call failed (${result.reason})`)
     return { refused: words }
   } finally {
@@ -353,7 +381,7 @@ export async function main(args: string[], env: NodeJS.ProcessEnv, io: { out: (t
       const port = Number(flag('--port'))
       if (!/^\d{1,5}$/.test(flag('--port')) || port < 1 || port > 65535 || port === 80) return usage()
       const card = cardFromFile(dir, flag('--from'))
-      const keys = loadSigningKeys(dir, card.name)
+      const keys = signingKeys(dir, card.name)
       io.out(`${JSON.stringify(servedCard((listed) => madeCard(card.name, card.description, `http://127.0.0.1:${port}/`, listed), keys))}\n`)
       return 0
     }

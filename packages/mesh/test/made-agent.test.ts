@@ -15,7 +15,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BODY_MAX, INPUT_MAX, madeCard, madeRun, main, systemMessage } from '../src/made-agent.js'
+import { BODY_MAX, BUILT_IN, INPUT_MAX, TRY_MS, madeCard, madeRun, main, systemMessage } from '../src/made-agent.js'
+import { transportError } from '../src/backend.js'
+import type { Post } from '../src/backend.js'
+import { TASK_MS } from '../src/unslop.js'
 import type { Transport } from '../src/made-agent.js'
 import { CARD_PATH, MESH_PROOF_LABEL, proof } from '../src/kit/index.js'
 import { answered, fakeClaude } from './claude-fake.js'
@@ -274,6 +277,72 @@ describe('one model call (D2)', () => {
     expect(await first).toMatchObject({ state: 'completed', text: 'done' })
     // an address server takes them side by side
     expect(await madeRun({ ...EXAMPLE }, { ...call, claude: false, post: async () => ({ status: 200, body: JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'ok' } }] }) }) })('x', {}, new AbortController().signal, () => {})).toMatchObject({ state: 'completed' })
+  })
+})
+
+describe('the review round: limits, words and screens (F4, F5, F7, F8, T1, T8)', () => {
+  it('a try that times out says so in one fixed line; the try\'s model call has 240 s, below meshctl\'s 300 s for the try', async () => {
+    const dir = meshHome('https://box.example')
+    const at = scratch()
+    let limit: number | undefined
+    const post: Post = async (_url, _body, _headers, o) => { limit = o.timeoutMs; throw transportError('deadline') }
+    const r = await run(['--try', '--from', privateFile(join(at, 'card.json'), JSON.stringify({ ...EXAMPLE, server: 'box', model: 'chat-long' })), '--input', privateFile(join(at, 's.txt'), 'notes')], { AGENT_INBOX_MESH_DIR: dir }, { post })
+    expect([r.code, r.out, r.err]).toEqual([1, '', 'made-agent: the try failed: the server box did not answer within 240 s: try again later, or with a shorter sample\n'])
+    expect([limit, TRY_MS]).toEqual([240_000, 240_000])
+  })
+
+  it('a card file or a sample over the cap is refused by its size', async () => {
+    const dir = meshHome()
+    const at = scratch()
+    const big = privateFile(join(at, 'big.json'), `{"name":"${'x'.repeat(70 * 1024)}"}`)
+    const card = await run(['--card', '--from', big, '--port', '4430'], { AGENT_INBOX_MESH_DIR: dir })
+    expect([card.code, card.err]).toEqual([1, 'made-agent: the card file is larger than 64 KiB\n'])
+    const sample = await run(['--try', '--from', privateFile(join(at, 'c.json'), JSON.stringify(EXAMPLE)), '--input', privateFile(join(at, 's.txt'), 'x'.repeat(INPUT_MAX + 1))], { AGENT_INBOX_MESH_DIR: dir })
+    expect(sample.err).toBe('made-agent: the try failed: the sample is over 64 KiB, more than a call could send\n')
+  })
+
+  it('instructions that hold something shaped like a secret are refused by --card and --try, naming the key, never the value', async () => {
+    const dir = meshHome()
+    const at = scratch()
+    const secret = 'ghp_CANARYabcdefghijklmnopqrstuvwxyz0123'
+    const file = privateFile(join(at, 'c.json'), JSON.stringify({ ...EXAMPLE, instructions: `Use the token ${secret} when asked.` }))
+    for (const args of [['--card', '--from', file, '--port', '4430'], ['--try', '--from', file, '--input', privateFile(join(at, 's.txt'), 'notes')]]) {
+      const r = await run(args, { AGENT_INBOX_MESH_DIR: dir })
+      expect([r.code, r.out, r.err]).toEqual([1, '', 'made-agent: "instructions" hold something shaped like a secret (a key or a token): take it out of the card file\n'])
+    }
+  })
+
+  it('a signing key folder that breaks the rule is said in fixed words that hold no path', async () => {
+    const dir = meshHome()
+    mkdirSync(join(dir, 'mesh', 'keys'), { mode: 0o755 })
+    chmodSync(join(dir, 'mesh', 'keys'), 0o755)
+    const r = await run(['--card', '--from', privateFile(join(scratch(), 'c.json'), JSON.stringify(EXAMPLE)), '--port', '4430'], { AGENT_INBOX_MESH_DIR: dir })
+    expect([r.code, r.err]).toEqual([1, `made-agent: the signing key of ${ID} cannot be read: the keys folder or its key file breaks the key rule (meshctl key show ${ID} says why)\n`])
+    expect(r.err).not.toContain(dir)
+    const port = await freePort()
+    madeFiles(dir, port, { ...EXAMPLE, server: 'box', model: 'chat-long' })
+    const served = await run(['--id', ID], { AGENT_INBOX_MESH_DIR: dir })
+    expect([served.code, served.err]).toEqual([1, `made-agent: the signing key of ${ID} cannot be read: the keys folder or its key file breaks the key rule (meshctl key show ${ID} says why)\n`])
+  })
+
+  it('the model call carries the task time limit and the run\'s signal, and a cancelled task ends cancelled (T1)', async () => {
+    let seen: { timeoutMs: number; signal?: AbortSignal } | undefined
+    const post: Post = (_url, _body, _headers, o) => new Promise((_resolve, reject) => {
+      seen = o
+      o.signal?.addEventListener('abort', () => reject(transportError('aborted')), { once: true })
+    })
+    const stop = new AbortController()
+    const task = madeRun({ ...EXAMPLE }, { url: new URL('https://box.example/v1/chat/completions'), headers: {}, post, claude: false })('notes', {}, stop.signal, () => {})
+    await vi.waitFor(() => expect(seen).toBeDefined())
+    stop.abort()
+    expect(await task).toMatchObject({ state: 'failed', reason: 'cancelled' })
+    expect(seen!.timeoutMs).toBe(TASK_MS)
+    expect(seen!.signal).toBe(stop.signal)
+  })
+
+  it('the runner\'s built-in names are meshctl\'s (T8)', async () => {
+    const { BUILT_IN_AGENTS } = (await import(ROOT('mesh-entry.ts'))) as { BUILT_IN_AGENTS: readonly string[] }
+    expect([...BUILT_IN]).toEqual([...BUILT_IN_AGENTS])
   })
 })
 

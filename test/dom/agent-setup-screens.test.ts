@@ -491,6 +491,8 @@ describe('Check and Remove on a server’s row (D3)', () => {
     bridge.s.servers = [server('main')]
     click(document.querySelector('#cards .ma-refresh'))
     await settle()
+    // the line is out of date the moment the list says no agent uses the server, before any press
+    expect(row('main')!.querySelector('.ms-row-note')?.textContent).toBe('')
     click(remove())
     await settle()
     expect(row('main')!.querySelector('.ms-row-note')?.textContent).toBe('')

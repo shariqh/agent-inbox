@@ -364,6 +364,11 @@ export function installMeshSetup(deps) {
         let el = rowEls.get(name)
         if (!el) rowEls.set(name, (el = serverRowEl(name)))
         const agents = strings(server.agents)
+        // a "still use this server" line is out of date once the list says no agent uses the server
+        if (!agents.length && usedNotes.has(name)) {
+          if (notes.get(name) === usedNotes.get(name)) notes.delete(name)
+          usedNotes.delete(name)
+        }
         const facts = [typeof server.baseUrl === 'string' ? server.baseUrl : '', KEYS[server.key] ?? '', agents.length ? `used by ${agents.join(', ')}` : '']
         setText(el.querySelector('.ms-row-facts'), facts.filter(Boolean).join(' · '))
         const note = el.querySelector('.ms-row-note')

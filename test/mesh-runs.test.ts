@@ -199,18 +199,21 @@ describe('unslop: one record per exit (§5.3, §5.4)', () => {
 describe('unslop-code: counts and classes only, never a path or text (#652)', () => {
   // what the agent's data part holds: paths, line numbers, suggestion kinds, fractional timings
   const DATA = {
-    code: 0, status: 'cleaned', model: 'coder-next', calls: 3, ms: { queued: 4.4, load: 0, model: 812.6 },
+    code: 0, status: 'cleaned', model: 'coder-next', calls: 3, tokens: { in: 151_000, out: 61_000 }, ms: { queued: 4.4, load: 0, model: 812.6 },
     files: [{ path: 'src/canary-path-q10.ts', status: 'cleaned', removed: [3, 4], dropped: [], suggestions: [{ line: 9, kind: 'cast' }] }],
   }
   const armed = (more: RunCollector = {}): RunCollector => ({ armed: Date.now() - 50, op: 'clean', task: 'task-9', data: DATA, files: 1, bytesIn: 2048, removed: 2, suggestions: 1, ...more })
 
-  it('records the op, the counts, the status, the model and whole-millisecond timings', () => {
+  it('records the op, the counts, the status, the model, whole-millisecond timings, and what the run spent', () => {
     const dir = scratchDir('runs-code-')
     mkdirSync(join(dir, 'mesh'), { mode: 0o700 })
     appendRun(dir, 'unslop-code', armed(), { exit: 0 })
     const [r] = records(dir)
-    expect(Object.keys(r!).sort()).toEqual([...COMMON, 'task', 'status', 'files', 'bytesIn', 'removed', 'suggestions', 'model', 'timing'].sort())
-    expect(r).toMatchObject({ agent: 'unslop-code', op: 'clean', exit: 0, outcome: 'ok', status: 'cleaned', files: 1, bytesIn: 2048, removed: 2, suggestions: 1, model: 'coder-next', timing: { queued: 4, load: 0, model: 813 } })
+    expect(Object.keys(r!).sort()).toEqual([...COMMON, 'task', 'status', 'files', 'bytesIn', 'removed', 'suggestions', 'model', 'timing', 'calls', 'tokensIn', 'tokensOut'].sort())
+    expect(r).toMatchObject({
+      agent: 'unslop-code', op: 'clean', exit: 0, outcome: 'ok', status: 'cleaned', files: 1, bytesIn: 2048, removed: 2, suggestions: 1, model: 'coder-next', timing: { queued: 4, load: 0, model: 813 },
+      calls: 3, tokensIn: 151_000, tokensOut: 61_000,
+    })
     expect(readdirSync(runsDir(dir))).toEqual([`unslop-code-${localDate(Date.now())}.jsonl`])
     expect(runBytes(dir)).not.toMatch(/canary|\.ts|cast/)
     // the reader takes it back under its own name only
@@ -240,6 +243,41 @@ describe('unslop-code: counts and classes only, never a path or text (#652)', ()
     expect(unslop).toHaveLength(1)
     expect(unslop[0]).toMatchObject({ outcome: 'ok' })
     expect(unslop[0]).not.toHaveProperty('status')
+  })
+
+  it('what a run spent: both model agents record calls and tokens; a bad count is left out; no other agent records them', () => {
+    const dir = scratchDir('runs-spent-')
+    mkdirSync(join(dir, 'mesh'), { mode: 0o700 })
+    appendRun(dir, 'unslop', { armed: Date.now(), op: 'pr', data: { status: 'rewritten', calls: 2, tokens: { in: 900, out: 0 } } }, { exit: 0 })
+    expect(records(dir).at(-1)).toMatchObject({ agent: 'unslop', calls: 2, tokensIn: 900, tokensOut: 0 })
+    // the limits: 100 000 calls, 10^12 tokens each way, safe integers of 0 or more
+    appendRun(dir, 'unslop-code', armed({ data: { ...DATA, calls: 100_000, tokens: { in: 1e12, out: 1e12 } } }), { exit: 0 })
+    expect(records(dir).at(-1)).toMatchObject({ calls: 100_000, tokensIn: 1e12, tokensOut: 1e12 })
+    for (const [calls, tokens] of [
+      [100_001, { in: 1e12 + 1, out: -1 }], [-1, { in: 1.5, out: '7' }], [2.5, null], ['3', { in: Number.MAX_SAFE_INTEGER + 2, out: Infinity }], [undefined, undefined],
+    ] as const) {
+      appendRun(dir, 'unslop-code', armed({ data: { ...DATA, calls, tokens } }), { exit: 0 })
+      const r = records(dir).at(-1)!
+      expect(r, JSON.stringify([calls, tokens])).toMatchObject({ outcome: 'ok', status: 'cleaned' })
+      for (const key of ['calls', 'tokensIn', 'tokensOut']) expect(r, `${key} ${JSON.stringify([calls, tokens])}`).not.toHaveProperty(key)
+    }
+    expect(records(dir)).toHaveLength(7)
+    // request-post has no model: its record never carries them
+    appendRun(dir, 'request-post', { armed: Date.now(), op: 'status', data: { phase: 'queued', calls: 1, tokens: { in: 1, out: 1 } } }, { exit: 0 })
+    expect(records(dir).at(-1)).not.toHaveProperty('calls')
+    expect(records(dir).at(-1)).not.toHaveProperty('tokensIn')
+  })
+
+  it('the reader skips and counts a record whose calls or tokens break their rule', () => {
+    const dir = scratchDir('runs-spent-read-')
+    const now = Date.now()
+    const good = { v: 1, id: 'aaaaaaaaaa', agent: 'unslop-code', op: 'clean', at: new Date(now - 1000).toISOString(), ms: 5, exit: 0, outcome: 'ok', calls: 4, tokensIn: 10, tokensOut: 2 }
+    const bad = [{ calls: -1 }, { calls: 100_001 }, { tokensIn: 0.5 }, { tokensOut: 1e12 + 1 }, { tokensIn: '10' }, { calls: null }]
+      .map((over, i) => JSON.stringify({ ...good, id: `b${'a'.repeat(8)}${'abcdef'[i]}`, ...over }))
+    privateFile(join(runsDir(dir), `unslop-code-${localDate(now)}.jsonl`), [JSON.stringify(good), ...bad, ''].join('\n'))
+    const read = readRuns(dir, 'unslop-code', now)
+    expect(read.runs).toEqual([good])
+    expect(read.skipped).toBe(6)
   })
 })
 
@@ -476,6 +514,7 @@ for (let i = 0; i < 50; i++) appendRun(${JSON.stringify(dir)}, 'unslop', { armed
       data: {
         reason: `r${'x'.repeat(39)}`, screen: Array.from({ length: 9 }, (_, i) => `${'c'.repeat(23)}${i}`), status: 'kept-original', attempts: 9, model: 'M'.repeat(64),
         rulesSha256: 'f'.repeat(64), ms: { queued: 1e12, load: 1e12, model: 1e12, check: 1e12 }, warnings: Array.from({ length: 9 }, (_, i) => ({ class: `${'w'.repeat(23)}${i}`, detail: C.detail })),
+        calls: 100_000, tokens: { in: 1e12, out: 1e12 },
       },
     }
     const file = join(runsDir(dir), `unslop-${localDate(Date.now())}.jsonl`)
@@ -485,6 +524,20 @@ for (let i = 0; i < 50; i++) appendRun(${JSON.stringify(dir)}, 'unslop', { armed
     expect(line.length).toBeGreaterThan(400)
     expect(line.length).toBeLessThanOrEqual(512)
     expect(JSON.parse(line.toString('utf8'))).toMatchObject({ outcome: 'kept-original', reason: `r${'x'.repeat(39)}`, status: 'kept-original' })
+
+    // unslop-code's largest record fits too; what it spent is the first thing it gives up
+    const code: RunCollector = {
+      armed: Date.now() - 1e9, op: 'clean', task: 'T'.repeat(64), files: 40, bytesIn: Number.MAX_SAFE_INTEGER, removed: Number.MAX_SAFE_INTEGER, suggestions: Number.MAX_SAFE_INTEGER,
+      data: { reason: `r${'x'.repeat(39)}`, status: 'failed', model: 'M'.repeat(64), ms: { queued: 1e12, load: 1e12, model: 1e12 }, calls: 100_000, tokens: { in: 1e12, out: 1e12 } },
+    }
+    const codeFile = join(runsDir(dir), `unslop-code-${localDate(Date.now())}.jsonl`)
+    privateFile(codeFile, 'x')
+    appendRun(dir, 'unslop-code', code, { exit: 13 })
+    const codeLine = readFileSync(codeFile).subarray(1)
+    expect(codeLine.length).toBeLessThanOrEqual(512)
+    const kept = JSON.parse(codeLine.toString('utf8'))
+    expect(kept).toMatchObject({ outcome: 'failed', status: 'failed', files: 40, removed: Number.MAX_SAFE_INTEGER })
+    expect(kept).not.toHaveProperty('calls')
 
     // 300 bytes under the cap: a record over 300 bytes is refused, a shorter one fits
     privateFile(file, `${'x'.repeat(256 * 1024 - 301)}\n`)

@@ -62,9 +62,11 @@ const OPS: Record<Kind, string[]> = {
   unslop: ['pr', 'issue', 'release-notes', 'docs', 'blog'], 'unslop-code': ['clean'], 'request-post': ['file', 'status', 'wait'], 'web-search': ['answer', 'sources'], added: ['call'],
 }
 const COMMON = ['v', 'id', 'agent', 'op', 'at', 'ms', 'exit', 'signal', 'outcome', 'reason', 'classes', 'task']
+// what a model agent's run spent: its model calls, and the tokens its replies reported in and out
+const SPENT = ['calls', 'tokensIn', 'tokensOut']
 const FIELDS: Record<Kind, string[]> = {
-  unslop: [...COMMON, 'status', 'bytesIn', 'attempts', 'model', 'rules', 'timing', 'warnings'],
-  'unslop-code': [...COMMON, 'status', 'files', 'bytesIn', 'removed', 'suggestions', 'model', 'timing'],
+  unslop: [...COMMON, 'status', 'bytesIn', 'attempts', 'model', 'rules', 'timing', 'warnings', ...SPENT],
+  'unslop-code': [...COMMON, 'status', 'files', 'bytesIn', 'removed', 'suggestions', 'model', 'timing', ...SPENT],
   'request-post': [...COMMON, 'phase', 'created', 'throughGo', 'channels', 'brand', 'fields'],
   'web-search': COMMON,
   added: COMMON,
@@ -107,6 +109,9 @@ const RULES: Record<string, (v: unknown, r: Json) => boolean> = {
   removed: (v) => int(v),
   suggestions: (v) => int(v),
   attempts: (v) => int(v, 9),
+  calls: (v) => int(v, 100_000),
+  tokensIn: (v) => int(v, 1e12),
+  tokensOut: (v) => int(v, 1e12),
   model: test(/^[A-Za-z0-9._:/-]{1,64}$/),
   rules: test(/^[0-9a-f]{12}$/),
   timing: (v, r) => !!v && typeof v === 'object' && Object.keys(v).join() === TIMING[kindOf(r['agent'])!] && Object.values(v).every((n) => int(n)),
@@ -150,6 +155,9 @@ function buildLine(agent: string, c: RunCollector, end: RunEnd, now: number): st
   const d = c.data ?? {}
   const ms = d['ms'] && typeof d['ms'] === 'object' ? d['ms'] as Json : {}
   const reason = c.internal ? 'internal' : d['reason']
+  const tokens = d['tokens'] && typeof d['tokens'] === 'object' ? d['tokens'] as Json : {}
+  // the result's own counts (the agent sums its replies' usage), for the two model agents
+  const spent: Json = { calls: d['calls'], tokensIn: tokens['in'], tokensOut: tokens['out'] }
   const r: Json = {
     v: 1, id: [...randomBytes(10)].map((b) => B32[b & 31]).join(''), agent, op: c.op, at: new Date(now).toISOString(), ms: Math.max(0, Math.round(now - c.armed)),
     exit: end.exit, signal: end.exit === null ? end.signal : undefined, reason,
@@ -161,12 +169,14 @@ function buildLine(agent: string, c: RunCollector, end: RunEnd, now: number): st
         rules: typeof d['rulesSha256'] === 'string' ? d['rulesSha256'].slice(0, 12) : undefined,
         timing: { queued: ms['queued'], load: ms['load'], model: ms['model'], check: ms['check'] },
         warnings: list((Array.isArray(d['warnings']) ? d['warnings'] : []).map((w) => (w && typeof w === 'object' ? (w as Json)['class'] : undefined)), 8),
+        ...spent,
       }
     : kind === 'unslop-code'
       ? {
           task: c.task, status: d['status'], files: c.files, bytesIn: c.bytesIn, removed: c.removed, suggestions: c.suggestions, model: d['model'],
           // its agent measures with performance.now(), so the timings come with fractions
           timing: { queued: whole(ms['queued']), load: whole(ms['load']), model: whole(ms['model']) },
+          ...spent,
         }
       : kind === 'request-post'
         ? {
@@ -176,8 +186,9 @@ function buildLine(agent: string, c: RunCollector, end: RunEnd, now: number): st
         : { task: c.task }
   for (const [key, value] of Object.entries(candidates)) if (value !== undefined && RULES[key]!(value, r)) r[key] = value
   if (r['reason'] !== undefined && !RULES['reason']!(r['reason'], r)) delete r['reason']
-  // the builder's last cap (§5.4): shorten the lists, then drop optional fields, until the line fits
-  const optional = ['warnings', 'classes', 'fields', 'model', 'task', 'timing', 'rules', 'channels', 'brand']
+  // the builder's last cap (§5.4): what the run spent goes first, then the lists shorten and the
+  // other optional fields drop, until the line fits
+  const optional = [...SPENT, 'warnings', 'classes', 'fields', 'model', 'task', 'timing', 'rules', 'channels', 'brand']
   for (;;) {
     const record = validRun(r)
     if (!record) return undefined

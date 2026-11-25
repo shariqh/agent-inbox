@@ -1658,6 +1658,50 @@ describe('unslop-code in the Agent cards tab', () => {
     expect(log.some((entry) => entry.includes('onerror'))).toBe(false)
   })
 
+  it('what each run spent ends its own facts: calls, then tokens in and out shown short; a bad or missing count shows nothing', async () => {
+    const fake = fakeMesh(body(up(), unslop()))
+    const spent = (calls: unknown, tokensIn: unknown, tokensOut: unknown): Json => ({ calls, tokensIn, tokensOut })
+    fake.s.runs = {
+      'unslop-code': [
+        run('a', 1 * MIN, { files: 32, removed: 27, suggestions: 0, ...spent(44, 151_000, 61_000) }),
+        run('b', 2 * MIN, { exit: 11, outcome: 'refused', reason: 'malformed', status: undefined, ...spent(1, 1, 0) }),
+        run('c', 3 * MIN, spent(2, 999, 0)),
+        run('d', 4 * MIN, spent(3, 1000, 234)),
+        run('e', 5 * MIN, spent(5, 9_940, 10)),
+        run('f', 6 * MIN, spent(6, 999_400, 100)),
+        run('g', 7 * MIN, spent(7, 1_500_000, 49_999)),
+        // huge, negative, fractional, missing, not a number: none of the three shows
+        run('h', 8 * MIN, spent(1e20, 5, 5)),
+        run('i', 9 * MIN, spent(4, -1, 5)),
+        run('j', 10 * MIN, spent(4, 5, 2.5)),
+        run('k', 11 * MIN, spent(4, 5, undefined)),
+        run('l', 12 * MIN, spent('4', 5, 5)),
+      ],
+      unslop: [
+        { v: 1, id: 'naaaaaaaaa', agent: 'unslop', op: 'docs', at: at(MIN), ms: 8400, exit: 0, outcome: 'ok', status: 'rewritten', attempts: 1, bytesIn: 6200, timing: { queued: 0, load: 0, model: 7000, check: 1 }, ...spent(1, 4100, 900) },
+        { v: 1, id: 'oaaaaaaaaa', agent: 'unslop', op: 'pr', at: at(2 * MIN), ms: 200, exit: 11, outcome: 'refused', reason: 'screen', classes: ['email'], bytesIn: 900, ...spent(0, 0, 0) },
+      ],
+    }
+    await boot({ mesh: fake })
+    await openAgent('unslop-code')
+    const base = '4.1 KB · coder-test · model 0.8 s'
+    expect(cells().map((row) => row[4])).toEqual([
+      `32 files · 27 lines removed · 0 suggestions · ${base} · 44 calls · 212k tokens`,
+      `3 files · 12 lines removed · 2 suggestions · ${base} · 1 call · 1 token · malformed`,
+      `3 files · 12 lines removed · 2 suggestions · ${base} · 2 calls · 999 tokens`,
+      `3 files · 12 lines removed · 2 suggestions · ${base} · 3 calls · 1.2k tokens`,
+      `3 files · 12 lines removed · 2 suggestions · ${base} · 5 calls · 10k tokens`,
+      `3 files · 12 lines removed · 2 suggestions · ${base} · 6 calls · 1.0M tokens`,
+      `3 files · 12 lines removed · 2 suggestions · ${base} · 7 calls · 1.5M tokens`,
+      ...Array.from({ length: 5 }, () => `3 files · 12 lines removed · 2 suggestions · ${base}`),
+    ])
+    await openAgent('unslop')
+    expect(cells().map((row) => row[4])).toEqual([
+      'model 7.0 s · 1 attempt · 6.2 KB · 1 call · 5.0k tokens',
+      '0.9 KB · 0 calls · 0 tokens · screen: email',
+    ])
+  })
+
   it('the card\'s last run follows lastRun, and no public file says meshctl or names a client', () => {
     expect(meshRows(body(code({ lastRun: { at: at(5 * MIN), op: 'clean', outcome: 'refused' } })), Date.now()).rows[0]!.lastrun).toBe(`Last run ${hhmm(at(5 * MIN))} · refused`)
     for (const file of ['mesh-section.js', 'mesh-agent-page.js', 'mesh-runs-tab.js']) {

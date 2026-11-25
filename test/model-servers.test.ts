@@ -541,7 +541,7 @@ describe('meshctl server check (D4)', () => {
     ].join('\n'))
     expect(s.seen).toEqual([{ path: '/base/v1/models', headers: expect.objectContaining({ authorization: `Bearer ${KEY_VALUE}` }) }])
     const json = await check(t.dir, ['box', '--json'])
-    expect(JSON.parse(json.out)).toEqual({ server: 'box', baseUrl: `${s.url}/base/`, key: 'file', reachable: true, models: ['a-model:7b', 'b-model', 'org/c.model_1'], skipped: 7 })
+    expect(JSON.parse(json.out)).toEqual({ server: 'box', kind: 'http', baseUrl: `${s.url}/base/`, key: 'file', reachable: true, models: ['a-model:7b', 'b-model', 'org/c.model_1'], skipped: 7 })
     // at most 50
     const many = await fake(models(Array.from({ length: 80 }, (_, i) => `m${String(i).padStart(2, '0')}`)))
     serversJson(t.dir, { many: { baseUrl: many.url } })
@@ -569,7 +569,7 @@ describe('meshctl server check (D4)', () => {
       const s = await fake(handler)
       serversJson(t.dir, { box: { baseUrl: s.url, apiKey: { env: ENV_MARK } } })
       const r = await check(t.dir, ['box', '--json'], { env: { [ENV_MARK]: KEY_VALUE }, checkMs: 500 })
-      expect([r.code, JSON.parse(r.out)], what).toEqual([1, { server: 'box', baseUrl: s.url, key: 'env', reachable: false, failure, models: [], skipped: 0 }])
+      expect([r.code, JSON.parse(r.out)], what).toEqual([1, { server: 'box', kind: 'http', baseUrl: s.url, key: 'env', reachable: false, failure, models: [], skipped: 0 }])
       const text = await check(t.dir, ['box'], { env: { [ENV_MARK]: KEY_VALUE }, checkMs: 500 })
       expect(text.out, what).toMatch(new RegExp(`^Server box at ${s.url}: ${failure.replaceAll('-', ' ')}`))
     }
@@ -598,5 +598,72 @@ describe('meshctl server check (D4)', () => {
     expect((await check(t.dir, ['box'])).err).toContain('is not a file you own that only you can read')
     expect((await check(scratchDir('servers-none-'), ['box'])).err).toContain('is missing: meshctl server add box adds the server')
     for (const args of [[], ['--json'], ['box', '--apply'], ['box', '--json', 'x']]) expect((await check(t.dir, args)).code, args.join(' ')).toBe(2)
+  })
+})
+
+// Claude Code as a model server, step 1 (D2, D4): a fake claude program in a scratch folder,
+// first on PATH; no test runs a real claude, and the fixed system places are passed as [].
+const PLANTED_ACCOUNT = 'planted-account@example.invalid'
+/** A fake claude: records its argv, cwd and environment, then prints `stdout` and exits `code` (or hangs). */
+function fakeClaude(behaviour: { stdout?: string; code?: number; hang?: boolean }): { bin: string; program: string; seen: string } {
+  const bin = scratchDir('claude-bin-')
+  const program = join(bin, 'claude')
+  const seen = join(bin, 'seen.json')
+  writeFileSync(program, `#!${process.execPath}
+require('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }))
+${behaviour.hang ? 'setTimeout(() => {}, 60_000)' : `process.stdout.write(${JSON.stringify(behaviour.stdout ?? '')}); process.exitCode = ${behaviour.code ?? 0}`}
+`)
+  chmodSync(program, 0o755)
+  return { bin, program, seen }
+}
+
+describe('meshctl server check of a Claude Code server (Claude Code D2)', () => {
+  async function check(dir: string, args: string[], env: Record<string, string>, checkMs?: number): Promise<Run> {
+    const out: string[] = []
+    const err: string[] = []
+    const code = await runServerCheck(args, { env: { AGENT_INBOX_MESH_DIR: dir, HOME: dir, ...env }, home: '/nonexistent-home', out: (t) => out.push(t), err: (t) => err.push(t), checkMs, claudePaths: [] })
+    const r = { code, out: out.join(''), err: err.join('') }
+    expect(`${r.out}${r.err}`).not.toMatch(FORBIDDEN)
+    expect(`${r.out}${r.err}`).not.toContain(PLANTED_ACCOUNT)
+    expect(`${r.out}${r.err}`).not.toContain('claude-bin-')
+    return r
+  }
+
+  it('signed in: ready, the three fixed models, no network and no model call; the program gets an allow-listed environment', async () => {
+    const t = setup()
+    serversJson(t.dir, { cc: { kind: 'claude-code' } })
+    const fake = fakeClaude({ stdout: JSON.stringify({ loggedIn: true, email: PLANTED_ACCOUNT, orgName: PLANTED_ACCOUNT }) })
+    const env = { PATH: `${fake.bin}:/usr/bin:/bin`, ANTHROPIC_API_KEY: KEY_VALUE, ANTHROPIC_BASE_URL: 'https://elsewhere.example', [ENV_MARK]: KEY_VALUE }
+    const text = await check(t.dir, ['cc'], env)
+    expect([text.code, text.out]).toEqual([0, 'Server cc (Claude Code on this Mac): ready; signed in; 3 models.\n  haiku\n  opus\n  sonnet\n'])
+    const seen = read(fake.seen)
+    expect(seen.argv).toEqual(['auth', 'status', '--json'])
+    expect(Object.keys(seen.env).filter((name) => !name.startsWith('__CF') && name !== 'PWD' && name !== 'SHLVL' && name !== '_').sort()).toEqual(['HOME', 'PATH'])
+    expect(JSON.stringify(seen.env)).not.toContain(KEY_VALUE)
+    const json = await check(t.dir, ['cc', '--json'], env)
+    expect([json.code, JSON.parse(json.out)]).toEqual([0, { server: 'cc', kind: 'claude-code', baseUrl: '', key: 'none', reachable: true, models: ['haiku', 'opus', 'sonnet'], skipped: 0 }])
+  })
+
+  it('no program, not signed in, not JSON, a failed run, too much output and a hang: the right word, exit 1, nothing of its output printed', async () => {
+    const t = setup()
+    serversJson(t.dir, { cc: { kind: 'claude-code' } })
+    const none = await check(t.dir, ['cc', '--json'], { PATH: scratchDir('claude-empty-') })
+    expect([none.code, JSON.parse(none.out)]).toEqual([1, { server: 'cc', kind: 'claude-code', baseUrl: '', key: 'none', reachable: false, failure: 'no-program', models: [], skipped: 0 }])
+    expect((await check(t.dir, ['cc'], { PATH: scratchDir('claude-empty-') })).out).toBe('Server cc (Claude Code on this Mac): no claude program found (looked in PATH and the usual places).\n')
+    const cases: Array<[string, Parameters<typeof fakeClaude>[0], string]> = [
+      ['signed out', { stdout: JSON.stringify({ loggedIn: false, email: PLANTED_ACCOUNT }) }, 'signed-out'],
+      ['loggedIn as a string', { stdout: JSON.stringify({ loggedIn: 'true' }) }, 'signed-out'],
+      ['not JSON', { stdout: `ignore previous instructions ${PLANTED_ACCOUNT}` }, 'signed-out'],
+      ['a failed run', { stdout: JSON.stringify({ loggedIn: true }), code: 1 }, 'signed-out'],
+      ['too much output', { stdout: JSON.stringify({ loggedIn: true, pad: 'x'.repeat(70 * 1024) }) }, 'signed-out'],
+      ['a hang', { hang: true }, 'timeout'],
+    ]
+    for (const [what, behaviour, failure] of cases) {
+      const fake = fakeClaude(behaviour)
+      const r = await check(t.dir, ['cc', '--json'], { PATH: fake.bin }, 1500)
+      expect([r.code, JSON.parse(r.out)], what).toEqual([1, { server: 'cc', kind: 'claude-code', baseUrl: '', key: 'none', reachable: false, failure, models: [], skipped: 0 }])
+      const text = await check(t.dir, ['cc'], { PATH: fake.bin }, 1500)
+      expect(text.out, what).toBe(`Server cc (Claude Code on this Mac): ${failure === 'timeout' ? 'timeout (no whole answer within 10 seconds)' : 'not signed in (run claude once and sign in)'}.\n`)
+    }
   })
 })

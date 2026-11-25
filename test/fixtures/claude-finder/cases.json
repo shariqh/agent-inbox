@@ -1,0 +1,20 @@
+{
+  "about": "Shared findClaude cases (Claude Code as a model server, D4). Run by test/claude-finder.test.ts against src/mesh-config.ts and by packages/mesh/test/claude-finder.test.ts against the package's copy. Each case builds files under a scratch folder: `files` maps a path relative to it to exec (a 0755 script), plain (a 0644 file), open (a 0775 script, writable by the group), dir (a folder) or link:<path> (a symlink to that path, relative to the scratch folder). `path` is PATH's entries, with $ standing for the scratch folder; `fixed` the fixed system candidates the same way; home is $/home. `expect` is the path findClaude returns (compared by real path), or null.",
+  "cases": [
+    { "name": "the first PATH folder that holds it wins", "files": { "a/claude": "exec", "b/claude": "exec" }, "path": ["$/a", "$/b"], "fixed": [], "expect": "a/claude" },
+    { "name": "a PATH folder without it is passed over", "files": { "b/claude": "exec" }, "path": ["$/a", "$/b"], "fixed": [], "expect": "b/claude" },
+    { "name": "a relative PATH entry is never searched", "files": { "b/claude": "exec" }, "path": ["a", "", "$/b"], "fixed": [], "expect": "b/claude" },
+    { "name": "a file the user may not execute is passed over", "files": { "a/claude": "plain", "b/claude": "exec" }, "path": ["$/a", "$/b"], "fixed": [], "expect": "b/claude" },
+    { "name": "a folder named claude is passed over", "files": { "a/claude": "dir", "b/claude": "exec" }, "path": ["$/a", "$/b"], "fixed": [], "expect": "b/claude" },
+    { "name": "the first one found decides: one others may write is refused, not passed over", "files": { "a/claude": "open", "b/claude": "exec" }, "path": ["$/a", "$/b"], "fixed": [], "expect": null },
+    { "name": "a link is followed to its real file", "files": { "real/claude-2": "exec", "a/claude": "link:real/claude-2" }, "path": ["$/a"], "fixed": [], "expect": "real/claude-2" },
+    { "name": "a link to a file others may write is refused", "files": { "real/claude-2": "open", "a/claude": "link:real/claude-2", "b/claude": "exec" }, "path": ["$/a", "$/b"], "fixed": [], "expect": null },
+    { "name": "the fixed system places come after PATH", "files": { "sys/claude": "exec", "b/claude": "exec" }, "path": ["$/b"], "fixed": ["$/sys/claude"], "expect": "b/claude" },
+    { "name": "a fixed system place is used when PATH has none", "files": { "sys/claude": "exec", "home/.local/bin/claude": "exec" }, "path": ["$/a"], "fixed": ["$/sys/claude"], "expect": "sys/claude" },
+    { "name": "~/.local/bin comes before the other places in home", "files": { "home/.local/bin/claude": "exec", "home/.claude/local/claude": "exec", "home/.npm-global/bin/claude": "exec" }, "path": [], "fixed": [], "expect": "home/.local/bin/claude" },
+    { "name": "~/.claude/local comes before ~/.npm-global", "files": { "home/.claude/local/claude": "exec", "home/.npm-global/bin/claude": "exec" }, "path": [], "fixed": [], "expect": "home/.claude/local/claude" },
+    { "name": "~/.npm-global/bin is the last place", "files": { "home/.npm-global/bin/claude": "exec" }, "path": [], "fixed": [], "expect": "home/.npm-global/bin/claude" },
+    { "name": "no PATH at all still looks in home", "files": { "home/.local/bin/claude": "exec" }, "path": null, "fixed": [], "expect": "home/.local/bin/claude" },
+    { "name": "nowhere is none", "files": {}, "path": ["$/a"], "fixed": ["$/sys/claude"], "expect": null }
+  ]
+}

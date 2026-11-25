@@ -3,7 +3,7 @@
 // rule and the shared cases in test/fixtures/mesh-json/ hold both to the same
 // verdicts: a regular file (never a symlink) of at most 64 KiB holding a JSON
 // object whose `schema` is 1. Anything else is off; a newer schema is never on.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs'
+import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { checkBaseUrl } from './backend.js'
@@ -167,4 +167,38 @@ export function readServers(dir: string): ServersRead {
     return { kind: 'refused', reason: code === 'ELOOP' ? 'not-regular' : 'unreadable' }
   }
   return parseServers(text)
+}
+
+/** The places findClaude looks after PATH that are not in home: a test passes [] for them. */
+const CLAUDE_SYSTEM_PATHS = ['/opt/homebrew/bin/claude', '/usr/local/bin/claude']
+
+/**
+ * The claude program (Claude Code as a model server, D4; the same rule as src/mesh-config.ts's, held by the shared cases in test/fixtures/claude-finder/): the first candidate that is a regular
+ * file the user may execute, among `<dir>/claude` for each absolute folder on `env.PATH`, then
+ * `fixed`, then `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin`. Its real path is
+ * returned (the usual install is a link) when it is owned by this user or root and neither group
+ * nor others may write it; the first candidate found decides, so an untrusted one gives undefined
+ * rather than a later one. The path is never printed, logged or put in any output.
+ */
+export function findClaude(env: NodeJS.ProcessEnv, home: string, fixed: readonly string[] = CLAUDE_SYSTEM_PATHS): string | undefined {
+  const fromPath = (env['PATH'] ?? '').split(':').filter((dir) => dir && isAbsolute(dir)).map((dir) => join(dir, 'claude'))
+  const inHome = ['.local/bin/claude', '.claude/local/claude', '.npm-global/bin/claude'].map((rel) => join(home, rel))
+  for (const candidate of [...fromPath, ...fixed, ...inHome]) {
+    let real: string
+    try {
+      accessSync(candidate, constants.X_OK)
+      real = realpathSync(candidate)
+      if (!statSync(real).isFile()) continue
+    } catch {
+      continue
+    }
+    try {
+      const info = statSync(real)
+      const uid = process.getuid?.() ?? -1
+      return (info.uid === uid || info.uid === 0) && (info.mode & 0o022) === 0 ? real : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
 }

@@ -9,7 +9,7 @@
 // a symlink), at most MESH_FILE_MAX bytes, a JSON object whose `schema` is 1.
 // A missing key or file means off. A newer schema is never read as on: this
 // build cannot know what it would turn on.
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -372,6 +372,40 @@ export function readServers(dir: string): ServersRead {
 
 /** The text meshctl writes: schema 1 and the servers, in the order given. */
 export const serversText = (servers: Record<string, ServerEntry>): string => `${JSON.stringify({ schema: SERVERS_SCHEMA, servers }, null, 2)}\n`
+
+/** The places findClaude looks after PATH that are not in home: a test passes [] for them. */
+const CLAUDE_SYSTEM_PATHS = ['/opt/homebrew/bin/claude', '/usr/local/bin/claude']
+
+/**
+ * The claude program (Claude Code as a model server, D4): the first candidate that is a regular
+ * file the user may execute, among `<dir>/claude` for each absolute folder on `env.PATH`, then
+ * `fixed`, then `~/.local/bin`, `~/.claude/local` and `~/.npm-global/bin`. Its real path is
+ * returned (the usual install is a link) when it is owned by this user or root and neither group
+ * nor others may write it; the first candidate found decides, so an untrusted one gives undefined
+ * rather than a later one. The path is never printed, logged or put in any output.
+ */
+export function findClaude(env: NodeJS.ProcessEnv, home: string, fixed: readonly string[] = CLAUDE_SYSTEM_PATHS): string | undefined {
+  const fromPath = (env['PATH'] ?? '').split(':').filter((dir) => dir && isAbsolute(dir)).map((dir) => join(dir, 'claude'))
+  const inHome = ['.local/bin/claude', '.claude/local/claude', '.npm-global/bin/claude'].map((rel) => join(home, rel))
+  for (const candidate of [...fromPath, ...fixed, ...inHome]) {
+    let real: string
+    try {
+      accessSync(candidate, constants.X_OK)
+      real = realpathSync(candidate)
+      if (!statSync(real).isFile()) continue
+    } catch {
+      continue
+    }
+    try {
+      const info = statSync(real)
+      const uid = process.getuid?.() ?? -1
+      return (info.uid === uid || info.uid === 0) && (info.mode & 0o022) === 0 ? real : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
 
 /** The port of an `agents.unslop.endpoint`: only http://127.0.0.1:<port>, never port 80 (clients drop `:80` from Host). */
 export function loopbackPort(endpoint: unknown): number | undefined {

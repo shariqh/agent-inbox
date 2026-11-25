@@ -271,15 +271,23 @@ const text = (v: unknown, cap: number): string | null => {
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2028\u2029\u{E0000}-\u{E007F}]/gu
 
 /**
- * Card text for one terminal line, as a quoted claim (publishable-agent design §4): tabs and
- * newlines as spaces, every other invisible character as U+FFFD, at most `cap` characters (a cut
- * value ends in `…`), `\` and `"` escaped, inside `"…"`. Undefined when the value is not a string.
+ * claim()'s cleaning without its quoting, for `add --json`'s card (add an agent by its card
+ * address, D1): tabs and newlines as spaces, every other invisible character as U+FFFD, at most
+ * `cap` characters (a cut value ends in `…`). Undefined when the value is not a string.
  */
-export function claim(v: unknown, cap: number): string | undefined {
+export function claimText(v: unknown, cap: number): string | undefined {
   if (typeof v !== 'string') return undefined
   const chars = [...v.replace(/[\t\n]/g, ' ').replace(HIDDEN, '\uFFFD')]
-  const cut = chars.length > cap ? `${chars.slice(0, cap).join('')}…` : chars.join('')
-  return `"${cut.replace(/[\\"]/g, (ch) => `\\${ch}`)}"`
+  return chars.length > cap ? `${chars.slice(0, cap).join('')}…` : chars.join('')
+}
+
+/**
+ * Card text for one terminal line, as a quoted claim (publishable-agent design §4): claimText()'s
+ * cleaning, then `\` and `"` escaped, inside `"…"`. Undefined when the value is not a string.
+ */
+export function claim(v: unknown, cap: number): string | undefined {
+  const cut = claimText(v, cap)
+  return cut === undefined ? undefined : `"${cut.replace(/[\\"]/g, (ch) => `\\${ch}`)}"`
 }
 const capped = <T>(all: T[], max: number) => ({ items: all.slice(0, max), more: Math.max(0, all.length - max) })
 const texts = (v: unknown, cap: number, max: number) =>

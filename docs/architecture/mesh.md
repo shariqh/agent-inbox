@@ -1024,7 +1024,17 @@ entry runs `runAdd` (`runMeshctl` alone answers `add` with the usage and 4).
   only when the card carries one; `addedEntry()` reads an entry whose `agentId` breaks the id rule
   as invalid. `skipFirstHopClick` (D14) is M4's and is never written now: before M4,
   `meshctl add --apply` is the human's approval for that agent.
-- **`meshctl add <card-url> [--id <id>] [--token-file <path>] [--apply]`**, in this order,
+- **`add --json` and `--expect-pin`** (add an agent by its card address, step 1). With `--json`,
+  `runAdd` runs the same path through `planCapture` and prints the plan with `card`, built by
+  `cardSummary()` (`src/mesh-add.ts`) from the card and the verdicts the summary uses, and set
+  from the point the pin is computed, so every later refusal, a failed step and the dry run carry
+  it and no earlier refusal does. Its card text goes through `claimText()` (`claim()`'s cleaning
+  and caps without the quotes and escapes); its `id` is `--id`, else the move's target, else the
+  usable id the name makes; `keysNew` is set only once the summary's trust words are known. The
+  summary block is not printed under `--json`. `--expect-pin <sha256>` (64 lower-case hex, else
+  usage) compares the pin right after it is computed, before every other refusal: a changed card
+  is refused, nothing written, in the dry run too. `docs/mesh-call.md` lists the fields.
+- **`meshctl add <card-url> [--id <id>] [--token-file <path>] [--expect-pin <sha256>] [--json] [--apply]`**, in this order,
   writing nothing and opening no connection until the fetch: the id (1–40 lower-case letters,
   digits and inner hyphens, never `unslop`, `request-post` or `web-search`); the card URL by the
   endpoint rule, then where it is (`reachOf()`, below); a loopback card URL needs `--token-file`, since `meshctl call` proves a
@@ -1195,7 +1205,7 @@ entry runs `runAdd` (`runMeshctl` alone answers `add` with the usage and 4).
      the old public key from the card. A copy on another host gets its own key, listed beside the
      others (at most 4), never a copy of this file. A lost key: create a new one; callers see a
      key change no pinned key endorses and accept it deliberately.
-- **`meshctl remove <id> [--apply]`** deletes only an entry `add` wrote (one with `card`), with
+- **`meshctl remove <id> [--json] [--apply]`** deletes only an entry `add` wrote (one with `card`), with
   a backup (deleting `mesh.json` when nothing else is left, like `disable`), then its run records
   (`runs/<id>-<date>.jsonl`, through `runFiles()`'s checks; the dry run counts them, #530), so an
   agent added later under the same id starts with no history, then the token copy and the
@@ -1612,9 +1622,10 @@ app shows it through the bridge (`docs/architecture/electron-app.md`).
   `not-a-model-server`; a key source that gives nothing is `key`, and nothing is sent. Only ids
   matching `^[A-Za-z0-9._:/-]{1,64}$` are kept, deduplicated, sorted, at most 50, and printed
   JSON-quoted under a fixed untrusted header.
-- **`--json` plans** (`runMeshctl`): `enable`, `disable` and `server add|set|remove` collect each
-  step's first line (`runSteps` with a `Plan`), a refusal or failed step as `refused`, and any other
-  line as a note, then print `{ applied, steps, refused?, notes? }`. A usage error stays text on
+- **`--json` plans** (`planCapture`, used by `runMeshctl` and `runAdd`): `enable`, `disable`,
+  `add`, `remove` and `server add|set|remove` collect each step's first line (`runSteps` with a
+  `Plan`), a refusal or failed step as `refused`, and any other line as a note, then print
+  `{ applied, steps, refused?, notes? }`; `add` adds `card` (below). A usage error stays text on
   stderr.
 - **Never printed:** a key, a key file's path, a key command, a key variable's name, a token, the
   claude program's path, text sent to or returned by it, or anything from `claude auth status` but

@@ -29,11 +29,11 @@
 //   meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--json] [--apply]
 //   meshctl disable --unslop-code [--purge] [--apply]
 //   meshctl disable --request-post [--purge] [--apply]
-//   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
+//   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
 //                                            add an A2A agent this repo doesn't ship (#529)
-//   meshctl add <card-url> --move <id> [--token-file <path>] [--apply]
+//   meshctl add <card-url> --move <id> [--token-file <path>] [--expect-pin <sha256>] [--json] [--apply]
 //                                            the same agent (its card's id) at a new endpoint (#537)
-//   meshctl remove <id> [--apply]            take an added agent out again
+//   meshctl remove <id> [--json] [--apply]   take an added agent out again
 //   meshctl key create|show|rotate|retire <agent> [--apply]
 //                                            an agent's card-signing key (src/mesh-keys.ts, #536)
 //   meshctl call <id> [--skill <s>] [--json] [--report <file>] [--timeout <s>] < request
@@ -56,8 +56,8 @@
 //
 // `server …` (model servers step 1) keeps <mesh dir>/mesh/servers.json: each model server once, by
 // name, with its address and key source, or as Claude Code on this Mac (`--claude-code`: no address,
-// no key); a local agent's profile names one instead of holding baseUrl and apiKey. enable, disable
-// and server add|set|remove take --json: one plan object.
+// no key); a local agent's profile names one instead of holding baseUrl and apiKey. enable, disable,
+// add, remove and server add|set|remove take --json: one plan object.
 //
 // Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 usage;
 // `unslop` has its own (0, 10-14, 4), listed in src/unslop-client.ts, `unslop-code` its own
@@ -76,7 +76,7 @@ import type { LookupFunction } from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { MESH_SCHEMA, MODEL_NAME, SERVERS_MAX, SERVERS_REASONS, SERVER_NAME, baseUrlRefusal, cardCopyFile, inTailnet, isClaudeServer, isKeySource, keyKind, loopbackPort, meshDir, meshFile, readCardCopy, readMesh, readPrivate, readServers, readTokenFile, removeCardCopy, requestPostEndpoint, serversFile, serversText, writeCardCopy, cardsFolderRefused } from './mesh-config.js'
 import type { KeySource, MeshDocument, MeshRead, ServerEntry } from './mesh-config.js'
-import { addSummary, cardEndpoint, cardSha256, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine } from './mesh-add.js'
+import { addSummary, cardEndpoint, cardSha256, cardSummary, fetchAddedCard, placeRefusal, reachOf, signatureRefusal, signedLine, type CardSummary } from './mesh-add.js'
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
@@ -109,9 +109,9 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable --unslop-code [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
-       agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--apply]
-       agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--apply]
-       agent-inbox-meshctl remove <id> [--apply]
+       agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
+       agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
+       agent-inbox-meshctl remove <id> [--json] [--apply]
        agent-inbox-meshctl key create|show|rotate|retire <agent> [--apply]
        agent-inbox-meshctl call <id> [--skill <skill>] [--json] [--report <file>] [--timeout <s>] < request
        agent-inbox-meshctl check <card-url> [--level local|publishable] [--strict] [--json] [--token-file <path> [--send <file>]]
@@ -129,8 +129,9 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl server check <name> [--json]
 
 Without --apply, enable, disable, add, remove, forget-runs, skills, key and server add|set|remove are dry runs: they print what they would do.
-enable, disable and server add|set|remove also take --json: they print one JSON object,
-{ "applied", "steps", "refused"?, "notes"? }, each step its first line as the text prints it.
+enable, disable, add, remove and server add|set|remove also take --json: they print one JSON object,
+{ "applied", "steps", "refused"?, "notes"? }, each step its first line as the text prints it;
+add's also has "card", the card's summary as cleaned fields (docs/mesh-call.md).
 The Agents view is always on, so enable --agents-view writes nothing.
 enable --unslop needs packages/mesh built in the checkout (npm ci && npm run build there);
 it listens on http://127.0.0.1:<port> only (default ${UNSLOP_PORT}). disable --unslop keeps the
@@ -171,6 +172,8 @@ add verifies the card's signatures (ES256, ES384 or EdDSA by a key the card's pr
 refuses the card; an unsigned card is allowed on loopback and this Mac's tailnet only. The keys
 the card lists are pinned in the entry (trust on first use);
 --key-thumbprint <t> refuses a card not signed by the key with that RFC 7638 thumbprint.
+--expect-pin <sha256> refuses a card whose pin is not the one given (a dry run prints it), so
+add takes only the card that was looked at.
 A card whose agent id an entry holds, signed by a key that entry pinned, is that agent at a new
 endpoint: add moves it. add --move <id> moves agents.<id> to the card URL given, signed or not:
 the card must declare the entry's agentId and match its pin; only the card URL and endpoint
@@ -420,12 +423,44 @@ function requestPostPaths(dir: string) {
 type Step = { dry: string; run: () => string; lock?: true }
 
 /**
- * A plan a program reads (model servers D6): with --json, enable, disable and server add|set|remove
- * print one object, `{ applied, steps, refused?, notes? }`, where each step is its first line as
- * the text prints it (never a profile's body, a template or a shim's text).
+ * A plan a program reads (model servers D6): with --json, enable, disable, add, remove and server
+ * add|set|remove print one object, `{ applied, steps, refused?, notes? }`, where each step is its
+ * first line as the text prints it (never a profile's body, a template or a shim's text); add's
+ * also carries `card`, the cleaned summary of the card it fetched (cardSummary in mesh-add.ts).
  */
-type Plan = { steps: string[]; notes: string[]; refused?: string }
+type Plan = { steps: string[]; notes: string[]; refused?: string; card?: CardSummary }
 const firstLine = (text: string): string => text.split('\n', 1)[0]!
+
+/**
+ * With --json the text goes into the plan: a refusal as `refused`, any other line as a note; a
+ * usage error stays the usage text on stderr, with no JSON. `print` writes the one object.
+ */
+function planCapture(io: MeshctlIo): { plan: Plan; io: MeshctlIo; print: (code: number, apply: boolean) => void } {
+  const plan: Plan = { steps: [], notes: [] }
+  const usageText: string[] = []
+  const captured: MeshctlIo = {
+    ...io,
+    out: (text) => { plan.notes.push(text.trim()) },
+    err: (text) => {
+      if (text.startsWith('usage:')) usageText.push(text)
+      else if (/^(Refused: |Failed at step )/.test(text)) plan.refused ??= text.replace(/^Refused: /, '').trim()
+      else plan.notes.push(text.replace(/^Note: /, '').trim())
+    },
+  }
+  const print = (code: number, apply: boolean): void => {
+    const out = io.out ?? ((text: string) => { process.stdout.write(text) })
+    const err = io.err ?? ((text: string) => { process.stderr.write(text) })
+    if (code === 2) err(usageText.join(''))
+    else {
+      out(`${JSON.stringify({
+        applied: apply && code === 0, steps: plan.steps,
+        ...(plan.refused === undefined ? {} : { refused: plan.refused }), ...(plan.notes.length ? { notes: plan.notes } : {}),
+        ...(plan.card === undefined ? {} : { card: plan.card }),
+      })}\n`)
+    }
+  }
+  return { plan, io: captured, print }
+}
 
 function runSteps(steps: Step[], apply: boolean, out: (text: string) => void, err: (text: string) => void, failed: string, plan?: Plan): number {
   const n = steps.length
@@ -565,37 +600,17 @@ function keyFileRefusal(path: string): string | undefined {
   return undefined
 }
 
-/** Whether a command takes --json for a plan (D6): enable, disable and server add|set|remove. */
+/**
+ * Whether a command takes --json for a plan (D6): enable, disable, remove and server add|set|remove.
+ * add takes it too, in runAdd (it is async, and this path answers add with 4).
+ */
 const wantsPlan = (argv: string[]): boolean => argv.includes('--json')
-  && (argv[0] === 'enable' || argv[0] === 'disable' || (argv[0] === 'server' && ['add', 'set', 'remove'].includes(argv[1] ?? '')))
+  && (argv[0] === 'enable' || argv[0] === 'disable' || argv[0] === 'remove' || (argv[0] === 'server' && ['add', 'set', 'remove'].includes(argv[1] ?? '')))
 
 export function runMeshctl(argv: string[], io: MeshctlIo = {}): number {
-  const plan: Plan | undefined = wantsPlan(argv) ? { steps: [], notes: [] } : undefined
-  let code: number
-  if (!plan) code = meshctl(argv, io)
-  else {
-    // with --json the text goes into the plan: a refusal as `refused`, any other line as a note;
-    // a usage error stays the usage text on stderr, with no JSON
-    const usageText: string[] = []
-    code = meshctl(argv, {
-      ...io,
-      out: (text) => { plan.notes.push(text.trim()) },
-      err: (text) => {
-        if (text.startsWith('usage:')) usageText.push(text)
-        else if (/^(Refused: |Failed at step )/.test(text)) plan.refused ??= text.replace(/^Refused: /, '').trim()
-        else plan.notes.push(text.replace(/^Note: /, '').trim())
-      },
-    }, plan)
-    const out = io.out ?? ((text: string) => { process.stdout.write(text) })
-    const err = io.err ?? ((text: string) => { process.stderr.write(text) })
-    if (code === 2) err(usageText.join(''))
-    else {
-      out(`${JSON.stringify({
-        applied: argv.includes('--apply') && code === 0, steps: plan.steps,
-        ...(plan.refused === undefined ? {} : { refused: plan.refused }), ...(plan.notes.length ? { notes: plan.notes } : {}),
-      })}\n`)
-    }
-  }
+  const json = wantsPlan(argv) ? planCapture(io) : undefined
+  const code = json ? meshctl(argv, json.io, json.plan) : meshctl(argv, io)
+  json?.print(code, argv.includes('--apply'))
   // deleting expired run records is housekeeping, not a configuration change, so a dry run
   // does it too (cards view V5 §5.6)
   if ((argv[0] === 'enable' || argv[0] === 'disable') && code !== 2) {
@@ -668,7 +683,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     } else if (flags.has(arg)) return usage()
     else flags.add(arg)
   }
-  // --json (D6) is enable's and disable's only; runMeshctl prints the plan
+  // --json (D6) is enable's, disable's and remove's only; runMeshctl prints the plan
   if (flags.delete('--json') && !plan) return usage()
   // --server and --model (D5) are enable --unslop's and --unslop-code's only
   if ((values.has('--server') || values.has('--model')) && !(command === 'enable' && (flags.has('--unslop') || flags.has('--unslop-code')))) return usage()
@@ -1066,8 +1081,8 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   }
 
   if (command === 'remove') {
-    const ids = rest.filter((arg) => arg !== '--apply')
-    if (ids.length !== 1 || rest.length > 2 || ids[0]!.startsWith('-')) return usage()
+    const ids = rest.filter((arg) => arg !== '--apply' && arg !== '--json')
+    if (ids.length !== 1 || rest.length > 3 || ids[0]!.startsWith('-')) return usage()
     const id = ids[0]!
     const bad = idRefusal(id)
     if (bad) return refuse(BUILT_IN_AGENTS.includes(id) ? `${id} is a built-in agent: meshctl disable turns it off` : bad)
@@ -1106,7 +1121,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
       out(`${id} is not in ${name}. Nothing to do.\n`)
       return 0
     }
-    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.')
+    return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.', plan)
   }
 
   if (command === 'enable' && !unslop && !requestPost && !unslopCode) {
@@ -1502,7 +1517,7 @@ function magicDnsSuffix(): string | undefined {
 type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' | 'err'>
 
 /**
- * `add <card-url> [--id <id> | --move <id>] [--token-file <path>] [--apply]` (#529, mesh design
+ * `add <card-url> [--id <id> | --move <id>] [--token-file <path>] [--expect-pin <sha256>] [--json] [--apply]` (#529, mesh design
  * §6.7, D13–D17): fetches and checks the card, applies the endpoint rule and, with `--apply`,
  * copies the token (0600, never printed) and writes `agents.<id>` = { card, endpoint, tokenFile?,
  * cardSha256, agentId? }, keeping every other key and a backup. It never replaces an entry or takes
@@ -1519,15 +1534,29 @@ type ClientIo = Pick<UnslopIo & RequestPostIo, 'env' | 'home' | 'stdin' | 'out' 
  * Since #534 (§8.8, D18) a public name is allowed: fetched only through publicLookup(), the card
  * must be signed and pass the publishable level's network-free must tests (publishableRefusal),
  * and the entry records `public: true`. A move never changes whether an entry is public.
+ * With `--json` (add an agent by its card address, D1) it prints the plan as one object, as the
+ * other --json commands do, with `card` (cardSummary) from the point the card's pin is known.
  */
 export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number> {
+  if (!args.includes('--json')) return addAgent(args, io)
+  const json = planCapture(io)
+  // `applied` follows the --apply the parser took, never the word: a flag's value can be "--apply"
+  const parsed = { apply: false }
+  const code = await addAgent(args, json.io, json.plan, parsed)
+  json.print(code, parsed.apply)
+  return code
+}
+
+async function addAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { apply: boolean }): Promise<number> {
   const env = io.env ?? process.env
   const home = io.home ?? homedir()
   const now = io.now ?? (() => new Date())
   const out = io.out ?? ((text: string) => { process.stdout.write(text) })
   const err = io.err ?? ((text: string) => { process.stderr.write(text) })
   const usage = (): number => { err(USAGE); return 2 }
-  const refuse = (reason: string): number => { err(`Refused: ${reason}. Nothing changed.\n`); return 1 }
+  // the card, once its pin is known: every answer from there on carries it (--json)
+  let summary: (() => CardSummary) | undefined
+  const refuse = (reason: string): number => { if (plan && summary) plan.card = summary(); err(`Refused: ${reason}. Nothing changed.\n`); return 1 }
   const show = (path: string): string => shown(path, home)
 
   let cardUrl: string | undefined
@@ -1535,21 +1564,27 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   let move: string | undefined
   let tokenFile: string | undefined
   let thumbprint: string | undefined
+  let expectPin: string | undefined
   let apply = false
+  let asJson = false
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (arg === '--apply' && !apply) apply = true
-    else if (arg === '--id' || arg === '--move' || arg === '--token-file' || arg === '--key-thumbprint') {
+    else if (arg === '--json' && plan && !asJson) asJson = true
+    else if (arg === '--id' || arg === '--move' || arg === '--token-file' || arg === '--key-thumbprint' || arg === '--expect-pin') {
       const value = args[++i]
-      if (value === undefined || (arg === '--id' ? id : arg === '--move' ? move : arg === '--token-file' ? tokenFile : thumbprint) !== undefined) return usage()
+      if (value === undefined || (arg === '--id' ? id : arg === '--move' ? move : arg === '--token-file' ? tokenFile : arg === '--key-thumbprint' ? thumbprint : expectPin) !== undefined) return usage()
       if (arg === '--id') id = value
       else if (arg === '--move') move = value
       else if (arg === '--token-file') tokenFile = value
-      else thumbprint = value
+      else if (arg === '--key-thumbprint') thumbprint = value
+      else expectPin = value
     } else if (!arg.startsWith('-') && cardUrl === undefined) cardUrl = arg
     else return usage()
   }
-  if (cardUrl === undefined || (id !== undefined && move !== undefined)) return usage()
+  // --expect-pin (D2): the pin of the card that was looked at, as the dry run prints it
+  if (cardUrl === undefined || (id !== undefined && move !== undefined) || (expectPin !== undefined && !/^[0-9a-f]{64}$/.test(expectPin))) return usage()
+  if (parsed) parsed.apply = apply
   const idBad = id === undefined ? undefined : idRefusal(id)
   if (idBad) return refuse(idBad)
   const moveBad = move === undefined ? undefined : idRefusal(move)
@@ -1614,18 +1649,28 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   if (unpublishable) return refuse(`the card is on a public name, so it must be publishable, and it fails ${unpublishable} (meshctl check <card-url> lists every test)`)
   const signedBy = 'signed' in verdict ? verdict.signed : []
   const pin = cardSha256(card)
+  // the card's id (D1): --id, else the --move target or the signed move's holder, else the usable id its name makes
+  const derived = idFromName(card['name'])
+  let cardId = id ?? move ?? (derived === undefined || idRefusal(derived) ? undefined : derived)
+  let keysNew: boolean | undefined
+  summary = () => cardSummary(card, { id: cardId, reach, endpoint: endpoint.endpoint, signed: 'signed' in verdict, keysNew, pin })
 
   const existing = readMesh(file)
   const agents = agentsOf(existing)
-  if (typeof agents === 'string') return refuse(agents)
-  const holder = profile === undefined ? undefined : Object.keys(agents).find((key) => {
-    const read = addedEntry(key, agents[key])
+  // read as no entry when mesh.json is refused, so a changed card's refusal comes first (D2)
+  const listed = typeof agents === 'string' ? {} : agents
+  const holder = profile === undefined ? undefined : Object.keys(listed).find((key) => {
+    const read = addedEntry(key, listed[key])
     return read !== undefined && read !== 'invalid' && read.agentId === profile.id
   })
   // the signed move (§3.4): the holder's pinned keys signed this card, so it is that agent
-  const held = holder === undefined ? undefined : addedEntry(holder, agents[holder])
+  const held = holder === undefined ? undefined : addedEntry(holder, listed[holder])
   const endorsed = held !== undefined && held !== 'invalid' && (held.keyThumbprints ?? []).some((k) => signedBy.includes(k))
   const target = move ?? (endorsed && id === undefined ? holder : undefined)
+  cardId = id ?? target ?? cardId
+  // the card that was looked at, or nothing (D2): before any other refusal, in the dry run too
+  if (expectPin !== undefined && pin !== expectPin) return refuse('the card is not the one that was checked (its pin differs): check it again')
+  if (typeof agents === 'string') return refuse(agents)
   const pinned = { ...(verdict.keys.length ? { keyThumbprints: verdict.keys } : {}) }
   let agentId: string
   let entry: Record<string, unknown>
@@ -1654,6 +1699,7 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
     if (profile.id !== moved.agentId) return refuse(`the card declares another agent id than agents.${target}'s, so it is another agent: add it without --move`)
     if (pin !== moved.cardSha256) return refuse(`the card at the new URL is not the one you added (pin ${moved.cardSha256.slice(0, 12)}, now ${pin.slice(0, 12)}): moving a changed card waits for accepting it (#531)`)
     if (moved.card === place.url && moved.endpoint === endpoint.endpoint && token === undefined) {
+      if (plan) plan.card = summary()
       out(`agents.${target} is already at ${place.url}. Nothing to do.\n`)
       return 0
     }
@@ -1670,13 +1716,16 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
   const knownAs = signedBy.map(pinnedFor).find((key) => key !== undefined)
   const trust = thumbprint !== undefined ? 'matches --key-thumbprint'
     : knownAs !== undefined ? `already pinned for agents.${knownAs}` : 'new to this Mac: trusted from now on if you --apply'
+  keysNew = thumbprint === undefined && knownAs === undefined
   const tokens = join(dir, 'mesh', 'tokens')
   const copy = join(tokens, agentId)
   const present = existing.kind === 'present'
   const next: MeshDocument = { ...(present ? existing.doc : { schema: MESH_SCHEMA }), agents: { ...agents, [agentId]: entry } }
   const json = `${JSON.stringify(next, null, 2)}\n`
 
-  out(addSummary(card, { cardUrl: place.url, endpoint: endpoint.endpoint, reach, token: token !== undefined || moved?.tokenFile !== undefined, pin, profile, signed: signedLine(verdict, trust) }))
+  // with --json the card object carries the summary (D1)
+  if (plan) plan.card = summary()
+  else out(addSummary(card, { cardUrl: place.url, endpoint: endpoint.endpoint, reach, token: token !== undefined || moved?.tokenFile !== undefined, pin, profile, signed: signedLine(verdict, trust) }))
   if (moved) {
     const sends = token !== undefined || moved.tokenFile !== undefined ? '; meshctl call will send the token to the new endpoint' : ''
     const why = move === undefined ? `, signed by a key its pinned card lists` : ''
@@ -1712,7 +1761,7 @@ export async function runAdd(args: string[], io: MeshctlIo = {}): Promise<number
       return `Wrote ${name}${backup}: ${agentId} is ${moved ? 'moved to' : 'added at'} ${endpoint.endpoint}.`
     },
   })
-  const code = runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`)
+  const code = runSteps(steps, apply, out, err, `Steps before it are done; ${name} was not changed.`, plan)
   if (apply && code === 0) {
     out(moved
       ? `${agentId} keeps its card pin and run records. meshctl call ${agentId} < request calls it at the new endpoint.\n`

@@ -9,7 +9,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo, LookupFunction } from 'node:net'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh, readCardCopy } from '../src/mesh-config.js'
 import { runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
 import { addSummary, cardSha256, reachOf, tailnetRefusal } from '../src/mesh-add.js'
@@ -813,9 +813,15 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       })
       const r = { code, out: out.join(''), err: err.join('') }
       expect(r.out + r.err).not.toContain(TOKEN)
+      // --json: the token file's folder (another scratch folder than the mesh dir) only ever in a step line
+      if (argv.includes('--json') && r.out) expect(JSON.stringify({ ...JSON.parse(r.out), steps: [] })).not.toContain(dirname(tokenFile))
       return r
     }
-    const run = (...argv: string[]) => ctl(argv, dir)
+    const run = (...argv: string[]) => {
+      const r = ctl(argv, dir)
+      expect(r.out + r.err).not.toContain(TOKEN)
+      return r
+    }
     return { dir, tokenFile, add, run, io }
   }
 
@@ -1409,6 +1415,412 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     await mesh.trigger('refresh')
     t.run('status')
     expect(a.connections()).toBe(connections)
+  })
+
+  // add and remove --json (add an agent by its card address, step 1): the app reads one JSON object
+  type Plan = { applied: boolean; steps: string[]; refused?: string; notes?: string[]; card?: Record<string, unknown> }
+  const plan = (r: { code: number; out: string; err: string }): Plan => {
+    expect(r.err).toBe('')
+    expect(r.out.endsWith('}\n') && r.out.split('\n')).toHaveLength(2)
+    return JSON.parse(r.out)
+  }
+  // the fake card servers listen on a random port, and the scratch folders and the pin change per run
+  const placeheld = (text: string, a: { origin: string }, dir: string, pin = '') =>
+    text.replaceAll(a.origin, 'http://127.0.0.1:<port>').replaceAll(dir, '<dir>').replaceAll(pin || '\0', '<pin>')
+
+  it('remove --json prints one plan object, and its text form stays byte for byte', async () => {
+    const a = await agent()
+    const t = setup('{"schema":1,"console":{"relay":false}}\n')
+    expect((await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const written = readFileSync(meshFile(t.dir), 'utf8')
+    const dry = t.run('remove', 'echo')
+    expect([dry.code, dry.err, placeheld(dry.out, a, t.dir)]).toEqual([0, '', [
+      'Dry run.',
+      '1/3 Would remove agents.echo from <dir>/mesh.json, keeping every other key (and a backup beside it).',
+      '2/3 Would delete the token copy <dir>/mesh/tokens/echo.',
+      '3/3 Would delete the card copy <dir>/mesh/cards/echo.json.',
+      'Nothing changed. Re-run with --apply.', '',
+    ].join('\n')])
+    const asJson = t.run('remove', 'echo', '--json')
+    expect(asJson.code).toBe(0)
+    expect(plan(asJson)).toEqual({ applied: false, steps: [
+      `Would remove agents.echo from ${meshFile(t.dir)}, keeping every other key (and a backup beside it).`,
+      `Would delete the token copy ${join(t.dir, 'mesh', 'tokens', 'echo')}.`,
+      `Would delete the card copy ${join(t.dir, 'mesh', 'cards', 'echo.json')}.`,
+    ] })
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe(written)
+    // refusals keep their words in `refused`, exit 1
+    writeFileSync(meshFile(t.dir), JSON.stringify({ ...JSON.parse(written), agents: { mine: { endpoint: 'x' }, echo: JSON.parse(written).agents.echo } }))
+    const mine = t.run('remove', 'mine', '--json', '--apply')
+    expect([mine.code, plan(mine)]).toEqual([1, { applied: false, steps: [], refused: 'agents.mine was not written by meshctl add, so remove leaves it alone. Nothing changed.' }])
+    const builtIn = t.run('remove', '--json', 'unslop')
+    expect([builtIn.code, plan(builtIn)]).toEqual([1, { applied: false, steps: [], refused: 'unslop is a built-in agent: meshctl disable turns it off. Nothing changed.' }])
+    // --apply carries out the steps, and a second run has nothing to do
+    const off = t.run('remove', 'echo', '--apply', '--json')
+    expect(off.code).toBe(0)
+    expect(plan(off)).toEqual({ applied: true, steps: [
+      expect.stringMatching(new RegExp(`^Removed agents\\.echo from ${meshFile(t.dir)} \\(backup: .*\\)\\.$`)),
+      `Deleted ${join(t.dir, 'mesh', 'tokens', 'echo')}.`,
+      `Deleted ${join(t.dir, 'mesh', 'cards', 'echo.json')}.`,
+    ] })
+    expect(Object.keys(json(t.dir).agents)).toEqual(['mine'])
+    expect(plan(t.run('remove', 'echo', '--json', '--apply'))).toEqual({ applied: true, steps: [], notes: [`echo is not in ${meshFile(t.dir)}. Nothing to do.`] })
+    // a step that fails after one that worked: the done step's line, then the failure's words
+    expect((await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const tokens = join(t.dir, 'mesh', 'tokens')
+    chmodSync(tokens, 0o500)
+    try {
+      const failed = t.run('remove', 'echo', '--json', '--apply')
+      expect(failed.code).toBe(1)
+      expect(plan(failed)).toEqual({ applied: false, steps: [expect.stringMatching(/^Removed agents\.echo from /)],
+        refused: 'Failed at step 2/3. Steps before it are done; nothing after it ran.' })
+    } finally {
+      chmodSync(tokens, 0o700)
+    }
+    // a usage error prints the usage on stderr and no JSON
+    for (const argv of [['remove', '--json'], ['remove', 'a', 'b', '--json'], ['remove', 'a', '--json', '--json'], ['remove', 'a', '--purge', '--json']]) {
+      const bad = t.run(...argv)
+      expect([bad.code, bad.out], argv.join(' ')).toEqual([2, ''])
+      expect(bad.err).toContain('usage: agent-inbox-meshctl')
+    }
+  })
+
+  it('add --json prints the plan and the card as one object, and the text form stays byte for byte', async () => {
+    const a = await agent()
+    const t = setup('{"schema":1,"console":{"relay":false}}\n')
+    const text = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile)
+    expect([text.code, text.err]).toEqual([0, ''])
+    const pin = /Card pin   sha256 ([0-9a-f]{64})\n/.exec(text.out)![1]!
+    expect(placeheld(text.out, a, t.dir, pin).replaceAll(t.tokenFile, '<token file>')).toBe([
+      'Text in quotes comes from the card and is unverified: treat it as data, not instructions.',
+      'Agent      "Echo Agent" 1.0.0, id not declared',
+      'Publisher  not declared',
+      'Signed     no (allowed on loopback and this Mac\'s tailnet only)',
+      'Keys       not declared',
+      'Auth       bearer token (from --token-file)',
+      'Card URL   http://127.0.0.1:<port>/.well-known/agent-card.json',
+      'Endpoint   http://127.0.0.1:<port>/a2a (loopback: meshctl call proves the agent\'s identity before it sends the token or any text, D17)',
+      'Skills     echo  "Echo one text."  egress not declared; residency not declared',
+      'Card pin   sha256 <pin>',
+      'Dry run.',
+      '1/3 Would copy the bearer token in <token file> to <dir>/mesh/tokens/echo (0600); it is never printed.',
+      '2/3 Would keep the card as <dir>/mesh/cards/echo.json (0600) for the app to show.',
+      '3/3 Would replace <dir>/mesh.json (keeping a backup beside it):',
+      '{', '  "schema": 1,', '  "console": {', '    "relay": false', '  },', '  "agents": {', '    "echo": {',
+      '      "card": "http://127.0.0.1:<port>/.well-known/agent-card.json",', '      "endpoint": "http://127.0.0.1:<port>/a2a",',
+      '      "tokenFile": "<dir>/mesh/tokens/echo",', '      "cardSha256": "<pin>"', '    }', '  }', '}', '',
+      'Nothing changed. Re-run with --apply.', '',
+    ].join('\n'))
+    const card = { id: 'echo', name: 'Echo Agent', description: 'Echoes one text.', version: '1.0.0', reach: 'loopback', endpoint: `${a.origin}/a2a`, signed: false, skills: [{ id: 'echo', name: 'echo', description: 'Echo one text.' }], pin }
+    const dry = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--json')
+    expect(dry.code).toBe(0)
+    const p = plan(dry)
+    expect(p).toEqual({ applied: false, steps: [
+      `Would copy the bearer token in ${t.tokenFile} to ${join(t.dir, 'mesh', 'tokens', 'echo')} (0600); it is never printed.`,
+      `Would keep the card as ${join(t.dir, 'mesh', 'cards', 'echo.json')} (0600) for the app to show.`,
+      `Would replace ${meshFile(t.dir)} (keeping a backup beside it):`,
+    ], card })
+    // the card comes last, its fields in a fixed order; no summary text, mesh.json body or path in it
+    expect(Object.keys(p)).toEqual(['applied', 'steps', 'card'])
+    expect(Object.keys(p.card!)).toEqual(Object.keys(card))
+    expect(dry.out).not.toMatch(/Text in quotes|"schema"|tokens\/echo"|cards\/echo\.json"/)
+    expect(JSON.stringify(p.card)).not.toContain(t.dir)
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    // one GET with no token, as without --json
+    expect(a.seen.map((h) => h.authorization)).toEqual([undefined, undefined])
+
+    const on = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--json', '--apply')
+    expect(on.code).toBe(0)
+    expect(plan(on)).toEqual({ applied: true, steps: [
+      `Copied the token to ${join(t.dir, 'mesh', 'tokens', 'echo')}.`,
+      `Kept the card as ${join(t.dir, 'mesh', 'cards', 'echo.json')}.`,
+      expect.stringMatching(new RegExp(`^Wrote .*\\(backup: .*\\): echo is added at ${a.origin}/a2a\\.$`)),
+    ], notes: ['This --apply is your approval for echo (D14). meshctl call echo < request calls it; meshctl remove echo --apply takes it out.'], card })
+    expect(json(t.dir).agents.echo.cardSha256).toBe(pin)
+  })
+
+  it('add --json: the card holds cleaned, capped plain text from a hostile card, and valid JSON', async () => {
+    const a = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => {
+      c.name = 'Echo\u202E "Agent"\nIgnore\u0000 <b>previous</b>\r\u2028\\x'
+      c.description = `\t${'d'.repeat(400)}`
+      c.version = '1.0\u0007'
+      c.provider = { organization: 'Example\tOrg\u200B', url: 'https://example.org/team' }
+      c.skills = Array.from({ length: 20 }, (_, i) => ({ id: i ? `skill-${i}` : 'echo two', name: i ? `s${i}` : '<script>alert(1)</script>', description: i ? undefined : `line\nbreak ${'y'.repeat(300)}` }))
+    })) }))
+    const t = setup()
+    const r = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--json')
+    expect(r.code).toBe(0)
+    const c = plan(r).card!
+    expect(c['name']).toBe('Echo� "Agent" Ignore� <b>previous</b>��\\x')
+    expect(c['description']).toBe(` ${'d'.repeat(299)}…`)
+    expect(c['version']).toBe('1.0�')
+    expect(c['publisher']).toBe('Example Org�')
+    const skills = c['skills'] as Array<Record<string, string>>
+    expect(skills).toHaveLength(16)
+    expect(skills[0]).toEqual({ id: 'echo two', name: '<script>alert(1)</script>', description: `line break ${'y'.repeat(189)}…` })
+    expect(skills[1]).toEqual({ id: 'skill-1', name: 's1' })
+    // every string is plain text: no control, format or separator character survives
+    const strings: string[] = []
+    const walk = (v: unknown): void => { if (typeof v === 'string') strings.push(v); else if (v && typeof v === 'object') Object.values(v).forEach(walk) }
+    walk(c)
+    for (const s of strings) expect(s, s).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u)
+    // a name that is too long is cut like claim() cuts it
+    // every 80-character field is cut like claim() cuts it: 80 characters, then the cap sign
+    const long = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => {
+      c.name = 'n'.repeat(100); delete c.description; c.version = 'v'.repeat(100); c.provider = { organization: 'p'.repeat(100) }
+      c.skills = [{ id: 'i '.repeat(50), name: 'k'.repeat(100) }]
+    })) }))
+    const cut = plan(await t.add(long.url, '--id', 'long', '--token-file', t.tokenFile, '--json')).card!
+    expect([cut['name'], cut['version'], cut['publisher']]).toEqual([`${'n'.repeat(80)}…`, `${'v'.repeat(80)}…`, `${'p'.repeat(80)}…`])
+    expect(cut['skills']).toEqual([{ id: `${'i '.repeat(40)}…`, name: `${'k'.repeat(80)}…` }])
+    expect(Object.keys(cut)).toEqual(['id', 'name', 'version', 'publisher', 'reach', 'endpoint', 'signed', 'skills', 'pin'])
+  })
+
+  it('add --json: keysNew for a signed card, a move\'s id and notes, and a failed step all carry the card', async () => {
+    const t = setup()
+    const signed = await signedAgent()
+    const fresh = plan(await t.add(signed.url, '--id', 'echo', '--token-file', t.tokenFile, '--json'))
+    expect(fresh.card).toMatchObject({ id: 'echo', signed: true, keysNew: true, reach: 'loopback' })
+    expect(plan(await t.add(signed.url, '--id', 'echo', '--token-file', t.tokenFile, '--key-thumbprint', K1.kid, '--json')).card).toMatchObject({ signed: true, keysNew: false })
+    expect(plan(await t.add(signed.url, '--id', 'echo', '--token-file', t.tokenFile, '--json', '--apply')).applied).toBe(true)
+    // the signed move: its id is the holder's, the key is already pinned, and the Move line stays a note
+    const after = await signedAgent()
+    const moving = plan(await t.add(after.url, '--token-file', t.tokenFile, '--json'))
+    expect(moving.card).toMatchObject({ id: 'echo', signed: true, keysNew: false, endpoint: `${after.origin}/a2a` })
+    expect(moving.notes).toEqual([`Move       this is echo at a new endpoint (was ${signed.origin}/a2a), signed by a key its pinned card lists: its card pin and run records stay; meshctl call will send the token to the new endpoint.`])
+    // --move to where it already is: nothing to do, with the card
+    // (keysNew is not known yet on this path, so it is left out)
+    const same = plan(await t.add(signed.url, '--move', 'echo', '--json', '--apply'))
+    expect(same).toEqual({ applied: true, steps: [], notes: [`agents.echo is already at ${signed.url}. Nothing to do.`], card: {
+      id: 'echo', name: 'Echo Agent', description: 'Echoes one text.', version: '1.0.0', reach: 'loopback', endpoint: `${signed.origin}/a2a`, signed: true,
+      skills: [{ id: 'echo', name: 'echo', description: 'Echo one text.' }], pin: json(t.dir).agents.echo.cardSha256,
+    } })
+    // an unsigned card has no keysNew
+    const plain = await agent()
+    expect(plan(await t.add(plain.url, '--id', 'plain', '--token-file', t.tokenFile, '--json')).card).not.toHaveProperty('keysNew')
+    // a step that fails: refused as the other --json commands word it, with the card
+    const other = setup()
+    mkdirSync(join(other.dir, 'mesh'), { mode: 0o700 })
+    writeFileSync(join(other.dir, 'mesh', 'tokens'), 'not a folder')
+    const failed = await other.add(plain.url, '--id', 'plain', '--token-file', other.tokenFile, '--json', '--apply')
+    expect(failed.code).toBe(1)
+    expect(plan(failed)).toMatchObject({ applied: false, steps: [], refused: `Failed at step 1/3. Steps before it are done; ${meshFile(other.dir)} was not changed.`, card: { id: 'plain', signed: false } })
+    expect(existsSync(meshFile(other.dir))).toBe(false)
+    // a later step fails (mesh.json's folder is read-only): the steps done before it are listed
+    const later = setup()
+    mkdirSync(join(later.dir, 'mesh'), { mode: 0o700 })
+    chmodSync(later.dir, 0o500)
+    try {
+      const r = await later.add(plain.url, '--id', 'plain', '--token-file', later.tokenFile, '--json', '--apply')
+      expect(r.code).toBe(1)
+      expect(plan(r)).toMatchObject({ applied: false, steps: [`Copied the token to ${join(later.dir, 'mesh', 'tokens', 'plain')}.`, `Kept the card as ${join(later.dir, 'mesh', 'cards', 'plain.json')}.`],
+        refused: `Failed at step 3/3. Steps before it are done; ${meshFile(later.dir)} was not changed.`, card: { id: 'plain', signed: false } })
+    } finally {
+      chmodSync(later.dir, 0o700)
+    }
+    expect(existsSync(meshFile(later.dir))).toBe(false)
+  })
+
+  it('add --expect-pin adds only the card that was looked at: a changed card is refused first, writing nothing', async () => {
+    let changed = false
+    const a = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => { if (changed) c.description = 'Changed.' })) }))
+    const t = setup('{"schema":1}\n')
+    const looked = plan(await t.add(a.url, '--token-file', t.tokenFile, '--json'))
+    const pin = looked.card!['pin'] as string
+    const PIN = 'the card is not the one that was checked (its pin differs): check it again. Nothing changed.'
+    changed = true
+    // the dry run checks it too, in both forms
+    const dry = await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', pin)
+    expect([dry.code, dry.out, dry.err]).toEqual([1, '', `Refused: ${PIN}\n`])
+    const refused = await t.add(a.url, '--expect-pin', pin, '--token-file', t.tokenFile, '--json', '--apply')
+    expect(refused.code).toBe(1)
+    const p = plan(refused)
+    expect(p).toEqual({ applied: false, steps: [], refused: PIN, card: { ...looked.card, description: 'Changed.', pin: expect.stringMatching(/^[0-9a-f]{64}$/) } })
+    expect(p.card!['pin']).not.toBe(pin)
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1}\n')
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    // the card that was looked at is added
+    const newPin = p.card!['pin'] as string
+    const on = await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', newPin, '--apply')
+    expect(on.code, on.err).toBe(0)
+    expect(json(t.dir).agents['echo-agent'].cardSha256).toBe(newPin)
+    // a changed card gets this refusal whatever else is wrong: here its derived id is taken, and a --move would see another pin
+    changed = false
+    const taken = plan(await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', newPin, '--json', '--apply'))
+    expect([taken.refused, taken.card!['id'], taken.card!['pin']]).toEqual([PIN, 'echo-agent', pin])
+    expect(plan(await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', pin, '--json')).refused).toMatch(/^the id echo-agent is already in /)
+    const profiledA = await profiledAgent()
+    expect((await t.add(profiledA.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const movedPin = json(t.dir).agents.echo.cardSha256
+    const elsewhere = await profiledAgent((c) => { c.description = 'Changed.' })
+    const move = plan(await t.add(elsewhere.url, '--move', 'echo', '--expect-pin', movedPin, '--json', '--apply'))
+    expect([move.refused, move.card!['id']]).toEqual([PIN, 'echo'])
+    expect(move.card).not.toHaveProperty('keysNew')
+    expect(json(t.dir).agents.echo.card).toBe(profiledA.url)
+    // with --move and the right pin it moves
+    const there = await profiledAgent()
+    expect(plan(await t.add(there.url, '--move', 'echo', '--expect-pin', movedPin, '--json', '--apply')).applied).toBe(true)
+  })
+
+  it('add --expect-pin: a signed card, a dry run that matches, and a mesh.json that changes during the fetch', async () => {
+    const PIN = 'the card is not the one that was checked (its pin differs): check it again. Nothing changed.'
+    const t = setup('{"schema":1}\n')
+    // a signed card refused for its pin: signed, and no keysNew (refused before the keys are looked up)
+    let changed = false
+    const signed = await signedAgent(K1, (c) => { if (changed) c.description = 'Changed.' })
+    const looked = plan(await t.add(signed.url, '--token-file', t.tokenFile, '--json'))
+    expect(looked.card).toMatchObject({ signed: true, keysNew: true })
+    changed = true
+    const refused = await t.add(signed.url, '--token-file', t.tokenFile, '--expect-pin', looked.card!['pin'] as string, '--json')
+    expect(refused.code).toBe(1)
+    const p = plan(refused)
+    expect(p.refused).toBe(PIN)
+    expect(p.card).toMatchObject({ id: 'echo-agent', signed: true, description: 'Changed.' })
+    expect(p.card).not.toHaveProperty('keysNew')
+    // a dry run with the matching pin succeeds, with one GET of the card and no more
+    const a = await agent()
+    const first = plan(await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--json'))
+    const seen = a.seen.length
+    const dry = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--expect-pin', first.card!['pin'] as string, '--json')
+    expect(dry.code).toBe(0)
+    expect(plan(dry)).toEqual(first)
+    expect(a.seen.length - seen).toBe(1)
+    expect(a.seen.every((h) => h.authorization === undefined)).toBe(true)
+
+    // mesh.json is read before the fetch and again after it; here the card server breaks it in between
+    let breakIt: (() => void) | undefined
+    const racing = await agent((origin) => { breakIt?.(); return { body: JSON.stringify(card(origin)) } })
+    const pin = plan(await t.add(racing.url, '--token-file', t.tokenFile, '--json')).card!['pin'] as string
+    const broken = (r: { code: number; out: string; err: string }) => { expect(r.code).toBe(1); return plan(r) }
+    const NOT_JSON = `${meshFile(t.dir)} is not valid JSON. Remove it by hand if you are sure. Nothing changed.`
+    // (a) a wrong pin: the pin's refusal comes first, with the card
+    writeFileSync(meshFile(t.dir), '{"schema":1}\n')
+    breakIt = () => { writeFileSync(meshFile(t.dir), '{"schema":1') }
+    const wrong = broken(await t.add(racing.url, '--token-file', t.tokenFile, '--expect-pin', 'a'.repeat(64), '--json', '--apply'))
+    expect([wrong.refused, wrong.card!['id'], wrong.card!['pin']]).toEqual([PIN, 'echo-agent', pin])
+    // (b) the right pin: the refused mesh.json, with the card
+    writeFileSync(meshFile(t.dir), '{"schema":1}\n')
+    const right = broken(await t.add(racing.url, '--token-file', t.tokenFile, '--expect-pin', pin, '--json', '--apply'))
+    expect([right.refused, right.card!['id'], right.card!['pin']]).toEqual([NOT_JSON, 'echo-agent', pin])
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1')
+    breakIt = undefined
+
+    // (c) another entry holds the card's agent id: refused after the fetch, so the card comes with it
+    writeFileSync(meshFile(t.dir), '{"schema":1}\n')
+    const held = await profiledAgent()
+    expect((await t.add(held.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const holder = await t.add(held.url, '--id', 'echo-two', '--token-file', t.tokenFile, '--json', '--apply')
+    expect(holder.code).toBe(1)
+    const h = plan(holder)
+    expect(h.refused).toBe('the card declares the agent id that agents.echo holds, so it is that agent: to move echo here, add --move echo (its pin and run records stay). Nothing changed.')
+    expect(h.card).toMatchObject({ id: 'echo-two', name: 'Echo Agent', signed: false, pin: json(t.dir).agents.echo.cardSha256 })
+  })
+
+  it('add --expect-pin takes 64 lower-case hex characters once; anything else is a usage error, with or without --json', async () => {
+    const a = await agent()
+    const t = setup()
+    const hex = 'a'.repeat(64)
+    for (const argv of [['--expect-pin'], ['--expect-pin', 'abc'], ['--expect-pin', 'A'.repeat(64)], ['--expect-pin', 'a'.repeat(65)], ['--expect-pin', 'g'.repeat(64)],
+      ['--expect-pin', `sha256 ${hex}`], ['--expect-pin', hex, '--expect-pin', hex]]) {
+      for (const form of [[], ['--json']]) {
+        const bad = await t.add(a.url, '--token-file', t.tokenFile, ...argv, ...form)
+        expect([bad.code, bad.out], [...argv, ...form].join(' ')).toEqual([2, ''])
+        expect(bad.err).toMatch(/^usage: agent-inbox-meshctl/)
+      }
+    }
+    expect(a.connections()).toBe(0)
+    expect(readdirSync(t.dir)).toEqual([])
+  })
+
+  it('add --json says applied only for the --apply it parsed, not for a value that reads "--apply"', async () => {
+    const a = await agent()
+    const t = setup()
+    // a token file named "--apply", given relative to the working folder: --token-file takes the word, so this is a dry run
+    const cwd = dirname(t.tokenFile)
+    writeFileSync(join(cwd, '--apply'), `${TOKEN}\n`, { mode: 0o600 })
+    const tsx = join(REPO, 'node_modules', 'tsx', 'dist', 'loader.mjs')
+    const child = spawn(process.execPath, ['--import', `file://${tsx}`, join(REPO, 'src', 'meshctl.ts'), 'add', a.url, '--token-file', '--apply', '--json'],
+      { cwd, env: { PATH: process.env['PATH'], HOME: t.dir, AGENT_INBOX_MESH_DIR: t.dir }, stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (d: Buffer) => { out += d })
+    child.stderr.on('data', (d: Buffer) => { err += d })
+    const code = await new Promise<number | null>((done) => child.on('close', done))
+    expect([code, err]).toEqual([0, ''])
+    expect(out).not.toContain(TOKEN)
+    const p = plan({ code: 0, out, err })
+    expect(p.applied).toBe(false)
+    expect(p.steps[0]).toMatch(/^Would copy the bearer token in /)
+    expect(existsSync(meshFile(t.dir))).toBe(false)
+    // the same through runAdd, with the parsed --apply: applied
+    expect(plan(await t.add(a.url, '--token-file', t.tokenFile, '--json', '--apply')).applied).toBe(true)
+  }, 30_000)
+
+  it('the usage and docs/mesh-call.md name add --json, --expect-pin, remove --json and every card field', async () => {
+    const t = setup()
+    const usage = (await t.add('--bogus')).err
+    expect(usage).toContain('add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]')
+    expect(usage).toContain('add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]')
+    expect(usage).toContain('remove <id> [--json] [--apply]')
+    expect(usage).toContain('enable, disable, add, remove and server add|set|remove also take --json')
+    const doc = readFileSync(join(REPO, 'docs', 'mesh-call.md'), 'utf8')
+    const signed = await signedAgent(K1, (c) => { c.provider = { organization: 'Example Org' } })
+    const c = plan(await t.add(signed.url, '--id', 'echo', '--token-file', t.tokenFile, '--json')).card!
+    for (const key of Object.keys(c)) expect(doc, key).toContain(`| \`${key}\` |`)
+    // the example object has the same fields in the same order
+    const example = /```json\n(\{"applied".*\})\n```/.exec(doc)
+    expect(Object.keys(JSON.parse(example![1]!).card)).toEqual(Object.keys(c))
+  })
+
+  it('add --json: a refusal before the fetch carries no card, one after it carries the card; usage stays text', async () => {
+    const a = await agent()
+    const t = setup('{"schema":1}\n')
+    const RULE = 'the card URL must be http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>] on a DNS name: never an IP address other than 127.0.0.1, localhost, plain http to another host, a written-out port 80 or 443, a user, a query or a fragment. Nothing changed.'
+    const address = await t.add('https://203.0.113.7/card', '--token-file', t.tokenFile, '--json', '--apply')
+    expect([address.code, plan(address)]).toEqual([1, { applied: false, steps: [], refused: RULE }])
+    const noToken = await t.add(a.url, '--json')
+    expect([noToken.code, plan(noToken)]).toEqual([1, { applied: false, steps: [], refused: 'a loopback agent needs --token-file: meshctl call proves its identity with that token before it sends anything (D17). Nothing changed.' }])
+    expect(a.connections()).toBe(0)
+    expect(plan(await t.add(a.url, '--token-file', t.tokenFile, '--apply', '--json')).applied).toBe(true)
+    const pin = json(t.dir).agents['echo-agent'].cardSha256
+    const added = readFileSync(meshFile(t.dir), 'utf8')
+    const seen = a.seen.length
+    // a taken --id is refused before the fetch: no card
+    const takenId = await t.add(a.url, '--id', 'echo-agent', '--token-file', t.tokenFile, '--json', '--apply')
+    expect([takenId.code, plan(takenId)]).toEqual([1, { applied: false, steps: [], refused: `the id echo-agent is already in ${meshFile(t.dir)}, and add never replaces an entry. Nothing changed.` }])
+    expect(a.seen.length).toBe(seen)
+    // a taken derived id is refused after it: the card comes with it, so a caller can show what it fetched
+    const takenDerived = await t.add(a.url, '--token-file', t.tokenFile, '--json', '--apply')
+    expect(takenDerived.code).toBe(1)
+    expect(plan(takenDerived)).toEqual({ applied: false, steps: [], refused: `the id echo-agent is already in ${meshFile(t.dir)}, and add never replaces an entry. Nothing changed.`,
+      card: expect.objectContaining({ id: 'echo-agent', name: 'Echo Agent', reach: 'loopback', signed: false, pin }) })
+    // a card that cannot be fetched or fails its checks: no card
+    const missing = await agent(() => ({ status: 404, body: '{}' }))
+    const notFound = await t.add(missing.url, '--token-file', t.tokenFile, '--json')
+    expect([notFound.code, plan(notFound)]).toEqual([1, { applied: false, steps: [], refused: 'the card URL answered HTTP 404. Nothing changed.' }])
+    // a name that makes no usable id: the card, without an id
+    const snowman = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => { c.name = '☃!' })) }))
+    const unusableRun = await t.add(snowman.url, '--token-file', t.tokenFile, '--json')
+    expect(unusableRun.code).toBe(1)
+    const unusable = plan(unusableRun)
+    expect(unusable.refused).toBe('the card\'s name makes no usable id: pass --id <id>. Nothing changed.')
+    expect(unusable.card).not.toHaveProperty('id')
+    expect(unusable.card).toMatchObject({ name: '☃!', signed: false })
+    const builtIn = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => { c.name = 'Request Post' })) }))
+    const namedRun = await t.add(builtIn.url, '--token-file', t.tokenFile, '--json')
+    expect(namedRun.code).toBe(1)
+    const named = plan(namedRun)
+    expect(named.refused).toMatch(/^request-post is a built-in agent/)
+    expect(named.card).not.toHaveProperty('id')
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe(added)
+    // a usage error: exit 2, the usage on stderr, nothing on stdout, no connection
+    const before = a.connections()
+    for (const argv of [['--json'], [a.url, '--json', '--json'], [a.url, '--json', '--bogus'], [a.url, '--id', 'a', '--move', 'b', '--json']]) {
+      const bad = await t.add(...argv)
+      expect([bad.code, bad.out], argv.join(' ')).toEqual([2, ''])
+      expect(bad.err).toMatch(/^usage: agent-inbox-meshctl/)
+    }
+    expect(a.connections()).toBe(before)
   })
 })
 

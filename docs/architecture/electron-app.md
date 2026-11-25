@@ -5,12 +5,13 @@ paths:
   - "electron/viewer-navigation.cjs"
   - "electron/terminal-launch.cjs"
   - "electron/chat-resume.cjs"
-applyTo: "electron/main.cjs,electron/setup-runner.cjs,electron/viewer-navigation.cjs,electron/terminal-launch.cjs,electron/chat-resume.cjs"
+  - "electron/mesh-process.cjs"
+applyTo: "electron/main.cjs,electron/setup-runner.cjs,electron/viewer-navigation.cjs,electron/terminal-launch.cjs,electron/chat-resume.cjs,electron/mesh-process.cjs"
 ---
 
 # Electron app: window install binding
 
-How Setup, update installs and local file links are granted to the app's own viewer window (#216).
+How Setup, update installs, local file links and the mesh bridge are granted to the app's own viewer window (#216).
 
 Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly verbatim. Claude Code and Copilot CLI load this file automatically when they read or edit a file matching the `paths`/`applyTo` globs above (through the symlinks in `.claude/rules/` and `.github/instructions/`); anyone else should read it before changing those files.
 
@@ -100,6 +101,70 @@ and `startId`. Main reads the chat, its folder, title and project through the vi
 its own dialog; the page names no folder, argv or env. `homeDir` (`app.getPath('home')`) is what main
 matches the shell's `COPILOT_HOME` against. The flow and its refusals are in `driven-sessions.md`
 ("Continue a chat … part 2").
+
+**The mesh bridge (agent setup in the app, step 2a).** `agentInboxMesh` lets the local page ask main
+to run one of a fixed list of `meshctl` operations, so the app can set up model servers and local
+agents with the same command a person would type, as a dry run first. Nothing on the page uses it
+yet. The rule: the page never supplies a command, a path or a secret, and `meshctl` stays the only
+writer of the mesh folder, with all of its own checks.
+
+- **What runs.** The program the person's own shim names, `<mesh dir>/bin/meshctl` (the mesh dir by
+  `meshctl`'s rule: an absolute `AGENT_INBOX_MESH_DIR`, else the folder of `AGENT_INBOX_DB`, else
+  `~/.agent-inbox`; a relative `AGENT_INBOX_DB` is refused as `environment`). Main never executes the
+  shim's shell text. It reads the shim again for every run, without following a link: a regular file
+  of this user's with no group or other write bit, at most 4 KiB, whose first four lines are exactly
+  the installer's (`#!/bin/sh`, the marker with `kind=runtime|checkout`, `node='…'`, `meshctl='…'`,
+  each path absolute and single-quoted with no quote, backslash, `$`, backtick or control
+  character), and both paths regular files. Then it spawns that node with `[meshctl.js, …argv]`:
+  `shell: false`, its own process group, `cwd` the person's home, stdin closed, an environment of
+  only `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG` and an
+  absolute `AGENT_INBOX_MESH_DIR` or `AGENT_INBOX_DB`. A run is stopped after 30 seconds (SIGTERM,
+  then SIGKILL 10 seconds later, as Setup) or once stdout passes 256 KiB; stderr is drained and
+  never kept. The terminal and the app run the same program, so a setup made in the app and one
+  typed by hand cannot differ.
+- **The fixed operations** (`OPERATIONS` in `electron/mesh-process.cjs`), each exactly one argv; a
+  writing one takes `apply` (false is the dry run, true adds `--apply`): `servers` (`server list
+  --json`), `check-server { name }`, `add-server { name, baseUrl, key }`, `adopt-server { name, from }`
+  (`server add <name> --from <agent> --move`), `set-server { name, baseUrl?, key? }`,
+  `remove-server { name }`, `enable-model-agent { agent, server, model }` (`unslop` or
+  `unslop-code`), `enable-request-post { endpoint, token }` and `disable { agent }` (never
+  `--purge`). Main checks every value before anything runs: exactly the operation's keys, a server
+  name `^[a-z0-9][a-z0-9-]{0,39}$`, a model `^[A-Za-z0-9._:/-]{1,64}$`, an `http:` or `https:` URL
+  with no credentials, space or control character and at most 2048 characters, `apply` a boolean,
+  and no value starting with `-`. `meshctl` applies its own stricter rules after.
+- **Answers.** The `--json` output is parsed and rebuilt field by field: a plan or apply is
+  `{ ok, applied, steps, refused?, notes? }`, `servers` is `{ ok, servers: [{ name, baseUrl, key,
+  agents }], inline, refused? }` with `key` one of `file|command|env|none`, and `check-server` is
+  `{ ok, reachable, failure?, models, skipped, refused? }`. Strings are cut (a line at 4096
+  characters, an address at 2048, a model at 64, a name at 40) and lists capped (32 steps, notes and
+  servers, 50 models); unknown fields are dropped. Model names and step lines are plain text for the
+  page to set as text. Anything else is `{ ok: false, reason }`, `reason` one word of a closed list
+  (`REASONS`): `unavailable`, `invalid`, `handle`, `busy`, `setup`, `updating`, `quitting`,
+  `unsupported`, `environment`, `not-installed`, `unsafe`, `unrecognized`, `stale`, `outdated`
+  (exit 2 and no JSON: an older install without the command), `output`, `timeout`, `failed`,
+  `cancelled`. The preload rebuilds every answer again against the same shapes.
+- **Files by handle.** A key or token file is chosen in main's own picker on the window
+  (`chooseFile('key' | 'token')`, one file, one picker at a time). Main keeps the absolute path under
+  a random 16-byte hex handle and answers `{ ok, handle, name }`, `name` being the base name cut to 80
+  characters. Handles live in memory, at most 16 (a 17th forgets the oldest), for 15 minutes, for
+  their purpose only, and are all forgotten when the window loses its grant or a quit begins; a file
+  chosen while that happened is discarded. An operation names a handle and main looks the path up;
+  an unknown or expired one is refused as `handle`.
+- **Who may call it.** Three channels, `agent-inbox:mesh-available`, `agent-inbox:mesh-run` (two
+  arguments) and `agent-inbox:mesh-choose-file` (one), registered at the top level by
+  `registerMeshIpc`, each with an exact arity, waiting for a re-proof in flight
+  (`installBinding.settled()`), then answering only `linkSender(event)` on the window holding
+  `meshWebContentsId`. The binding's `apply` sets that id from the file grant (the owned viewer), so
+  a navigation, a reload, a crash or closing drops it, and `beginAppQuit()` clears it. `available()`
+  is `{ available: true }` only while that holds, no quit has begun, no update installs and the shim
+  passes; otherwise it carries the reason word.
+- **One at a time.** The bridge has its own `createInstallGate()`: one run in flight (a second is
+  `busy`), none while Setup runs (`installGate.running()`), an update installs or a quit has begun.
+  `beginAppQuit()` stops a run in flight, and `before-quit` waits for it as for Setup. Setup and
+  update installs are unchanged: they do not wait for a mesh run, which a quit stops.
+- **Where it is absent.** The view showing another Mac's Inbox loads only `remote-preload.cjs`, which
+  has no `agentInboxMesh`, and the three channels answer it exactly as a stranger
+  (`test/main-ipc.test.ts`). Nothing is logged: no argument, path, address or output.
 
 ## History (shipped since v1)
 

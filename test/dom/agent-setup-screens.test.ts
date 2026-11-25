@@ -14,7 +14,7 @@ import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
 import meshProcess from '../../electron/mesh-process.cjs'
-import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, fakeBridge, server } from './agent-setup-fake.js'
+import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, checkedClaude, claudeServer, fakeBridge, server } from './agent-setup-fake.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -564,6 +564,86 @@ describe('Check and Remove on a server’s row (D3)', () => {
     expect(bridge.ops()).toEqual([['remove-server', { name: 'old', apply: false }], ['remove-server', { name: 'old', apply: true }]])
     expect(row('old')).toBeNull()
     expect(document.activeElement).toBe(buttonLabelled('Add a server', home()))
+  })
+})
+
+describe('a Claude Code server in Model servers (Claude Code D2)', () => {
+  const facts = (name: string) => row(name)!.querySelector('.ms-row-facts')?.textContent
+  const note = (name: string) => row(name)!.querySelector<HTMLElement>('.ms-row-note')!
+
+  it('its row says where it runs and that text goes to Anthropic, with who uses it; no address and no key words', async () => {
+    await boot({ bridge: { servers: [claudeServer('claude', { agents: ['unslop-code'] }), claudeServer('spare'), server('lab', { key: 'command' })] } })
+    await enter()
+    expect(facts('claude')).toBe('Claude Code on this Mac · sends text to Anthropic · used by unslop-code')
+    expect(facts('spare')).toBe('Claude Code on this Mac · sends text to Anthropic')
+    expect(facts('lab')).toBe('http://127.0.0.1:8080/lab · key from a command')
+    expect(row('claude')!.textContent).not.toContain('no key')
+    expect(shown(buttonLabelled('Check', row('claude')!))).toBe(true)
+    expect(shown(buttonLabelled('Remove', row('claude')!))).toBe(true)
+  })
+
+  it('a list from a command older than the Claude Code kind still shows, every row as an address server', async () => {
+    const { bridge } = await boot({ bridge: { servers: [server('local', { key: 'file', agents: ['unslop'] }), server('lab')] } })
+    await enter()
+    // the rows carry no kind, as such a command prints them; the bridge's own shaper makes them address servers
+    expect(bridge.s.servers.every((one) => !('kind' in one))).toBe(true)
+    expect(facts('local')).toBe('http://127.0.0.1:8080/local · key file · used by unslop')
+    expect(facts('lab')).toBe('http://127.0.0.1:8080/lab · no key')
+  })
+
+  it('Check: ready and signed in with its models; each failure in its own words; an address server keeps its own', async () => {
+    const { bridge } = await boot({ bridge: { servers: [claudeServer('claude'), server('lab')] } })
+    await enter()
+    bridge.s.answers['check-server'] = () => checkedClaude()
+    click(buttonLabelled('Check', row('claude')!))
+    await settle()
+    expect(note('claude').textContent).toBe('ready · signed in · 3 models')
+    expect(document.activeElement).toBe(buttonLabelled('Check', row('claude')!))
+    bridge.s.answers['check-server'] = () => checkedClaude(undefined, { models: ['sonnet'] })
+    click(buttonLabelled('Check', row('claude')!))
+    await settle()
+    expect(note('claude').textContent).toBe('ready · signed in · 1 model')
+    const WORDS: Record<string, string> = {
+      'no-program': 'Claude Code was not found on this Mac.',
+      'signed-out': 'Claude Code is not signed in, or could not start from the app. Run claude in a terminal and sign in.',
+      timeout: 'Claude Code did not answer in time.',
+    }
+    for (const [failure, words] of Object.entries(WORDS)) {
+      const answer = checkedClaude(failure)
+      expect(answer, failure).toEqual({ ok: false, reachable: false, failure, models: [], skipped: 0, kind: 'claude-code' })
+      bridge.s.answers['check-server'] = () => answer
+      click(buttonLabelled('Check', row('claude')!))
+      await settle()
+      expect(note('claude').textContent, failure).toBe(words)
+    }
+    // the shared word keeps the address server's sentence on an address server
+    bridge.s.answers['check-server'] = () => checked('timeout')
+    click(buttonLabelled('Check', row('lab')!))
+    await settle()
+    expect(note('lab').textContent).toBe('The server did not answer in time.')
+    bridge.s.answers['check-server'] = () => checked()
+    click(buttonLabelled('Check', row('lab')!))
+    await settle()
+    expect(note('lab').textContent).toBe('reachable · 2 models')
+  })
+
+  it('a check that names no kind goes by the server list: Claude Code’s words on its row', async () => {
+    const { bridge } = await boot({ bridge: { servers: [claudeServer('claude')] } })
+    await enter()
+    bridge.s.answers['check-server'] = () => checkedClaude(undefined, { kind: false })
+    expect(bridge.s.answers['check-server']({})).not.toHaveProperty('kind')
+    click(buttonLabelled('Check', row('claude')!))
+    await settle()
+    expect(note('claude').textContent).toBe('ready · signed in · 3 models')
+    bridge.s.answers['check-server'] = () => checkedClaude('timeout', { kind: false })
+    click(buttonLabelled('Check', row('claude')!))
+    await settle()
+    expect(note('claude').textContent).toBe('Claude Code did not answer in time.')
+    // a refusal and a bridge reason keep their own words on this kind too
+    bridge.s.answers['check-server'] = () => ({ ok: false, reason: 'busy' })
+    click(buttonLabelled('Check', row('claude')!))
+    await settle()
+    expect(note('claude').textContent).toBe('Another setup step is still running.')
   })
 })
 

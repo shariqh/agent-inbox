@@ -18,6 +18,10 @@ const NEEDS = { 'model-server': 'Needs a model server', 'address-and-token': 'Ne
 const TERMINAL = 'Set up in a terminal for now (docs/unslop.md).'
 const ELSEWHERE = 'Set these up in the app on the Mac that runs your agents.'
 const KEYS = { file: 'key file', command: 'key from a command', env: 'key from a variable', none: 'no key' }
+// the second kind of model server: Claude Code on this Mac, with no address and no key. The bridge
+// names each row's kind (and a check's, when the command does); any other row is a server at an address.
+const CLAUDE = 'claude-code'
+const CLAUDE_FACTS = 'Claude Code on this Mac · sends text to Anthropic'
 // D6: the bridge's failure words; a cancel says nothing, every other reason names itself
 const REASONS = {
   'not-installed': 'The mesh command is not installed on this Mac. Run Setup first.',
@@ -39,6 +43,13 @@ const CHECKS = {
   'not-a-model-server': 'This address does not answer as a model server.',
   timeout: 'The server did not answer in time.',
   key: 'The key could not be read.',
+}
+// a Claude Code server's: the program, its sign-in (the command reports any failure of its sign-in
+// question so, a program that cannot start under the app's short PATH included), and its own timeout
+const CLAUDE_CHECKS = {
+  'no-program': 'Claude Code was not found on this Mac.',
+  'signed-out': 'Claude Code is not signed in, or could not start from the app. Run claude in a terminal and sign in.',
+  timeout: 'Claude Code did not answer in time.',
 }
 // a key the app could not read, by where it comes from. The app runs the command with a short fixed
 // environment, never the shell's: a variable is not there, and a command that needs one gives nothing.
@@ -69,17 +80,26 @@ function problem(answer) {
  * `failure` and no `reason`: it is the check's result, not a step that did not work.
  */
 const failedCheck = (answer) => Boolean(answer) && typeof answer === 'object' && answer.ok !== true && typeof answer.reason !== 'string'
-  && !answer.refused && typeof answer.failure === 'string' && Object.hasOwn(CHECKS, answer.failure)
+  && !answer.refused && typeof answer.failure === 'string' && (Object.hasOwn(CHECKS, answer.failure) || Object.hasOwn(CLAUDE_CHECKS, answer.failure))
 
-/** A check's result in words. `keyKind`: where the server's key comes from, for a key that could not be read. */
-function checkText(answer, keyKind) {
+/**
+ * A check's result in words. `server`: the page's row for it, for its kind when the answer names
+ * none and for where its key comes from when the key could not be read.
+ */
+function checkText(answer, server) {
+  const named = answer && typeof answer === 'object' ? answer.kind : undefined
+  const claude = named === CLAUDE || (named !== 'http' && server?.kind === CLAUDE)
   if (!failedCheck(answer)) {
     const words = problem(answer)
     if (words !== null) return words
-    if (answer.reachable === true) return `reachable · ${plural(strings(answer.models).length, 'model')}`
+    if (answer.reachable === true) return `${claude ? 'ready · signed in' : 'reachable'} · ${plural(strings(answer.models).length, 'model')}`
   }
-  if (answer.failure === 'key' && typeof keyKind === 'string' && Object.hasOwn(KEY_CHECKS, keyKind)) return KEY_CHECKS[keyKind]
-  return Object.hasOwn(CHECKS, answer.failure) ? CHECKS[answer.failure] : CHECKS.unreachable
+  const failure = answer.failure
+  if (claude && Object.hasOwn(CLAUDE_CHECKS, failure)) return CLAUDE_CHECKS[failure]
+  const keyKind = server?.key
+  if (failure === 'key' && typeof keyKind === 'string' && Object.hasOwn(KEY_CHECKS, keyKind)) return KEY_CHECKS[keyKind]
+  if (Object.hasOwn(CHECKS, failure)) return CHECKS[failure]
+  return Object.hasOwn(CLAUDE_CHECKS, failure) ? CLAUDE_CHECKS[failure] : CHECKS.unreachable
 }
 
 function httpAddress(text) {
@@ -391,7 +411,8 @@ export function installMeshSetup(deps) {
           if (notes.get(name) === usedNotes.get(name)) notes.delete(name)
           usedNotes.delete(name)
         }
-        const facts = [typeof server.baseUrl === 'string' ? server.baseUrl : '', KEYS[server.key] ?? '', agents.length ? `used by ${agents.join(', ')}` : '']
+        const used = agents.length ? `used by ${agents.join(', ')}` : ''
+        const facts = server.kind === CLAUDE ? [CLAUDE_FACTS, used] : [typeof server.baseUrl === 'string' ? server.baseUrl : '', KEYS[server.key] ?? '', used]
         setText(el.querySelector('.ms-row-facts'), facts.filter(Boolean).join(' · '))
         const note = el.querySelector('.ms-row-note')
         setText(note, notes.get(name) ?? '')
@@ -426,12 +447,12 @@ export function installMeshSetup(deps) {
     setDisabled(section.querySelector('.ms-add'), busy())
   }
 
-  // where a server's key comes from, by the list the page last read
-  const keyKindOf = (name) => (servers?.list ?? []).find((server) => server.name === name)?.key
+  // a server's row in the list the page last read: its kind, and where its key comes from
+  const serverOf = (name) => (servers?.list ?? []).find((server) => server.name === name)
 
   async function checkRow(name, { focus = true } = {}) {
     await act(`check:${name}`, async () => {
-      notes.set(name, checkText(await call('check-server', { name }), keyKindOf(name)))
+      notes.set(name, checkText(await call('check-server', { name }), serverOf(name)))
     })
     if (focus) settleFocus(() => rowEls.get(name)?.querySelector('.ms-check'))
   }
@@ -788,7 +809,7 @@ export function installMeshSetup(deps) {
       page.model = { server: name, state: 'asking', models: [], why: '' }
       await act('models', async () => {
         const answer = await call('check-server', { name })
-        const said = checkText(answer, keyKindOf(name))
+        const said = checkText(answer, serverOf(name))
         notes.set(name, said)
         if (page !== mine || page.values.server !== name) return
         const reached = !failedCheck(answer) && problem(answer) === null && answer.reachable === true

@@ -105,3 +105,6 @@ export function madeProfile(dir: string, id: string): { port: number } | 'missin
   const port = p['port']
   return Number.isSafeInteger(port) && (port as number) >= 1 && (port as number) <= 65535 && port !== 80 ? { port: port as number } : 'refused'
 }
+
+/** A made agent's log files (its start log and its day logs), by name; `id` passed the id rule. */
+export const madeLog = (id: string): RegExp => new RegExp(`^${id}-(?:\\d{4}-\\d{2}-\\d{2}|agent)\\.log$`)

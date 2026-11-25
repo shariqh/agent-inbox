@@ -83,7 +83,7 @@ import { addSummary, cardEndpoint, cardSha256, cardSummary, checkedCard, fetchAd
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
 import { frameResult } from './agent-result.js'
-import { madePaths, madeProfile, parseMadeCard, serverKinds } from './mesh-made.js'
+import { madeLog, madePaths, madeProfile, parseMadeCard, serverKinds } from './mesh-made.js'
 import { meshLink } from './mesh-identity.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
@@ -1134,6 +1134,22 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
         dry: `Would delete the card copy ${show(cardCopy)}.`,
         run: () => { removeCardCopy(dir, id); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(cardCopy)}.` },
       })
+    }
+    // a made agent's own files (agents a chat makes, D5): its start profile, description and logs;
+    // its runner learns at its next gate tick, the entry being gone
+    const made = madePaths(dir, id)
+    if (exists(made.description) || (exists(made.profile) && madeProfile(dir, id) !== 'missing')) {
+      const logs = join(dir, 'mesh', 'logs')
+      let logFiles: string[] = []
+      try {
+        if (lstatSync(logs).isDirectory()) logFiles = readdirSync(logs).filter((entry) => madeLog(id).test(entry)).sort()
+      } catch { /* no logs */ }
+      const remove = (path: string, dry: string): void => {
+        if (exists(path)) steps.push({ dry, run: () => { unlinkSync(path); removeIfEmpty(join(path, '..')); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(path)}.` } })
+      }
+      remove(made.profile, `Would delete the start profile ${show(made.profile)}; a running ${id} stops within a minute.`)
+      remove(made.description, `Would delete the description ${show(made.description)}.`)
+      for (const log of logFiles) remove(join(logs, log), `Would delete the log ${show(join(logs, log))}.`)
     }
     if (!steps.length) {
       out(`${id} is not in ${name}. Nothing to do.\n`)

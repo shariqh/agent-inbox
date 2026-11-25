@@ -5,9 +5,10 @@
 // the card with the identity proof and answers SendMessage, reading the same files the real one
 // reads. FAKE_RUNNER (in the environment it inherits) bends it: `card-fail`, `try-fail`,
 // `no-listen`, `other-card`, `unproven` (it answers without the identity proof, as another process on the port would). It records its pid under <mesh dir>/fake-pids/ so a test can stop it,
-// and it stops once its mesh.json entry, seen once, is gone or names another port.
+// and it stops once its mesh.json entry, seen once, is gone or names another port, or its start
+// profile is gone.
 import { createHmac } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
 
@@ -73,14 +74,14 @@ if (args[0] === '--card') {
   })
   server.listen(port, '127.0.0.1', () => process.stderr.write(`made-agent: ${id} listening on http://127.0.0.1:${port}/\n`))
   server.on('error', () => process.exit(1))
-  // the real runner's gate, faster: once the entry has been seen, its going (or naming another port) stops it
+  // the real runner's gate, faster: once the entry has been seen, its going (or naming another port) stops it, as does remove's deleting the profile
   let seen = false
   setInterval(() => {
     let entry
     try { entry = JSON.parse(readFileSync(join(dir, 'mesh.json'), 'utf8')).agents?.[id] } catch { /* none */ }
     const on = entry !== undefined && entry.endpoint === `http://127.0.0.1:${port}/`
     if (on) seen = true
-    else if (seen) {
+    else if (seen || !existsSync(join(dir, 'mesh', 'wrappers', `${id}.json`))) {
       process.stderr.write('made-agent: stopped (mesh.json)\n')
       process.exit(0)
     }

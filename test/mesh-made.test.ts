@@ -7,7 +7,7 @@ import { copyFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, statSync
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Readable } from 'node:stream'
-import { runClient, runNew } from '../src/meshctl.js'
+import { runClient, runMeshctl, runNew } from '../src/meshctl.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -64,7 +64,13 @@ function setup() {
     return { code, out: out.join(''), err: err.join('') }
   }
   const t0 = { dir }
-  return { dir, home, where, card, run, make, call }
+  const ctl = (...args: string[]) => {
+    const out: string[] = []
+    const err: string[] = []
+    const code = runMeshctl(args, { env: { AGENT_INBOX_MESH_DIR: dir }, home, out: (x) => out.push(x), err: (x) => err.push(x) })
+    return { code, out: out.join(''), err: err.join('') }
+  }
+  return { dir, home, where, card, run, make, call, ctl }
 }
 
 describe('meshctl new: the dry run (D3)', () => {
@@ -319,4 +325,46 @@ describe('meshctl call starts a made agent that is not running (D4)', () => {
     expect([r.code, r.out, r.err]).toEqual([15, '', `meshctl call: unavailable: nothing answers at http://127.0.0.1:${port}: is the agent running?; nothing was sent\n`])
     expect(runners(t.dir).filter(alive)).toHaveLength(0)
   }, 30_000)
+})
+
+describe('meshctl remove of a made agent (D5)', () => {
+  it('also deletes its start profile, description and logs, says the runner stops within a minute, and leaves nothing behind', async () => {
+    const t = setup()
+    expect((await t.make([ID, '--from', t.card(), '--apply'])).code).toBe(0)
+    privateFile(join(t.dir, 'mesh', 'logs', `${ID}-2026-11-25.log`), '{"outcome":"completed"}\n')
+    privateFile(join(t.dir, 'mesh', 'logs', `${ID}-x-agent.log`), 'another agent\'s log\n')
+    const dry = t.ctl('remove', ID)
+    expect([dry.code, dry.err]).toEqual([0, ''])
+    expect(dry.out.replaceAll(t.dir, '<dir>').split('\n')).toEqual([
+      'Dry run.',
+      '1/7 Would delete <dir>/mesh.json: agents.action-items was its only setting (keeping a backup beside it).',
+      '2/7 Would delete the token copy <dir>/mesh/tokens/action-items.',
+      '3/7 Would delete the card copy <dir>/mesh/cards/action-items.json.',
+      '4/7 Would delete the start profile <dir>/mesh/wrappers/action-items.json; a running action-items stops within a minute.',
+      '5/7 Would delete the description <dir>/mesh/agents/action-items.json.',
+      '6/7 Would delete the log <dir>/mesh/logs/action-items-2026-11-25.log.',
+      '7/7 Would delete the log <dir>/mesh/logs/action-items-agent.log.',
+      'Nothing changed. Re-run with --apply.', '',
+    ])
+    expect(runners(t.dir).filter(alive)).toHaveLength(1)
+    const applied = t.ctl('remove', ID, '--apply')
+    expect([applied.code, applied.err]).toEqual([0, ''])
+    const left = files(t.dir).filter((f) => f.includes(ID) && !f.startsWith('fake-pids') && !f.includes('.bak-'))
+    expect(left).toEqual([`mesh/logs/${ID}-x-agent.log`])
+    expect(files(t.dir)).not.toContain('mesh.json')
+    // the runner stops once its entry is gone (the real one within a minute, the fake at once)
+    expect(await waitFor(() => runners(t.dir).filter(alive).length === 0)).toBe(true)
+    expect(t.ctl('remove', ID).out).toBe(`${ID} is not in ${t.dir}/mesh.json. Nothing to do.\n`)
+  }, 30_000)
+
+  it('the files a killed new left, with no entry, are deleted by remove', async () => {
+    const t = setup()
+    privateFile(join(t.dir, 'mesh', 'agents', `${ID}.json`), JSON.stringify({ schema: 1, ...EXAMPLE }))
+    privateFile(join(t.dir, 'mesh', 'tokens', ID), `${'k3'.repeat(20)}\n`)
+    privateFile(join(t.dir, 'mesh', 'wrappers', `${ID}.json`), '{"made":true,"port":4431,"start":["/bin/false"]}')
+    const r = t.ctl('remove', ID, '--apply')
+    expect([r.code, r.err]).toEqual([0, ''])
+    expect(r.out.split('\n').filter(Boolean)).toHaveLength(3)
+    expect(files(t.dir)).toEqual(['mesh', 'mesh/servers.json'])
+  })
 })

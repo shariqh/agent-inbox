@@ -99,9 +99,14 @@ function meshDirOf(env, home) {
   return { dir: path.join(home, '.agent-inbox') }
 }
 
-/** The environment meshctl runs with: system folders, who and where, and the mesh dir's variables. */
+/**
+ * The environment meshctl runs with: system folders, who and where, and the mesh dir's variables.
+ * TAILSCALE_BE_CLI makes the Tailscale app's own binary answer as a command line when it is run
+ * from an app Finder opened (electron/remote-tailscale.cjs sets the same): meshctl falls back on
+ * that binary to read this Mac's tailnet, and Homebrew's `tailscale` is not on this PATH.
+ */
 function meshEnv(env) {
-  const out = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }
+  const out = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TAILSCALE_BE_CLI: '1' }
   for (const name of ['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG']) if (env[name]) out[name] = env[name]
   if (env.AGENT_INBOX_MESH_DIR && path.isAbsolute(env.AGENT_INBOX_MESH_DIR)) out.AGENT_INBOX_MESH_DIR = env.AGENT_INBOX_MESH_DIR
   if (env.AGENT_INBOX_DB && path.isAbsolute(env.AGENT_INBOX_DB)) out.AGENT_INBOX_DB = env.AGENT_INBOX_DB

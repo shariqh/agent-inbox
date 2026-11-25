@@ -152,8 +152,8 @@ describe('meshDirOf and meshEnv: the mesh dir by meshctl’s own rule, and a min
     expect(meshEnv({
       PATH: '/evil/bin', HOME: '/h', USER: 'u', LOGNAME: 'u', TMPDIR: '/t', LANG: 'C', NODE_OPTIONS: '--require /evil.js', SECRET_TOKEN: 's',
       AGENT_INBOX_MESH_DIR: '/m', AGENT_INBOX_DB: '/d/inbox.db', AGENT_INBOX_PORT: '1',
-    })).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/h', USER: 'u', LOGNAME: 'u', TMPDIR: '/t', LANG: 'C', AGENT_INBOX_MESH_DIR: '/m', AGENT_INBOX_DB: '/d/inbox.db' })
-    expect(meshEnv({ AGENT_INBOX_MESH_DIR: 'm', AGENT_INBOX_DB: 'd' })).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin' })
+    })).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TAILSCALE_BE_CLI: '1', HOME: '/h', USER: 'u', LOGNAME: 'u', TMPDIR: '/t', LANG: 'C', AGENT_INBOX_MESH_DIR: '/m', AGENT_INBOX_DB: '/d/inbox.db' })
+    expect(meshEnv({ AGENT_INBOX_MESH_DIR: 'm', AGENT_INBOX_DB: 'd' })).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TAILSCALE_BE_CLI: '1' })
   })
 })
 
@@ -436,7 +436,7 @@ describe('createMeshBridge: the gates, the handles and a run', () => {
     expect(b.bridge.available()).toEqual({ available: true })
     await expect(b.bridge.run('remove-server', { name: 'box', apply: false })).resolves.toEqual({ ok: true, applied: false, steps: ['Would add the server box.'] })
     expect(b.spawned).toEqual([[b.node, [b.script, 'server', 'remove', 'box', '--json'], expect.objectContaining({
-      cwd: b.home, shell: false, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: b.home, AGENT_INBOX_MESH_DIR: b.dir },
+      cwd: b.home, shell: false, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TAILSCALE_BE_CLI: '1', HOME: b.home, AGENT_INBOX_MESH_DIR: b.dir },
     })]])
   })
 
@@ -632,7 +632,7 @@ process.stdout.write(JSON.stringify({ applied: false, steps: ['Would add the ser
     expect(existsSync(planted)).toBe(false)
     // macOS may add its own text-encoding variable to a child; nothing else is there
     const { __CF_USER_TEXT_ENCODING: _encoding, ...env } = got.env
-    expect(env).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: f.home, USER: 'tester', AGENT_INBOX_MESH_DIR: f.dir })
+    expect(env).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TAILSCALE_BE_CLI: '1', HOME: f.home, USER: 'tester', AGENT_INBOX_MESH_DIR: f.dir })
     expect(got.cwd).toBe(realpathSync(f.home))
   })
 })

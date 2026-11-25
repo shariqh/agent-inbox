@@ -40,12 +40,29 @@ The app's Agent cards tab has a **Model servers** section that runs these same c
 run first, in the app's own window on the Mac that runs the agents (never in a browser or from
 another Mac). Each server shows its address, where its key comes from and the agents that name
 it, with **Check** (`server check`: reachable and how many models, or why not) and **Remove**,
-which asks first. **Add a server** takes a name, an address and either no key or a key file picked
-in the app's own file dialog (the app keeps the file's path in the main process; the page sees only
-its name). A key from a command or a variable is added with `meshctl`. **Make it a server** turns
-an agent's inline settings into a server (`server add --from <agent> --move`). Setting up
-unslop-code, or **Change server** on its page, picks a server and a model from the server's own
-list. The commands below stay the way to do everything else.
+which asks first. **Add a server** first asks **What kind**: **A server at an address** (chosen
+when the page opens) or **Claude Code on this Mac**. A server at an address takes a name, an
+address and either no key or a key file picked in the app's own file dialog (the app keeps the
+file's path in the main process; the page sees only its name). A key from a command or a variable
+is added with `meshctl`. **Make it a server** turns an agent's inline settings into a server
+(`server add --from <agent> --move`). Setting up unslop-code, or **Change server** on its page,
+picks a server and a model from the server's own list. The commands below stay the way to do
+everything else.
+
+A [Claude Code](#claude-code-on-this-mac) server takes only a name; the page says `Uses the Claude
+Code you are signed in to. No key to enter.`, and Save runs `server add <name> --claude-code`, a dry
+run first, then checks the new server. Its row reads `Claude Code on this Mac · sends text to
+Anthropic`, then the agents that name it. Its **Check** says:
+
+- `ready · signed in · 3 models` when the program is found and signed in;
+- `Claude Code was not found on this Mac.` (`no-program`);
+- `Claude Code is not signed in, or could not start from the app. Run claude in a terminal and
+  sign in.` (`signed-out`; the command reports any failure of its sign-in question this way,
+  including a program that cannot start under the app's short `PATH`);
+- `Claude Code did not answer in time.` (`timeout`).
+
+Setting up an agent on such a server offers `haiku`, `sonnet` and `opus`, in that order. When its
+check fails, the list still offers the three, with the check's words under it.
 
 ### A key the app cannot read
 
@@ -254,9 +271,9 @@ reported as not reached. unslop gives the original back.
   finds none exits at once and says so.
 - It says `not signed in (run claude once and sign in)` (`signed-out`): run `claude` in a terminal,
   sign in, then check again.
-- The app shows such a server with a blank address, and its **Check** says `That did not work
-  (output).`: that version of the app does not know this kind yet. Use `server check` in a
-  terminal until you update the app.
+- An app before 2.24.0 does not know this kind: it shows such a server with `no key` and a blank
+  address, a ready server checks as `reachable · 3 models`, and only a failing check says `That
+  did not work (output).` Use `server check` in a terminal, or update the app.
 
 ## Output for programs (`--json`)
 

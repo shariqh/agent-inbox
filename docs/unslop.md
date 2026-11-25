@@ -329,7 +329,9 @@ stderr.
 Each line holds the end time, the duration, the kind, the exit code and an outcome word, plus
 the result's fixed facts: its status, reason and refusal classes, the draft's size in bytes, the
 attempts, the model name, the first 12 characters of the rules hash, the timings, the warning
-classes and the agent's task id (to find its own log line).
+classes, what the run spent (`calls`, the model calls made, and `tokensIn` and `tokensOut`, the
+tokens its replies reported) and the agent's task id (to find its own log line). The app's Run
+history ends a run's details with them, as `N calls · X tokens`.
 
 It never holds the draft, the edited text, the report's `failures`, a warning's detail, the
 profile, the backend URL, the key or the token, or anything about who called. Records older than

@@ -107,7 +107,7 @@ What it prints:
 - **stdout:** the patch, and nothing else. It is empty when nothing is removed, and on every exit
   but 0, except when `--apply` was refused (exit 13), when the patch is still printed.
 - **stderr:** one summary line (the files looked at, the comment lines removed, the
-  suggestions), then each suggestion as `<path>:<line> <kind>` (`defensive`, `trycatch`, `cast`,
+  suggestions, and, when the agent reports them, `; N calls, I tokens in, O out` at its end), then each suggestion as `<path>:<line> <kind>` (`defensive`, `trycatch`, `cast`,
   `nesting` or `other`), then each file the agent skipped or did not reach and each file the
   command left out, with its reason. Paths and the agent's words are printed without control
   characters.

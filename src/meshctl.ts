@@ -83,7 +83,7 @@ import { addSummary, cardEndpoint, cardSha256, cardSummary, checkedCard, fetchAd
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
 import { frameResult } from './agent-result.js'
-import { madePaths, parseMadeCard, serverKinds } from './mesh-made.js'
+import { madePaths, madeProfile, parseMadeCard, serverKinds } from './mesh-made.js'
 import { meshLink } from './mesh-identity.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
@@ -2085,6 +2085,23 @@ export async function runCheckCommand(args: string[], io: MeshctlIo & { cardMs?:
   return code
 }
 
+/**
+ * call's start for a made agent (D4): undefined when `id` has no made start profile, so call goes on
+ * exactly as for any added agent; else a start from that profile, which must be a private file you
+ * own naming the entry's port, by the built-ins' starter (detached, no shell, its log beside theirs).
+ */
+function madeStart(dir: string, id: string, env: NodeJS.ProcessEnv): { start(port: number): { exited: () => boolean; log: string } | string } | undefined {
+  if (idRefusal(id)) return undefined
+  const profile = madeProfile(dir, id)
+  if (profile === 'missing') return undefined
+  const fix = `meshctl remove ${id} --apply, then make it again`
+  return {
+    start: (port) => profile === 'refused' ? `its start profile ${madePaths(dir, id).profile} must be a JSON file you own with mode 0600 that names its port: ${fix}`
+      : profile.port !== port ? `its start profile names port ${profile.port}, not its entry's ${port}: ${fix}`
+        : startAgent(dir, { env }, id, fix),
+  }
+}
+
 const SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const
 
 /**
@@ -2112,7 +2129,7 @@ export async function runClient(command: 'unslop' | 'unslop-code' | 'request-pos
       : command === 'unslop-code'
         ? await runUnslopCode(args, { ...io, cwd: io.cwd ?? process.cwd(), run }).catch(() => { run.internal = true; io.err('unslop-code: failed (internal error); nothing was applied.\n'); return 13 })
         : command === 'call'
-          ? await runCall(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('meshctl call: failed (internal error).\n'); return 13 })
+          ? await runCall(args, { tailnet: magicDnsSuffix, made: (id) => madeStart(dir, id, io.env), ...io, run }).catch(() => { run.internal = true; io.err('meshctl call: failed (internal error).\n'); return 13 })
           : await runRequestPost(args, { tailnet: magicDnsSuffix, ...io, run }).catch(() => { run.internal = true; io.err('request-post: outcome unknown (internal error): run the same command again; never file it in-session.\n'); return 13 })
     appendRun(dir, agent, run, { exit: code })
     return code

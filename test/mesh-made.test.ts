@@ -6,7 +6,8 @@
 import { copyFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { runNew } from '../src/meshctl.js'
+import { Readable } from 'node:stream'
+import { runClient, runNew } from '../src/meshctl.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -56,7 +57,14 @@ function setup() {
     return { code, out: out.join(''), err: err.join('') }
   }
   const make = (args: string[], extra: Record<string, string> = {}) => run([...args, '--checkout', where], extra)
-  return { dir, home, where, card, run, make }
+  const call = async (id: string, input = 'Sam sends the notes.') => {
+    const out: string[] = []
+    const err: string[] = []
+    const code = await runClient('call', [id], { env: { AGENT_INBOX_MESH_DIR: t0.dir, HOME: home, PATH: process.env['PATH'] ?? '' }, home, stdin: Readable.from([Buffer.from(input)]), out: (x) => out.push(x), err: (x) => err.push(x) })
+    return { code, out: out.join(''), err: err.join('') }
+  }
+  const t0 = { dir }
+  return { dir, home, where, card, run, make, call }
 }
 
 describe('meshctl new: the dry run (D3)', () => {
@@ -259,4 +267,56 @@ describe('meshctl new --apply (D3)', () => {
     expect(JSON.parse(readFileSync(join(t.dir, 'mesh', 'agents', `${ID}.json`), 'utf8'))).toEqual({ schema: 1, ...EXAMPLE })
     expect(readFileSync(join(t.dir, 'mesh', 'tokens', ID), 'utf8')).not.toContain('old-token')
   })
+})
+
+/** Stops every fake runner of `dir` and waits until none is alive. */
+async function stopRunners(dir: string): Promise<void> {
+  for (const pid of runners(dir)) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
+  expect(await waitFor(() => runners(dir).filter(alive).length === 0)).toBe(true)
+}
+
+describe('meshctl call starts a made agent that is not running (D4)', () => {
+  it('starts it from its start profile, proves it, checks the pin and answers; once running it is not started again', async () => {
+    const t = setup()
+    expect((await t.make([ID, '--from', t.card(), '--apply'])).code).toBe(0)
+    await stopRunners(t.dir)
+    const r = await t.call(ID)
+    expect([r.code, r.err]).toEqual([0, `meshctl call: ${ID}: starting the agent\n`])
+    expect(r.out).toMatch(new RegExp(`^Untrusted result from agent ${ID} \\(card [0-9a-f]{12}\\)`))
+    expect(r.out).toContain(`made answer from ${ID}: 20 characters`)
+    expect(runners(t.dir).filter(alive)).toHaveLength(1)
+    const again = await t.call(ID)
+    expect([again.code, again.err]).toEqual([0, ''])
+    expect(runners(t.dir).filter(alive)).toHaveLength(1)
+  }, 30_000)
+
+  it('a start profile that names another port than the entry, or is open to others, is refused with 15 and nothing starts', async () => {
+    const t = setup()
+    expect((await t.make([ID, '--from', t.card(), '--apply'])).code).toBe(0)
+    await stopRunners(t.dir)
+    const profile = join(t.dir, 'mesh', 'wrappers', `${ID}.json`)
+    const kept = JSON.parse(readFileSync(profile, 'utf8'))
+    privateFile(profile, JSON.stringify({ ...kept, port: kept.port + 1 }))
+    const moved = await t.call(ID)
+    expect([moved.code, moved.out]).toEqual([15, ''])
+    expect(moved.err).toBe(`meshctl call: unavailable: nothing answers at http://127.0.0.1:${kept.port}, and ${ID} cannot be started: its start profile names port ${kept.port + 1}, not its entry's ${kept.port}: meshctl remove ${ID} --apply, then make it again; nothing was sent\n`)
+    privateFile(profile, JSON.stringify(kept))
+    chmodSync(profile, 0o644)
+    const open = await t.call(ID)
+    expect([open.code, open.err]).toEqual([15, expect.stringContaining('its start profile ')])
+    expect(open.err).toContain('must be a JSON file you own with mode 0600 that names its port')
+    expect(runners(t.dir).filter(alive)).toHaveLength(0)
+  }, 30_000)
+
+  it('a plain added agent that is not running behaves exactly as before: 15, nothing started', async () => {
+    const t = setup()
+    expect((await t.make([ID, '--from', t.card(), '--apply'])).code).toBe(0)
+    const port = Number(/"port": (\d+)/.exec(readFileSync(join(t.dir, 'mesh', 'wrappers', `${ID}.json`), 'utf8'))![1])
+    // the same entry, with a profile that is no made agent's (no "made": true): an agent added by its card address
+    await stopRunners(t.dir)
+    privateFile(join(t.dir, 'mesh', 'wrappers', `${ID}.json`), JSON.stringify({ port, start: ['/bin/false'] }))
+    const r = await t.call(ID)
+    expect([r.code, r.out, r.err]).toEqual([15, '', `meshctl call: unavailable: nothing answers at http://127.0.0.1:${port}: is the agent running?; nothing was sent\n`])
+    expect(runners(t.dir).filter(alive)).toHaveLength(0)
+  }, 30_000)
 })

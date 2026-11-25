@@ -80,3 +80,28 @@ export const madePaths = (dir: string, id: string) => ({
   profile: join(dir, 'mesh', 'wrappers', `${id}.json`),
   log: join(dir, 'mesh', 'logs', `${id}-agent.log`),
 })
+
+/**
+ * The start profile of `id` (D4): its port when it is a made agent's, a private file you own holding
+ * `"made": true` and a port; `missing` when there is none or it is not a made agent's (no
+ * `"made": true`), so call behaves exactly as for any added agent; `refused` when it is not a private
+ * JSON file you own, or names no port.
+ */
+export function madeProfile(dir: string, id: string): { port: number } | 'missing' | 'refused' {
+  let text: string
+  try {
+    text = readPrivate(madePaths(dir, id).profile)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'refused'
+  }
+  let p: Record<string, unknown> = {}
+  try {
+    const value: unknown = JSON.parse(text)
+    if (value && typeof value === 'object' && !Array.isArray(value)) p = value as Record<string, unknown>
+  } catch {
+    return 'refused'
+  }
+  if (p['made'] !== true) return 'missing'
+  const port = p['port']
+  return Number.isSafeInteger(port) && (port as number) >= 1 && (port as number) <= 65535 && port !== 80 ? { port: port as number } : 'refused'
+}

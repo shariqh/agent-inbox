@@ -1,7 +1,8 @@
 // `meshctl call <id>` (#530; mesh design §6.7 D15–D17, §8.5, §8.8): the one generic A2A 1.0
 // client for an agent added with `meshctl add`. Node core and the mesh's own modules only, and
 // only meshctl imports it: never the stdio MCP server or the viewer. It reads the request from
-// stdin, never from a terminal, and never spawns a process. Off (no `agents.<id>` entry that
+// stdin, never from a terminal, and never spawns a process itself: when nothing answers a made agent
+// (agents a chat makes, D4), it asks the start function meshctl puts in its io to start it. Off (no `agents.<id>` entry that
 // `add` wrote, by the one reading rule) is exit 14 before any connection. Otherwise it reads the
 // token copy, re-checks a tailnet endpoint against this Mac's tailnet, fetches the card fresh (on
 // loopback with the identity challenge, label `a2a-mesh`, so the token and the request go only to
@@ -31,6 +32,8 @@ const RESULT_MAX = 1024 * 1024
 const STREAM_MAX = 4 * 1024 * 1024
 const CARD_MS = 5_000
 const POLL_MS = 5_000
+// a made agent's start: the built-ins' wait (src/unslop-client.ts)
+const START_WAIT_MS = 10_000
 const TERMINAL = ['TASK_STATE_COMPLETED', 'TASK_STATE_REJECTED', 'TASK_STATE_FAILED', 'TASK_STATE_CANCELED']
 // a one-shot client cannot answer these, so they end the call too
 const INTERRUPTED = ['TASK_STATE_INPUT_REQUIRED', 'TASK_STATE_AUTH_REQUIRED']
@@ -60,6 +63,12 @@ export interface CallIo {
   pollMs?: number
   /** the meshctl entry's run record (cards view V5 §5.3): armed once the entry passes its rule */
   run?: RunCollector
+  /**
+   * A made agent's start (agents a chat makes, D4), which meshctl passes in so this module never
+   * spawns: undefined for an id that was not made; else `start(port)` starts it from its start
+   * profile for the entry's port (detached, no shell), or says why not.
+   */
+  made?: (id: string) => { start(port: number): { exited: () => boolean; log: string } | string } | undefined
 }
 
 type Json = Record<string, unknown>
@@ -212,7 +221,21 @@ async function call(id: string, skill: string | undefined, timeoutMs: number, io
     say(`unavailable: ${why}; nothing was sent`)
     return { code: 15, reason: 'unavailable' }
   }
-  const got = await link.card(CARD_MS)
+  let got = await link.card(CARD_MS)
+  // a made agent that is not running is started from its start profile, then proven as today (D4)
+  const made = place.loopback ? io.made?.(id) : undefined
+  if (got === 'refused' && made) {
+    const started = made.start(Number(card.port))
+    if (typeof started === 'string') return unavailable(`nothing answers at ${place.origin}, and ${id} cannot be started: ${started}`)
+    say(`${id}: starting the agent`)
+    for (const until = Date.now() + START_WAIT_MS; got === 'refused' && Date.now() < until;) {
+      const gone = started.exited()
+      await sleep(200)
+      got = await link.card(CARD_MS)
+      if (gone) break
+    }
+    if (got === 'refused') return unavailable(`${id} did not start; see ${started.log}`)
+  }
   if (got === 'unproven') return unproven()
   if (got === 'refused') return unavailable(`nothing answers at ${place.origin}: is the agent running?`)
   if (got === 'error') return unavailable(`the card request to ${place.origin} failed (no answer in ${CARD_MS / 1000} s, a cut connection, DNS${entry.public ? ', a name that resolves to an address that is not public' : ''} or TLS)`)
@@ -228,7 +251,8 @@ async function call(id: string, skill: string | undefined, timeoutMs: number, io
   if (!fetched || pin === undefined) return unavailable(`the card URL sent no JSON card of at most ${CARD_MAX / 1024} KiB`)
   if (pin !== entry.cardSha256) {
     say(`card changed: the card at ${entry.card} is not the one you added (pin ${entry.cardSha256.slice(0, 12)}, now ${pin.slice(0, 12)}), so nothing was sent. ` +
-      `To accept it after looking: meshctl remove ${id} --apply, then meshctl add ${entry.card} --id ${id}${token === undefined ? '' : ' --token-file <your token file>'} (a dry run that shows the card) and again with --apply`)
+      (made ? `${id} is a made agent: meshctl remove ${id} --apply, then make it again with meshctl new (a signing key made for ${id} after it was made changes its card)`
+        : `To accept it after looking: meshctl remove ${id} --apply, then meshctl add ${entry.card} --id ${id}${token === undefined ? '' : ' --token-file <your token file>'} (a dry run that shows the card) and again with --apply`))
     return { code: 16, reason: 'card-changed' }
   }
   pinned(pin)

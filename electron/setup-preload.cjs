@@ -431,6 +431,7 @@ const MESH_OPERATIONS = Object.freeze({
   servers: [],
   'check-server': ['name'],
   'add-server': ['name', 'baseUrl', 'key', 'apply'],
+  'add-claude-server': ['name', 'apply'],
   'adopt-server': ['name', 'from', 'apply'],
   'set-server': ['name', 'baseUrl', 'key', 'apply'],
   'remove-server': ['name', 'apply'],
@@ -444,7 +445,8 @@ const MESH_REASONS = new Set([
   'outdated', 'output', 'timeout', 'failed', 'cancelled',
 ])
 const MESH_KEYS = new Set(['file', 'command', 'env', 'none'])
-const MESH_CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model-server', 'timeout', 'key'])
+const MESH_SERVER_KINDS = new Set(['http', 'claude-code'])
+const MESH_CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model-server', 'timeout', 'key', 'no-program', 'signed-out'])
 const MESH_HANDLE = /^[0-9a-f]{32}$/
 const MESH_VALUE_MAX = 2048
 const meshFailed = (reason = 'failed') => ({ ok: false, reason })
@@ -479,7 +481,9 @@ function meshPlan(value) {
 function meshServer(row) {
   const agents = isPlainObject(row) ? meshStrings(row.agents, 8, 40) : null
   if (agents === null || typeof row.name !== 'string' || typeof row.baseUrl !== 'string' || !MESH_KEYS.has(row.key)) return null
-  return { name: meshCut(row.name, 40), baseUrl: meshCut(row.baseUrl, 2048), key: row.key, agents }
+  // no kind is an address server, as main says; any other kind fails the list
+  if (row.kind !== undefined && !MESH_SERVER_KINDS.has(row.kind)) return null
+  return { name: meshCut(row.name, 40), kind: row.kind ?? 'http', baseUrl: meshCut(row.baseUrl, 2048), key: row.key, agents }
 }
 
 function meshServers(value) {
@@ -498,6 +502,11 @@ function meshCheck(value) {
   const out = { ok: value.ok, reachable: value.reachable, models, skipped: Number.isSafeInteger(value.skipped) && value.skipped >= 0 ? value.skipped : 0 }
   if (MESH_CHECK_FAILURES.has(value.failure)) out.failure = value.failure
   if (typeof value.refused === 'string') out.refused = meshCut(value.refused, 4096)
+  // kept only when main named one; any other kind fails the answer, as it does in main
+  if (value.kind !== undefined) {
+    if (!MESH_SERVER_KINDS.has(value.kind)) return null
+    out.kind = value.kind
+  }
   return out
 }
 

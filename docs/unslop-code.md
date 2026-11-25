@@ -227,7 +227,8 @@ Never send it files that hold secrets or customer material; it skips a file in w
   meshctl entry once the command has found the agent's switch on, whatever the exit: the op
   (`clean`), the end time and duration, the exit code and outcome word, the status, reason,
   model and task id, the files sent, the bytes sent, the comment lines removed, the number of
-  suggestions and the timings. Never a path and never text. Records older than 30 days are
+  suggestions, the timings and what the run spent (`calls`, `tokensIn` and `tokensOut`). Never a
+  path and never text. Records older than 30 days are
   deleted by a later call or by the next `meshctl enable` or `disable`. To delete them now:
 
   ```sh
@@ -249,8 +250,9 @@ port, or a build whose card the client cannot use) shows as not an agent card or
 with the same fix words as unslop. The page's usage line reads `<mesh dir>/mesh/unslop-code-budget.json`,
 counted apart from unslop's. Run history reads `<mesh dir>/mesh/runs/unslop-code-<date>.jsonl`: each row
 says its outcome (cleaned, nothing to remove, refused, busy, failed, unavailable or interrupted) and, in
-its details, the files sent, the comment lines removed, the suggestions, the kilobytes sent, the model
-and the timings. A row never holds a path or any text.
+its details, the files sent, the comment lines removed, the suggestions, the kilobytes sent, the model,
+the timings and what the run spent (`44 calls · 212k tokens`: the model calls, and the tokens in and
+out added together). A row never holds a path or any text.
 
 In the app's own window the tab also turns it on and off with the same commands: **Set up** on its
 Marketplace card picks a model server and a model (from the server's list, or typed when the server

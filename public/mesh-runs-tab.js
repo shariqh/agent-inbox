@@ -76,6 +76,24 @@ function outcomeText(run) {
 
 const list = (value) => (Array.isArray(value) ? value.filter((s) => typeof s === 'string') : [])
 const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`
+const count = (n) => Number.isSafeInteger(n) && n >= 0
+
+/** A token count shown short: 999, 1.2k, 212k, 1.5M (each band by the rounded value, so never "1000k"). */
+function short(n) {
+  if (n < 1000) return String(n)
+  const tenths = Math.round(n / 100) / 10
+  if (tenths < 10) return `${tenths.toFixed(1)}k`
+  const thousands = Math.round(n / 1000)
+  if (thousands < 1000) return `${thousands}k`
+  return `${(Math.round(n / 100_000) / 10).toFixed(1)}M`
+}
+
+// what a model agent's run spent, last among its own facts; nothing unless all three counts are sound
+function spent(run, facts) {
+  if (!count(run.calls) || !count(run.tokensIn) || !count(run.tokensOut)) return
+  const tokens = run.tokensIn + run.tokensOut
+  facts.push(plural(run.calls, 'call'), `${short(tokens)} token${tokens === 1 ? '' : 's'}`)
+}
 
 // the Details cell's facts, joined with " · "
 function detailsText(run, outcome) {
@@ -85,6 +103,7 @@ function detailsText(run, outcome) {
     if (Number.isFinite(run.attempts)) facts.push(plural(run.attempts, 'attempt'))
     if (run.rules) facts.push(`rules ${run.rules}`)
     if (Number.isFinite(run.bytesIn)) facts.push(`${(run.bytesIn / 1000).toFixed(1)} KB`)
+    spent(run, facts)
   }
   if (run.agent === 'unslop-code') {
     // what the record holds, in the order unslop's facts take: counts, size, the model, then the timings that are long enough to read
@@ -95,6 +114,7 @@ function detailsText(run, outcome) {
     if (typeof run.model === 'string' && run.model) facts.push(run.model)
     if (Number.isFinite(run.timing?.model)) facts.push(`model ${took(run.timing.model)}`)
     for (const key of ['load', 'queued']) if (run.timing?.[key] >= 1000) facts.push(`${key} ${took(run.timing[key])}`)
+    spent(run, facts)
   }
   if (run.agent === 'request-post') {
     if (run.phase && run.phase !== outcome) facts.push(run.phase)

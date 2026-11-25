@@ -175,7 +175,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   record is a closed schema with fixed vocabularies and patterns (§5.4; one rule table serves the
   builder and the validator): `v`, `id`, `agent`, `op`, `at` (the end), `ms`, `exit`, `signal`,
   `outcome`, `reason`, `classes`, `task`; for unslop `status`, `bytesIn`, `attempts`, `model`,
-  `rules`, `timing`, `warnings`; for request-post `phase`, `created`, `throughGo`, `fields`, and
+  `rules`, `timing`, `warnings`, and for both model agents what the run spent: `calls` (0 to
+  100 000), `tokensIn` and `tokensOut` (0 to 10^12), copied from the result's `calls` and
+  `tokens { in, out }` and dropped together, first, when a record would pass the line cap; for request-post `phase`, `created`, `throughGo`, `fields`, and
   `channels` and `brand` on exit 0 only. Never text, a prompt, a query, an answer, a title, a
   URL, a page id, a request key (derived or caller-chosen), a token or the caller's identity.
   Files dated before the kept period (the 30 local dates ending today) are deleted by
@@ -877,9 +879,9 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     check prints the patch and exits 13. Exit codes 0, 11, 12, 13, 14 and 4, as unslop's.
   - **The run record** (`src/mesh-runs.ts`): op `clean`; outcomes 0 `ok`, 11 `refused`, 12
     `busy`, 13 `failed`, 14 `unavailable`; fields `status` (`cleaned`, `unchanged`, `rejected`,
-    `busy`, `failed`), `files`, `bytesIn`, `removed`, `suggestions`, `model` and `timing`
-    (`queued`, `load`, `model`, rounded to whole milliseconds) beside the common ones. Never a
-    path or text.
+    `busy`, `failed`), `files`, `bytesIn`, `removed`, `suggestions`, `model`, `timing`
+    (`queued`, `load`, `model`, rounded to whole milliseconds), `calls`, `tokensIn` and
+    `tokensOut` beside the common ones. Never a path or text.
   - Tests: `test/unslop-code-client.test.ts` (scratch git repositories; the client against
     `startServer` with `codeSkill` and a fake run; one on-demand start of the real agent with a
     fake backend), `test/mesh.test.ts` (enable, disable and purge in both directions, the
@@ -895,7 +897,8 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
   that is not a card says something other than the unslop-code agent answers. Run history rows say
   `cleaned` or `nothing to remove` where unslop's say `rewritten` or `unchanged`, and their details
   hold the files, the lines removed, the suggestions, the kilobytes sent, the model and the
-  timings (`public/mesh-runs-tab.js`). No new control and no new style. Tests:
+  timings, then for both model agents `N calls · X tokens` (in and out added, shown short; nothing
+  unless all three counts are sound) (`public/mesh-runs-tab.js`). No new control and no new style. Tests:
   `test/mesh-agents.test.ts` (the server's list, usage and runs) and `test/dom/mesh-agents.test.ts`.
 
 ## request-post conformance fixtures (M2b R1, #500)

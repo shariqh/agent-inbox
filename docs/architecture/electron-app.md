@@ -124,8 +124,9 @@ writer of the mesh folder, with all of its own checks.
   typed by hand cannot differ.
 - **The fixed operations** (`OPERATIONS` in `electron/mesh-process.cjs`), each exactly one argv; a
   writing one takes `apply` (false is the dry run, true adds `--apply`): `servers` (`server list
-  --json`), `check-server { name }`, `add-server { name, baseUrl, key }`, `adopt-server { name, from }`
-  (`server add <name> --from <agent> --move`), `set-server { name, baseUrl?, key? }`,
+  --json`), `check-server { name }`, `add-server { name, baseUrl, key }`, `add-claude-server { name }`
+  (`server add <name> --claude-code`: Claude Code on this Mac, a name and nothing else),
+  `adopt-server { name, from }` (`server add <name> --from <agent> --move`), `set-server { name, baseUrl?, key? }`,
   `remove-server { name }`, `enable-model-agent { agent, server, model }` (`unslop` or
   `unslop-code`), `enable-request-post { endpoint, token }` and `disable { agent }` (never
   `--purge`). Main checks every value before anything runs: exactly the operation's keys, a server
@@ -133,16 +134,23 @@ writer of the mesh folder, with all of its own checks.
   with no credentials, space or control character and at most 2048 characters, `apply` a boolean,
   and no value starting with `-`. `meshctl` applies its own stricter rules after.
 - **Answers.** The `--json` output is parsed and rebuilt field by field: a plan or apply is
-  `{ ok, applied, steps, refused?, notes? }`, `servers` is `{ ok, servers: [{ name, baseUrl, key,
-  agents }], inline, refused? }` with `key` one of `file|command|env|none`, and `check-server` is
-  `{ ok, reachable, failure?, models, skipped, refused? }`. Strings are cut (a line at 4096
+  `{ ok, applied, steps, refused?, notes? }`, `servers` is `{ ok, servers: [{ name, kind, baseUrl,
+  key, agents }], inline, refused? }` with `key` one of `file|command|env|none`, and `check-server` is
+  `{ ok, reachable, failure?, models, skipped, refused?, kind? }`. A row's `kind` is `claude-code`
+  when the command's row says so, else `http` (also for a row with no `kind`, as a command older than
+  the Claude Code kind prints it); a Claude Code row's `baseUrl` is `""`. A check carries `kind` only
+  when the command's JSON names a valid one, so the page falls back on its own server list. Any other
+  `kind` fails the answer as `output`. `failure` is one of a closed list: `unreachable`,
+  `unauthorized`, `not-a-model-server`, `timeout`, `key`, and Claude Code's `no-program` and
+  `signed-out`; any other word fails the answer as `output`. Strings are cut (a line at 4096
   characters, an address at 2048, a model at 64, a name at 40) and lists capped (32 steps, notes and
   servers, 50 models); unknown fields are dropped. Model names and step lines are plain text for the
   page to set as text. Anything else is `{ ok: false, reason }`, `reason` one word of a closed list
   (`REASONS`): `unavailable`, `invalid`, `handle`, `busy`, `setup`, `updating`, `quitting`,
   `unsupported`, `environment`, `not-installed`, `unsafe`, `unrecognized`, `stale`, `outdated`
   (exit 2 and no JSON: an older install without the command), `output`, `timeout`, `failed`,
-  `cancelled`. The preload rebuilds every answer again against the same shapes.
+  `cancelled`. The preload rebuilds every answer again against the same shapes, with the same
+  defaults; a test pins its key kinds, server kinds and failure words equal to main's.
 - **Files by handle.** A key or token file is chosen in main's own picker on the window
   (`chooseFile('key' | 'token')`, one file, one picker at a time). Main keeps the absolute path under
   a random 16-byte hex handle and answers `{ ok, handle, name }`, `name` being the base name cut to 80

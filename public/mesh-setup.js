@@ -18,6 +18,15 @@ const NEEDS = { 'model-server': 'Needs a model server', 'address-and-token': 'Ne
 const TERMINAL = 'Set up in a terminal for now (docs/unslop.md).'
 const ELSEWHERE = 'Set these up in the app on the Mac that runs your agents.'
 const KEYS = { file: 'key file', command: 'key from a command', env: 'key from a variable', none: 'no key' }
+// the second kind of model server: Claude Code on this Mac, with no address and no key. The bridge
+// names each row's kind (and a check's, when the command does); any other row is a server at an address.
+const CLAUDE = 'claude-code'
+const CLAUDE_FACTS = 'Claude Code on this Mac · sends text to Anthropic'
+const CLAUDE_HINT = 'Uses the Claude Code you are signed in to. No key to enter.'
+// a Claude Code server's models, in the page's own order whatever order its check answers
+const CLAUDE_MODELS = ['haiku', 'sonnet', 'opus']
+// Add a server's "What kind" choice, in its order; an address server is chosen when the page opens
+const SERVER_KINDS = [[CLAUDE, 'Claude Code on this Mac'], ['http', 'A server at an address']]
 // D6: the bridge's failure words; a cancel says nothing, every other reason names itself
 const REASONS = {
   'not-installed': 'The mesh command is not installed on this Mac. Run Setup first.',
@@ -39,6 +48,13 @@ const CHECKS = {
   'not-a-model-server': 'This address does not answer as a model server.',
   timeout: 'The server did not answer in time.',
   key: 'The key could not be read.',
+}
+// a Claude Code server's: the program, its sign-in (the command reports any failure of its sign-in
+// question so, a program that cannot start under the app's short PATH included), and its own timeout
+const CLAUDE_CHECKS = {
+  'no-program': 'Claude Code was not found on this Mac.',
+  'signed-out': 'Claude Code is not signed in, or could not start from the app. Run claude in a terminal and sign in.',
+  timeout: 'Claude Code did not answer in time.',
 }
 // a key the app could not read, by where it comes from. The app runs the command with a short fixed
 // environment, never the shell's: a variable is not there, and a command that needs one gives nothing.
@@ -69,17 +85,31 @@ function problem(answer) {
  * `failure` and no `reason`: it is the check's result, not a step that did not work.
  */
 const failedCheck = (answer) => Boolean(answer) && typeof answer === 'object' && answer.ok !== true && typeof answer.reason !== 'string'
-  && !answer.refused && typeof answer.failure === 'string' && Object.hasOwn(CHECKS, answer.failure)
+  && !answer.refused && typeof answer.failure === 'string' && (Object.hasOwn(CHECKS, answer.failure) || Object.hasOwn(CLAUDE_CHECKS, answer.failure))
 
-/** A check's result in words. `keyKind`: where the server's key comes from, for a key that could not be read. */
-function checkText(answer, keyKind) {
+/** Whether a check is of a Claude Code server: by the kind its answer names, else by the page's row for it. */
+function claudeCheck(answer, server) {
+  const named = answer && typeof answer === 'object' ? answer.kind : undefined
+  return named === CLAUDE || (named !== 'http' && server?.kind === CLAUDE)
+}
+
+/**
+ * A check's result in words. `server`: the page's row for it, for its kind when the answer names
+ * none and for where its key comes from when the key could not be read.
+ */
+function checkText(answer, server) {
+  const claude = claudeCheck(answer, server)
   if (!failedCheck(answer)) {
     const words = problem(answer)
     if (words !== null) return words
-    if (answer.reachable === true) return `reachable · ${plural(strings(answer.models).length, 'model')}`
+    if (answer.reachable === true) return `${claude ? 'ready · signed in' : 'reachable'} · ${plural(strings(answer.models).length, 'model')}`
   }
-  if (answer.failure === 'key' && typeof keyKind === 'string' && Object.hasOwn(KEY_CHECKS, keyKind)) return KEY_CHECKS[keyKind]
-  return Object.hasOwn(CHECKS, answer.failure) ? CHECKS[answer.failure] : CHECKS.unreachable
+  const failure = answer.failure
+  if (claude && Object.hasOwn(CLAUDE_CHECKS, failure)) return CLAUDE_CHECKS[failure]
+  const keyKind = server?.key
+  if (failure === 'key' && typeof keyKind === 'string' && Object.hasOwn(KEY_CHECKS, keyKind)) return KEY_CHECKS[keyKind]
+  if (Object.hasOwn(CHECKS, failure)) return CHECKS[failure]
+  return Object.hasOwn(CLAUDE_CHECKS, failure) ? CLAUDE_CHECKS[failure] : CHECKS.unreachable
 }
 
 function httpAddress(text) {
@@ -155,6 +185,16 @@ export function installMeshSetup(deps) {
     if (active === el) return
     const nowhere = !active || active === doc.body || !active.isConnected
     if (nowhere || (!lost && deps.panel()?.contains(active))) el.focus({ preventScroll: true })
+  }
+
+  // Focus once an operation's last repaint is done: onto `want` when focus went nowhere (Chrome drops
+  // it to the body from a control a repaint disabled, such as the foot's while the servers are read)
+  // or still sits where it was `parked`; a person who moved it meanwhile keeps it.
+  function landAfter(want, parked) {
+    const el = typeof want === 'function' ? want() : want
+    const active = doc.activeElement
+    if (!el?.isConnected || active === el) return
+    if (!active || active === doc.body || !active.isConnected || active === parked) el.focus({ preventScroll: true })
   }
 
   async function call(operation, values) {
@@ -391,7 +431,8 @@ export function installMeshSetup(deps) {
           if (notes.get(name) === usedNotes.get(name)) notes.delete(name)
           usedNotes.delete(name)
         }
-        const facts = [typeof server.baseUrl === 'string' ? server.baseUrl : '', KEYS[server.key] ?? '', agents.length ? `used by ${agents.join(', ')}` : '']
+        const used = agents.length ? `used by ${agents.join(', ')}` : ''
+        const facts = server.kind === CLAUDE ? [CLAUDE_FACTS, used] : [typeof server.baseUrl === 'string' ? server.baseUrl : '', KEYS[server.key] ?? '', used]
         setText(el.querySelector('.ms-row-facts'), facts.filter(Boolean).join(' · '))
         const note = el.querySelector('.ms-row-note')
         setText(note, notes.get(name) ?? '')
@@ -426,12 +467,12 @@ export function installMeshSetup(deps) {
     setDisabled(section.querySelector('.ms-add'), busy())
   }
 
-  // where a server's key comes from, by the list the page last read
-  const keyKindOf = (name) => (servers?.list ?? []).find((server) => server.name === name)?.key
+  // a server's row in the list the page last read: its kind, and where its key comes from
+  const serverOf = (name) => (servers?.list ?? []).find((server) => server.name === name)
 
   async function checkRow(name, { focus = true } = {}) {
     await act(`check:${name}`, async () => {
-      notes.set(name, checkText(await call('check-server', { name }), keyKindOf(name)))
+      notes.set(name, checkText(await call('check-server', { name }), serverOf(name)))
     })
     if (focus) settleFocus(() => rowEls.get(name)?.querySelector('.ms-check'))
   }
@@ -464,7 +505,8 @@ export function installMeshSetup(deps) {
   function blank(kind, extra) {
     return {
       kind, opener: null, back: null, agent: null, change: false, message: '', review: null, file: null,
-      values: { name: '', baseUrl: '', key: 'none', server: '', model: '', endpoint: '' },
+      // `kind`: Add a server's "What kind" choice, not the page's own kind
+      values: { name: '', kind: 'http', baseUrl: '', key: 'none', server: '', model: '', endpoint: '' },
       model: { server: '', state: 'idle', models: [], why: '' },
       ...extra,
     }
@@ -561,6 +603,30 @@ export function installMeshSetup(deps) {
     return wrap
   }
 
+  // A fieldset of radios, its choice kept in the page's values: a repaint never rebuilds it
+  function radios(legend, name, key, options) {
+    const choice = make('fieldset', 'ms-choice')
+    choice.append(make('legend', 'ms-label', legend))
+    for (const [value, text] of options) {
+      const option = make('label', 'ms-radio')
+      const radio = make('input')
+      radio.type = 'radio'
+      radio.name = name
+      radio.value = value
+      radio.checked = page.values[key] === value
+      radio.addEventListener('change', () => {
+        if (!page || !radio.checked) return
+        page.values[key] = value
+        // a message about the other kind's fields is out of date once they hide
+        if (key === 'kind') page.message = ''
+        changed()
+      })
+      option.append(radio, doc.createTextNode(` ${text}`))
+      choice.append(option)
+    }
+    return choice
+  }
+
   function build(root) {
     const title = page.kind === 'add' ? 'Add a model server' : page.kind === 'adopt' ? 'Make it a server' : page.agent
     // it goes back to where the page came from: an agent's form, the agent's own page, or the grid
@@ -573,35 +639,23 @@ export function installMeshSetup(deps) {
     form.noValidate = true
     form.setAttribute('aria-label', title)
     form.addEventListener('submit', (event) => event.preventDefault())
-    const refs = { root, form, first: null, server: null }
+    const refs = { root, form, first: null, server: null, address: null, key: null, claudeHint: null }
     const fields = make('div', 'ms-fields')
     const actions = make('div', 'ms-actions')
     if (page.kind === 'add' || page.kind === 'adopt') {
       if (page.kind === 'adopt') fields.append(make('p', 'ms-hint', `Saves ${page.agent}’s own address and key as a server.`))
+      if (page.kind === 'add') fields.append(radios('What kind', 'msKind', 'kind', SERVER_KINDS))
       const name = input('name', page.values.name)
       fields.append(field('Name', name, 'Lower-case letters, digits and hyphens.'))
       refs.first = name
       if (page.kind === 'add') {
-        fields.append(field('Address', input('baseUrl', page.values.baseUrl)))
-        const choice = make('fieldset', 'ms-choice')
-        choice.append(make('legend', 'ms-label', 'Key'))
-        for (const [value, text] of [['none', 'No key'], ['file', 'Key file']]) {
-          const option = make('label', 'ms-radio')
-          const radio = make('input')
-          radio.type = 'radio'
-          radio.name = 'msKey'
-          radio.value = value
-          radio.checked = page.values.key === value
-          radio.addEventListener('change', () => {
-            if (!page || !radio.checked) return
-            page.values.key = value
-            changed()
-          })
-          option.append(radio, doc.createTextNode(` ${text}`))
-          choice.append(option)
-        }
-        choice.append(chooser('key'))
-        fields.append(choice)
+        // Claude Code needs only the name: the address and the key hide (and are not checked) while it is chosen
+        refs.claudeHint = make('p', 'ms-hint', CLAUDE_HINT)
+        refs.claudeHint.id = 'meshClaudeHint'
+        refs.address = field('Address', input('baseUrl', page.values.baseUrl))
+        refs.key = radios('Key', 'msKey', 'key', [['none', 'No key'], ['file', 'Key file']])
+        refs.key.append(chooser('key'))
+        fields.append(refs.claudeHint, refs.address, refs.key)
       }
       actions.append(button('ms-save ms-primary', 'Save'))
       actions.firstChild.addEventListener('click', () => save())
@@ -692,6 +746,15 @@ export function installMeshSetup(deps) {
     const message = els.form.querySelector('.ms-message')
     setText(message, page.message)
     setHidden(message, !page.message)
+    if (els.address) {
+      const claude = page.values.kind === CLAUDE
+      setHidden(els.claudeHint, !claude)
+      setHidden(els.address, claude)
+      setHidden(els.key, claude)
+      // the quiet line describes the Name field while it shows
+      if (claude && els.first.getAttribute('aria-describedby') !== els.claudeHint.id) els.first.setAttribute('aria-describedby', els.claudeHint.id)
+      else if (!claude && els.first.hasAttribute('aria-describedby')) els.first.removeAttribute('aria-describedby')
+    }
     const choose = els.form.querySelector('.ms-choose')
     if (choose) {
       setDisabled(choose, disabled)
@@ -761,8 +824,11 @@ export function installMeshSetup(deps) {
     els.form.querySelector('.ms-model-label').htmlFor = typing ? typed.id : list.id
     setHidden(list, typing)
     setHidden(typed, !typing)
-    setText(why, typing ? model.why : '')
-    setHidden(why, !typing || !model.why)
+    // the field shows the model the page holds: a server change resets it, and a person typing keeps theirs
+    if (typed.value !== page.values.model && doc.activeElement !== typed) typed.value = page.values.model
+    // why the server could not be asked: beside the typed field, or under a Claude Code server's fixed list
+    setText(why, model.why)
+    setHidden(why, !model.why)
     const choices = model.state === 'asking' ? [['', 'asking the server…']]
       : model.state === 'list' ? [...(model.models.length > 1 ? [['', 'Choose a model']] : []), ...model.models.map((name) => [name, name])]
         : [['', page.values.server ? '' : 'Choose a server first']]
@@ -780,7 +846,8 @@ export function installMeshSetup(deps) {
   }
 
   // Model: the chosen server's list, asked by check-server; a field to type it in when it cannot be asked.
-  // `focus`: the person chose the server, so focus goes on to the model; else it stays where it is.
+  // A Claude Code server's list is the page's own three, also when its check fails, with the check's
+  // words under it. `focus`: the person chose the server, so focus goes on to the model; else it stays.
   function askModels(name, { focus }) {
     const mine = page
     const ask = async () => {
@@ -788,10 +855,14 @@ export function installMeshSetup(deps) {
       page.model = { server: name, state: 'asking', models: [], why: '' }
       await act('models', async () => {
         const answer = await call('check-server', { name })
-        const said = checkText(answer, keyKindOf(name))
+        const said = checkText(answer, serverOf(name))
         notes.set(name, said)
         if (page !== mine || page.values.server !== name) return
         const reached = !failedCheck(answer) && problem(answer) === null && answer.reachable === true
+        if (claudeCheck(answer, serverOf(name))) {
+          page.model = { server: name, state: 'list', models: CLAUDE_MODELS, why: reached ? '' : said }
+          return
+        }
         const models = reached ? strings(answer.models) : []
         if (models.length) {
           page.model = { server: name, state: 'list', models, why: '' }
@@ -863,29 +934,35 @@ export function installMeshSetup(deps) {
     page = null
     els = null
     fresh = mine.agent
+    // back on the agent's page: Change server's own control, or the new agent page's back control
+    const want = () => (mine.change ? mine.opener?.() ?? deps.heading() : deps.agentPage()?.querySelector('.map-back') ?? deps.heading())
     if (mine.change) {
       changed()
-      settleFocus(() => mine.opener?.() ?? deps.heading())
+      settleFocus(want)
     } else deps.turnedOn(mine.agent)
+    const parked = doc.activeElement
     deps.reload()
+    // reading the servers disables the foot's controls, which drops focus from Change server
     await listServers()
+    landAfter(want, parked)
   }
 
   async function save() {
     if (!page || busy()) return
     const name = page.values.name.trim()
+    const address = page.kind === 'add' && page.values.kind !== CLAUDE
     const words = !SERVER_NAME.test(name) ? 'Use lower-case letters, digits and hyphens for the name.'
-      : page.kind === 'add' && !httpAddress(page.values.baseUrl.trim()) ? 'Enter the address, starting with http:// or https://.'
-        : page.kind === 'add' && page.values.key === 'file' && !page.file ? 'Choose the key file.' : ''
+      : address && !httpAddress(page.values.baseUrl.trim()) ? 'Enter the address, starting with http:// or https://.'
+        : address && page.values.key === 'file' && !page.file ? 'Choose the key file.' : ''
     if (words) {
       page.message = words
       changed()
       return
     }
     const mine = page
-    const values = page.kind === 'add'
-      ? ['add-server', { name, baseUrl: page.values.baseUrl.trim(), key: page.values.key === 'file' ? page.file.handle : 'none' }]
-      : ['adopt-server', { name, from: page.agent }]
+    const values = address ? ['add-server', { name, baseUrl: page.values.baseUrl.trim(), key: page.values.key === 'file' ? page.file.handle : 'none' }]
+      : page.kind === 'add' ? ['add-claude-server', { name }]
+        : ['adopt-server', { name, from: page.agent }]
     page.message = ''
     let done = false
     await act('save', async () => {
@@ -920,12 +997,7 @@ export function installMeshSetup(deps) {
     }
     // Focus goes to the new server's row once it is painted, else to Add a server; a person who
     // moved it meanwhile keeps it. It lands again after the check, which disables the row's button.
-    const land = () => {
-      const el = rowEls.get(name)?.querySelector('.ms-check') ?? serverSection?.querySelector('.ms-add')
-      const active = doc.activeElement
-      if (!el?.isConnected || active === el) return
-      if (!active || active === doc.body || !active.isConnected || active === parked) el.focus({ preventScroll: true })
-    }
+    const land = () => landAfter(() => rowEls.get(name)?.querySelector('.ms-check') ?? serverSection?.querySelector('.ms-add'), parked)
     land()
     await checkRow(name, { focus: false })
     land()

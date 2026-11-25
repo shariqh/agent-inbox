@@ -14,7 +14,25 @@ export const OFFERED: Record<string, Json> = {
 }
 export const ALL_OFFERED = [OFFERED['unslop']!, OFFERED['unslop-code']!, OFFERED['request-post']!]
 
-export const server = (name: string, over: Json = {}): Json => ({ name, baseUrl: `http://127.0.0.1:8080/${name}`, key: 'none', agents: [], ...over })
+// an address server's row as the command prints it, kind and all
+export const server = (name: string, over: Json = {}): Json => ({ name, kind: 'http', baseUrl: `http://127.0.0.1:8080/${name}`, key: 'none', agents: [], ...over })
+// the same row as a command older than the Claude Code kind prints it: no kind
+export const olderServer = (name: string, over: Json = {}): Json => {
+  const { kind: _kind, ...row } = server(name, over)
+  return row
+}
+// Claude Code on this Mac, as the command prints its row: no address, no key
+export const claudeServer = (name: string, over: Json = {}): Json => ({ name, kind: 'claude-code', baseUrl: '', key: 'none', agents: [], ...over })
+// the models a Claude Code server answers, in the command's own (sorted) order
+export const CLAUDE_MODELS = ['haiku', 'opus', 'sonnet']
+
+/** The server list's answer, shaped by the real bridge from the command's own output. */
+export const listed = (servers: Json[], inline: string[] = []): Json =>
+  meshProcess.meshAnswer('servers', JSON.stringify({ servers, inline }), 0) as Json
+
+/** A plan's answer (a dry run or the real one), shaped by the real bridge. */
+export const planned = (apply: boolean): Json =>
+  meshProcess.meshAnswer('plan', JSON.stringify({ applied: apply, steps: apply ? [] : ['Write mesh.json'] }), 0) as Json
 
 export const HANDLE = 'a1'.repeat(16)
 
@@ -25,7 +43,17 @@ export const HANDLE = 'a1'.repeat(16)
  */
 export const checked = (failure?: string, models: string[] = ['model-a', 'model-b']): Json =>
   meshProcess.meshAnswer('check', JSON.stringify({
-    server: 'local', baseUrl: 'http://127.0.0.1:8080/local', key: 'none', reachable: failure === undefined,
+    server: 'local', kind: 'http', baseUrl: 'http://127.0.0.1:8080/local', key: 'none', reachable: failure === undefined,
+    ...(failure === undefined ? {} : { failure }), models: failure === undefined ? models : [], skipped: 0,
+  }), failure === undefined ? 0 : 1) as Json
+
+/**
+ * A Claude Code server's check, shaped by the real bridge: its kind, and the three model names or a
+ * failure (no-program, signed-out, timeout). `kind: false`: as a command that names no kind prints it.
+ */
+export const checkedClaude = (failure?: string, { models = CLAUDE_MODELS, kind = true }: { models?: string[]; kind?: boolean } = {}): Json =>
+  meshProcess.meshAnswer('check', JSON.stringify({
+    server: 'claude', ...(kind ? { kind: 'claude-code' } : {}), baseUrl: '', key: 'none', reachable: failure === undefined,
     ...(failure === undefined ? {} : { failure }), models: failure === undefined ? models : [], skipped: 0,
   }), failure === undefined ? 0 : 1) as Json
 
@@ -52,9 +80,9 @@ export function fakeBridge(init: { available?: Json; servers?: Json[]; inline?: 
       if (s.hold) await s.hold
       const answer = s.answers[operation]
       if (answer) return answer(values)
-      if (operation === 'servers') return { ok: true, servers: s.servers, inline: s.inline }
+      if (operation === 'servers') return listed(s.servers, s.inline)
       if (operation === 'check-server') return checked()
-      return { ok: true, applied: values['apply'] === true, steps: values['apply'] === true ? [] : ['Write mesh.json'] }
+      return planned(values['apply'] === true)
     },
     chooseFile: async (purpose: string) => {
       s.picks.push(purpose)

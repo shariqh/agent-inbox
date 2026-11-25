@@ -169,6 +169,8 @@ describe('meshArgv: each fixed operation maps to exactly one argv', () => {
       ['server', 'add', 'box', '--base-url', 'https://models.example/llm', '--no-key', '--json'], 'plan'],
     ['add-server', { name: 'box', baseUrl: 'http://127.0.0.1:8080', key: KEY_HANDLE, apply: true },
       ['server', 'add', 'box', '--base-url', 'http://127.0.0.1:8080', '--key-file', '/Users/me/.keys/box', '--json', '--apply'], 'plan'],
+    ['add-claude-server', { name: 'claude', apply: false }, ['server', 'add', 'claude', '--claude-code', '--json'], 'plan'],
+    ['add-claude-server', { name: 'claude-2', apply: true }, ['server', 'add', 'claude-2', '--claude-code', '--json', '--apply'], 'plan'],
     ['adopt-server', { name: 'box', from: 'unslop', apply: false }, ['server', 'add', 'box', '--from', 'unslop', '--move', '--json'], 'plan'],
     ['adopt-server', { name: 'box', from: 'unslop-code', apply: true }, ['server', 'add', 'box', '--from', 'unslop-code', '--move', '--json', '--apply'], 'plan'],
     ['set-server', { name: 'box', baseUrl: 'https://models.example/v2', apply: false }, ['server', 'set', 'box', '--base-url', 'https://models.example/v2', '--json'], 'plan'],
@@ -198,6 +200,14 @@ describe('meshArgv: each fixed operation maps to exactly one argv', () => {
     ['add-server', { name: 'box', baseUrl: 'https://m.example', key: 'none', apply: false, args: ['--purge'] }],
     ['set-server', { name: 'box', apply: false }],
     ['disable', { agent: 'unslop', apply: false, purge: true }],
+    // a Claude Code server takes a name only: no address, no key, no program or path
+    ['add-claude-server', { name: 'claude' }], ['add-claude-server', { apply: false }],
+    ['add-claude-server', { name: 'claude', baseUrl: 'https://m.example', apply: false }],
+    ['add-claude-server', { name: 'claude', key: 'none', apply: false }],
+    ['add-claude-server', { name: 'claude', kind: 'claude-code', apply: false }],
+    ['add-claude-server', { name: 'claude', program: '/usr/local/bin/claude', apply: false }],
+    ['add-claude-server', { name: 'Claude', apply: false }], ['add-claude-server', { name: '--claude-code', apply: false }],
+    ['add-claude-server', { name: 'claude', apply: 'true' }],
     // apply is a boolean
     ['remove-server', { name: 'box', apply: 'true' }], ['remove-server', { name: 'box', apply: 1 }],
     // a server name
@@ -258,7 +268,7 @@ describe('meshAnswer: meshctl’s JSON rebuilt field by field', () => {
   it('rebuilds the server list and a check, with only their own fields', () => {
     expect(meshAnswer('servers', JSON.stringify({
       servers: [{ name: 'box', baseUrl: 'https://m.example', key: 'file', agents: ['unslop-code'], apiKey: { file: '/k' } }], inline: ['unslop'], extra: 1,
-    }), 0)).toEqual({ ok: true, servers: [{ name: 'box', baseUrl: 'https://m.example', key: 'file', agents: ['unslop-code'] }], inline: ['unslop'] })
+    }), 0)).toEqual({ ok: true, servers: [{ name: 'box', kind: 'http', baseUrl: 'https://m.example', key: 'file', agents: ['unslop-code'] }], inline: ['unslop'] })
     expect(meshAnswer('servers', JSON.stringify({ servers: [], inline: [], refused: 'servers.json is not valid JSON' }), 1))
       .toEqual({ ok: false, servers: [], inline: [], refused: 'servers.json is not valid JSON' })
     expect(meshAnswer('servers', JSON.stringify({ servers: [{ name: 'box', baseUrl: 'https://m.example', key: 'the key itself', agents: [] }], inline: [] }), 0))
@@ -272,6 +282,47 @@ describe('meshAnswer: meshctl’s JSON rebuilt field by field', () => {
       .toEqual({ ok: false, reachable: false, models: [], skipped: 0, refused: 'the server box is not in servers.json' })
     expect(meshAnswer('check', JSON.stringify({ reachable: false, failure: '<b>new</b>', models: [], skipped: 0 }), 1)).toEqual({ ok: false, reason: 'output' })
     expect(meshAnswer('check', JSON.stringify({ reachable: true, models: [], skipped: -1 }), 0)).toEqual({ ok: true, reachable: true, models: [], skipped: 0 })
+  })
+
+  it('gives every server row its kind: a Claude Code row has no address, and a row from an older command is an address server', () => {
+    const rows = [
+      { name: 'claude', kind: 'claude-code', baseUrl: '', key: 'none', agents: ['unslop-code'] },
+      { name: 'box', kind: 'http', baseUrl: 'https://m.example', key: 'file', agents: [] },
+      // a command older than the Claude Code kind prints no kind
+      { name: 'old', baseUrl: 'http://127.0.0.1:8080', key: 'none', agents: [] },
+    ]
+    expect(meshAnswer('servers', JSON.stringify({ servers: rows, inline: [] }), 0)).toEqual({
+      ok: true,
+      servers: [
+        { name: 'claude', kind: 'claude-code', baseUrl: '', key: 'none', agents: ['unslop-code'] },
+        { name: 'box', kind: 'http', baseUrl: 'https://m.example', key: 'file', agents: [] },
+        { name: 'old', kind: 'http', baseUrl: 'http://127.0.0.1:8080', key: 'none', agents: [] },
+      ],
+      inline: [],
+    })
+    // any other kind fails the list as any other shape error does
+    for (const kind of ['ollama', '', null, 1, 'Claude-Code']) {
+      expect(meshAnswer('servers', JSON.stringify({ servers: [{ ...rows[1], kind }], inline: [] }), 0), String(kind)).toEqual({ ok: false, reason: 'output' })
+    }
+    // a Claude Code row still needs the address string, empty as the command prints it
+    expect(meshAnswer('servers', JSON.stringify({ servers: [{ name: 'claude', kind: 'claude-code', key: 'none', agents: [] }], inline: [] }), 0)).toEqual({ ok: false, reason: 'output' })
+  })
+
+  it('passes a check’s kind only when the command names a valid one, and knows the two Claude Code failures', () => {
+    expect(meshAnswer('check', JSON.stringify({ server: 'claude', kind: 'claude-code', reachable: true, models: ['haiku', 'opus', 'sonnet'], skipped: 0 }), 0))
+      .toEqual({ ok: true, reachable: true, models: ['haiku', 'opus', 'sonnet'], skipped: 0, kind: 'claude-code' })
+    expect(meshAnswer('check', JSON.stringify({ server: 'box', kind: 'http', reachable: true, models: ['m'], skipped: 0 }), 0))
+      .toEqual({ ok: true, reachable: true, models: ['m'], skipped: 0, kind: 'http' })
+    // an older command: no kind, and the page falls back on its own server list
+    expect(meshAnswer('check', JSON.stringify({ server: 'box', reachable: true, models: [], skipped: 0 }), 0)).toEqual({ ok: true, reachable: true, models: [], skipped: 0 })
+    for (const failure of ['no-program', 'signed-out', 'timeout']) {
+      expect(meshAnswer('check', JSON.stringify({ server: 'claude', kind: 'claude-code', reachable: false, failure, models: [], skipped: 0 }), 1), failure)
+        .toEqual({ ok: false, reachable: false, failure, models: [], skipped: 0, kind: 'claude-code' })
+    }
+    for (const kind of ['ollama', '', null, 7]) {
+      expect(meshAnswer('check', JSON.stringify({ server: 'box', kind, reachable: true, models: [], skipped: 0 }), 0), String(kind)).toEqual({ ok: false, reason: 'output' })
+    }
+    expect(meshAnswer('check', JSON.stringify({ server: 'claude', kind: 'claude-code', reachable: false, failure: 'not-installed', models: [], skipped: 0 }), 1)).toEqual({ ok: false, reason: 'output' })
   })
 
   it('answers output for anything but its one JSON object, and outdated for a usage error', () => {
@@ -438,6 +489,12 @@ describe('createMeshBridge: the gates, the handles and a run', () => {
     expect(b.spawned).toEqual([[b.node, [b.script, 'server', 'remove', 'box', '--json'], expect.objectContaining({
       cwd: b.home, shell: false, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TAILSCALE_BE_CLI: '1', HOME: b.home, AGENT_INBOX_MESH_DIR: b.dir },
     })]])
+  })
+
+  it('adds a Claude Code server with its name only: the argv is main’s own', async () => {
+    const b = bridgeFixture({ answer: PLAN })
+    await expect(b.bridge.run('add-claude-server', { name: 'claude', apply: true })).resolves.toEqual({ ok: true, applied: false, steps: ['Would add the server box.'] })
+    expect(b.spawned.map((args) => args[1])).toEqual([[b.script, 'server', 'add', 'claude', '--claude-code', '--json', '--apply']])
   })
 
   it('refuses every invalid request before anything is read or spawned', async () => {
@@ -662,11 +719,13 @@ describe('agentInboxMesh: the page’s bridge', () => {
     await mesh.available()
     await mesh.run('add-server', { name: 'box', baseUrl: 'https://m.example', key: KEY_HANDLE, apply: false })
     await mesh.run('servers', {})
+    await mesh.run('add-claude-server', { name: 'claude', apply: false })
     await mesh.chooseFile('token')
     expect(invoke.mock.calls).toEqual([
       ['agent-inbox:mesh-available'],
       ['agent-inbox:mesh-run', 'add-server', { name: 'box', baseUrl: 'https://m.example', key: KEY_HANDLE, apply: false }],
       ['agent-inbox:mesh-run', 'servers', {}],
+      ['agent-inbox:mesh-run', 'add-claude-server', { name: 'claude', apply: false }],
       ['agent-inbox:mesh-choose-file', 'token'],
     ])
   })
@@ -685,6 +744,7 @@ describe('agentInboxMesh: the page’s bridge', () => {
     ['run', ['shell', {}]], ['run', [['servers'], {}]], ['run', ['servers', { apply: true }]], ['run', ['remove-server', { name: 'box', apply: 'yes' }]],
     ['run', ['check-server', { name: 7 }]], ['run', ['check-server', { name: 'x'.repeat(2049) }]], ['run', ['disable', { agent: 'unslop', apply: false, purge: true }]],
     ['run', ['add-server', { name: 'box', baseUrl: 'https://m.example', key: { file: '/Users/me/.keys/box' }, apply: false }]],
+    ['run', ['add-claude-server', { name: 'claude', baseUrl: 'https://m.example', apply: false }]], ['run', ['add-claude-server', { name: 'claude', program: 'claude', apply: false }]],
     ['chooseFile', []], ['chooseFile', ['path']], ['chooseFile', ['key', '/Users/me/.keys/box']],
   ] as const)('refuses %s(%j) without asking main', async (method, args) => {
     const { mesh, invoke } = loadPreload(() => ({ ok: true }))
@@ -699,16 +759,38 @@ describe('agentInboxMesh: the page’s bridge', () => {
       'agent-inbox:mesh-choose-file': { ok: true, handle: KEY_HANDLE, name: 'n'.repeat(100), path: '/Users/me/.keys/box' },
     }
     const runs: Record<string, unknown> = {
-      servers: { ok: true, servers: [{ name: 'box', baseUrl: 'https://m.example', key: 'file', agents: ['unslop'], apiKey: { file: '/k' } }], inline: [], extra: 1 },
-      'check-server': { ok: true, reachable: true, models: ['m'.repeat(100)], skipped: 2, baseUrl: 'https://m.example' },
+      servers: {
+        ok: true, inline: [], extra: 1,
+        servers: [
+          { name: 'box', kind: 'http', baseUrl: 'https://m.example', key: 'file', agents: ['unslop'], apiKey: { file: '/k' } },
+          { name: 'claude', kind: 'claude-code', baseUrl: '', key: 'none', agents: [] },
+        ],
+      },
+      'check-server': { ok: true, reachable: true, models: ['m'.repeat(100)], skipped: 2, baseUrl: 'https://m.example', kind: 'claude-code' },
       'remove-server': { ok: false, applied: false, steps: ['s'.repeat(5000)], refused: 'named by unslop', notes: ['n'], stderr: 'x' },
     }
     const { mesh } = loadPreload((channel, operation) => (channel === 'agent-inbox:mesh-run' ? runs[operation as string] : answers[channel]))
     expect(await mesh.available()).toEqual({ available: true })
     expect(await mesh.chooseFile('key')).toEqual({ ok: true, handle: KEY_HANDLE, name: 'n'.repeat(80) })
-    expect(await mesh.run('servers', {})).toEqual({ ok: true, servers: [{ name: 'box', baseUrl: 'https://m.example', key: 'file', agents: ['unslop'] }], inline: [] })
-    expect(await mesh.run('check-server', { name: 'box' })).toEqual({ ok: true, reachable: true, models: ['m'.repeat(64)], skipped: 2 })
+    expect(await mesh.run('servers', {})).toEqual({
+      ok: true, inline: [],
+      servers: [{ name: 'box', kind: 'http', baseUrl: 'https://m.example', key: 'file', agents: ['unslop'] }, { name: 'claude', kind: 'claude-code', baseUrl: '', key: 'none', agents: [] }],
+    })
+    expect(await mesh.run('check-server', { name: 'box' })).toEqual({ ok: true, reachable: true, models: ['m'.repeat(64)], skipped: 2, kind: 'claude-code' })
     expect(await mesh.run('remove-server', { name: 'box', apply: false })).toEqual({ ok: false, applied: false, steps: ['s'.repeat(4096)], refused: 'named by unslop', notes: ['n'] })
+  })
+
+  it('gives a row with no kind the address kind, as main does; keeps a check’s kind and the Claude Code failures; fails any other kind', async () => {
+    const run = async (operation: string, value: unknown) => loadPreload(() => value).mesh.run(operation, operation === 'servers' ? {} : { name: 'x' })
+    expect(await run('servers', { ok: true, inline: [], servers: [{ name: 'old', baseUrl: 'http://127.0.0.1:8080', key: 'none', agents: [] }] }))
+      .toEqual({ ok: true, inline: [], servers: [{ name: 'old', kind: 'http', baseUrl: 'http://127.0.0.1:8080', key: 'none', agents: [] }] })
+    expect(await run('servers', { ok: true, inline: [], servers: [{ name: 'x', kind: 'ollama', baseUrl: '', key: 'none', agents: [] }] })).toEqual({ ok: false, reason: 'failed' })
+    expect(await run('check-server', { ok: true, reachable: true, models: [], skipped: 0 })).toEqual({ ok: true, reachable: true, models: [], skipped: 0 })
+    for (const failure of ['no-program', 'signed-out']) {
+      expect(await run('check-server', { ok: false, reachable: false, failure, models: [], skipped: 0, kind: 'claude-code' }), failure)
+        .toEqual({ ok: false, reachable: false, failure, models: [], skipped: 0, kind: 'claude-code' })
+    }
+    expect(await run('check-server', { ok: true, reachable: true, models: [], skipped: 0, kind: 'ollama' })).toEqual({ ok: false, reason: 'failed' })
   })
 
   it('answers failed for a rejected call or an unexpected shape, and passes on only its own refusal words', async () => {
@@ -740,6 +822,20 @@ describe('agentInboxMesh: the page’s bridge', () => {
       expect([...operations[name]!].sort(), name).toEqual([...spec.required, ...(spec.optional ?? [])].sort())
     }
     expect([...(literal('MESH_REASONS', '\n])') as Set<string>)].sort()).toEqual([...meshProcess.REASONS].sort())
+  })
+
+  it('knows the same key kinds, server kinds and check failure words as main', () => {
+    const preload = readFileSync(join(REPO, 'electron', 'setup-preload.cjs'), 'utf8')
+    const literal = (name: string) => {
+      const at = preload.indexOf(`const ${name} = `)
+      expect(at, name).toBeGreaterThan(-1)
+      return new Function(`return ${preload.slice(at + `const ${name} = `.length, preload.indexOf('])', at) + 2)}`)() as Set<string>
+    }
+    expect([...literal('MESH_KEYS')].sort()).toEqual([...meshProcess.KEY_KINDS].sort())
+    expect([...literal('MESH_SERVER_KINDS')].sort()).toEqual([...meshProcess.SERVER_KINDS].sort())
+    expect([...literal('MESH_CHECK_FAILURES')].sort()).toEqual([...meshProcess.CHECK_FAILURES].sort())
+    expect([...meshProcess.SERVER_KINDS].sort()).toEqual(['claude-code', 'http'])
+    expect([...meshProcess.CHECK_FAILURES].sort()).toEqual(['key', 'no-program', 'not-a-model-server', 'signed-out', 'timeout', 'unauthorized', 'unreachable'])
   })
 
   it('is absent from the view showing another Mac’s Inbox, and the page’s files never name the command', () => {

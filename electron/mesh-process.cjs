@@ -54,7 +54,10 @@ const CONTROL = /[\x00-\x1f\x7f-\x9f]/
 const MODEL_AGENTS = new Set(['unslop', 'unslop-code'])
 const DISABLE_AGENTS = new Set(['unslop', 'unslop-code', 'request-post'])
 const KEY_KINDS = new Set(['file', 'command', 'env', 'none'])
-const CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model-server', 'timeout', 'key'])
+// a server at an address, or Claude Code on this Mac (no address, no key)
+const SERVER_KINDS = new Set(['http', 'claude-code'])
+// a check's failure: the address kind's five, and Claude Code's program not found or not signed in
+const CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model-server', 'timeout', 'key', 'no-program', 'signed-out'])
 const PURPOSES = new Set(['key', 'token'])
 
 /**
@@ -189,6 +192,8 @@ const OPERATIONS = Object.freeze({
     kind: 'plan', required: ['name', 'baseUrl', 'key', 'apply'],
     argv: (v, file) => ['server', 'add', v.name, '--base-url', v.baseUrl, ...keyArgs(v.key, file), '--json'],
   },
+  // Claude Code on this Mac: a name only; the command finds the program and its sign-in itself
+  'add-claude-server': { kind: 'plan', required: ['name', 'apply'], argv: (v) => ['server', 'add', v.name, '--claude-code', '--json'] },
   'adopt-server': { kind: 'plan', required: ['name', 'from', 'apply'], argv: (v) => ['server', 'add', v.name, '--from', v.from, '--move', '--json'] },
   'set-server': {
     kind: 'plan', required: ['name', 'apply'], optional: ['baseUrl', 'key'],
@@ -283,10 +288,13 @@ function planAnswer(parsed, code) {
   return out
 }
 
+// A row's kind: a command older than the Claude Code kind prints none, and every row it knows is an address server
 function serverRow(row) {
   if (!isPlainObject(row) || typeof row.name !== 'string' || typeof row.baseUrl !== 'string' || !KEY_KINDS.has(row.key) || !isStrings(row.agents)) return null
+  if (row.kind !== undefined && !SERVER_KINDS.has(row.kind)) return null
   return {
     name: cut(row.name, WORD_MAX),
+    kind: row.kind ?? 'http',
     baseUrl: cut(row.baseUrl, BASE_URL_MAX),
     key: row.key,
     agents: row.agents.slice(0, AGENTS_MAX).map((agent) => cut(agent, WORD_MAX)),
@@ -312,9 +320,12 @@ function checkAnswer(parsed, code) {
   }
   if (typeof parsed.reachable !== 'boolean' || !isStrings(parsed.models)) return failure('output')
   if (parsed.failure !== undefined && !CHECK_FAILURES.has(parsed.failure)) return failure('output')
+  if (parsed.kind !== undefined && !SERVER_KINDS.has(parsed.kind)) return failure('output')
   const skipped = Number.isSafeInteger(parsed.skipped) && parsed.skipped >= 0 ? parsed.skipped : 0
   const out = { ok: code === 0 && parsed.reachable, reachable: parsed.reachable, models: parsed.models.slice(0, MODELS_MAX).map((id) => cut(id, MODEL_MAX)), skipped }
   if (parsed.failure !== undefined) out.failure = parsed.failure
+  // an older command names no kind: the page goes by its own server list then
+  if (parsed.kind !== undefined) out.kind = parsed.kind
   return out
 }
 
@@ -561,5 +572,5 @@ function registerMeshIpc({ ipcMain, bridge, settled, isGranted }) {
 }
 
 module.exports = {
-  OPERATIONS, REASONS, createFileHandles, createMeshBridge, meshAnswer, meshArgv, meshDirOf, meshEnv, readShim, registerMeshIpc, runMeshctl,
+  CHECK_FAILURES, KEY_KINDS, OPERATIONS, REASONS, SERVER_KINDS, createFileHandles, createMeshBridge, meshAnswer, meshArgv, meshDirOf, meshEnv, readShim, registerMeshIpc, runMeshctl,
 }

@@ -48,6 +48,8 @@
       "verdict": "\"model\" is needed unless the server is Claude Code on this Mac" },
     { "name": "a model name that breaks the rule", "doc": { "name": "action-items", "description": "Lists action items.", "instructions": "List them.", "server": "box", "model": "chat long" },
       "verdict": "\"model\" must be 1 to 64 letters, digits, \".\", \"_\", \":\", \"/\" or \"-\"" },
+    { "name": "text that is not well formed (a lone surrogate)", "doc": { "name": "action-items", "description": "Lists action items.", "instructions": "List them \ud800 now.", "server": "claude", "model": "sonnet" },
+      "verdict": "the card file holds text that is not well-formed Unicode (a lone surrogate)" },
     { "name": "text that is not JSON", "text": "{ name: action-items }", "verdict": "the card file is not valid JSON" },
     { "name": "JSON that is not an object", "text": "[\"action-items\"]", "verdict": "the card file must be one JSON object" },
     { "name": "a file over 64 KiB", "doc": { "name": "action-items", "description": "Lists action items.", "instructions": "List them.", "server": "claude", "model": "sonnet" }, "pad": 65537,

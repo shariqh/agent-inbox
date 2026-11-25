@@ -22,6 +22,8 @@ const MODEL_NAME = /^[A-Za-z0-9._:/-]{1,64}$/
 const ONE_LINE_BAD = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/
 const TEXT_BAD = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/
 const INSTRUCTIONS_MAX = 16384
+/** A lone surrogate: text that is not well-formed Unicode (it has no UTF-8 form). */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
 
 const RULES = {
   name: '"name" must equal the agent\'s id: 1 to 40 lower-case letters, digits and inner hyphens',
@@ -45,6 +47,7 @@ export function checkMadeCard(value: unknown, id: string, kind: ServerKind, stor
   if (stored && doc['schema'] !== 1) return { refused: 'the description\'s "schema" must be 1' }
   const missing = KEYS.find((key) => (stored || key !== 'model') && !Object.hasOwn(doc, key))
   if (missing !== undefined) return { refused: `${what} has no "${missing}"` }
+  if (KEYS.some((key) => typeof doc[key] === 'string' && LONE_SURROGATE.test(doc[key] as string))) return { refused: `${what} holds text that is not well-formed Unicode (a lone surrogate)` }
   const { name, description, instructions, server, model } = doc
   if (typeof name !== 'string' || name !== id || !MADE_ID.test(name)) return { refused: RULES.name }
   if (typeof description !== 'string' || ONE_LINE_BAD.test(description) || description.trim().length < 1 || description.trim().length > 200) return { refused: RULES.description }

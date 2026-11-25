@@ -410,7 +410,7 @@ describe('setting up an agent (D4)', () => {
     expect([...select('model').options].map((o) => o.textContent)).toEqual(['Choose a model', 'model-a', 'model-b'])
     choose(select('model'), 'model-b')
     bridge.s.answers['enable-model-agent'] = (values) => values['apply'] === true
-      ? { ok: true, applied: true, steps: [] }
+      ? (mesh.s.version = { agents: 1 }, mesh.s.body = { on: true, agents: [], others: 0, available: [] }, { ok: true, applied: true, steps: [] })
       : { ok: true, applied: false, steps: ['Add unslop-code to mesh.json', '<img src=x onerror=alert(1)>'], notes: ['Restart nothing'] }
     click(buttonLabelled('Check', setup()))
     await settle()
@@ -446,12 +446,19 @@ describe('setting up an agent (D4)', () => {
     expect(shown(agentPage())).toBe(true)
     expect(title().textContent).toBe('unslop-code')
     expect(agentPage().querySelector('.map-gone')?.textContent).toBe('Turned on. Its details show in a moment.')
+    // not asked while the agent is not in the data yet
+    expect(mesh.s.triggers.filter((t) => t.startsWith('refresh'))).toEqual([])
     expect(document.activeElement).toBe(agentPage().querySelector('.map-back'))
-    mesh.s.version = { agents: 1 }
     mesh.s.body = { on: true, agents: [on('unslop-code', { state: 'unchecked', reason: 'press Refresh' })], others: 0, available: [OFFERED['unslop']!, OFFERED['request-post']!] }
     await pollTick()
     expect(shown(agentPage().querySelector('.map-gone'))).toBe(false)
     expect(agentPage().querySelector('.map-status')?.textContent).toBe('Not checked yet · press Refresh')
+    // F3: once the agent shows in the data it is checked, once, without a press on Refresh
+    await settle()
+    expect(mesh.s.triggers.filter((t) => t === 'refresh unslop-code')).toEqual(['refresh unslop-code'])
+    await pollTick()
+    await pollTick()
+    expect(mesh.s.triggers.filter((t) => t === 'refresh unslop-code')).toHaveLength(1)
     expect(shown(agentPage().querySelector('.ms-foot'))).toBe(true)
   })
 
@@ -638,7 +645,7 @@ describe('an agent that is on (D5)', () => {
   })
 
   it('Change server opens the set-up form with the server it uses chosen, and runs the same operation', async () => {
-    const { bridge } = await openAgent('unslop-code', [server('local', { agents: ['unslop-code'] }), server('lab')])
+    const { bridge, mesh } = await openAgent('unslop-code', [server('local', { agents: ['unslop-code'] }), server('lab')])
     click(buttonLabelled('Change server', foot()))
     await settle()
     expect(shown(setup())).toBe(true)
@@ -667,6 +674,10 @@ describe('an agent that is on (D5)', () => {
     expect(shown(setup())).toBe(false)
     expect(shown(agentPage())).toBe(true)
     expect(document.activeElement).toBe(buttonLabelled('Change server', foot()))
+    // F3: the changed agent is checked once
+    expect(mesh.s.triggers.filter((t) => t === 'refresh unslop-code')).toHaveLength(1)
+    await pollTick()
+    expect(mesh.s.triggers.filter((t) => t === 'refresh unslop-code')).toHaveLength(1)
   })
 
   it('an added agent has no foot', async () => {

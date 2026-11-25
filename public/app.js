@@ -861,6 +861,8 @@ const meshSetup = installMeshSetup({
     reloadAndPaint()
   },
   turnedOn: (name) => openMeshAgent(`mesh.json:${name}`, name, { focus: true, pending: true }),
+  // an agent just turned on is checked once, as the agent page's Refresh checks it
+  check: (name) => { meshRefresh(name) },
   turnedOff: () => {
     meshAgentPage.close()
     paintAgentCards()

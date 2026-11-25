@@ -73,7 +73,8 @@ function httpAddress(text) {
  * @param {{doc?: Document, bridge: () => any, local: () => Promise<boolean>,
  *   home: () => HTMLElement | null, setupPage: () => HTMLElement | null, agentPage: () => HTMLElement | null,
  *   panel: () => HTMLElement | null, heading: () => HTMLElement | null, active: () => boolean,
- *   changed: () => void, reload: () => void, turnedOn: (name: string) => void, turnedOff: () => void}} deps
+ *   changed: () => void, reload: () => void, turnedOn: (name: string) => void, turnedOff: () => void,
+ *   check: (name: string) => void}} deps
  */
 export function installMeshSetup(deps) {
   const doc = deps.doc ?? globalThis.document
@@ -92,6 +93,8 @@ export function installMeshSetup(deps) {
   // the open set-up page, or null; the agent page's foot
   let page = null
   const foot = { agent: null, asking: false, message: '' }
+  // an agent just turned on (or given another server), until it shows in the tab's data and is checked once
+  let fresh = null
   let version = 0
   // the open page's elements, rebuilt only when a page opens or comes back
   let els = null
@@ -811,6 +814,7 @@ export function installMeshSetup(deps) {
     }
     page = null
     els = null
+    fresh = mine.agent
     if (mine.change) {
       changed()
       settleFocus(() => mine.opener?.() ?? deps.heading())
@@ -982,6 +986,12 @@ export function installMeshSetup(deps) {
      * @param {{body: any, agent: {name: string} | null}} input
      */
     paint({ body, agent }) {
+      // its first appearance in the data: one check of that agent, as opening its page asks for
+      if (fresh && Array.isArray(body?.agents) && body.agents.some((row) => String(row?.name) === fresh)) {
+        const name = fresh
+        fresh = null
+        deps.check(name)
+      }
       const home = deps.home()
       if (home) {
         // after "Yours", in this order: the Marketplace while a drawn built-in is off, the servers with the bridge

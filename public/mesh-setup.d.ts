@@ -29,6 +29,8 @@ export function installMeshSetup(deps: {
   turnedOn: (name: string) => void
   /** the open agent was turned off: back to the tab's home */
   turnedOff: () => void
+  /** check this one agent now, as its page's Refresh does */
+  check: (name: string) => void
 }): {
   usable(): boolean
   refreshAvailable(): Promise<boolean>

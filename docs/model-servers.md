@@ -2,6 +2,7 @@
 
 A **model server** is an OpenAI-compatible backend that the local agents (`unslop` and
 `unslop-code`) send their model calls to, or [Claude Code on this Mac](#claude-code-on-this-mac).
+An agent a chat makes from a card file names one too ([docs/made-agents.md](made-agents.md)).
 You add it once, by name, and each agent's profile names it. When the server's address or key
 source changes, you change it in one place, and every agent that names it picks the change up on
 its next call.
@@ -174,7 +175,8 @@ npm run meshctl -- server remove box --apply
 
 `set` changes the address, the key source, or both, keeping a backup; the agents that name the
 server stop within a minute and start with the new settings on their next call. `remove` is
-refused while an agent that is on names the server; point that agent at another server first.
+refused while an agent that is on names the server; point that agent at another server first, or,
+for a made agent, remove it (`meshctl remove <id> --apply`).
 An agent that is off keeps its settings but does not hold a server: `remove` goes through and
 says that the kept settings still name it, and turning that agent on again needs `--server`.
 Removing the last server deletes `servers.json` (keeping a backup).

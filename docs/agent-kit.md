@@ -9,6 +9,9 @@ CI runs `meshctl check --strict` against that agent on every pull request.
 `packages/mesh` is private and not published (npm packaging is #540), so for now you write an agent
 inside a checkout of this repository. Use Node 24 (`fnm use 24`).
 
+An agent that only needs instructions run on a model server needs no program: a chat can make one
+from a card file ([docs/made-agents.md](made-agents.md)).
+
 ## What the kit gives you
 
 | Piece | Module | What it does |

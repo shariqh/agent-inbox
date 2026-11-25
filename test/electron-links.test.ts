@@ -339,8 +339,13 @@ describe('main opens links only through electron/link-open.cjs (issue #300)', ()
     ])
     // the only call that can store an app is chooseApp, which asks the picker itself
     expect(settings).toContain("(settings, ruleId) => settings.chooseApp(ruleId))")
-    // and the only other pickers are driven sessions' folder choosers (#412 step 3, #432), which pick folders, never apps
-    expect(main.match(/dialog\.showOpenDialog\(/g)).toHaveLength(6)
+    // and the only other pickers are driven sessions' folder choosers (#412 step 3, #432), which pick folders, never apps,
+    // and the mesh bridge's (step 2a), which picks one key or token file and keeps its path in main
+    expect(main.match(/dialog\.showOpenDialog\(/g)).toHaveLength(8)
+    const mesh = main.slice(main.indexOf('const meshBridge = createMeshBridge({'), main.indexOf('registerMeshIpc({'))
+    expect(mesh.match(/dialog\.showOpenDialog\(/g)).toHaveLength(2)
+    expect(mesh).toContain("properties: ['openFile', 'showHiddenFiles'],")
+    expect(mesh).not.toMatch(/openDirectory|\.app\b/)
     const folders = main.slice(main.indexOf('chooseFolder: async () => {'), main.indexOf('driverRuntime: launchDriverRuntime,'))
     expect(folders).toContain("properties: ['openDirectory'] }")
     expect(folders).toContain("properties: ['openDirectory', 'createDirectory'] }")

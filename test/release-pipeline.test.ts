@@ -891,6 +891,8 @@ describe('macOS finalization contract', () => {
     expect(electronModules).toContain('electron/setup-core.cjs')
     expect(electronModules).toContain('electron/setup-process.cjs')
     expect(electronModules).toContain('electron/runtime-verify.cjs')
+    // agent setup in the app, step 2a: the mesh bridge's process module
+    expect(electronModules).toContain('electron/mesh-process.cjs')
     expect(electronModules.every((module) => module.startsWith('electron/'))).toBe(true)
     expect(pullRequestTrigger).toContain('      - "electron/**"')
     const packageApp = readFileSync(join(root, 'scripts', 'package-app.sh'), 'utf8')

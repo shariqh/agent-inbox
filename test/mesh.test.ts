@@ -1495,7 +1495,20 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
       ...readdirSync(join(REPO, 'electron')).filter((f) => /\.c?js$/.test(f)).map((f) => `electron/${f}`),
     ]
     expect(files.length).toBeGreaterThan(10)
-    for (const file of files) expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(/unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-server-check|mesh-skills|mesh-keys|card-signature|meshctl/)
+    // agent setup in the app, step 2a: electron/mesh-process.cjs runs the person's own meshctl as a
+    // separate process (the node and script its shim names), so it alone may name meshctl; it still
+    // names no client, and loads nothing but Node's own modules, so it cannot reach one in process
+    const BRIDGE = 'electron/mesh-process.cjs'
+    for (const file of files) {
+      expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(
+        file === BRIDGE
+          ? /unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-server-check|mesh-skills|mesh-keys|card-signature/
+          : /unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-server-check|mesh-skills|mesh-keys|card-signature|meshctl/,
+      )
+    }
+    const bridge = readFileSync(join(REPO, BRIDGE), 'utf8')
+    expect([...bridge.matchAll(/require\(([^)]*)\)/g)].map((m) => m[1])).toEqual(["'node:fs'", "'node:path'", "'node:crypto'"])
+    expect(bridge).not.toMatch(/\bimport\(/)
   })
 
   // The app's whole dependency set, pinned by name: package.json's dependencies and

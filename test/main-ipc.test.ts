@@ -71,6 +71,10 @@ const CHANNELS: Record<string, { allows: 'local page only' | 'hub view'; args: u
   'agent-inbox:launch-continue-chat': { allows: 'local page only', args: [{ tool: 'claude', id: CHAT_ID, mode: 'ask', prompt: 'go' }] },
   'agent-inbox:chat-resume-available': { allows: 'local page only', args: [] },
   'agent-inbox:chat-resume': { allows: 'local page only', args: [{ tool: 'claude', id: CHAT_ID }] },
+  // agent setup in the app, step 2a: the mesh bridge, for the owned local page only
+  'agent-inbox:mesh-available': { allows: 'local page only', args: [] },
+  'agent-inbox:mesh-run': { allows: 'local page only', args: ['servers', {}] },
+  'agent-inbox:mesh-choose-file': { allows: 'local page only', args: ['key'] },
   // Settings → Other devices (#617, PR 2d): the hub controller's panel, for the owned local page only
   'agent-inbox:remote-entry': { allows: 'local page only', args: [] },
   'agent-inbox:remote-entry-turn-on': { allows: 'local page only', args: [] },
@@ -210,7 +214,7 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     main.evaluate(`{
       const h = globalThis.__mainIpcHarness
       linkWindow = h.win; updateWindow = h.win; themeWindow = h.win; themeWindowWebContentsId = 7
-      fileLinkWebContentsId = 7; setupInstallWebContentsId = 7; updateInstallWebContentsId = 7; launchWebContentsId = 7
+      fileLinkWebContentsId = 7; setupInstallWebContentsId = 7; updateInstallWebContentsId = 7; launchWebContentsId = 7; meshWebContentsId = 7
       viewerOwned = true; setupInstallEnabled = true; launchEnabled = true
       installBinding = h.installBinding; updateController = h.update; launchController = h.launch; chatResume = h.chat
       linkSettings = h.links; remoteConnect = h.connect; hubView = h.hub
@@ -242,15 +246,15 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     expect(registered).toEqual(Object.keys(CHANNELS).sort())
   })
 
-  it('names in main.cjs only channels it registers at its top level, through one of four register functions or a literal', () => {
+  it('names in main.cjs only channels it registers at its top level, through one of five register functions or a literal', () => {
     const source = read('electron/main.cjs')
     // every use of ipcMain: the require, ipcMain.handle with a literal or handleLinkSettings' parameter, or a register call
     const uses = [...source.matchAll(/\bipcMain\b[^\n]*/g)].map((m) => m[0])
     for (const use of uses) {
       expect(use, use).toMatch(/^ipcMain(, Menu,|\.handle\('agent-inbox:[a-z-]+', |\.handle\(channel, async \(event, \.\.\.args\) => \{$|,$)/)
     }
-    expect([...source.matchAll(/^(register\w+)\(\{\n {2}ipcMain,$/gm)].map((m) => m[1])).toEqual(['registerLaunchIpc', 'registerChatResumeIpc', 'registerRemoteEntryIpc', 'registerHubIpc'])
-    expect(source.match(/\bipcMain,\n/g)).toHaveLength(4)
+    expect([...source.matchAll(/^(register\w+)\(\{\n {2}ipcMain,$/gm)].map((m) => m[1])).toEqual(['registerLaunchIpc', 'registerChatResumeIpc', 'registerMeshIpc', 'registerRemoteEntryIpc', 'registerHubIpc'])
+    expect(source.match(/\bipcMain,\n/g)).toHaveLength(5)
     // no channel is registered later, inside a function that runs after start-up
     const literals = [...source.matchAll(/ipcMain\.handle\('([a-z:-]+)'/g), ...source.matchAll(/handleLinkSettings\('([a-z:-]+)'/g)].map((m) => m[1])
     for (const channel of literals) expect(main.handlers.has(channel!), channel).toBe(true)
@@ -282,6 +286,9 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
     ['agent-inbox:install-available', []],
     ['agent-inbox:launch-available', []],
     ['agent-inbox:chat-resume-available', []],
+    // the harness's home has no shim: not-installed, where a stranger hears unavailable
+    ['agent-inbox:mesh-available', []],
+    ['agent-inbox:mesh-run', ['servers', {}]],
     ['agent-inbox:connect-view', []],
     ['agent-inbox:connect-show', [null]],
     // #637: the harness's hub is online and its fetch answers an empty list, which reads as unreadable
@@ -308,6 +315,31 @@ describe('electron/main.cjs: every IPC channel, and the hub view', () => {
       main.evaluate('fileLinkWebContentsId = 7')
     }
     expect(shown).toHaveLength(shownBefore)
+  })
+
+  // agent setup in the app, step 2a
+  it('the mesh bridge answers only the window holding its grant: dropped, it answers that window as a stranger and calls nothing', async () => {
+    const e = events()
+    const available = main.handlers.get('agent-inbox:mesh-available')!
+    const run = main.handlers.get('agent-inbox:mesh-run')!
+    const choose = main.handlers.get('agent-inbox:mesh-choose-file')!
+    // the harness's home has no shim, so the granted page hears why, and nothing runs
+    expect(await available(e.local)).toEqual({ available: false, reason: 'not-installed' })
+    expect(await run(e.local, 'servers', {})).toEqual({ ok: false, reason: 'not-installed' })
+    expect(await run(e.local, 'shell', { command: 'id' })).toEqual({ ok: false, reason: 'invalid' })
+    main.calls.length = 0
+    main.evaluate('meshWebContentsId = null')
+    try {
+      expect(await available(e.local)).toEqual(await available(e.stranger))
+      expect(await run(e.local, 'servers', {})).toEqual({ ok: false, reason: 'unavailable' })
+      expect(await choose(e.local, 'key')).toEqual({ ok: false, reason: 'unavailable' })
+    } finally {
+      main.evaluate('meshWebContentsId = 7')
+    }
+    expect(main.calls).toEqual([])
+    // the granted page's picker is main's own, on the window; cancelled here
+    expect(await choose(e.local, 'key')).toEqual({ ok: false, reason: 'cancelled' })
+    expect(main.calls).toEqual(['dialog.showOpenDialog'])
   })
 
   it('Check for Updates… and an update notification bring This Mac forward first (openUpdatesWindow)', () => {
@@ -428,6 +460,7 @@ describe('electron/main.cjs never hands the hub view a grant (source)', () => {
     ['setupInstallWebContentsId', ['setup ? setupWindowWebContentsId : null', 'null']],
     ['updateInstallWebContentsId', ['update ? setupWindowWebContentsId : null', 'null']],
     ['launchWebContentsId', ['launch ? setupWindowWebContentsId : null', 'null']],
+    ['meshWebContentsId', ['files ? setupWindowWebContentsId : null', 'null']],
     ['installBinding', ['createInstallBinding({', 'null']],
   ])('assigns %s only from the window or the binding', (name, allowed) => {
     const assigned = [...main.matchAll(new RegExp(`\\b${name} = (?!=)([^\\n]*)`, 'g'))].map((m) => m[1]!.trim())
@@ -442,9 +475,14 @@ describe('electron/main.cjs never hands the hub view a grant (source)', () => {
   })
 
   it('keeps the hub view’s module and preload free of every grant and privileged name', () => {
-    const privileged = ['installBinding', 'linkWindow', 'themeWindow', 'updateWindow', 'fileLinkWebContentsId', 'launchWebContentsId', 'setupInstall', 'agentInboxSetup', 'agentInboxLinks', 'agentInboxLaunch', 'agentInboxChats', 'agentInboxUpdates', 'agentInboxTheme']
+    const privileged = [
+      'installBinding', 'linkWindow', 'themeWindow', 'updateWindow', 'fileLinkWebContentsId', 'launchWebContentsId', 'setupInstall', 'agentInboxSetup', 'agentInboxLinks',
+      'agentInboxLaunch', 'agentInboxChats', 'agentInboxUpdates', 'agentInboxTheme',
+      // agent setup in the app, step 2a: the mesh bridge is the owned local page's only
+      'agentInboxMesh', 'meshBridge', 'meshWebContentsId', 'mesh-process',
+    ]
     // hub-view.cjs registers agentInboxConnect's channels for the local page; the preload must not know them
-    for (const [file, names] of [['electron/hub-view.cjs', privileged], ['electron/remote-preload.cjs', [...privileged, 'agentInboxConnect', 'connect-']]] as const) {
+    for (const [file, names] of [['electron/hub-view.cjs', privileged], ['electron/remote-preload.cjs', [...privileged, 'agentInboxConnect', 'connect-', 'mesh-', 'meshctl']]] as const) {
       const text = read(file)
       for (const name of names) {
         expect(text.includes(name), `${file} names ${name}`).toBe(false)
@@ -646,6 +684,41 @@ describe('electron/main.cjs wires the hub view (source)', () => {
     // nothing else in main shows a hub: every path is hubView.show(id), behind mayShow
     // (#617 PR 4a: the hub watch's notification click and the lost-hub notice's click are two more, by id)
     expect([...main.matchAll(/hubView\?\.show\(([^)]*)\)/g)].map((m) => m[1]).filter((arg) => arg !== 'null')).toEqual(['id', 'id', 'id, true'])
+  })
+})
+
+// agent setup in the app, step 2a
+describe('electron/main.cjs wires the mesh bridge (source)', () => {
+  const main = read('electron/main.cjs')
+  const section = main.slice(main.indexOf('const meshGate = createInstallGate()'), main.indexOf('// ── sharing this Inbox with your other Macs'))
+
+  it('runs with its own gate, and refuses while Setup runs, an update installs or the app quits', () => {
+    expect(main).toContain("const { createMeshBridge, registerMeshIpc } = require('./mesh-process.cjs')")
+    expect(main.match(/createMeshBridge\(/g)).toHaveLength(1)
+    expect(section).toContain('gate: meshGate,')
+    expect(section).toContain('spawnImpl: spawn,')
+    expect(section).toContain("home: () => app.getPath('home'),")
+    expect(section).toContain('isQuitting: () => installGate.quitting(),')
+    expect(section).toContain('isSetupRunning: () => installGate.running(),')
+    expect(section).toContain('isUpdateInstalling: () => updateController?.isInstalling() === true,')
+    // the picker is main's own, on the window, for one file; the page never names a path
+    expect(section).toContain("properties: ['openFile', 'showHiddenFiles'],")
+    expect(section).toContain('return result.canceled ? null : result.filePaths[0] ?? null')
+    expect(section).not.toMatch(/console\.|log:/)
+  })
+
+  it('answers only the owned viewer’s top frame holding the grant, which goes with the file grant and is dropped when a quit begins', () => {
+    expect(section).toContain('isGranted: (event) => linkSender(event) && meshWebContentsId !== null && event.sender.id === meshWebContentsId,')
+    expect(section).toContain('settled: () => installBinding?.settled() ?? Promise.resolve(),')
+    const binding = main.slice(main.indexOf('installBinding = createInstallBinding({'), main.indexOf("win.webContents.on('did-start-navigation'"))
+    expect(binding).toContain('meshWebContentsId = files ? setupWindowWebContentsId : null')
+    // its chosen files go with the grant: a navigation, a reload, a crash or closing forgets them
+    expect(binding).toContain('if (!files) meshBridge.revoke()')
+    const begin = main.slice(main.indexOf('function beginAppQuit()'), main.indexOf('\n}\n', main.indexOf('function beginAppQuit()')))
+    expect(begin).toContain('meshWebContentsId = null')
+    expect(begin).toContain('const meshStopping = meshBridge.beginQuit()')
+    // the quit waits for the mesh run as it does for Setup
+    expect(begin).toContain('return setupStopping && meshStopping ? Promise.all([setupStopping, meshStopping]).then(() => undefined) : setupStopping ?? meshStopping')
   })
 })
 

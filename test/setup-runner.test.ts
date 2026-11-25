@@ -804,8 +804,10 @@ describe('createInstallBinding (#216)', () => {
     const refreshInstallPermission = vi.fn()
     // #617 PR 3c: the hub view hears every change of the window's grants
     const hubView = { ownerChanged: vi.fn() }
+    // agent setup in the app, step 2a: the mesh bridge forgets its chosen files when the file grant goes
+    const meshBridge = { revoke: vi.fn() }
     const wiring = new Function(
-      'createInstallBinding', 'URL_BASE', 'installGate', 'reproveOwnership', 'updateController', 'flags', 'process', 'hubView',
+      'createInstallBinding', 'URL_BASE', 'installGate', 'reproveOwnership', 'updateController', 'flags', 'process', 'hubView', 'meshBridge',
       `let setupInstallEnabled = flags.setupInstallEnabled
       let viewerOwned = flags.viewerOwned
       let launchEnabled = flags.launchEnabled === true
@@ -813,18 +815,21 @@ describe('createInstallBinding (#216)', () => {
       let setupInstallWebContentsId = null
       let updateInstallWebContentsId = null
       let fileLinkWebContentsId = null
+      let meshWebContentsId = null
       let installBinding = null
       const setupWindowWebContentsId = 7
       ${main.slice(start, end + '\n  })'.length)}
       return {
         installBinding,
         ids: () => ({ setup: setupInstallWebContentsId, update: updateInstallWebContentsId, files: fileLinkWebContentsId, launch: launchWebContentsId }),
+        meshId: () => meshWebContentsId,
       }`,
-    )(createInstallBinding, VIEWER, gate, reproveOwnership, { refreshInstallPermission }, flags, { platform: flags.platform ?? 'darwin' }, hubView) as {
+    )(createInstallBinding, VIEWER, gate, reproveOwnership, { refreshInstallPermission }, flags, { platform: flags.platform ?? 'darwin' }, hubView, meshBridge) as {
       installBinding: InstallBinding
       ids(): { setup: number | null; update: number | null; files: number | null; launch: number | null }
+      meshId(): number | null
     }
-    return { ...wiring, gate, reproveOwnership, refreshInstallPermission, hubView, proof: () => proofs.at(-1)! }
+    return { ...wiring, gate, reproveOwnership, refreshInstallPermission, hubView, meshBridge, proof: () => proofs.at(-1)! }
   }
 
   it('main rebinds its window to the owned viewer only after the startup proof passes again', async () => {
@@ -897,6 +902,30 @@ describe('createInstallBinding (#216)', () => {
       w.installBinding.navigationStarted(VIEWER)
       expect(w.ids().launch, JSON.stringify(flags)).toBeNull()
     }
+  })
+
+  // agent setup in the app, step 2a
+  it('main grants the mesh bridge with the file grant, and forgets its chosen files whenever that grant goes', async () => {
+    const w = mainWiring({ setupInstallEnabled: false, viewerOwned: true })
+    w.installBinding.navigationStarted(VIEWER)
+    expect(w.meshId()).toBe(7)
+    expect(w.meshBridge.revoke).not.toHaveBeenCalled()
+    // a reload revokes it, and the files with it, until the re-proof passes
+    w.installBinding.navigationStarted(VIEWER)
+    expect(w.meshId()).toBeNull()
+    expect(w.meshBridge.revoke).toHaveBeenCalledTimes(1)
+    const rebound = w.installBinding.navigationCommitted(VIEWER)
+    w.proof().resolve(true)
+    await rebound
+    expect(w.meshId()).toBe(7)
+    expect(w.meshBridge.revoke).toHaveBeenCalledTimes(1)
+    w.installBinding.rendererGone()
+    expect(w.meshId()).toBeNull()
+    expect(w.meshBridge.revoke).toHaveBeenCalledTimes(2)
+    // a viewer this app does not own never holds it
+    const reused = mainWiring({ setupInstallEnabled: false, viewerOwned: false })
+    reused.installBinding.navigationStarted(VIEWER)
+    expect(reused.meshId()).toBeNull()
   })
 
   it('main re-proves ownership with the startup proof, and a spawned viewer must still be running', async () => {

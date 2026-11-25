@@ -1596,9 +1596,10 @@ app shows it through the bridge (`docs/architecture/electron-app.md`).
   or others; the first found decides) and makes `mesh/claude-cwd` (0700). `claudePost` is then the
   run functions' `post`, with the placeholder base URL `http://127.0.0.1:9/claude-code` and no key,
   so `runUnslop` and `runCodeSlop` are unchanged. It reads the model and the first system and user
-  messages of the request body, spawns `claude -p --safe-mode --tools "" --system-prompt <system>
-  --model <m> --no-session-persistence --output-format json` asynchronously without a shell, the
-  user text on stdin, in `mesh/claude-cwd`, with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+  messages of the request body, spawns `claude -p --safe-mode --tools "" --system-prompt-file <file>
+  --model <m> --no-session-persistence --output-format json` asynchronously without a shell (the system
+  message in `<file>`, a new 0600 `system-<hex>.txt` in the call's folder, deleted when the call ends
+  whatever the outcome, so it is never on a command line), the user text on stdin, in `mesh/claude-cwd`, with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
   `TMPDIR`, `LANG` and `LC_ALL`; one call has at most the task's time left, capped at 120 s
   (`SIGTERM`, then `SIGKILL` after 2 s: transport `deadline`), the abort signal kills it the same
   way (`aborted`), stdout over 1 MiB is `too-large`, stderr is dropped. `is_error: false` with a

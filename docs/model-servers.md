@@ -242,8 +242,12 @@ Each call runs without a shell, in an empty folder of its own (`<mesh dir>/mesh/
 the text on standard input:
 
 ```sh
-claude -p --safe-mode --tools "" --system-prompt <the agent's instructions> --model <model> --no-session-persistence --output-format json
+claude -p --safe-mode --tools "" --system-prompt-file <file> --model <model> --no-session-persistence --output-format json
 ```
+
+- The agent's instructions go in `<file>`, a new 0600 file in that folder that is deleted when the
+  call ends, whatever the outcome, so they never appear on the command line, where other
+  processes on the Mac could read them.
 
 - `-p` prints one answer and exits, and `--output-format json` makes that one JSON object. The
   agent reads the answer and the token counts from it.

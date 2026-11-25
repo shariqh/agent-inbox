@@ -4,7 +4,7 @@
 // the program's JSON to the HttpReply classify reads; drop an error sentence; and kill a child that
 // runs past its limit or is cancelled.
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -76,7 +76,12 @@ describe('claudePost (Claude Code D3)', () => {
     const reply = await post(URL_ANY, body('SYSTEM -- text', 'USER\ntext'), { authorization: 'Bearer planted' }, { timeoutMs: 10_000 })
     const [seen] = f.seen()
     expect(f.seen()).toHaveLength(1)
-    expect(seen!.argv).toEqual(['-p', '--safe-mode', '--tools', '', '--system-prompt', 'SYSTEM -- text', '--model', 'sonnet', '--no-session-persistence', '--output-format', 'json'])
+    // the system message goes by a 0600 file in the private folder, never on the command line, and is gone afterwards
+    expect(seen!.argv).toEqual(['-p', '--safe-mode', '--tools', '', '--system-prompt-file', expect.stringMatching(/^.+\/system-[0-9a-f]{16}\.txt$/), '--model', 'sonnet', '--no-session-persistence', '--output-format', 'json'])
+    expect(realpathSync(join(seen!.argv[5]!, '..'))).toBe(realpathSync(cwd))
+    expect([seen!.systemPrompt, seen!.systemPromptMode]).toEqual(['SYSTEM -- text', 0o600])
+    expect(JSON.stringify(seen!.argv)).not.toContain('SYSTEM')
+    expect(readdirSync(cwd)).toEqual([])
     expect(seen!.stdin).toBe('USER\ntext')
     expect(seen!.cwd).toBe(realpathSync(cwd))
     const keys = Object.keys(seen!.env).filter((k) => !k.startsWith('__CF'))
@@ -102,7 +107,7 @@ describe('claudePost (Claude Code D3)', () => {
   it('counts the start-up as prompt time: 3500 ms of wall time and 2000 of API time give prompt_ms 1500, and no load is booked', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
     const { spawn, children } = fakeChildren()
-    const call = claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn })(URL_ANY, body(), {}, { timeoutMs: 10_000 })
+    const call = claudePost({ program: '/x/claude', env: ENV, cwd: scratch('claude-cwd-'), spawn })(URL_ANY, body(), {}, { timeoutMs: 10_000 })
     await vi.advanceTimersByTimeAsync(3500)
     children[0]!.answer(JSON.stringify(answered('{"suggest":[]}', { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 3 }, 2000)), 0)
     const reply = await call
@@ -175,7 +180,7 @@ describe('claudePost (Claude Code D3)', () => {
     }
     expect(await reasonOf(claudePost({ program: join(scratch('claude-none-'), 'claude'), env: ENV, cwd: scratch('claude-cwd-') })(URL_ANY, body(), {}, { timeoutMs: 10_000 }))).toBe('unreachable')
     const throwing = (() => { throw new Error('ERR_INVALID_ARG_VALUE') }) as unknown as typeof import('node:child_process').spawn
-    expect(await reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn: throwing })(URL_ANY, body(), {}, { timeoutMs: 10_000 }))).toBe('unreachable')
+    expect(await reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: scratch('claude-cwd-'), spawn: throwing })(URL_ANY, body(), {}, { timeoutMs: 10_000 }))).toBe('unreachable')
     // a body that is not a requestBody is refused before any spawn
     let spawned = 0
     const counting = ((..._args: unknown[]) => { spawned++; throw new Error('x') }) as unknown as typeof import('node:child_process').spawn
@@ -242,10 +247,30 @@ describe('claudePost (Claude Code D3)', () => {
     for (const s of f.seen()) expect(await deadSoon(s.pid)).toBe(true)
   }, 15_000)
 
+  it('the system message file is 0600, holds the system message, and is gone after a failed, timed-out, cancelled or unspawned call too', async () => {
+    const failing = fake({ stdout: failed(500, 'PLANTED overloaded'), code: 1 })
+    const cwd = scratch('claude-cwd-')
+    expect(await reasonOf(claudePost({ program: failing.program, env: ENV, cwd })(URL_ANY, body('SYSTEM secret-ish', 'u'), {}, { timeoutMs: 10_000 }))).toBeUndefined()
+    expect([failing.seen()[0]!.systemPrompt, failing.seen()[0]!.systemPromptMode]).toEqual(['SYSTEM secret-ish', 0o600])
+    expect(readdirSync(cwd)).toEqual([])
+    const hung = fake({ hang: true })
+    expect(await reasonOf(claudePost({ program: hung.program, env: ENV, cwd })(URL_ANY, body(), {}, { timeoutMs: 1000 }))).toBe('deadline')
+    expect(readdirSync(cwd)).toEqual([])
+    const stop = new AbortController()
+    const cancelled = claudePost({ program: hung.program, env: ENV, cwd })(URL_ANY, body(), {}, { timeoutMs: 10_000, signal: stop.signal })
+    await pidOf(hung)
+    stop.abort()
+    expect(await reasonOf(cancelled)).toBe('aborted')
+    expect(readdirSync(cwd)).toEqual([])
+    const throwing = (() => { throw new Error('x') }) as unknown as typeof import('node:child_process').spawn
+    expect(await reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd, spawn: throwing })(URL_ANY, body(), {}, { timeoutMs: 10_000 }))).toBe('unreachable')
+    expect(readdirSync(cwd)).toEqual([])
+  }, 20_000)
+
   it('caps one call at 120 seconds whatever time the task has left', async () => {
     vi.useFakeTimers()
     const { spawn, children } = fakeChildren()
-    const call = reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: '/', spawn })(URL_ANY, body(), {}, { timeoutMs: 600_000 }))
+    const call = reasonOf(claudePost({ program: '/x/claude', env: ENV, cwd: scratch('claude-cwd-'), spawn })(URL_ANY, body(), {}, { timeoutMs: 600_000 }))
     await vi.advanceTimersByTimeAsync(CALL_MAX_MS - 1)
     expect(children[0]!.killed).toEqual([])
     await vi.advanceTimersByTimeAsync(1)

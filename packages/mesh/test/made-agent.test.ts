@@ -248,7 +248,10 @@ describe('one model call (D2)', () => {
     expect([r.code, r.err, r.out]).toEqual([0, '', '- Send the notes [Sam]'])
     const [call] = fake.seen()
     expect(fake.seen()).toHaveLength(1)
-    expect(call!.argv).toEqual(['-p', '--safe-mode', '--tools', '', '--system-prompt', systemMessage(ID, INSTRUCTIONS), '--model', 'haiku', '--no-session-persistence', '--output-format', 'json'])
+    expect(call!.argv).toEqual(['-p', '--safe-mode', '--tools', '', '--system-prompt-file', expect.stringMatching(/made-try-.*\/system-[0-9a-f]{16}\.txt$/), '--model', 'haiku', '--no-session-persistence', '--output-format', 'json'])
+    // the instructions reach the program by a private file, never its command line
+    expect([call!.systemPrompt, call!.systemPromptMode]).toEqual([systemMessage(ID, INSTRUCTIONS), 0o600])
+    expect(JSON.stringify(call!.argv)).not.toContain('meeting notes')
     expect(call!.stdin).toBe('Sam sends the notes.')
     expect(call!.cwd).toMatch(/made-try-/)
     expect(existsSync(call!.cwd)).toBe(false)

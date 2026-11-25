@@ -248,6 +248,12 @@ describe('a profile that names a Claude Code server (Claude Code D3)', () => {
     // the data part carries the calls and the tokens to the client (D6): 17 in and 7 out per call
     const n = calls.length
     expect(task.artifacts[0].parts[1].data).toMatchObject({ model: 'haiku', calls: n, tokens: { in: 17 * n, out: 7 * n } })
+    // the program's path is in neither the A2A result nor its data part
+    for (const shown of [JSON.stringify(task), JSON.stringify(task.artifacts[0].parts[1].data)]) {
+      expect(shown).not.toContain(fake.dir)
+      expect(shown).not.toContain(realpathSync(fake.dir))
+      expect(shown).not.toMatch(/claude-fake-/)
+    }
     expect(logText(dir)).not.toMatch(new RegExp(`${fake.dir}|claude-fake-`))
   })
 
@@ -288,6 +294,14 @@ describe('a profile that names a Claude Code server (Claude Code D3)', () => {
       const none = await claudeAgent(dir, agentName, { stdout: answered('x') }, '/nonexistent-planted').then(() => undefined, (e: Error) => e)
       expect(none?.message).toBe('the profile names the server cc, which is Claude Code on this Mac, but no claude program was found')
     }
+  })
+
+  it('shows the agent\'s words for a servers.json with a kind this build does not know', async () => {
+    const { dir } = await home('unslop-code')
+    servers(dir, { cc: { kind: 'ollama' } })
+    profile(dir, 'unslop-code', { server: 'cc', model: 'sonnet' })
+    const error = await claudeAgent(dir, 'unslop-code', { stdout: answered('x') }).then(() => undefined, (e: Error) => e)
+    expect(error?.message).toBe('the profile names the server cc, but mesh/servers.json holds a kind this build does not know: run meshctl server list')
   })
 
   it('refuses a mesh/claude-cwd that others may open', async () => {

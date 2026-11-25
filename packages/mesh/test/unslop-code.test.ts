@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { transportError } from '../src/backend.js'
 import type { HttpReply, Post } from '../src/backend.js'
-import { QUESTIONS, windows } from '../src/code-prompt.js'
+import { QUESTIONS, TEST_FILE_NOTE, isTestPath, windows } from '../src/code-prompt.js'
 import type { Question } from '../src/code-prompt.js'
 import { ANSWER_TOKENS, runCodeSlop } from '../src/unslop-code.js'
 import type { CodeFile, CodeSlopEnv, CodeSlopLog, CodeSlopResult, CodeSlopTask } from '../src/unslop-code.js'
@@ -147,6 +147,29 @@ describe('the task', () => {
     const result = await runCodeSlop(task([fileB]), setup(post).env)
     expect(result.files[0]).toMatchObject({ status: 'unchanged', suggestions: [{ line: 4, kind: 'nesting' }] })
     expect(result.patch).toBe('')
+  })
+})
+
+describe('a test file', () => {
+  it('is told that step notes are not slop, in the remove question only; any other file is not', async () => {
+    const inTest: CodeFile = { path: 'test/total.test.ts', text: B, added: [3, 4, 5, 6] }
+    const { post, sent } = fake([['row.size', { remove: '{"remove":[3]}', keep: '{"keep":[]}' }], ['retryAfter', {}]])
+    const { env } = setup(post)
+    await runCodeSlop(task([fileA, inTest]), env)
+    const system = (question: Question, needle: string) => sent.find((c) => c.question === question && c.parsed.messages[1]!.content.includes(needle))!.parsed.messages[0]!.content
+    expect(system('remove', 'row.size')).toContain(TEST_FILE_NOTE)
+    // the note sits before the question, so the question still ends the message
+    expect(system('remove', 'row.size').endsWith(QUESTIONS.remove)).toBe(true)
+    expect(system('keep', 'row.size')).not.toContain(TEST_FILE_NOTE)
+    expect(system('suggest', 'row.size')).not.toContain(TEST_FILE_NOTE)
+    expect(system('remove', 'retryAfter')).not.toContain(TEST_FILE_NOTE)
+    // the numbered text is still the whole user message
+    expect(sent.every((c) => !c.parsed.messages[1]!.content.includes(TEST_FILE_NOTE))).toBe(true)
+  })
+
+  it('is known by its path', () => {
+    for (const path of ['test/a.ts', 'tests/a.js', 'src/__tests__/a.ts', 'packages/mesh/test/x.test.ts', 'src/a.test.ts', 'src/a.spec.mjs', 'spec/a.cjs', 'a.test.js']) expect(isTestPath(path), path).toBe(true)
+    for (const path of ['src/a.ts', 'src/contest/a.ts', 'src/latest.ts', 'src/testing.ts', 'attest/a.ts', 'src/a.test.md']) expect(isTestPath(path), path).toBe(false)
   })
 })
 

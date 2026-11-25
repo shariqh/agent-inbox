@@ -730,7 +730,11 @@ later the wrappers, the bridge and the bench (mesh design §2.3).
     not) and suggest (`{"suggest":[{"line":…,"kind":…}]}`, other slop on marked lines:
     `defensive`, `trycatch`, `cast`, `nesting`, `other`). A file the guards call unsure,
     or with no whole-line comment among its added lines, gets only the suggest question;
-    keep is asked only when a listed line would otherwise go. The categories follow the
+    keep is asked only when a listed line would otherwise go. For a test file (one in a
+    `test`, `tests`, `spec` or `__tests__` folder, or named `*.test.*` or `*.spec.*`) the
+    remove question is preceded by one sentence: a short comment that names what the
+    lines after it check is not slop; dividers and step numbers still are. The path is
+    used only to choose that sentence and is never sent. The categories follow the
     deslop skill of Cursor's plugins repository,
     <https://github.com/cursor/plugins> (`cursor-team-kit/skills/deslop/SKILL.md`, MIT
     License, "Copyright (c) 2026 Cursor"); the wording is this repository's own, and the

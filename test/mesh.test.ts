@@ -9,7 +9,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo, LookupFunction } from 'node:net'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh, readCardCopy } from '../src/mesh-config.js'
 import { runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
 import { addSummary, cardSha256, reachOf, tailnetRefusal } from '../src/mesh-add.js'
@@ -813,9 +813,15 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       })
       const r = { code, out: out.join(''), err: err.join('') }
       expect(r.out + r.err).not.toContain(TOKEN)
+      // --json: the token file's folder (another scratch folder than the mesh dir) only ever in a step line
+      if (argv.includes('--json') && r.out) expect(JSON.stringify({ ...JSON.parse(r.out), steps: [] })).not.toContain(dirname(tokenFile))
       return r
     }
-    const run = (...argv: string[]) => ctl(argv, dir)
+    const run = (...argv: string[]) => {
+      const r = ctl(argv, dir)
+      expect(r.out + r.err).not.toContain(TOKEN)
+      return r
+    }
     return { dir, tokenFile, add, run, io }
   }
 
@@ -1459,6 +1465,18 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     ] })
     expect(Object.keys(json(t.dir).agents)).toEqual(['mine'])
     expect(plan(t.run('remove', 'echo', '--json', '--apply'))).toEqual({ applied: true, steps: [], notes: [`echo is not in ${meshFile(t.dir)}. Nothing to do.`] })
+    // a step that fails after one that worked: the done step's line, then the failure's words
+    expect((await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const tokens = join(t.dir, 'mesh', 'tokens')
+    chmodSync(tokens, 0o500)
+    try {
+      const failed = t.run('remove', 'echo', '--json', '--apply')
+      expect(failed.code).toBe(1)
+      expect(plan(failed)).toEqual({ applied: false, steps: [expect.stringMatching(/^Removed agents\.echo from /)],
+        refused: 'Failed at step 2/3. Steps before it are done; nothing after it ran.' })
+    } finally {
+      chmodSync(tokens, 0o700)
+    }
     // a usage error prints the usage on stderr and no JSON
     for (const argv of [['remove', '--json'], ['remove', 'a', 'b', '--json'], ['remove', 'a', '--json', '--json'], ['remove', 'a', '--purge', '--json']]) {
       const bad = t.run(...argv)
@@ -1547,10 +1565,15 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     walk(c)
     for (const s of strings) expect(s, s).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u)
     // a name that is too long is cut like claim() cuts it
-    const long = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => { c.name = 'n'.repeat(100); delete c.description; delete c.version })) }))
+    // every 80-character field is cut like claim() cuts it: 80 characters, then the cap sign
+    const long = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => {
+      c.name = 'n'.repeat(100); delete c.description; c.version = 'v'.repeat(100); c.provider = { organization: 'p'.repeat(100) }
+      c.skills = [{ id: 'i '.repeat(50), name: 'k'.repeat(100) }]
+    })) }))
     const cut = plan(await t.add(long.url, '--id', 'long', '--token-file', t.tokenFile, '--json')).card!
-    expect(cut['name']).toBe(`${'n'.repeat(80)}…`)
-    expect(Object.keys(cut)).toEqual(['id', 'name', 'reach', 'endpoint', 'signed', 'skills', 'pin'])
+    expect([cut['name'], cut['version'], cut['publisher']]).toEqual([`${'n'.repeat(80)}…`, `${'v'.repeat(80)}…`, `${'p'.repeat(80)}…`])
+    expect(cut['skills']).toEqual([{ id: `${'i '.repeat(40)}…`, name: `${'k'.repeat(80)}…` }])
+    expect(Object.keys(cut)).toEqual(['id', 'name', 'version', 'publisher', 'reach', 'endpoint', 'signed', 'skills', 'pin'])
   })
 
   it('add --json: keysNew for a signed card, a move\'s id and notes, and a failed step all carry the card', async () => {
@@ -1566,8 +1589,12 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(moving.card).toMatchObject({ id: 'echo', signed: true, keysNew: false, endpoint: `${after.origin}/a2a` })
     expect(moving.notes).toEqual([`Move       this is echo at a new endpoint (was ${signed.origin}/a2a), signed by a key its pinned card lists: its card pin and run records stay; meshctl call will send the token to the new endpoint.`])
     // --move to where it already is: nothing to do, with the card
+    // (keysNew is not known yet on this path, so it is left out)
     const same = plan(await t.add(signed.url, '--move', 'echo', '--json', '--apply'))
-    expect(same).toMatchObject({ applied: true, steps: [], notes: [`agents.echo is already at ${signed.url}. Nothing to do.`], card: { id: 'echo' } })
+    expect(same).toEqual({ applied: true, steps: [], notes: [`agents.echo is already at ${signed.url}. Nothing to do.`], card: {
+      id: 'echo', name: 'Echo Agent', description: 'Echoes one text.', version: '1.0.0', reach: 'loopback', endpoint: `${signed.origin}/a2a`, signed: true,
+      skills: [{ id: 'echo', name: 'echo', description: 'Echo one text.' }], pin: json(t.dir).agents.echo.cardSha256,
+    } })
     // an unsigned card has no keysNew
     const plain = await agent()
     expect(plan(await t.add(plain.url, '--id', 'plain', '--token-file', t.tokenFile, '--json')).card).not.toHaveProperty('keysNew')
@@ -1579,6 +1606,19 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(failed.code).toBe(1)
     expect(plan(failed)).toMatchObject({ applied: false, steps: [], refused: `Failed at step 1/3. Steps before it are done; ${meshFile(other.dir)} was not changed.`, card: { id: 'plain', signed: false } })
     expect(existsSync(meshFile(other.dir))).toBe(false)
+    // a later step fails (mesh.json's folder is read-only): the steps done before it are listed
+    const later = setup()
+    mkdirSync(join(later.dir, 'mesh'), { mode: 0o700 })
+    chmodSync(later.dir, 0o500)
+    try {
+      const r = await later.add(plain.url, '--id', 'plain', '--token-file', later.tokenFile, '--json', '--apply')
+      expect(r.code).toBe(1)
+      expect(plan(r)).toMatchObject({ applied: false, steps: [`Copied the token to ${join(later.dir, 'mesh', 'tokens', 'plain')}.`, `Kept the card as ${join(later.dir, 'mesh', 'cards', 'plain.json')}.`],
+        refused: `Failed at step 3/3. Steps before it are done; ${meshFile(later.dir)} was not changed.`, card: { id: 'plain', signed: false } })
+    } finally {
+      chmodSync(later.dir, 0o700)
+    }
+    expect(existsSync(meshFile(later.dir))).toBe(false)
   })
 
   it('add --expect-pin adds only the card that was looked at: a changed card is refused first, writing nothing', async () => {
@@ -1620,6 +1660,60 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     // with --move and the right pin it moves
     const there = await profiledAgent()
     expect(plan(await t.add(there.url, '--move', 'echo', '--expect-pin', movedPin, '--json', '--apply')).applied).toBe(true)
+  })
+
+  it('add --expect-pin: a signed card, a dry run that matches, and a mesh.json that changes during the fetch', async () => {
+    const PIN = 'the card is not the one that was checked (its pin differs): check it again. Nothing changed.'
+    const t = setup('{"schema":1}\n')
+    // a signed card refused for its pin: signed, and no keysNew (refused before the keys are looked up)
+    let changed = false
+    const signed = await signedAgent(K1, (c) => { if (changed) c.description = 'Changed.' })
+    const looked = plan(await t.add(signed.url, '--token-file', t.tokenFile, '--json'))
+    expect(looked.card).toMatchObject({ signed: true, keysNew: true })
+    changed = true
+    const refused = await t.add(signed.url, '--token-file', t.tokenFile, '--expect-pin', looked.card!['pin'] as string, '--json')
+    expect(refused.code).toBe(1)
+    const p = plan(refused)
+    expect(p.refused).toBe(PIN)
+    expect(p.card).toMatchObject({ id: 'echo-agent', signed: true, description: 'Changed.' })
+    expect(p.card).not.toHaveProperty('keysNew')
+    // a dry run with the matching pin succeeds, with one GET of the card and no more
+    const a = await agent()
+    const first = plan(await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--json'))
+    const seen = a.seen.length
+    const dry = await t.add(a.url, '--id', 'echo', '--token-file', t.tokenFile, '--expect-pin', first.card!['pin'] as string, '--json')
+    expect(dry.code).toBe(0)
+    expect(plan(dry)).toEqual(first)
+    expect(a.seen.length - seen).toBe(1)
+    expect(a.seen.every((h) => h.authorization === undefined)).toBe(true)
+
+    // mesh.json is read before the fetch and again after it; here the card server breaks it in between
+    let breakIt: (() => void) | undefined
+    const racing = await agent((origin) => { breakIt?.(); return { body: JSON.stringify(card(origin)) } })
+    const pin = plan(await t.add(racing.url, '--token-file', t.tokenFile, '--json')).card!['pin'] as string
+    const broken = (r: { code: number; out: string; err: string }) => { expect(r.code).toBe(1); return plan(r) }
+    const NOT_JSON = `${meshFile(t.dir)} is not valid JSON. Remove it by hand if you are sure. Nothing changed.`
+    // (a) a wrong pin: the pin's refusal comes first, with the card
+    writeFileSync(meshFile(t.dir), '{"schema":1}\n')
+    breakIt = () => { writeFileSync(meshFile(t.dir), '{"schema":1') }
+    const wrong = broken(await t.add(racing.url, '--token-file', t.tokenFile, '--expect-pin', 'a'.repeat(64), '--json', '--apply'))
+    expect([wrong.refused, wrong.card!['id'], wrong.card!['pin']]).toEqual([PIN, 'echo-agent', pin])
+    // (b) the right pin: the refused mesh.json, with the card
+    writeFileSync(meshFile(t.dir), '{"schema":1}\n')
+    const right = broken(await t.add(racing.url, '--token-file', t.tokenFile, '--expect-pin', pin, '--json', '--apply'))
+    expect([right.refused, right.card!['id'], right.card!['pin']]).toEqual([NOT_JSON, 'echo-agent', pin])
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1')
+    breakIt = undefined
+
+    // (c) another entry holds the card's agent id: refused after the fetch, so the card comes with it
+    writeFileSync(meshFile(t.dir), '{"schema":1}\n')
+    const held = await profiledAgent()
+    expect((await t.add(held.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const holder = await t.add(held.url, '--id', 'echo-two', '--token-file', t.tokenFile, '--json', '--apply')
+    expect(holder.code).toBe(1)
+    const h = plan(holder)
+    expect(h.refused).toBe('the card declares the agent id that agents.echo holds, so it is that agent: to move echo here, add --move echo (its pin and run records stay). Nothing changed.')
+    expect(h.card).toMatchObject({ id: 'echo-two', name: 'Echo Agent', signed: false, pin: json(t.dir).agents.echo.cardSha256 })
   })
 
   it('add --expect-pin takes 64 lower-case hex characters once; anything else is a usage error, with or without --json', async () => {
@@ -1678,15 +1772,20 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
       card: expect.objectContaining({ id: 'echo-agent', name: 'Echo Agent', reach: 'loopback', signed: false, pin }) })
     // a card that cannot be fetched or fails its checks: no card
     const missing = await agent(() => ({ status: 404, body: '{}' }))
-    expect(plan(await t.add(missing.url, '--token-file', t.tokenFile, '--json'))).toEqual({ applied: false, steps: [], refused: 'the card URL answered HTTP 404. Nothing changed.' })
+    const notFound = await t.add(missing.url, '--token-file', t.tokenFile, '--json')
+    expect([notFound.code, plan(notFound)]).toEqual([1, { applied: false, steps: [], refused: 'the card URL answered HTTP 404. Nothing changed.' }])
     // a name that makes no usable id: the card, without an id
     const snowman = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => { c.name = '☃!' })) }))
-    const unusable = plan(await t.add(snowman.url, '--token-file', t.tokenFile, '--json'))
+    const unusableRun = await t.add(snowman.url, '--token-file', t.tokenFile, '--json')
+    expect(unusableRun.code).toBe(1)
+    const unusable = plan(unusableRun)
     expect(unusable.refused).toBe('the card\'s name makes no usable id: pass --id <id>. Nothing changed.')
     expect(unusable.card).not.toHaveProperty('id')
     expect(unusable.card).toMatchObject({ name: '☃!', signed: false })
     const builtIn = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => { c.name = 'Request Post' })) }))
-    const named = plan(await t.add(builtIn.url, '--token-file', t.tokenFile, '--json'))
+    const namedRun = await t.add(builtIn.url, '--token-file', t.tokenFile, '--json')
+    expect(namedRun.code).toBe(1)
+    const named = plan(namedRun)
     expect(named.refused).toMatch(/^request-post is a built-in agent/)
     expect(named.card).not.toHaveProperty('id')
     expect(readFileSync(meshFile(t.dir), 'utf8')).toBe(added)

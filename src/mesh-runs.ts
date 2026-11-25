@@ -186,8 +186,8 @@ function buildLine(agent: string, c: RunCollector, end: RunEnd, now: number): st
         : { task: c.task }
   for (const [key, value] of Object.entries(candidates)) if (value !== undefined && RULES[key]!(value, r)) r[key] = value
   if (r['reason'] !== undefined && !RULES['reason']!(r['reason'], r)) delete r['reason']
-  // the builder's last cap (§5.4): what the run spent goes first, then the lists shorten and the
-  // other optional fields drop, until the line fits
+  // the builder's last cap (§5.4): what the run spent goes first, as one unit, then the lists
+  // shorten and the other optional fields drop, until the line fits
   const optional = [...SPENT, 'warnings', 'classes', 'fields', 'model', 'task', 'timing', 'rules', 'channels', 'brand']
   for (;;) {
     const record = validRun(r)
@@ -196,6 +196,11 @@ function buildLine(agent: string, c: RunCollector, end: RunEnd, now: number): st
     if (Buffer.byteLength(line) <= LINE_MAX) return line
     const key = optional.find((k) => r[k] !== undefined)
     if (!key) return undefined
+    // the three counts go together: the page shows none of them without all three
+    if (SPENT.includes(key)) {
+      for (const k of SPENT) delete r[k]
+      continue
+    }
     const value = r[key]
     if (Array.isArray(value) && value.length > 1) r[key] = value.slice(0, -1)
     else delete r[key]

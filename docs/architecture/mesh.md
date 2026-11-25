@@ -177,7 +177,7 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `outcome`, `reason`, `classes`, `task`; for unslop `status`, `bytesIn`, `attempts`, `model`,
   `rules`, `timing`, `warnings`, and for both model agents what the run spent: `calls` (0 to
   100 000), `tokensIn` and `tokensOut` (0 to 10^12), copied from the result's `calls` and
-  `tokens { in, out }` and the first fields dropped when a record would pass the line cap; for request-post `phase`, `created`, `throughGo`, `fields`, and
+  `tokens { in, out }` and dropped together, first, when a record would pass the line cap; for request-post `phase`, `created`, `throughGo`, `fields`, and
   `channels` and `brand` on exit 0 only. Never text, a prompt, a query, an answer, a title, a
   URL, a page id, a request key (derived or caller-chosen), a token or the caller's identity.
   Files dated before the kept period (the 30 local dates ending today) are deleted by

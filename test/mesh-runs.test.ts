@@ -523,7 +523,11 @@ for (let i = 0; i < 50; i++) appendRun(${JSON.stringify(dir)}, 'unslop', { armed
     const line = readFileSync(file).subarray(1)
     expect(line.length).toBeGreaterThan(400)
     expect(line.length).toBeLessThanOrEqual(512)
-    expect(JSON.parse(line.toString('utf8'))).toMatchObject({ outcome: 'kept-original', reason: `r${'x'.repeat(39)}`, status: 'kept-original' })
+    const unslop = JSON.parse(line.toString('utf8'))
+    expect(unslop).toMatchObject({ outcome: 'kept-original', reason: `r${'x'.repeat(39)}`, status: 'kept-original' })
+    // what it spent went first, as one unit; the facts after it in the drop order are still there
+    for (const key of ['calls', 'tokensIn', 'tokensOut']) expect(unslop).not.toHaveProperty(key)
+    expect(Object.keys(unslop)).toEqual(expect.arrayContaining(['timing', 'rules']))
 
     // unslop-code's largest record fits too; what it spent is the first thing it gives up
     const code: RunCollector = {
@@ -536,8 +540,20 @@ for (let i = 0; i < 50; i++) appendRun(${JSON.stringify(dir)}, 'unslop', { armed
     const codeLine = readFileSync(codeFile).subarray(1)
     expect(codeLine.length).toBeLessThanOrEqual(512)
     const kept = JSON.parse(codeLine.toString('utf8'))
-    expect(kept).toMatchObject({ outcome: 'failed', status: 'failed', files: 40, removed: Number.MAX_SAFE_INTEGER })
-    expect(kept).not.toHaveProperty('calls')
+    expect(kept).toMatchObject({ outcome: 'failed', status: 'failed', files: 40, removed: Number.MAX_SAFE_INTEGER, task: 'T'.repeat(64) })
+    expect(kept.timing).toEqual({ queued: 1e12, load: 1e12, model: 1e12 })
+    for (const key of ['calls', 'tokensIn', 'tokensOut']) expect(kept).not.toHaveProperty(key)
+
+    // at every size around the cap the three go together: never a token count without the others
+    for (let length = 1; length <= 64; length++) {
+      appendRun(dir, 'unslop-code', { ...code, task: 'T'.repeat(length) }, { exit: 13 })
+      const last = readFileSync(codeFile, 'utf8').split('\n').filter(Boolean).at(-1)!
+      expect(Buffer.byteLength(last) + 2, String(length)).toBeLessThanOrEqual(512)
+      const record = JSON.parse(last)
+      const present = ['calls', 'tokensIn', 'tokensOut'].filter((key) => key in record)
+      expect(present.length === 0 || present.length === 3, `${length}: ${present.join()}`).toBe(true)
+      expect(record, String(length)).toHaveProperty('timing')
+    }
 
     // 300 bytes under the cap: a record over 300 bytes is refused, a shorter one fits
     privateFile(file, `${'x'.repeat(256 * 1024 - 301)}\n`)

@@ -9,7 +9,7 @@
 import { randomBytes } from 'node:crypto'
 import { DEFAULT_SAMPLING, addTokens, checkApiKey, checkBaseUrl, classify, post as httpPost, requestBody } from './backend.js'
 import type { BackendProfile, Post, Sampling, Tokens, TransportReason } from './backend.js'
-import { lineTexts, questionMessages, windows } from './code-prompt.js'
+import { isTestPath, lineTexts, questionMessages, windows } from './code-prompt.js'
 import type { Question } from './code-prompt.js'
 import { commentLines, decide, parsePoints, parseSuggestions, patchFor, removeLines, sameProgram, suggestionsFor } from './code-slop.js'
 import type { Decision, DropReason, Suggestion } from './code-slop.js'
@@ -155,7 +155,7 @@ export async function runCodeSlop(task: CodeSlopTask, env: CodeSlopEnv): Promise
   let tokensPerS = DEFAULT_TOKENS_PER_S
 
   /** One question: the answer's text, null for an unusable answer, 'time' when the time left cannot cover it, or a Stop. */
-  const askModel = async (question: Question, shown: string): Promise<string | null | 'time' | Stop> => {
+  const askModel = async (question: Question, shown: string, testFile: boolean): Promise<string | null | 'time' | Stop> => {
     const left = deadline - now()
     if (left < (ANSWER_TOKENS / tokensPerS) * 1000) return 'time'
     env.onState?.(question)
@@ -163,7 +163,7 @@ export async function runCodeSlop(task: CodeSlopTask, env: CodeSlopEnv): Promise
     const sent = now()
     let http
     try {
-      http = await (env.post ?? httpPost)(url, requestBody(profile, questionMessages(question, shown), ANSWER_TOKENS), headers, { timeoutMs: left, signal: task.signal })
+      http = await (env.post ?? httpPost)(url, requestBody(profile, questionMessages(question, shown, { testFile }), ANSWER_TOKENS), headers, { timeoutMs: left, signal: task.signal })
     } catch (error) {
       const reason = (error as { reason?: TransportReason }).reason
       // a call that ran out of time ends the run as the budget does: decided files are kept (Claude Code D5)
@@ -199,7 +199,7 @@ export async function runCodeSlop(task: CodeSlopTask, env: CodeSlopEnv): Promise
     let reason: string | undefined
     for (let q = 0; q < plan.length; q++) {
       const question = plan[q]!
-      const answer = await askModel(question, shown)
+      const answer = await askModel(question, shown, isTestPath(file.path))
       if (answer === 'time' || (answer && typeof answer === 'object')) {
         // this file and every later one are not reached; files already decided keep their results
         for (const rest of prepared.slice(results.length)) results.push('status' in rest ? rest : fileResult(rest.file.path, 'not-reached'))

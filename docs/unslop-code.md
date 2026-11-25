@@ -9,6 +9,9 @@ it, it holds one whole-line `//` comment and nothing else, and the guards in
 `packages/mesh/src/code-slop.ts` allow it. The result is a deletions-only patch. Code is never
 rewritten; other things the model noticed come back as suggestions, which nothing applies.
 
+In a test file, a short comment that names what the next lines check stays. Section dividers and
+step numbers still go.
+
 It is opt-in and off by default. The implementation notes are in
 [`docs/architecture/mesh.md`](architecture/mesh.md) (the unslop-code sections).
 

@@ -5,7 +5,8 @@
 // column (`  12+| ` for an added line, `  12 | ` otherwise). It is asked three
 // questions, each on its own: which added comments are slop (`{"remove":[…]}`),
 // which comments shown a maintainer needs (`{"keep":[…]}`), and which added lines
-// hold other slop (`{"suggest":[…]}`). It never returns code: code decides
+// hold other slop (`{"suggest":[…]}`). For a test file the first question is
+// preceded by one sentence that keeps step notes. It never returns code: code decides
 // (src/code-slop.ts). The numbered text is untrusted data: it goes in the user
 // message alone, and since every line of it starts with a line number or is `…`,
 // nothing in it can pass for the end of the data.
@@ -27,6 +28,16 @@ const PREAMBLE = [
 ].join('\n')
 
 const MARKS = 'Only lines marked + count: never point at a line without the +.'
+
+/**
+ * Said before the remove question for a test file. A short comment that names what a test's next
+ * step checks reads as narration to a model, and two careful readers split on whether it is noise;
+ * by default it stays. Dividers and step numbers still go.
+ */
+export const TEST_FILE_NOTE = 'This is a test file. In it, a short comment that names what the lines after it check is not slop: never point at it. Section dividers and step numbers still are slop.'
+
+/** Whether a repository path is a test file: in a test, tests, spec or __tests__ folder, or named *.test.* or *.spec.* (JavaScript or TypeScript). */
+export const isTestPath = (path: string): boolean => /(^|\/)(tests?|spec|__tests__)\/|\.(test|spec)\.[cm]?[jt]sx?$/.test(path)
 
 export const QUESTIONS: Record<Question, string> = {
   remove: `The numbered code below was just written by an AI coding agent. Point at the comments that are AI slop: comments that restate what the code does, narrate steps ("Step 1", "Loop through", "Return the result"), apologise, or mark sections. Do not point at comments that explain why the code is the way it is, document what a function is for, or record a constraint.
@@ -74,9 +85,11 @@ export function windows(source: string, added: Iterable<number>, context = CONTE
   return out.join('\n')
 }
 
-export function questionMessages(question: Question, shown: string): Message[] {
+export function questionMessages(question: Question, shown: string, options: { testFile?: boolean } = {}): Message[] {
+  // the note goes before the question, so the question (and its answer shape) still ends the message
+  const note = question === 'remove' && options.testFile ? `${TEST_FILE_NOTE}\n\n` : ''
   return [
-    { role: 'system', content: `${PREAMBLE}\n\n${QUESTIONS[question]}` },
+    { role: 'system', content: `${PREAMBLE}\n\n${note}${QUESTIONS[question]}` },
     { role: 'user', content: shown },
   ]
 }

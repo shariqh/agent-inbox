@@ -1581,6 +1581,63 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(existsSync(meshFile(other.dir))).toBe(false)
   })
 
+  it('add --expect-pin adds only the card that was looked at: a changed card is refused first, writing nothing', async () => {
+    let changed = false
+    const a = await agent((origin) => ({ body: JSON.stringify(card(origin, (c) => { if (changed) c.description = 'Changed.' })) }))
+    const t = setup('{"schema":1}\n')
+    const looked = plan(await t.add(a.url, '--token-file', t.tokenFile, '--json'))
+    const pin = looked.card!['pin'] as string
+    const PIN = 'the card is not the one that was checked (its pin differs): check it again. Nothing changed.'
+    changed = true
+    // the dry run checks it too, in both forms
+    const dry = await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', pin)
+    expect([dry.code, dry.out, dry.err]).toEqual([1, '', `Refused: ${PIN}\n`])
+    const refused = await t.add(a.url, '--expect-pin', pin, '--token-file', t.tokenFile, '--json', '--apply')
+    expect(refused.code).toBe(1)
+    const p = plan(refused)
+    expect(p).toEqual({ applied: false, steps: [], refused: PIN, card: { ...looked.card, description: 'Changed.', pin: expect.stringMatching(/^[0-9a-f]{64}$/) } })
+    expect(p.card!['pin']).not.toBe(pin)
+    expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1}\n')
+    expect(readdirSync(t.dir)).toEqual(['mesh.json'])
+    // the card that was looked at is added
+    const newPin = p.card!['pin'] as string
+    const on = await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', newPin, '--apply')
+    expect(on.code, on.err).toBe(0)
+    expect(json(t.dir).agents['echo-agent'].cardSha256).toBe(newPin)
+    // a changed card gets this refusal whatever else is wrong: here its derived id is taken, and a --move would see another pin
+    changed = false
+    const taken = plan(await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', newPin, '--json', '--apply'))
+    expect([taken.refused, taken.card!['id'], taken.card!['pin']]).toEqual([PIN, 'echo-agent', pin])
+    expect(plan(await t.add(a.url, '--token-file', t.tokenFile, '--expect-pin', pin, '--json')).refused).toMatch(/^the id echo-agent is already in /)
+    const profiledA = await profiledAgent()
+    expect((await t.add(profiledA.url, '--id', 'echo', '--token-file', t.tokenFile, '--apply')).code).toBe(0)
+    const movedPin = json(t.dir).agents.echo.cardSha256
+    const elsewhere = await profiledAgent((c) => { c.description = 'Changed.' })
+    const move = plan(await t.add(elsewhere.url, '--move', 'echo', '--expect-pin', movedPin, '--json', '--apply'))
+    expect([move.refused, move.card!['id']]).toEqual([PIN, 'echo'])
+    expect(move.card).not.toHaveProperty('keysNew')
+    expect(json(t.dir).agents.echo.card).toBe(profiledA.url)
+    // with --move and the right pin it moves
+    const there = await profiledAgent()
+    expect(plan(await t.add(there.url, '--move', 'echo', '--expect-pin', movedPin, '--json', '--apply')).applied).toBe(true)
+  })
+
+  it('add --expect-pin takes 64 lower-case hex characters once; anything else is a usage error, with or without --json', async () => {
+    const a = await agent()
+    const t = setup()
+    const hex = 'a'.repeat(64)
+    for (const argv of [['--expect-pin'], ['--expect-pin', 'abc'], ['--expect-pin', 'A'.repeat(64)], ['--expect-pin', 'a'.repeat(65)], ['--expect-pin', 'g'.repeat(64)],
+      ['--expect-pin', `sha256 ${hex}`], ['--expect-pin', hex, '--expect-pin', hex]]) {
+      for (const form of [[], ['--json']]) {
+        const bad = await t.add(a.url, '--token-file', t.tokenFile, ...argv, ...form)
+        expect([bad.code, bad.out], [...argv, ...form].join(' ')).toEqual([2, ''])
+        expect(bad.err).toMatch(/^usage: agent-inbox-meshctl/)
+      }
+    }
+    expect(a.connections()).toBe(0)
+    expect(readdirSync(t.dir)).toEqual([])
+  })
+
   it('add --json: a refusal before the fetch carries no card, one after it carries the card; usage stays text', async () => {
     const a = await agent()
     const t = setup('{"schema":1}\n')

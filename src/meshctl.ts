@@ -1559,23 +1559,26 @@ async function addAgent(args: string[], io: MeshctlIo, plan?: Plan): Promise<num
   let move: string | undefined
   let tokenFile: string | undefined
   let thumbprint: string | undefined
+  let expectPin: string | undefined
   let apply = false
   let asJson = false
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
     if (arg === '--apply' && !apply) apply = true
     else if (arg === '--json' && plan && !asJson) asJson = true
-    else if (arg === '--id' || arg === '--move' || arg === '--token-file' || arg === '--key-thumbprint') {
+    else if (arg === '--id' || arg === '--move' || arg === '--token-file' || arg === '--key-thumbprint' || arg === '--expect-pin') {
       const value = args[++i]
-      if (value === undefined || (arg === '--id' ? id : arg === '--move' ? move : arg === '--token-file' ? tokenFile : thumbprint) !== undefined) return usage()
+      if (value === undefined || (arg === '--id' ? id : arg === '--move' ? move : arg === '--token-file' ? tokenFile : arg === '--key-thumbprint' ? thumbprint : expectPin) !== undefined) return usage()
       if (arg === '--id') id = value
       else if (arg === '--move') move = value
       else if (arg === '--token-file') tokenFile = value
-      else thumbprint = value
+      else if (arg === '--key-thumbprint') thumbprint = value
+      else expectPin = value
     } else if (!arg.startsWith('-') && cardUrl === undefined) cardUrl = arg
     else return usage()
   }
-  if (cardUrl === undefined || (id !== undefined && move !== undefined)) return usage()
+  // --expect-pin (D2): the pin of the card that was looked at, as the dry run prints it
+  if (cardUrl === undefined || (id !== undefined && move !== undefined) || (expectPin !== undefined && !/^[0-9a-f]{64}$/.test(expectPin))) return usage()
   const idBad = id === undefined ? undefined : idRefusal(id)
   if (idBad) return refuse(idBad)
   const moveBad = move === undefined ? undefined : idRefusal(move)
@@ -1648,16 +1651,20 @@ async function addAgent(args: string[], io: MeshctlIo, plan?: Plan): Promise<num
 
   const existing = readMesh(file)
   const agents = agentsOf(existing)
-  if (typeof agents === 'string') return refuse(agents)
-  const holder = profile === undefined ? undefined : Object.keys(agents).find((key) => {
-    const read = addedEntry(key, agents[key])
+  // read as no entry when mesh.json is refused, so a changed card's refusal comes first (D2)
+  const listed = typeof agents === 'string' ? {} : agents
+  const holder = profile === undefined ? undefined : Object.keys(listed).find((key) => {
+    const read = addedEntry(key, listed[key])
     return read !== undefined && read !== 'invalid' && read.agentId === profile.id
   })
   // the signed move (§3.4): the holder's pinned keys signed this card, so it is that agent
-  const held = holder === undefined ? undefined : addedEntry(holder, agents[holder])
+  const held = holder === undefined ? undefined : addedEntry(holder, listed[holder])
   const endorsed = held !== undefined && held !== 'invalid' && (held.keyThumbprints ?? []).some((k) => signedBy.includes(k))
   const target = move ?? (endorsed && id === undefined ? holder : undefined)
   cardId = id ?? target ?? cardId
+  // the card that was looked at, or nothing (D2): before any other refusal, in the dry run too
+  if (expectPin !== undefined && pin !== expectPin) return refuse('the card is not the one that was checked (its pin differs): check it again')
+  if (typeof agents === 'string') return refuse(agents)
   const pinned = { ...(verdict.keys.length ? { keyThumbprints: verdict.keys } : {}) }
   let agentId: string
   let entry: Record<string, unknown>

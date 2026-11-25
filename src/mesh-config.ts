@@ -219,6 +219,150 @@ export function readMesh(file: string): MeshRead {
   return parsed.ok ? { kind: 'present', doc: parsed.doc } : { kind: 'refused', reason: MESH_REASONS[parsed.reason] }
 }
 
+// ── model servers (model servers step 1, D1) ─────────────────────────────────
+// `<mesh dir>/mesh/servers.json` names each model server once: its address and its key SOURCE
+// (`{ file }`, `{ command }` or `{ env }`, never a key). A local agent's profile names a server
+// instead of holding `baseUrl` and `apiKey` itself. packages/mesh/src/mesh-config.ts reads the file
+// by this same rule; the cases in test/fixtures/servers-json/ hold both to the same verdicts.
+// A file that breaks any rule is refused whole, with a reason that names the rule and never a value.
+
+export const SERVERS_SCHEMA = 1
+const SERVERS_FILE_MAX = 64 * 1024
+export const SERVERS_MAX = 32
+export const SERVER_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
+/** A model name, as `enable --model` takes it and `server check` lists it. */
+export const MODEL_NAME = /^[A-Za-z0-9._:/-]{1,64}$/
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+const PRINTABLE = /^[^\x00-\x1f\x7f]{0,4096}$/
+export const serversFile = (dir: string): string => join(dir, 'mesh', 'servers.json')
+
+export type KeySource = { file: string } | { command: string[] } | { env: string }
+export type ServerEntry = { baseUrl: string; apiKey?: KeySource }
+export type ServersReason = 'not-regular' | 'not-private' | 'too-large' | 'unreadable' | 'not-json' | 'not-object' | 'no-schema' | 'newer-schema'
+  | 'unknown-key' | 'no-servers' | 'too-many' | 'bad-name' | 'bad-entry' | 'bad-base-url' | 'bad-api-key'
+export type ServersRead =
+  | { kind: 'missing' }
+  | { kind: 'refused'; reason: ServersReason }
+  | { kind: 'present'; servers: Record<string, ServerEntry> }
+
+// fixed words for each refusal: never a value from the file
+export const SERVERS_REASONS: Record<ServersReason, string> = {
+  'not-regular': 'is not a regular file (a symlink, folder or device)',
+  'not-private': 'is not a file you own that only you can read (chmod 600 it)',
+  'too-large': `is larger than ${SERVERS_FILE_MAX} bytes`,
+  unreadable: 'cannot be read',
+  'not-json': 'is not valid JSON',
+  'not-object': 'is not a JSON object',
+  'no-schema': 'has no valid "schema"',
+  'newer-schema': `was written by a newer Agent Inbox (schema above ${SERVERS_SCHEMA})`,
+  'unknown-key': 'holds a key this build does not know (the file holds only schema and servers, a server only baseUrl and apiKey)',
+  'no-servers': 'has no "servers" object',
+  'too-many': `holds more than ${SERVERS_MAX} servers`,
+  'bad-name': 'holds a server name that is not 1 to 40 lower-case letters, digits or "-" (starting with a letter or digit)',
+  'bad-entry': 'holds a server that is not an object',
+  'bad-base-url': 'holds a baseUrl that is not https://, or http:// on a loopback address, without credentials, a query or a fragment',
+  'bad-api-key': 'holds an apiKey that is not { "file": "/absolute/path" }, { "command": ["/absolute/path", "arg"] } or { "env": "NAME" }',
+}
+
+/**
+ * Why `raw` is not a model server's base URL, in fixed words, or undefined when it is one. The
+ * same rule as packages/mesh's checkBaseUrl, plus one: printable ASCII only, at most 2048 bytes.
+ */
+export function baseUrlRefusal(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !/^[\x21-\x7e]{1,2048}$/.test(raw)) return 'the address must be one URL of at most 2048 printable characters, without spaces'
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return 'the address is not a URL'
+  }
+  const loopback = /^127(?:\.\d{1,3}){3}$/.test(url.hostname) || url.hostname === '[::1]'
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return 'the address must be https://, or http:// on a loopback address'
+  if (url.username || url.password || url.search || url.hash) return 'the address must not carry credentials, a query or a fragment'
+  if (/\/\/|\\/.test(url.pathname) || raw.includes('\\')) return 'the address path must not contain // or a backslash'
+  const out = new URL(url.href)
+  out.pathname = `${url.pathname.replace(/\/+$/, '')}/v1/chat/completions`
+  return out.origin === url.origin ? undefined : 'the address changed origin'
+}
+
+/** Whether `value` is a key source by shape: exactly one of file, command or env. It is never read here. */
+export function isKeySource(value: unknown): value is KeySource {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  if (keys.length !== 1) return false
+  const v = (value as Record<string, unknown>)[keys[0]!]
+  if (keys[0] === 'file') return typeof v === 'string' && PRINTABLE.test(v) && (v.startsWith('/') || v.startsWith('~/'))
+  if (keys[0] === 'env') return typeof v === 'string' && ENV_NAME.test(v)
+  if (keys[0] === 'command') {
+    return Array.isArray(v) && v.length >= 1 && v.length <= 64 && v.every((s) => typeof s === 'string' && PRINTABLE.test(s)) && (v[0] as string).startsWith('/')
+  }
+  return false
+}
+
+/** The kind of a server's key source, the only thing about it meshctl prints. */
+export const keyKind = (entry: ServerEntry): 'file' | 'command' | 'env' | 'none' =>
+  entry.apiKey === undefined ? 'none' : 'file' in entry.apiKey ? 'file' : 'command' in entry.apiKey ? 'command' : 'env'
+
+/** The servers in `text` by the one rule, or the first rule it breaks. */
+export function parseServers(text: string): { ok: true; servers: Record<string, ServerEntry> } | { ok: false; reason: ServersReason } {
+  if (text.length > SERVERS_FILE_MAX) return { ok: false, reason: 'too-large' }
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return { ok: false, reason: 'not-json' }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, reason: 'not-object' }
+  const doc = value as Record<string, unknown>
+  const schema = doc['schema']
+  if (!Number.isSafeInteger(schema) || (schema as number) < 1) return { ok: false, reason: 'no-schema' }
+  if ((schema as number) > SERVERS_SCHEMA) return { ok: false, reason: 'newer-schema' }
+  if (Object.keys(doc).some((key) => key !== 'schema' && key !== 'servers')) return { ok: false, reason: 'unknown-key' }
+  const list = doc['servers']
+  if (!list || typeof list !== 'object' || Array.isArray(list)) return { ok: false, reason: 'no-servers' }
+  const entries = Object.entries(list as Record<string, unknown>)
+  if (entries.length > SERVERS_MAX) return { ok: false, reason: 'too-many' }
+  const servers: Record<string, ServerEntry> = {}
+  for (const [name, entry] of entries) {
+    if (!SERVER_NAME.test(name)) return { ok: false, reason: 'bad-name' }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { ok: false, reason: 'bad-entry' }
+    const e = entry as Record<string, unknown>
+    if (Object.keys(e).some((key) => key !== 'baseUrl' && key !== 'apiKey')) return { ok: false, reason: 'unknown-key' }
+    if (baseUrlRefusal(e['baseUrl'])) return { ok: false, reason: 'bad-base-url' }
+    if (Object.hasOwn(e, 'apiKey') && !isKeySource(e['apiKey'])) return { ok: false, reason: 'bad-api-key' }
+    servers[name] = { baseUrl: e['baseUrl'] as string, ...(Object.hasOwn(e, 'apiKey') ? { apiKey: e['apiKey'] as KeySource } : {}) }
+  }
+  return { ok: true, servers }
+}
+
+/** Reads `servers.json` by the one rule: a regular file you own that only you can read, at most 64 KiB. */
+export function readServers(dir: string): ServersRead {
+  const file = serversFile(dir)
+  let text: string
+  try {
+    if (!lstatSync(file).isFile()) return { kind: 'refused', reason: 'not-regular' }
+    const fd = openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    try {
+      const stat = fstatSync(fd)
+      if (!stat.isFile()) return { kind: 'refused', reason: 'not-regular' }
+      if ((process.getuid && stat.uid !== process.getuid()) || stat.mode & 0o077) return { kind: 'refused', reason: 'not-private' }
+      if (stat.size > SERVERS_FILE_MAX) return { kind: 'refused', reason: 'too-large' }
+      text = readFileSync(fd, 'utf8')
+    } finally {
+      closeSync(fd)
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return { kind: 'missing' }
+    return { kind: 'refused', reason: code === 'ELOOP' ? 'not-regular' : 'unreadable' }
+  }
+  const parsed = parseServers(text)
+  return parsed.ok ? { kind: 'present', servers: parsed.servers } : { kind: 'refused', reason: parsed.reason }
+}
+
+/** The text meshctl writes: schema 1 and the servers, in the order given. */
+export const serversText = (servers: Record<string, ServerEntry>): string => `${JSON.stringify({ schema: SERVERS_SCHEMA, servers }, null, 2)}\n`
+
 /** The port of an `agents.unslop.endpoint`: only http://127.0.0.1:<port>, never port 80 (clients drop `:80` from Host). */
 export function loopbackPort(endpoint: unknown): number | undefined {
   // never String() a hand-edited object: one whose toString is not callable throws

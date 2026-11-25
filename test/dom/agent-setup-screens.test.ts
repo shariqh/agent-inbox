@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path'
 import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
-import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, fakeBridge, server } from './agent-setup-fake.js'
+import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, fakeBridge, server } from './agent-setup-fake.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -425,10 +425,52 @@ describe('Check and Remove on a server’s row (D3)', () => {
     await settle()
     expect(row('local')!.querySelector('.ms-row-note')?.textContent).toBe('reachable · 2 models')
     expect(document.activeElement).toBe(buttonLabelled('Check', row('local')!))
-    bridge.s.answers['check-server'] = () => ({ ok: true, reachable: false, failure: 'unauthorized', models: [], skipped: 0 })
+    bridge.s.answers['check-server'] = () => checked('unauthorized')
     click(buttonLabelled('Check', row('local')!))
     await settle()
     expect(row('local')!.querySelector('.ms-row-note')?.textContent).toBe('The server refused the key.')
+  })
+
+  it('every failed check has its own plain words, in the shape the app really answers', async () => {
+    const { bridge } = await boot({ bridge: { servers: [server('local')] } })
+    await enter()
+    const WORDS: Record<string, string> = {
+      unreachable: 'The server did not answer.',
+      unauthorized: 'The server refused the key.',
+      'not-a-model-server': 'This address does not answer as a model server.',
+      timeout: 'The server did not answer in time.',
+      key: 'The key could not be read.',
+    }
+    for (const [failure, words] of Object.entries(WORDS)) {
+      const answer = checked(failure)
+      // the app's answer for a check that ran and failed: not ok, the failure, and no reason
+      expect(answer, failure).toEqual({ ok: false, reachable: false, failure, models: [], skipped: 0 })
+      bridge.s.answers['check-server'] = () => answer
+      click(buttonLabelled('Check', row('local')!))
+      await settle()
+      expect(row('local')!.querySelector('.ms-row-note')?.textContent, failure).toBe(words)
+    }
+  })
+
+  it('a key the app cannot read says why, by where the key comes from', async () => {
+    const { bridge } = await boot({ bridge: { servers: [server('by-command', { key: 'command' }), server('by-variable', { key: 'env' }), server('by-file', { key: 'file' })] } })
+    await enter()
+    bridge.s.answers['check-server'] = () => checked('key')
+    const WORDS: Record<string, string> = {
+      'by-command': 'The key’s command gave no key here. The app runs it without your shell’s settings (docs/model-servers.md).',
+      'by-variable': 'The key is in a shell variable, and the app does not see your shell’s variables (docs/model-servers.md).',
+      'by-file': 'The key file could not be read: it is missing, empty or open to other accounts.',
+    }
+    for (const [name, words] of Object.entries(WORDS)) {
+      click(buttonLabelled('Check', row(name)!))
+      await settle()
+      expect(row(name)!.querySelector('.ms-row-note')?.textContent, name).toBe(words)
+    }
+    // another failure on the same server keeps its own words
+    bridge.s.answers['check-server'] = () => checked('unreachable')
+    click(buttonLabelled('Check', row('by-command')!))
+    await settle()
+    expect(row('by-command')!.querySelector('.ms-row-note')?.textContent).toBe('The server did not answer.')
   })
 
   it('Remove asks in place, Cancel puts it back, and a refusal shows in the row', async () => {
@@ -587,7 +629,7 @@ describe('setting up an agent (D4)', () => {
     // two servers: none is chosen for the person
     expect(select('server').value).toBe('')
     expect(bridge.ops()).toEqual([])
-    bridge.s.answers['check-server'] = () => ({ ok: true, reachable: false, failure: 'unreachable', models: [], skipped: 0 })
+    bridge.s.answers['check-server'] = () => checked('unreachable')
     choose(select('server'), 'lab')
     await settle()
     expect(shown(select('model'))).toBe(false)
@@ -600,6 +642,24 @@ describe('setting up an agent (D4)', () => {
     expect(bridge.ops().at(-1)).toEqual(['enable-model-agent', { agent: 'unslop-code', server: 'lab', model: 'qwen3-coder:30b', apply: false }])
   })
 
+  it('a server whose key the app cannot read still sets up: the model is typed, and the line says why', async () => {
+    const { bridge } = await boot({ bridge: { servers: [server('local'), server('lab', { key: 'command' })] } })
+    await enter()
+    click(offer('unslop-code')!.querySelector('.ma-description'))
+    await settle()
+    bridge.s.answers['check-server'] = () => checked('key')
+    choose(select('server'), 'lab')
+    await settle()
+    expect(shown(select('model'))).toBe(false)
+    expect(shown(field('model'))).toBe(true)
+    expect(setup().querySelector('.ms-model-why')?.textContent).toBe('The key’s command gave no key here. The app runs it without your shell’s settings (docs/model-servers.md).')
+    expect(document.activeElement).toBe(field('model'))
+    type(field('model'), 'coder-next')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(bridge.ops().at(-1)).toEqual(['enable-model-agent', { agent: 'unslop-code', server: 'lab', model: 'coder-next', apply: false }])
+  })
+
   it('while the models are asked the list says so; a server with none lists none', async () => {
     const { bridge } = await boot({ bridge: { servers: [server('local')] } })
     await enter()
@@ -608,7 +668,7 @@ describe('setting up an agent (D4)', () => {
     await settle()
     expect([...select('model').options].map((o) => o.textContent)).toEqual(['asking the server…'])
     expect(select('model').disabled).toBe(true)
-    bridge.s.answers['check-server'] = () => ({ ok: true, reachable: true, models: [], skipped: 0 })
+    bridge.s.answers['check-server'] = () => checked(undefined, [])
     release()
     await settle()
     expect(shown(field('model'))).toBe(true)

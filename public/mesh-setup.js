@@ -36,6 +36,13 @@ const CHECKS = {
   timeout: 'The server did not answer in time.',
   key: 'The key could not be read.',
 }
+// a key the app could not read, by where it comes from. The app runs the command with a short fixed
+// environment, never the shell's: a variable is not there, and a command that needs one gives nothing.
+const KEY_CHECKS = {
+  command: 'The key’s command gave no key here. The app runs it without your shell’s settings (docs/model-servers.md).',
+  env: 'The key is in a shell variable, and the app does not see your shell’s variables (docs/model-servers.md).',
+  file: 'The key file could not be read: it is missing, empty or open to other accounts.',
+}
 const SERVER_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
 const MODEL_NAME = /^[A-Za-z0-9._:/-]{1,64}$/
 // the server list's last entry; no server name can start with a space
@@ -53,11 +60,22 @@ function problem(answer) {
   return reasonText(typeof answer.reason === 'string' ? answer.reason : 'failed')
 }
 
-function checkText(answer) {
-  const words = problem(answer)
-  if (words !== null) return words
-  if (answer.reachable === true) return `reachable · ${plural(strings(answer.models).length, 'model')}`
-  return CHECKS[answer.failure] ?? CHECKS.unreachable
+/**
+ * A check that ran and found the server unusable. The bridge answers it `ok: false` with the
+ * `failure` and no `reason`: it is the check's result, not a step that did not work.
+ */
+const failedCheck = (answer) => Boolean(answer) && typeof answer === 'object' && answer.ok !== true && typeof answer.reason !== 'string'
+  && !answer.refused && typeof answer.failure === 'string' && Object.hasOwn(CHECKS, answer.failure)
+
+/** A check's result in words. `keyKind`: where the server's key comes from, for a key that could not be read. */
+function checkText(answer, keyKind) {
+  if (!failedCheck(answer)) {
+    const words = problem(answer)
+    if (words !== null) return words
+    if (answer.reachable === true) return `reachable · ${plural(strings(answer.models).length, 'model')}`
+  }
+  if (answer.failure === 'key' && typeof keyKind === 'string' && Object.hasOwn(KEY_CHECKS, keyKind)) return KEY_CHECKS[keyKind]
+  return Object.hasOwn(CHECKS, answer.failure) ? CHECKS[answer.failure] : CHECKS.unreachable
 }
 
 function httpAddress(text) {
@@ -404,9 +422,12 @@ export function installMeshSetup(deps) {
     setDisabled(section.querySelector('.ms-add'), busy())
   }
 
+  // where a server's key comes from, by the list the page last read
+  const keyKindOf = (name) => (servers?.list ?? []).find((server) => server.name === name)?.key
+
   async function checkRow(name, { focus = true } = {}) {
     await act(`check:${name}`, async () => {
-      notes.set(name, checkText(await call('check-server', { name })))
+      notes.set(name, checkText(await call('check-server', { name }), keyKindOf(name)))
     })
     if (focus) settleFocus(() => rowEls.get(name)?.querySelector('.ms-check'))
   }
@@ -763,15 +784,16 @@ export function installMeshSetup(deps) {
       page.model = { server: name, state: 'asking', models: [], why: '' }
       await act('models', async () => {
         const answer = await call('check-server', { name })
-        notes.set(name, checkText(answer))
+        const said = checkText(answer, keyKindOf(name))
+        notes.set(name, said)
         if (page !== mine || page.values.server !== name) return
-        const words = problem(answer)
-        const models = words === null && answer.reachable === true ? strings(answer.models) : []
+        const reached = !failedCheck(answer) && problem(answer) === null && answer.reachable === true
+        const models = reached ? strings(answer.models) : []
         if (models.length) {
           page.model = { server: name, state: 'list', models, why: '' }
           if (models.length === 1) page.values.model = models[0]
         } else {
-          page.model = { server: name, state: 'typed', models: [], why: words ?? (answer.reachable === true ? 'The server lists no models.' : CHECKS[answer.failure] ?? CHECKS.unreachable) }
+          page.model = { server: name, state: 'typed', models: [], why: reached ? 'The server lists no models.' : said }
         }
       })
       const model = () => (page === mine && els ? els.form.querySelector(page.model.state === 'typed' ? '.ms-model-text' : '.ms-model-list') : null)

@@ -2,6 +2,8 @@
 // the Agent cards tab's set-up screens (agent setup in the app, step 2b): it records every operation
 // with its values, answers each as the preload would, and can hold an answer to show a run in flight.
 // Nothing runs: no command, no file, no home.
+import meshProcess from '../../electron/mesh-process.cjs'
+
 type Json = Record<string, unknown>
 
 /** The built-ins that are not on, as src/mesh-agents.ts answers them (D8). */
@@ -15,6 +17,17 @@ export const ALL_OFFERED = [OFFERED['unslop']!, OFFERED['unslop-code']!, OFFERED
 export const server = (name: string, over: Json = {}): Json => ({ name, baseUrl: `http://127.0.0.1:8080/${name}`, key: 'none', agents: [], ...over })
 
 export const HANDLE = 'a1'.repeat(16)
+
+/**
+ * A server check's answer, shaped by the real bridge (`meshAnswer`) from the command's own output and
+ * exit code, so a test cannot hand the page an answer the app never gives. A check that ran and found
+ * the server unusable exits 1: the bridge answers `ok: false` with the `failure` and no `reason`.
+ */
+export const checked = (failure?: string, models: string[] = ['model-a', 'model-b']): Json =>
+  meshProcess.meshAnswer('check', JSON.stringify({
+    server: 'local', baseUrl: 'http://127.0.0.1:8080/local', key: 'none', reachable: failure === undefined,
+    ...(failure === undefined ? {} : { failure }), models: failure === undefined ? models : [], skipped: 0,
+  }), failure === undefined ? 0 : 1) as Json
 
 export function fakeBridge(init: { available?: Json; servers?: Json[]; inline?: string[] } = {}) {
   const s = {
@@ -40,7 +53,7 @@ export function fakeBridge(init: { available?: Json; servers?: Json[]; inline?: 
       const answer = s.answers[operation]
       if (answer) return answer(values)
       if (operation === 'servers') return { ok: true, servers: s.servers, inline: s.inline }
-      if (operation === 'check-server') return { ok: true, reachable: true, models: ['model-a', 'model-b'], skipped: 0 }
+      if (operation === 'check-server') return checked()
       return { ok: true, applied: values['apply'] === true, steps: values['apply'] === true ? [] : ['Write mesh.json'] }
     },
     chooseFile: async (purpose: string) => {

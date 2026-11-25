@@ -272,8 +272,9 @@ reported as not reached. unslop gives the original back.
 - It says `not signed in (run claude once and sign in)` (`signed-out`): run `claude` in a terminal,
   sign in, then check again.
 - An app before 2.24.0 does not know this kind: it shows such a server with `no key` and a blank
-  address, a ready server checks as `reachable · 3 models`, and only a failing check says `That
-  did not work (output).` Use `server check` in a terminal, or update the app.
+  address. A ready server checks as `reachable · 3 models`; a check that finds no program or no
+  sign-in says `That did not work (output).`, and one that timed out says `The server did not
+  answer in time.` Use `server check` in a terminal, or update the app.
 
 ## Output for programs (`--json`)
 

@@ -62,6 +62,17 @@ describe('a set-up page’s keys (step 2b)', () => {
     expect(document.getElementById('agentCardsHome')!.hidden).toBe(false)
     expect(title()).toBe('Agent cards')
     expect(document.activeElement).toBe(setUp())
+    // Add an agent (add step 2, D4): Escape from the page goes back with focus on Add by address
+    const addByAddress = () => buttonLabelled('Add by address', document.querySelector('.ms-market .ma-head')!)!
+    click(addByAddress())
+    await settle()
+    expect(title()).toBe('Add an agent')
+    const away = setup().querySelector<HTMLElement>('.map-back')!
+    away.focus()
+    escape(away)
+    await settle()
+    expect(title()).toBe('Agent cards')
+    expect(document.activeElement).toBe(addByAddress())
     // nothing ran but the server list
     expect(bridge.ops()).toEqual([])
   })

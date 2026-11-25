@@ -861,6 +861,8 @@ const meshSetup = installMeshSetup({
     reloadAndPaint()
   },
   turnedOn: (name) => openMeshAgent(`mesh.json:${name}`, name, { focus: true, pending: true }),
+  // an agent added by its card address: its page, saying it was added until the next read names it
+  added: (id) => openMeshAgent(`mesh.json:${id}`, id, { focus: true, pending: 'added' }),
   // an agent just turned on is checked once, as the agent page's Refresh checks it
   check: (name) => { meshRefresh(name) },
   toTop: scrollPageToTop,

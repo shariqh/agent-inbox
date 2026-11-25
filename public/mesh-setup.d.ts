@@ -29,6 +29,8 @@ export function installMeshSetup(deps: {
   turnedOn: (name: string) => void
   /** the open agent was turned off: back to the tab's home */
   turnedOff: () => void
+  /** an agent was added by its card address: show its own page */
+  added: (id: string) => void
   /** check this one agent now, as its page's Refresh does */
   check: (name: string) => void
   /** show the page from its top: a set-up page that opens does not keep the scroll it was opened from */

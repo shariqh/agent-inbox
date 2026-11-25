@@ -2262,7 +2262,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ms-section { margin-top: 28px; }
 .ms-section[hidden], .ms-section .ms-line[hidden], .ms-rows[hidden], .ms-row-note[hidden], .ms-ask[hidden], .ms-btn[hidden],
 .ms-terminal[hidden], .ms-file-name[hidden], .ms-message[hidden], .ms-actions[hidden], .ms-review[hidden], .ms-review [hidden],
-.ms-field [hidden], .ms-field[hidden], .ms-choice[hidden] { display: none; }
+.ms-field [hidden], .ms-field[hidden], .ms-choice[hidden], .ms-market .ma-grid[hidden] { display: none; }
 .ms-line { margin: 8px 0 0; padding: 0 4px; color: var(--app-muted); font-size: 12px; }
 .ms-btn:disabled { cursor: default; opacity: .55; }
 .ms-primary { border-color: var(--app-border-strong); }
@@ -2299,6 +2299,15 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ms-exact { margin-top: 12px; }
 .ms-exact summary { color: var(--app-muted); font-size: 12px; cursor: pointer; }
 .ms-exact-steps { margin: 6px 0 0; padding-left: 18px; color: var(--app-muted); font-size: 12px; overflow-wrap: anywhere; }
+/* add an agent by its card address: the Marketplace's button in the selected tab's accent, and the
+   checked card's summary, whose card text wraps anywhere */
+.ms-add-agent { border-color: var(--app-accent); color: var(--app-accent); }
+.ms-card { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--app-border); border-radius: 12px; overflow-wrap: anywhere; }
+.ms-card-title { margin: 0 0 8px; font-weight: 600; }
+.ms-facts { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 6px 16px; margin: 0 0 8px; }
+.ms-facts dt { color: var(--app-muted); }
+.ms-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.ms-review .ms-for-terminal { margin: 0 0 10px; }
 .ms-foot { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--app-border); }
 .ms-foot .ms-ask-text { flex: 1 1 220px; min-width: 0; }
 .ms-foot .ms-message { margin-top: 8px; }

@@ -1914,7 +1914,9 @@ describe('no new dependency (design §2.3, §2.4c)', () => {
     // names no client, and loads nothing but Node's own modules, so it cannot reach one in process
     const BRIDGE = 'electron/mesh-process.cjs'
     for (const file of files) {
-      expect(readFileSync(join(REPO, file), 'utf8'), file).not.toMatch(
+      // the page may point a person at the document docs/mesh-call.md (add step 2, D4): a doc's name, not a module
+      const text = readFileSync(join(REPO, file), 'utf8')
+      expect(file === BRIDGE ? text : text.replaceAll('docs/mesh-call.md', ''), file).not.toMatch(
         file === BRIDGE
           ? /unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-server-check|mesh-skills|mesh-keys|card-signature/
           : /unslop-client|unslop-code-client|request-post-client|mesh-call|mesh-check|mesh-server-check|mesh-skills|mesh-keys|card-signature|meshctl/,

@@ -14,7 +14,7 @@ import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
 import meshProcess from '../../electron/mesh-process.cjs'
-import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, checkedClaude, claudeServer, fakeBridge, olderServer, planned, server } from './agent-setup-fake.js'
+import { ALL_OFFERED, CARD, CHECK_STEPS, HANDLE, LOCAL_CARD, OFFERED, PIN, blurWhenDisabled, carded, checked, checkedClaude, claudeServer, fakeBridge, olderServer, planned, server } from './agent-setup-fake.js'
 
 useDomTest()
 let db: Database.Database | null = null
@@ -152,6 +152,7 @@ describe('the tab’s home (D2)', () => {
     expect(document.querySelector('.ms-market .ms-line')?.textContent).toBe('Set these up in the app on the Mac that runs your agents.')
     expect([...document.querySelectorAll('.ms-market li')].map((li) => (li as HTMLElement).dataset['offer'])).toEqual(['unslop-code', 'request-post'])
     expect([...document.querySelectorAll('.ms-market .ms-setup')].some((el) => shown(el))).toBe(false)
+    expect(shown(document.querySelector('.ms-add-agent'))).toBe(false)
     expect(document.querySelector('.ms-servers')).toBeNull()
     expect(document.querySelector('.ms-foot')).toBeNull()
   })
@@ -164,12 +165,35 @@ describe('the tab’s home (D2)', () => {
     expect(document.querySelector('.ms-servers')).toBeNull()
   })
 
-  it('with every built-in on the Marketplace is gone, and Yours is the grid as before', async () => {
+  it('with every built-in on the Marketplace stays for Add by address, with no grid and no line; Yours is the grid as before', async () => {
     await boot({ agents: [on('unslop'), on('unslop-code'), on('request-post', { where: 'tailnet' })], available: [] })
     await enter()
-    expect([...home().querySelectorAll('h2')].map((h) => h.textContent)).toEqual(['Yours', 'Model servers'])
+    expect([...home().querySelectorAll('h2')].map((h) => h.textContent)).toEqual(['Yours', 'Marketplace', 'Model servers'])
+    expect(shown(buttonLabelled('Add by address', document.querySelector('.ms-market .ma-head')!))).toBe(true)
+    expect(shown(document.querySelector('.ms-market .ma-grid'))).toBe(false)
+    expect(shown(document.querySelector('.ms-market .ms-line'))).toBe(false)
     expect(shown(home().querySelector('.ma-empty'))).toBe(false)
     expect(home().querySelector('.ma-count')?.textContent).toBe('3')
+  })
+
+  it('without the bridge and with every built-in on there is no Marketplace, as before', async () => {
+    await boot({ agents: [on('unslop'), on('unslop-code'), on('request-post', { where: 'tailnet' })], available: [], bridge: null })
+    await enter()
+    expect([...home().querySelectorAll('h2')].map((h) => h.textContent)).toEqual(['Yours'])
+  })
+
+  it('Add by address sits at the Marketplace’s head after its title, pushed right, in the accent colour', async () => {
+    await boot()
+    await enter()
+    const head = document.querySelector<HTMLElement>('.ms-market .ma-head')!
+    const add = buttonLabelled('Add by address', head)!
+    expect([...head.children].map((el) => el.className)).toEqual(['ma-title-text', 'ah-spacer', 'ms-btn ms-add-agent'])
+    expect(add.disabled).toBe(false)
+    const css = readFileSync(resolve(import.meta.dirname, '..', '..', 'public', 'style.css'), 'utf8')
+    const mine = css.slice(css.indexOf('agent setup in the app (step 2b)'), css.indexOf('/* Run history (cards view V5d)'))
+    // the selected tab's own accent token, for the outline and the text; no new colour
+    expect(mine).toMatch(/\.ms-add-agent \{ border-color: var\(--app-accent\); color: var\(--app-accent\); \}/)
+    expect(css).toMatch(/\.tab\[aria-selected="true"\] \{[^}]*var\(--app-accent\)/)
   })
 })
 
@@ -1282,6 +1306,391 @@ describe('setting up an agent on a Claude Code server (Claude Code D4)', () => {
     expect(select('server').value).toBe('claude')
     expect(options()).toEqual(['Choose a model', 'haiku', 'sonnet', 'opus'])
     expect(bridge.ops().map(([op]) => op)).toEqual(['add-claude-server', 'add-claude-server', 'check-server'])
+  })
+})
+
+describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
+  const ADDRESS = 'https://studio.tailnet-example.ts.net/pdf/.well-known/agent-card.json'
+  const LOCAL = 'http://127.0.0.1:9000/.well-known/agent-card.json'
+  const addButton = () => buttonLabelled('Add by address', document.querySelector('.ms-market .ma-head')!)!
+  const summary = () => setup().querySelector<HTMLElement>('.ms-card')!
+  const facts = () => [...summary().querySelectorAll('dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent])
+  const tokenField = () => setup().querySelector<HTMLElement>('.ms-token')!
+  async function openPage(over: Parameters<typeof boot>[0] = {}) {
+    const booted = await boot(over)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await enter()
+    click(addButton())
+    await settle()
+    return booted
+  }
+  async function check(address = ADDRESS) {
+    type(field('address'), address)
+    click(buttonLabelled('Check', setup()))
+    await settle()
+  }
+
+  it('opens in the tab: its title, ← Agent cards, the Card address field with focus, and no token field for an https address', async () => {
+    const { bridge } = await openPage()
+    expect(shown(setup())).toBe(true)
+    expect(title().textContent).toBe('Add an agent')
+    expect(setup().querySelector('form')?.getAttribute('aria-label')).toBe('Add an agent')
+    expect(setup().querySelector('.map-back')?.textContent).toBe('← Agent cards')
+    expect(setup().querySelector('.ms-field .ms-label')?.textContent).toBe('Card address')
+    expect(document.activeElement).toBe(field('address'))
+    expect(shown(tokenField())).toBe(false)
+    type(field('address'), ADDRESS)
+    await settle()
+    expect(shown(tokenField())).toBe(false)
+    expect(shown(buttonLabelled('Check', setup()))).toBe(true)
+    expect(bridge.ops()).toEqual([])
+  })
+
+  it('the token file shows while the address is on this Mac, and the field is not rebuilt while typing', async () => {
+    await openPage()
+    const address = field('address')!
+    address.focus()
+    type(address, 'http://127.0.0.1:9000/')
+    await settle()
+    expect(shown(tokenField())).toBe(true)
+    expect(tokenField().querySelector('.ms-label')?.textContent).toBe('Token file')
+    expect(tokenField().querySelector('.ms-hint')?.textContent).toBe('An agent on this Mac needs its token file.')
+    expect(shown(buttonLabelled('Choose file…', tokenField()))).toBe(true)
+    expect(field('address')).toBe(address)
+    expect(document.activeElement).toBe(address)
+    type(address, 'https://hub.example.ts.net/')
+    await settle()
+    expect(shown(tokenField())).toBe(false)
+    expect(field('address')).toBe(address)
+  })
+
+  it('says what is wrong before running anything: an address that is neither https:// nor this Mac’s, a loopback address with no file', async () => {
+    const { bridge } = await openPage()
+    for (const address of ['', 'ftp://example.org/card', 'http://example.org/card', 'studio.tailnet-example.ts.net']) {
+      type(field('address'), address)
+      click(buttonLabelled('Check', setup()))
+      await settle()
+      expect(message().textContent, address).toBe('Enter the card’s address, starting with https:// (or http://127.0.0.1: for an agent on this Mac).')
+      expect(document.activeElement).toBe(field('address'))
+    }
+    await check(LOCAL)
+    expect(message().textContent).toBe('Choose the token file.')
+    expect(bridge.ops()).toEqual([])
+  })
+
+  it('Check shows the card as the drawing does: quoted card text, the page’s own words, Nothing has changed yet, Add and Back, focus on Add', async () => {
+    const { bridge } = await openPage()
+    await check(`  ${ADDRESS} `)
+    expect(bridge.ops()).toEqual([['check-agent', { address: ADDRESS }]])
+    expect(shown(summary())).toBe(true)
+    expect(summary().querySelector('.ms-card-title')?.textContent).toBe('“pdf-reader”')
+    expect(facts()).toEqual([
+      ['What it does', '“Reads a PDF and answers questions about it.”'],
+      ['Publisher', '“Example Labs”'],
+      ['Where it runs', 'On your tailnet. What you send it stays on your own machines.'],
+      ['Card', 'Signed by its publisher. Trusted from now on if you add it.'],
+      ['Skills', '“read”, “ask”'],
+      ['Name here', 'pdf-reader'],
+    ])
+    expect(summary().querySelector('.ms-card-note')?.textContent).toBe('Text in quotes comes from the card and is unverified.')
+    expect(shown(setup().querySelector('.ms-nothing'))).toBe(true)
+    expect(setup().querySelector('.ms-nothing')?.textContent).toBe('Nothing has changed yet.')
+    const review = setup().querySelector<HTMLElement>('.ms-review')!
+    expect([...review.querySelectorAll<HTMLButtonElement>('.ms-actions button')].filter(shown).map((b) => b.textContent)).toEqual(['Add', 'Back'])
+    expect(document.activeElement).toBe(buttonLabelled('Add', review))
+    // the page's own summary only: no Turn on heading, no step list; the command's lines closed under it
+    expect(review.querySelector('.ms-review-title')).toBeNull()
+    expect(review.querySelector('.ms-steps')).toBeNull()
+    const exact = review.querySelector<HTMLDetailsElement>('.ms-exact')!
+    expect(shown(exact)).toBe(true)
+    expect(exact.open).toBe(false)
+    expect([...exact.querySelectorAll('li')].map((li) => li.textContent)).toEqual(CHECK_STEPS)
+    // while the review shows, the address field is disabled; the version is never shown
+    expect(field('address')!.disabled).toBe(true)
+    expect(summary().textContent).not.toContain('1.0.0')
+    expect(summary().textContent).not.toContain('studio.tailnet-example.ts.net')
+  })
+
+  it.each([
+    ['public', true, true, 'On the internet. What you send it leaves this Mac.', 'Signed by its publisher. Trusted from now on if you add it.'],
+    ['tailnet', true, false, 'On your tailnet. What you send it stays on your own machines.', 'Signed by its publisher, with a key this Mac already trusts.'],
+    ['tailnet', true, undefined, 'On your tailnet. What you send it stays on your own machines.', 'Signed by its publisher.'],
+    ['tailnet', false, undefined, 'On your tailnet. What you send it stays on your own machines.', 'Not signed. Allowed only for an agent on this Mac or your tailnet.'],
+  ] as const)('where it runs (%s) and its card (signed %s, new key %s) in the page’s words', async (reach, signed, keysNew, where, cardWords) => {
+    const { bridge } = await openPage()
+    const endpoint = reach === 'public' ? 'https://agents.example.org/pdf/a2a' : CARD['endpoint']
+    bridge.s.answers['check-agent'] = () => carded({ card: { ...CARD, reach, endpoint, signed, keysNew } })
+    await check()
+    expect(Object.fromEntries(facts())).toMatchObject({ 'Where it runs': where, Card: cardWords })
+  })
+
+  it('an agent on this Mac: its words, and the token file goes with the check and the add', async () => {
+    const { bridge } = await openPage()
+    bridge.s.file = { ok: true, handle: HANDLE, name: 'echo.token' }
+    type(field('address'), LOCAL)
+    await settle()
+    click(buttonLabelled('Choose file…', setup()))
+    await settle()
+    expect(bridge.s.picks).toEqual(['token'])
+    expect(setup().querySelector('.ms-file-name')?.textContent).toBe('echo.token')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(Object.fromEntries(facts())).toMatchObject({ 'Where it runs': 'On this Mac. What you send it stays on this Mac.', Card: 'Not signed. Allowed only for an agent on this Mac or your tailnet.' })
+    expect(buttonLabelled('Choose file…', setup())!.disabled).toBe(true)
+    click(buttonLabelled('Add', setup()))
+    await settle()
+    expect(bridge.ops()).toEqual([
+      ['check-agent', { address: LOCAL, token: HANDLE }],
+      ['add-agent', { address: LOCAL, token: HANDLE, id: 'pdf-reader', pin: PIN, apply: true }],
+    ])
+    expect(document.body.innerHTML).not.toContain(HANDLE)
+  })
+
+  it('missing card text has the page’s own words; a skill goes by its name, else its id', async () => {
+    const { bridge } = await openPage()
+    const { name: _n, description: _d, publisher: _p, ...bare } = CARD
+    bridge.s.answers['check-agent'] = () => carded({ card: { ...bare, skills: [] } })
+    await check()
+    expect(summary().querySelector('.ms-card-title')?.textContent).toBe('No name given')
+    expect(Object.fromEntries(facts())).toMatchObject({ 'What it does': 'Not given', Publisher: 'Not given', Skills: 'None listed', 'Name here': 'pdf-reader' })
+    click(buttonLabelled('Back', setup()))
+    await settle()
+    bridge.s.answers['check-agent'] = () => carded({ card: { ...CARD, skills: [{ id: 'read' }, { id: 'ask', name: 'Ask a question' }] } })
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(Object.fromEntries(facts())['Skills']).toBe('“read”, “Ask a question”')
+  })
+
+  it('Add runs add-agent once with the checked id and pin; the new agent’s page opens, says it was added, and the tab reads again', async () => {
+    const { bridge, mesh } = await openPage()
+    await check()
+    const added = agent('pdf-reader', { kind: 'added', where: 'tailnet', endpoint: CARD['endpoint'], state: 'added', checkedAt: null })
+    const reads = mesh.s.triggers.length
+    click(buttonLabelled('Add', setup()))
+    await settle()
+    expect(bridge.ops()).toEqual([
+      ['check-agent', { address: ADDRESS }],
+      ['add-agent', { address: ADDRESS, id: 'pdf-reader', pin: PIN, apply: true }],
+    ])
+    expect(shown(setup())).toBe(false)
+    expect(shown(agentPage())).toBe(true)
+    expect(title().textContent).toBe('pdf-reader')
+    expect(agentPage().querySelector('.map-gone')?.textContent).toBe('Added. Its details show in a moment.')
+    expect(shown(agentPage().querySelector('.map-gone'))).toBe(true)
+    expect(document.activeElement).toBe(agentPage().querySelector('.map-back'))
+    // the app never checks an added agent: no refresh of it
+    expect(mesh.s.triggers.slice(reads).filter((t) => t.startsWith('refresh'))).toEqual([])
+    mesh.s.version = { agents: 1 }
+    mesh.s.body = { on: true, agents: [added], others: 0, available: [] }
+    await pollTick()
+    await settle()
+    expect(shown(agentPage().querySelector('.map-gone'))).toBe(false)
+    expect(agentPage().querySelector('.map-badge')?.textContent).toBe('Added by you')
+    expect(mesh.s.triggers.filter((t) => t.startsWith('refresh'))).toEqual([])
+  })
+
+  it('card text with markup, quote marks or 300 characters with no space shows as quoted text, makes no element, and wraps', async () => {
+    const { bridge } = await openPage()
+    const long = 'x'.repeat(300)
+    bridge.s.answers['check-agent'] = () => carded({ card: {
+      ...CARD, name: '<img src=x onerror=alert(1)>', description: `“quoted” "and" ${long}`, publisher: '<a href="https://example.org">Example</a>',
+      skills: [{ id: 'read', name: '<script>alert(1)</script>' }, { id: long }],
+    } })
+    await check()
+    expect(summary().querySelector('.ms-card-title')?.textContent).toBe('“<img src=x onerror=alert(1)>”')
+    expect(Object.fromEntries(facts())).toMatchObject({
+      'What it does': `““quoted” "and" ${long}”`,
+      Publisher: '“<a href="https://example.org">Example</a>”',
+      // the bridge cuts a skill's id to 162 units (the command's own cap is shorter still)
+      Skills: `“<script>alert(1)</script>”, “${'x'.repeat(162)}”`,
+    })
+    expect(setup().querySelector('img, script, a, [href], [src], [style], [onerror]')).toBeNull()
+    const css = readFileSync(resolve(import.meta.dirname, '..', '..', 'public', 'style.css'), 'utf8')
+    const mine = css.slice(css.indexOf('agent setup in the app (step 2b)'), css.indexOf('/* Run history (cards view V5d)'))
+    // every part of the summary wraps anywhere: nothing scrolls sideways at 400 px
+    expect(mine).toMatch(/\.ms-card \{[^}]*overflow-wrap: anywhere/)
+    expect(mine).toMatch(/\.ms-facts dd \{[^}]*min-width: 0[^}]*overflow-wrap: anywhere/)
+    expect(mine).toMatch(/\.ms-facts \{[^}]*grid-template-columns: minmax\(0, max-content\) minmax\(0, 1fr\)/)
+  })
+
+  it('a card that changed between Check and Add: the command’s words, nothing added, Back keeps the form, a new Check shows the new card', async () => {
+    const { bridge } = await openPage({ bridge: {} })
+    bridge.s.file = { ok: true, handle: HANDLE, name: 'echo.token' }
+    type(field('address'), LOCAL)
+    await settle()
+    click(buttonLabelled('Choose file…', setup()))
+    await settle()
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    const changed = 'the card is not the one that was checked (its pin differs): check it again. Nothing changed.'
+    const newCard = { ...LOCAL_CARD, name: 'pdf-reader-2', description: 'Reads PDFs, now with tables.', pin: 'a'.repeat(64) }
+    bridge.s.answers['add-agent'] = () => carded({ card: newCard, refused: changed })
+    click(buttonLabelled('Add', setup()))
+    await settle()
+    const review = setup().querySelector<HTMLElement>('.ms-review')!
+    expect(review.querySelector('.ms-refused')?.textContent).toBe(changed)
+    expect(shown(summary())).toBe(false)
+    expect(shown(review.querySelector('.ms-nothing'))).toBe(false)
+    expect([...review.querySelectorAll<HTMLButtonElement>('.ms-actions button')].filter(shown).map((b) => b.textContent)).toEqual(['Back'])
+    expect(document.activeElement).toBe(buttonLabelled('Back', review))
+    expect(shown(setup().querySelector('.ms-for-terminal'))).toBe(false)
+    expect(shown(agentPage())).toBe(false)
+    click(buttonLabelled('Back', review))
+    await settle()
+    expect(field('address')!.value).toBe(LOCAL)
+    expect(setup().querySelector('.ms-file-name')?.textContent).toBe('echo.token')
+    expect(document.activeElement).toBe(buttonLabelled('Check', setup()))
+    bridge.s.answers['check-agent'] = () => carded({ card: newCard })
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(summary().querySelector('.ms-card-title')?.textContent).toBe('“pdf-reader-2”')
+    expect(Object.fromEntries(facts())['What it does']).toBe('“Reads PDFs, now with tables.”')
+    delete bridge.s.answers['add-agent']
+    click(buttonLabelled('Add', setup()))
+    await settle()
+    expect(bridge.ops().map(([op, values]) => [op, values['pin']])).toEqual([
+      ['check-agent', undefined], ['add-agent', PIN], ['check-agent', undefined], ['add-agent', 'a'.repeat(64)],
+    ])
+  })
+
+  it('an agent already added: a taken derived id is refused in the command’s words; a move or the same address says so; no summary, no Add, nothing runs', async () => {
+    const { bridge } = await openPage()
+    const taken = 'the id pdf-reader is already in ~/.agent-inbox/mesh.json, and add never replaces an entry. Nothing changed.'
+    const cases: Array<[Json, string]> = [
+      [carded({ refused: taken }), taken],
+      [carded({ notes: ['Move       this is pdf-reader at a new endpoint (was https://hub.example.ts.net/a2a), signed by a key its pinned card lists.'] }),
+        'This agent is already added as pdf-reader. Moving it to a new address is done in a terminal.'],
+      [carded({ steps: [], notes: [`agents.pdf-reader is already at ${ADDRESS}. Nothing to do.`] }), 'This agent is already added as pdf-reader.'],
+    ]
+    for (const [answer, words] of cases) {
+      bridge.s.answers['check-agent'] = () => answer
+      if (!field('address')!.value) type(field('address'), ADDRESS)
+      click(buttonLabelled('Check', setup()))
+      await settle()
+      const review = setup().querySelector<HTMLElement>('.ms-review')!
+      expect(review.querySelector('.ms-refused')?.textContent, words).toBe(words)
+      expect(shown(summary()), words).toBe(false)
+      expect([...review.querySelectorAll<HTMLButtonElement>('.ms-actions button')].filter(shown).map((b) => b.textContent)).toEqual(['Back'])
+      expect(document.activeElement).toBe(buttonLabelled('Back', review))
+      // Add is hidden; even a forced press of it runs nothing
+      buttonLabelled('Add', review)!.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+      await settle()
+      click(buttonLabelled('Back', review))
+      await settle()
+    }
+    expect(bridge.ops().map(([op]) => op)).toEqual(['check-agent', 'check-agent', 'check-agent'])
+  })
+
+  it('a refusal naming an option the page does not have gets one quiet line pointing to a terminal; no other refusal does', async () => {
+    const { bridge } = await openPage()
+    const terminalLine = () => setup().querySelector<HTMLElement>('.ms-for-terminal')!
+    bridge.s.answers['check-agent'] = () => carded({ card: { ...CARD, id: undefined }, refused: 'the card’s name makes no usable id: pass --id <id>. Nothing changed.' })
+    await check()
+    expect(setup().querySelector('.ms-refused')?.textContent).toBe('the card’s name makes no usable id: pass --id <id>. Nothing changed.')
+    expect(terminalLine().textContent).toBe('That option is for a terminal. See docs/mesh-call.md.')
+    expect(shown(terminalLine())).toBe(true)
+    click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+    await settle()
+    bridge.s.answers['check-agent'] = () => carded({ card: null, refused: 'the card could not be fetched. Nothing changed.' })
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(setup().querySelector('.ms-refused')?.textContent).toBe('the card could not be fetched. Nothing changed.')
+    expect(shown(terminalLine())).toBe(false)
+  })
+
+  it('an address the bridge will not take says so under the field, with focus on it; every other problem is the review’s', async () => {
+    const { bridge } = await openPage()
+    bridge.s.answers['check-agent'] = () => ({ ok: false, reason: 'invalid' })
+    await check('https://Studio.example.org/card?x=1')
+    expect(message().textContent).toBe('This address cannot be added here. Use https:// on a name, or http://127.0.0.1 with a port, with no query or fragment.')
+    expect(shown(setup().querySelector('.ms-review'))).toBe(false)
+    expect(document.activeElement).toBe(field('address'))
+    expect(field('address')!.disabled).toBe(false)
+    bridge.s.answers['check-agent'] = () => ({ ok: false, reason: 'timeout' })
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(shown(message())).toBe(false)
+    expect(setup().querySelector('.ms-refused')?.textContent).toBe('The command did not answer in time.')
+    expect(document.activeElement).toBe(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+    expect(bridge.ops()).toHaveLength(2)
+  })
+
+  it('a token file chosen for an agent on this Mac is kept while the address is not, and never sent with it', async () => {
+    const { bridge } = await openPage()
+    type(field('address'), LOCAL)
+    await settle()
+    click(buttonLabelled('Choose file…', setup()))
+    await settle()
+    type(field('address'), ADDRESS)
+    await settle()
+    expect(shown(tokenField())).toBe(false)
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    click(buttonLabelled('Add', setup()))
+    await settle()
+    expect(bridge.ops()).toEqual([
+      ['check-agent', { address: ADDRESS }],
+      ['add-agent', { address: ADDRESS, id: 'pdf-reader', pin: PIN, apply: true }],
+    ])
+  })
+
+  it('a second press while a Check or an Add runs does nothing; the pressed button says so; a repaint keeps the address, the file and focus', async () => {
+    const { bridge, mesh } = await openPage()
+    bridge.s.file = { ok: true, handle: HANDLE, name: 'echo.token' }
+    type(field('address'), LOCAL)
+    await settle()
+    click(buttonLabelled('Choose file…', setup()))
+    await settle()
+    const release = bridge.hold()
+    const checkButton = buttonLabelled('Check', setup())!
+    click(checkButton)
+    await settle()
+    expect(checkButton.textContent).toBe('Checking…')
+    expect(checkButton.disabled).toBe(true)
+    expect(addButton().disabled).toBe(true)
+    expect(field('address')!.disabled).toBe(true)
+    expect(buttonLabelled('Choose file…', setup())!.disabled).toBe(true)
+    checkButton.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    const focused = document.activeElement
+    mesh.s.version = { agents: 1 }
+    mesh.s.body = { on: true, agents: [on('unslop')], others: 0, available: [OFFERED['unslop-code']!] }
+    await pollTick()
+    await pollTick()
+    expect(field('address')!.value).toBe(LOCAL)
+    expect(setup().querySelector('.ms-file-name')?.textContent).toBe('echo.token')
+    expect(document.activeElement).toBe(focused)
+    release()
+    await settle()
+    expect(bridge.ops().map(([op]) => op)).toEqual(['check-agent'])
+    const hold = bridge.hold()
+    const add = buttonLabelled('Add', setup())!
+    click(add)
+    await settle()
+    expect(add.textContent).toBe('Adding…')
+    expect(add.disabled).toBe(true)
+    expect(buttonLabelled('Back', setup().querySelector('.ms-review')!)!.disabled).toBe(true)
+    expect(addButton().disabled).toBe(true)
+    add.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    await settle()
+    hold()
+    await settle()
+    expect(bridge.ops().map(([op]) => op)).toEqual(['check-agent', 'add-agent'])
+  })
+
+  it('← Agent cards goes back with focus on Add by address, and nothing was run', async () => {
+    const { bridge } = await openPage()
+    type(field('address'), ADDRESS)
+    click(setup().querySelector('.map-back'))
+    await settle()
+    expect(shown(home())).toBe(true)
+    expect(document.activeElement).toBe(addButton())
+    expect(bridge.ops()).toEqual([])
+  })
+
+  it('without the bridge being available there is no Add by address, and the page does not open', async () => {
+    await boot({ agents: [on('unslop')], available: [OFFERED['unslop-code']!], bridge: { available: { available: false, reason: 'not-installed' } } })
+    await enter()
+    expect(shown(document.querySelector('.ms-add-agent'))).toBe(false)
   })
 })
 

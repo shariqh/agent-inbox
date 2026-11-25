@@ -22,6 +22,10 @@ const KEYS = { file: 'key file', command: 'key from a command', env: 'key from a
 const REASONS = {
   'not-installed': 'The mesh command is not installed on this Mac. Run Setup first.',
   outdated: 'The installed mesh command is older than this app. Run Setup again.',
+  stale: 'The installed mesh command points at files that are gone. Run Setup again.',
+  unsafe: 'The installed mesh command is not as Setup wrote it. Run Setup again.',
+  unrecognized: 'The installed mesh command is not as Setup wrote it. Run Setup again.',
+  handle: 'The chosen file is no longer held. Choose it again.',
   busy: 'Another setup step is still running.',
   setup: 'Setup is running. Try again when it is done.',
   updating: 'An update is installing.',
@@ -39,9 +43,9 @@ const CHECKS = {
 // a key the app could not read, by where it comes from. The app runs the command with a short fixed
 // environment, never the shell's: a variable is not there, and a command that needs one gives nothing.
 const KEY_CHECKS = {
-  command: 'The key’s command gave no key here. The app runs it without your shell’s settings (docs/model-servers.md).',
-  env: 'The key is in a shell variable, and the app does not see your shell’s variables (docs/model-servers.md).',
-  file: 'The key file could not be read: it is missing, empty or open to other accounts.',
+  command: 'The command gave no key. The app runs it without your terminal’s settings (docs/model-servers.md).',
+  env: 'The app cannot see your terminal’s variables, so it cannot read this key (docs/model-servers.md).',
+  file: 'The key file could not be read: it is missing, empty or not a private file of yours.',
 }
 const SERVER_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
 const MODEL_NAME = /^[A-Za-z0-9._:/-]{1,64}$/

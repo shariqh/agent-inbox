@@ -13,6 +13,7 @@ import { join, resolve } from 'node:path'
 import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
+import meshProcess from '../../electron/mesh-process.cjs'
 import { ALL_OFFERED, HANDLE, OFFERED, blurWhenDisabled, checked, fakeBridge, server } from './agent-setup-fake.js'
 
 useDomTest()
@@ -457,9 +458,9 @@ describe('Check and Remove on a server’s row (D3)', () => {
     await enter()
     bridge.s.answers['check-server'] = () => checked('key')
     const WORDS: Record<string, string> = {
-      'by-command': 'The key’s command gave no key here. The app runs it without your shell’s settings (docs/model-servers.md).',
-      'by-variable': 'The key is in a shell variable, and the app does not see your shell’s variables (docs/model-servers.md).',
-      'by-file': 'The key file could not be read: it is missing, empty or open to other accounts.',
+      'by-command': 'The command gave no key. The app runs it without your terminal’s settings (docs/model-servers.md).',
+      'by-variable': 'The app cannot see your terminal’s variables, so it cannot read this key (docs/model-servers.md).',
+      'by-file': 'The key file could not be read: it is missing, empty or not a private file of yours.',
     }
     for (const [name, words] of Object.entries(WORDS)) {
       click(buttonLabelled('Check', row(name)!))
@@ -471,6 +472,17 @@ describe('Check and Remove on a server’s row (D3)', () => {
     click(buttonLabelled('Check', row('by-command')!))
     await settle()
     expect(row('by-command')!.querySelector('.ms-row-note')?.textContent).toBe('The server did not answer.')
+  })
+
+  it('a check the command refused shows the refusal’s own words', async () => {
+    const { bridge } = await boot({ bridge: { servers: [server('local')] } })
+    await enter()
+    const refused = meshProcess.meshAnswer('check', JSON.stringify({ server: 'local', refused: 'the server local is not in the list' }), 1) as Json
+    expect(refused).toEqual({ ok: false, reachable: false, models: [], skipped: 0, refused: 'the server local is not in the list' })
+    bridge.s.answers['check-server'] = () => refused
+    click(buttonLabelled('Check', row('local')!))
+    await settle()
+    expect(row('local')!.querySelector('.ms-row-note')?.textContent).toBe('the server local is not in the list')
   })
 
   it('Remove asks in place, Cancel puts it back, and a refusal shows in the row', async () => {
@@ -652,7 +664,7 @@ describe('setting up an agent (D4)', () => {
     await settle()
     expect(shown(select('model'))).toBe(false)
     expect(shown(field('model'))).toBe(true)
-    expect(setup().querySelector('.ms-model-why')?.textContent).toBe('The key’s command gave no key here. The app runs it without your shell’s settings (docs/model-servers.md).')
+    expect(setup().querySelector('.ms-model-why')?.textContent).toBe('The command gave no key. The app runs it without your terminal’s settings (docs/model-servers.md).')
     expect(document.activeElement).toBe(field('model'))
     type(field('model'), 'coder-next')
     click(buttonLabelled('Check', setup()))
@@ -911,6 +923,10 @@ describe('the bridge’s failures in words (D6)', () => {
     setup: 'Setup is running. Try again when it is done.',
     updating: 'An update is installing.',
     timeout: 'The command did not answer in time.',
+    stale: 'The installed mesh command points at files that are gone. Run Setup again.',
+    unsafe: 'The installed mesh command is not as Setup wrote it. Run Setup again.',
+    unrecognized: 'The installed mesh command is not as Setup wrote it. Run Setup again.',
+    handle: 'The chosen file is no longer held. Choose it again.',
   }
   const REASONS = ['unavailable', 'invalid', 'handle', 'busy', 'setup', 'updating', 'quitting', 'unsupported', 'environment', 'not-installed', 'unsafe', 'unrecognized', 'stale', 'outdated', 'output', 'timeout', 'failed']
 
@@ -929,6 +945,15 @@ describe('the bridge’s failures in words (D6)', () => {
     await settle()
     expect(note().textContent).toBe('')
     expect(shown(note())).toBe(false)
+  })
+
+  it.each(['stale', 'unsafe', 'unrecognized', 'not-installed'])('a mesh command that cannot be used (%s) says why under Marketplace, with an agent on', async (reason) => {
+    await boot({ agents: [on('unslop')], available: [OFFERED['unslop-code']!], bridge: { available: { available: false, reason } } })
+    await enter()
+    const line = document.querySelector<HTMLElement>('.ms-market .ms-line')!
+    expect(line.textContent).toBe(WORDS[reason])
+    expect(shown(line)).toBe(true)
+    expect(shown(buttonLabelled('Set up', offer('unslop-code')!))).toBe(false)
   })
 
   it('a failed server list says why in the section', async () => {

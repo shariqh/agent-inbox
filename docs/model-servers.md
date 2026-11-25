@@ -46,23 +46,24 @@ list. The commands below stay the way to do everything else.
 The app runs these commands with a short fixed environment (`PATH`, `HOME`, and a few others), not
 your shell's. So **Check** in the app can fail on a key where `server check` in a terminal works:
 
-- A key from a variable is never visible to the app. **Check** says the key is in a shell variable.
+- A key from a variable is not visible to the app.
 - A key from a command works only if the command needs nothing from your shell. A command that
-  reads a token from a variable gives no key there, and **Check** says the key's command gave no key.
+  reads a token from a variable, or finds a tool through your `PATH`, gives no key there.
 
 You can still set up an agent on that server in the app: it asks you to type the model's name
 instead of picking it from the server's list.
 
-To let the app read the key too, use a key file (`server set <name> --key-file …`), or make the
-command load your shell's settings first. With zsh, put `/bin/zsh -c 'exec "$@"' zsh` in front of
-the command:
+To let the app read the key too, use a key file (`server set <name> --key-file …`). For a key from
+a command, you can instead make the command load your shell's settings first. No command writes a
+command source, so edit the server's `apiKey` in `servers.json` by hand. With zsh, put
+`/bin/zsh -c 'exec "$@"' zsh` in front of the command:
 
 ```json
 "apiKey": { "command": ["/bin/zsh", "-c", "exec \"$@\"", "zsh", "/usr/local/bin/keytool", "read", "box"] }
 ```
 
 A zsh started this way reads `~/.zshenv` and no other startup file of yours, so the variable the
-command needs must be set there.
+command needs must be exported there (`export NAME=…`).
 
 ## How an agent names a server
 

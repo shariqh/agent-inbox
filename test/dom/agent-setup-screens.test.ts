@@ -757,6 +757,20 @@ describe('an agent that is on (D5)', () => {
     expect(mesh.s.triggers.filter((t) => t === 'refresh unslop-code')).toHaveLength(1)
   })
 
+  it('the back control in the Change server form names the agent and goes back to its page', async () => {
+    await openAgent('unslop-code', [server('local', { agents: ['unslop-code'] })])
+    click(buttonLabelled('Change server', foot()))
+    await settle()
+    const back = setup().querySelector<HTMLElement>('.map-back')!
+    expect(back.textContent).toBe('← unslop-code')
+    expect(back.getAttribute('aria-label')).toBe('Back to unslop-code')
+    click(back)
+    await settle()
+    expect(shown(setup())).toBe(false)
+    expect(shown(agentPage())).toBe(true)
+    expect(document.activeElement).toBe(buttonLabelled('Change server', foot()))
+  })
+
   it('an added agent has no foot', async () => {
     await boot({ agents: [agent('echo', { kind: 'added', where: 'public', state: 'added', checkedAt: null })], available: [] })
     await enter()

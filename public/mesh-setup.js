@@ -519,9 +519,11 @@ export function installMeshSetup(deps) {
 
   function build(root) {
     const title = page.kind === 'add' ? 'Add a model server' : page.kind === 'adopt' ? 'Make it a server' : page.agent
-    const backButton = make('button', 'map-back', page.back ? `← ${page.back.agent}` : '← Agent cards')
+    // it goes back to where the page came from: an agent's form, the agent's own page, or the grid
+    const goesTo = page.back ? page.back.agent : page.change ? page.agent : null
+    const backButton = make('button', 'map-back', goesTo ? `← ${goesTo}` : '← Agent cards')
     backButton.type = 'button'
-    backButton.setAttribute('aria-label', page.back ? `Back to ${page.back.agent}` : 'Back to Agent cards')
+    backButton.setAttribute('aria-label', goesTo ? `Back to ${goesTo}` : 'Back to Agent cards')
     backButton.addEventListener('click', () => back())
     const form = make('form', 'ms-form')
     form.noValidate = true

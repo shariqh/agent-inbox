@@ -762,6 +762,29 @@ describe('meshctl add, set, list, status and enable with a Claude Code server (C
     expect(read(unslop).model).toBe('coder-next')
   })
 
+  it('without --server, --model is held to the same rule for the Claude Code server the profile will name', () => {
+    const t = setup()
+    serversJson(t.dir, { cc: { kind: 'claude-code' }, box: { baseUrl: 'https://box.example' } })
+    const refused = 'Refused: the server cc is Claude Code on this Mac: its models are haiku, sonnet and opus. Nothing changed.\n'
+    // an existing profile that names it
+    const unslop = profile(t.dir, 'unslop', { skill: '/rules', server: 'cc', model: 'sonnet' })
+    const before = readFileSync(unslop, 'utf8')
+    expect(t.enable('unslop', '--model', 'chat-long', '--apply').err).toBe(refused)
+    expect(readFileSync(unslop, 'utf8')).toBe(before)
+    expect(t.enable('unslop', '--model', 'opus', '--apply').code).toBe(0)
+    expect(read(unslop).model).toBe('opus')
+    // a new unslop-code profile that would copy unslop's server
+    expect(t.enable('unslop-code', '--model', 'coder-next', '--apply').err).toBe(refused)
+    expect(existsSync(join(t.dir, 'mesh', 'wrappers', 'unslop-code.json'))).toBe(false)
+    expect(t.enable('unslop-code', '--model', 'haiku', '--apply').code).toBe(0)
+    expect(read(join(t.dir, 'mesh', 'wrappers', 'unslop-code.json'))).toMatchObject({ server: 'cc', model: 'haiku' })
+    // an existing unslop-code profile that names it
+    expect(t.enable('unslop-code', '--model', 'coder-next', '--apply').err).toBe(refused)
+    // a profile that names an address server takes any model name
+    profile(t.dir, 'unslop', { skill: '/rules', server: 'box', model: 'chat-long' })
+    expect(t.enable('unslop', '--model', 'qwen3:32b', '--apply').code).toBe(0)
+  })
+
   it('enable --unslop-code copies unslop\'s Claude Code server with sonnet when no model is given', () => {
     const t = setup()
     serversJson(t.dir, { cc: { kind: 'claude-code' } })

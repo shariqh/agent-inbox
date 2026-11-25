@@ -753,12 +753,20 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   const sName = show(sFile)
   // enable's --server and --model (D5): the server must be in servers.json, the model a plain name
   // a Claude Code server (Claude Code D2) takes haiku, sonnet or opus only: with no --model, a
-  // profile's model is kept when it is already one of them, else it becomes sonnet
-  const backendChoice = (profilePath: string): BackendChoice | { refused: string } => {
+  // profile's model is kept when it is already one of them, else it becomes sonnet. Without
+  // --server the rule holds for the server the profile will name: the one it names now, or, for a
+  // new profile, the one it copies from `copyFrom` (unslop's profile, for enable --unslop-code)
+  const backendChoice = (profilePath: string, copyFrom?: string): BackendChoice | { refused: string } => {
     const server = values.get('--server')
     const model = values.get('--model')
     if (model !== undefined && !MODEL_NAME.test(model)) return { refused: 'a model name is 1 to 64 letters, digits, ".", "_", ":", "/" or "-"' }
-    if (server === undefined) return { model }
+    if (server === undefined) {
+      if (model === undefined || CLAUDE_MODELS.includes(model)) return { model }
+      const existing = readProfile(profilePath)
+      const copied = existing === 'missing' && copyFrom !== undefined ? unslopBackend(copyFrom) : undefined
+      const named = typeof existing === 'object' ? namedServer(existing.p) : copied && 'server' in copied ? copied.server : undefined
+      return named !== undefined && claudeServer(named) ? { refused: `the server ${named} is Claude Code on this Mac: its models are haiku, sonnet and opus` } : { model }
+    }
     if (!SERVER_NAME.test(server)) return { refused: SERVER_NAME_RULE }
     const read = readServers(dir)
     if (read.kind === 'refused') return { refused: `${sName} ${SERVERS_REASONS[read.reason]}` }
@@ -1212,7 +1220,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     if (!isFile(script)) return refuse(`${show(script)} is missing: run npm run build in ${show(repo)}`)
     if ([node, wrap, script, dir].some((path) => /[\x00-\x1f\x7f]/.test(path))) return refuse('a path holds a control character')
     const code = unslopCodePaths(dir)
-    const choice = backendChoice(code.profile)
+    const choice = backendChoice(code.profile, paths.profile)
     if ('refused' in choice) return refuse(choice.refused)
     const start = [node, wrap, '--agent', 'openai-compatible', '--profile', 'unslop-code']
     // --server names a server; without it the profile takes unslop's backend, inline or the server it names (D5)

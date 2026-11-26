@@ -290,7 +290,7 @@ The desktop app's Agent cards tab adds an agent the same way, through this comma
 Marketplace, **Add by address** opens a page with the card's address. **Check** runs the dry run
 (`add <card-url> --json`): it fetches the card once and sends the agent nothing. The page shows
 what the card says, with every bit of card text in quotes as plain text. **Add** then runs
-`add <card-url> --id <the id shown> --expect-pin <the pin it showed> --json --apply`, so it adds
+`add <card-url> --id <the id shown> --expect-pin <the pin the check returned> --json --apply`, so it adds
 exactly the card that was checked; a card that changed in between is refused, and nothing is
 written. An added agent's page has **Remove** (`remove <id> --json`, then with `--apply`).
 

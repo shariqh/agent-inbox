@@ -775,7 +775,7 @@ adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--app
 `npm run meshctl -- call <id>` calls it (#530; see [`docs/mesh-call.md`](docs/mesh-call.md)).
 The two local agents can share one model backend: `npm run meshctl -- server add <name> …` adds a
 model server once, and each agent's profile names it (see [`docs/model-servers.md`](docs/model-servers.md)).
-The app's **Agent cards** tab shows the agents `mesh.json` turns on: the three built-in ones (unslop, unslop-code and request-post) and the ones you added. In the app it also adds model servers and turns unslop-code and request-post on and off, through the same command. Its Marketplace always offers **Add by address**: paste an agent's card address, check what the card says, and add exactly that card; an added agent's page has **Remove**.
+The app's **Agent cards** tab shows the agents `mesh.json` turns on: the three built-in ones (unslop, unslop-code and request-post) and the ones you added. In the app it also adds model servers and turns unslop-code and request-post on and off, through the same command. In the app's own window on the Mac that runs your agents, its Marketplace offers **Add by address**: paste an agent's card address, check what the card says, and add exactly that card; an added agent's page has **Remove**.
 To write such an agent on `@a2a-js/sdk`, start from the agent kit and its example
 ([`docs/agent-kit.md`](docs/agent-kit.md), #539).
 `npm run meshctl -- status`

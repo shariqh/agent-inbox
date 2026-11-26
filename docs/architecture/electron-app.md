@@ -141,10 +141,12 @@ writer of the mesh folder, with all of its own checks.
   `address` is `http://127.0.0.1:<port>` or `https://` on a lower-case DNS name of at most 253
   characters whose last label starts with a letter, with an optional plain path (no `.` or `..`
   segment, percent sign, query or fragment), a port 1-65535 and never 80 on loopback or 443 on a
-  name, and at most 2048 characters in all; an `id` is `^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$` and
+  name, that parses as a URL (a malformed punycode label such as `xn--a` does not; the 253-character
+  limit is measured on the parsed host), and at most 2048 characters in all; an `id` is `^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$` and
   not a built-in agent's name; a `pin` is 64 lower-case hex characters; a `token` handle goes only
   with a loopback `address`, else the request is `invalid`. Tests run tables of addresses and ids
-  through main's rules and add's own, which must agree. `meshctl` applies its own stricter rules
+  through main's rules and add's own and require the same answer for each row (the 2048 cap is
+  tested on its own, as add has none); add refuses an address its URL parser rejects, as main does. `meshctl` applies its own stricter rules
   after. `check-agent` and `add-agent` make the command fetch the card (a `*.ts.net` address also
   asks Tailscale for this Mac's tailnet), inside the same 30 second limit.
 - **Answers.** The `--json` output is parsed and rebuilt field by field: a plan or apply is
@@ -156,7 +158,7 @@ writer of the mesh folder, with all of its own checks.
   `endpoint` by the address rule and loopback exactly when `reach` is, `signed`, `keysNew?`, at most
   16 `skills` of `{ id, name?, description? }`, and `pin`). Card text is cut (a name, version,
   publisher or skill id or name at 162 UTF-16 units, a description at 602, a skill's at 402); any
-  card string holding a control character, or any field breaking its rule, fails the whole answer as
+  card string holding a control or format character (Unicode Cf), or any field breaking its rule, fails the whole answer as
   `output`, refused or not. A plan with no refusal must carry a card with an id; a refusal may come
   without a card (one before the card was pinned). A row's `kind` is `claude-code`
   when the command's row says so, else `http` (also for a row with no `kind`, as a command older than

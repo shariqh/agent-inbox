@@ -1678,6 +1678,46 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
     expect(bridge.ops()).toHaveLength(2)
   })
 
+  it('a token file whose handle has expired is cleared: the form shows no file and asks for it again', async () => {
+    const { bridge } = await openPage()
+    bridge.s.file = { ok: true, handle: HANDLE, name: 'echo.token' }
+    const fileName = () => setup().querySelector<HTMLElement>('.ms-file-name')!
+    // at Check
+    type(field('address'), LOCAL)
+    await settle()
+    click(buttonLabelled('Choose file…', setup()))
+    await settle()
+    bridge.s.answers['check-agent'] = () => ({ ok: false, reason: 'handle' })
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(setup().querySelector('.ms-refused')?.textContent).toBe('The chosen file is no longer held. Choose it again.')
+    click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+    await settle()
+    expect(shown(fileName())).toBe(false)
+    expect(fileName().textContent).toBe('')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(message().textContent).toBe('Choose the token file.')
+    expect(bridge.ops()).toHaveLength(1)
+    // at Add, after a check that worked
+    delete bridge.s.answers['check-agent']
+    click(buttonLabelled('Choose file…', setup()))
+    await settle()
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    bridge.s.answers['add-agent'] = () => ({ ok: false, reason: 'handle' })
+    click(buttonLabelled('Add', setup()))
+    await settle()
+    expect(setup().querySelector('.ms-refused')?.textContent).toBe('The chosen file is no longer held. Choose it again.')
+    click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+    await settle()
+    expect(shown(fileName())).toBe(false)
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    expect(message().textContent).toBe('Choose the token file.')
+    expect(bridge.ops().map(([op]) => op)).toEqual(['check-agent', 'check-agent', 'add-agent'])
+  })
+
   it('a token file chosen for an agent on this Mac is kept while the address is not, and never sent with it', async () => {
     const { bridge } = await openPage()
     type(field('address'), LOCAL)

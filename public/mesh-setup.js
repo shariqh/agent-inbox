@@ -246,11 +246,15 @@ export function installMeshSetup(deps) {
   }
 
   async function call(operation, values) {
+    let answer
     try {
-      return await deps.bridge().run(operation, values)
+      answer = await deps.bridge().run(operation, values)
     } catch {
       return { ok: false, reason: 'failed' }
     }
+    // a chosen file's handle expired (main holds one for 15 minutes): the form asks for the file again
+    if (answer?.ok === false && answer.reason === 'handle' && page) page.file = null
+    return answer
   }
 
   // One operation at a time: false when another runs (a second press does nothing)

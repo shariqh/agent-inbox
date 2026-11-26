@@ -1,6 +1,8 @@
 import type { Server } from 'node:http'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
+import { compress } from 'hono/compress'
+import { cacheControlFor } from './viewer-static.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
 const BOUNDARY_HEADER = 'x-agent-inbox-local-boundary'
@@ -84,13 +86,17 @@ export function startLocalViewer(app: Hono, port: number): Server {
     }
 
     await next()
-    // The unversioned ESM graph must not mix heuristically cached releases.
-    c.header('Cache-Control', 'no-store')
+    // The unversioned ESM graph must not mix heuristically cached releases: a file of the page
+    // says no-cache (kept, but checked before each use), everything else no-store.
+    c.header('Cache-Control', cacheControlFor(c.req.raw, c.res.status))
     c.header(BOUNDARY_HEADER, BOUNDARY_VERSION)
     c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
     c.header('X-Frame-Options', 'DENY')
   })
 
+  // After the gate, so a refusal stays as it is, and before the routes, so it compresses each
+  // answer once its ETag, Content-Type and body are final (a strong tag becomes W/"…").
+  guarded.use('*', compress())
   guarded.route('/', app)
   server = serve({
     fetch: guarded.fetch,

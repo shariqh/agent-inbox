@@ -2,7 +2,6 @@
 // §3.2 "The gate, in order"). Real HTTP over a raw socket against the real listener on a
 // scratch port, wrapping a real createViewer app built as src/viewer-server.ts builds it.
 import crypto from 'node:crypto'
-import { serveStatic } from '@hono/node-server/serve-static'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -10,6 +9,7 @@ import { openDb } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
 import { pathFormOk, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
+import { staticFiles } from '../src/viewer-static.js'
 import type { RemoteEntry } from '../src/viewer-remote.js'
 import { scratchDir } from './scratch.js'
 import { waitUntil } from './wait.js'
@@ -39,7 +39,7 @@ beforeAll(async () => {
   writeSetting(dir, setting(port, [device(first, '1111111111111111'), device(second, '2222222222222222', 'desk')]))
   // as src/viewer-server.ts builds it: a second createViewer, no owner token
   const remoteApp = createViewer(db, viewerOpts(dir))
-  remoteApp.get('/*', serveStatic({ root: './public' }))
+  remoteApp.get('/*', staticFiles('./public'))
   entry = startRemoteEntry({ app: remoteApp, dir, viewerPort: 4319, intervalMs: 3_600_000 })
   await waitUntil(() => entry.status().listening, 'the remote entry to listen')
 })
@@ -114,7 +114,9 @@ describe('an accepted request', () => {
       expect(response.headers['x-agent-inbox-remote-boundary']).toBe('tailnet-v1')
       expect(response.headers['content-security-policy']).toContain("script-src 'self'")
       expect(response.headers['x-frame-options']).toBe('DENY')
-      expect(response.headers['cache-control']).toBe('no-store')
+      // a file of the page revalidates before each use; every /api/ answer stays no-store
+      expect(response.headers['cache-control']).toBe('no-cache')
+      expect(response.headers['etag']).toMatch(/^"[A-Za-z0-9_-]{43}"$/)
     }
     await expectPassed(() => get('/', deviceHeaders(first)))
     await expectPassed(() => get('/app.js', deviceHeaders(first)))

@@ -22,12 +22,14 @@ import { createAdaptorServer } from '@hono/node-server'
 import type { HttpBindings } from '@hono/node-server'
 import { Hono } from 'hono'
 import type { Handler, MiddlewareHandler } from 'hono'
+import { compress } from 'hono/compress'
 import { PAIR_PATH, createPairing, isDeviceLabel } from './remote-pair.js'
 import type { MadeCode, PairedDevice } from './remote-pair.js'
 import { UPDATE_PATH, remoteUpdateRoutes } from './remote-update.js'
 import type { RemoteUpdate } from './remote-update.js'
 import { FILE_PATH, remoteFileRoute } from './remote-file.js'
 import type { FileKind } from './remote-file.js'
+import { cacheControlFor } from './viewer-static.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
 const REMOTE_FILE = 'remote.json'
@@ -454,7 +456,8 @@ export function remoteGate(opts: {
     await next()
     // a pairing refusal stays the bare 403, with no marker, like every refusal at the gate
     if (pairing && c.res.status !== 200) return
-    c.header('Cache-Control', 'no-store')
+    // as on the loopback entry: a file of the page says no-cache, everything else no-store
+    c.header('Cache-Control', cacheControlFor(c.req.raw, c.res.status))
     c.header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
     c.header('X-Frame-Options', 'DENY')
     c.header(BOUNDARY_HEADER, BOUNDARY_VERSION)
@@ -487,6 +490,10 @@ export function guardRemoteApp(
   }
   // #634: a file a card links, for a paired device only (step 8 ran); served here, never by the wrapped app
   if (file) guarded.get(FILE_PATH, file)
+  // What the wrapped app serves (the Inbox's data and the page's files) is compressed, as on the
+  // loopback entry: registered before its routes, so it runs once their ETag, Content-Type and body
+  // are final. The guarded app's own routes above answer first and go out as they are.
+  guarded.use('*', compress())
   // Hono copies the app's routes at this call: a route added to `app` afterwards is never served.
   guarded.route('/', app as unknown as Hono<{ Bindings: HttpBindings }>)
   // createViewer sets no onError, so this one handles its errors (Hono's default logs the error itself)

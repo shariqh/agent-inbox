@@ -5,9 +5,9 @@ import { request } from 'node:http'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { startLocalViewer } from '../src/viewer-network.js'
+import { staticFiles } from '../src/viewer-static.js'
 
 // #412: scripts only from this origin, no plugins, <base> or form submissions, no framing.
 const CSP = "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
@@ -27,7 +27,7 @@ describe('local viewer network boundary', () => {
     app.get('/', (c) => c.text('viewer'))
     app.get('/api/secret', (c) => c.json({ secret: true }))
     app.post('/api/mutate', (c) => c.json({ mutated: true }))
-    app.get('/*', serveStatic({ root: './public' }))
+    app.get('/*', staticFiles('./public'))
 
     server = startLocalViewer(app, 0)
     if (!server.listening) await once(server, 'listening')
@@ -120,13 +120,16 @@ describe('local viewer network boundary', () => {
   })
 
   describe.each(['GET', 'HEAD'])('%s cache policy', (method) => {
+    // no-cache, never a heuristic: the browser keeps the file but asks before each use, so two
+    // releases of the unversioned ESM graph never mix (test/slow-link-server.test.ts revalidates)
     it.each(['/index.html', '/app.js', '/card.js', '/rowview.js', '/style.css'])(
-      'prevents heuristic caching of the unversioned resource %s',
+      'makes the unversioned resource %s revalidate before every use',
       async (path) => {
         const response = await send(path, { method })
         expect(response.status).toBe(200)
         expect(response.headers['last-modified']).toBeDefined()
-        expect(response.headers['cache-control']).toBe('no-store')
+        expect(response.headers['etag']).toMatch(/^"[A-Za-z0-9_-]{43}"$/)
+        expect(response.headers['cache-control']).toBe('no-cache')
         if (method === 'HEAD') expect(response.body).toBe('')
       },
     )

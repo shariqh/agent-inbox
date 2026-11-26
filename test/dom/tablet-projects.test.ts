@@ -1059,20 +1059,36 @@ describe('async project mutation focus', () => {
     expect(projectTab('beta')).toBeNull()
   })
 
-  it('ignores an older poll failure after a newer load succeeds', async () => {
+  // Slow links, step 1: one round at a time. A poll while a round is held starts no read; the held
+  // round's failure reads as one, and the one follow-up queued behind it then reads and clears it.
+  it('queues the next poll behind a held round, whose failure the follow-up then clears', async () => {
+    expectConsoleError(/stale load failure/)
     const d = open()
     question(d, 'alpha')
     setViewport(900)
     await bootApp(d)
 
+    // every read after the held one, counted beneath the hold (which steps aside once it has its read)
+    const reads: string[] = []
+    const fetchNow = globalThis.fetch
+    globalThis.fetch = async (input, init) => {
+      if ((init?.method ?? 'GET') === 'GET') reads.push(String(input))
+      return await fetchNow(input, init)
+    }
     const stale = holdUrlFailure('/api/items')
     const oldPoll = pollTick()
     await stale.started
+    const during = reads.length
     await pollTick()
+    await pollTick()
+    expect(reads.length, 'no read starts while a round is running').toBe(during)
     expect(document.getElementById('status')?.textContent).toBe('')
 
     stale.release()
     await oldPoll
+    await settle()
+    // exactly one follow-up round, and it succeeded
+    expect(reads.filter((url) => url === '/api/items')).toHaveLength(1)
     expect(document.getElementById('status')?.textContent).toBe('')
   })
 

@@ -1,7 +1,7 @@
-import { serveStatic } from '@hono/node-server/serve-static'
 import { homedir } from 'node:os'
 import { openDb } from './store.js'
 import { createViewer } from './viewer.js'
+import { staticFiles } from './viewer-static.js'
 import { startGithubPoller } from './issue-poller.js'
 import { startLocalViewer } from './viewer-network.js'
 import { remoteDir, startRemoteEntry } from './viewer-remote.js'
@@ -37,7 +37,7 @@ startGithubPoller(db)
 // `~/` under this user's home (src/remote-file.ts)
 const update = createRemoteUpdate({ version: AGENT_INBOX_VERSION })
 const remoteApp = createViewer(db, { mesh })
-remoteApp.get('/*', serveStatic({ root: './public' }))
+remoteApp.get('/*', staticFiles('./public'))
 const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update, files: { linked: linkedFiles(db), home: homedir() } })
 // loopback only, and never on the remote allowlist: counts since start, no login or secret
 app.get('/api/remote-entry', (c) => c.json(remote.status()))
@@ -48,7 +48,7 @@ if (ownerToken) app.post('/api/remote-entry/code', remoteCodeRoute(remote, owner
 // only with the owner token. It starts nothing: main decides on its own state.
 if (ownerToken) app.post('/api/remote-entry/update', remoteUpdateReportRoute(update, ownerToken))
 
-app.get('/*', serveStatic({ root: './public' }))
+app.get('/*', staticFiles('./public'))
 
 startLocalViewer(app, port)
 console.log(`agent-inbox viewer on http://127.0.0.1:${port}`)

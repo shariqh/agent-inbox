@@ -61,15 +61,19 @@ describe('concurrent poll reads (issue #161)', () => {
     expect(status()).toBe('')
   })
 
-  it('never lets an older, slower tick overwrite a newer one', async () => {
+  // Slow links, step 1: one round at a time. An older, slower tick can no longer be overtaken: a
+  // tick while one is held starts no read, and the one follow-up queued behind it reads afterwards.
+  it('never starts a tick while an older, slower one is held; the queued tick reads after it', async () => {
     db = freshDb()
     insertItem(db, { ...AGENT, kind: 'question', title: 'First' })
     let holding = false
+    let reads = 0
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
     await bootApp(db, {
       interceptFetch: async (input, init, next) => {
         const held = holding && isGet(init)
+        if (isGet(init)) reads += 1
         const response = await next()
         if (held) await gate
         return response
@@ -81,19 +85,25 @@ describe('concurrent poll reads (issue #161)', () => {
     holding = true
     await pollTick()
     holding = false
+    const during = reads
 
-    const fresh = insertItem(db, { ...AGENT, kind: 'question', title: 'Read by the newer tick' })
+    const fresh = insertItem(db, { ...AGENT, kind: 'question', title: 'Read by the queued tick' })
     await pollTick()
-    expect(row(stale)).not.toBeNull()
-    expect(row(fresh)).not.toBeNull()
-    expect(badgeCount()).toBe(3)
+    await pollTick()
+    expect(reads, 'no read starts while a tick is running').toBe(during)
+    expect(row(stale)).toBeNull()
+    expect(row(fresh)).toBeNull()
+    expect(badgeCount()).toBe(1)
 
     release()
     await settle()
-    expect(row(fresh)?.textContent).toContain('Read by the newer tick')
+    expect(row(stale)?.textContent).toContain('Read by the older tick')
+    expect(row(fresh)?.textContent).toContain('Read by the queued tick')
     expect(badgeCount()).toBe(3)
+    // the two ticks during the held one shared ONE follow-up
+    expect(reads - during).toBe(POLL_READS.length)
     await pollTick()
-    expect(row(fresh)?.textContent).toContain('Read by the newer tick')
+    expect(row(fresh)?.textContent).toContain('Read by the queued tick')
     expect(badgeCount()).toBe(3)
   })
 

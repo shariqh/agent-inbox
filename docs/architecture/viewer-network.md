@@ -56,3 +56,9 @@ sends this module's marker. This module does not change for it. See `remote-inbo
   no `::1` listener or host-widening environment variable. Keep this module
   viewer-process-only: hosted auth is a separate entry, and no network code may enter the
   stdio MCP import graph.
+- **Caching and compression.** A file of the page (`public/`) answers `Cache-Control: no-cache`
+  with an ETag taken from its content and may be revalidated with `If-None-Match`
+  (`src/viewer-static.ts`); everything else stays `no-store`. `hono/compress` sits after the gate,
+  just before the routes. On a compressed answer a strong ETag becomes `W/"…"`, so both
+  `etagMatches` (`src/viewer.ts`) and the static tag comparison (`src/viewer-static.ts`) compare
+  weakly.

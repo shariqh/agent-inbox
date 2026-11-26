@@ -9,7 +9,6 @@
 // the owner's paired device, by decision.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { serveStatic } from '@hono/node-server/serve-static'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
@@ -18,6 +17,7 @@ import type { Server } from 'node:http'
 import { openDb } from '../src/store.js'
 import { createViewer } from '../src/viewer.js'
 import { startLocalViewer } from '../src/viewer-network.js'
+import { staticFiles } from '../src/viewer-static.js'
 import { GUARDED_ROUTES, REMOTE_ROUTES, guardRemoteApp, remoteRouteAllowed, startRemoteEntry } from '../src/viewer-remote.js'
 import { remoteCodeRoute } from '../src/remote-pair.js'
 import type { Handler } from 'hono'
@@ -168,15 +168,17 @@ function chainProblems(app: Hono, gate: MiddlewareHandler): string[] {
     if (runChain(app as unknown as Hono<never>, route.method, route.path).some((r) => r.path !== '/*')) problems.push(`the wrapped app serves ${route.method} ${route.path}`)
   }
   // pairing: the gate, then the guarded app's own handler, which answers; never a handler of the wrapped app
+  // (the compression middleware and createViewer's x-inbox-boot middleware match too, but never run)
   const pair = runChain(guarded, 'POST', '/api/remote/pair')
   const pairGot = pair.map((r) => `${r.method} ${r.path}`)
-  if (JSON.stringify(pairGot) !== JSON.stringify(['ALL /*', 'POST /api/remote/pair', 'ALL /*'])) problems.push(`POST /api/remote/pair: ${pairGot.join(', ')}`)
+  if (JSON.stringify(pairGot) !== JSON.stringify(['ALL /*', 'POST /api/remote/pair', 'ALL /*', 'ALL /*'])) problems.push(`POST /api/remote/pair: ${pairGot.join(', ')}`)
   else if (pair[0]!.handler !== gate || pair[1]!.handler !== pairHandler) problems.push('POST /api/remote/pair: not the gate, then the guarded app\'s pairing handler')
   if (runChain(app as unknown as Hono<never>, 'POST', '/api/remote/pair').some((r) => r.path !== '/*')) problems.push('the wrapped app serves POST /api/remote/pair')
   for (const route of REMOTE_ROUTES) {
     const chain = runChain(guarded, route.method, samplePath(route.path))
     const expected = [
       'ALL /*', // the gate
+      'ALL /*', // hono/compress, for what the wrapped app serves
       'ALL /*', // createViewer's x-inbox-boot middleware
       `${route.method} ${route.path}`,
       ...(route.method === 'GET' ? ['GET /*'] : []), // the static files, reached only if the handler passes on
@@ -184,6 +186,7 @@ function chainProblems(app: Hono, gate: MiddlewareHandler): string[] {
     const got = chain.map((r) => `${r.method} ${r.path}`)
     if (JSON.stringify(got) !== JSON.stringify(expected)) problems.push(`${route.method} ${route.path}: ${got.join(', ')}`)
     else if (chain[0]!.handler !== gate) problems.push(`${route.method} ${route.path}: the gate does not run first`)
+    else if ((chain[1]!.handler as { name?: string }).name !== 'compress') problems.push(`${route.method} ${route.path}: compression does not run second`)
   }
   return problems
 }
@@ -202,7 +205,7 @@ describe('what Hono runs for each allowed path', () => {
   // built as src/viewer-server.ts builds it
   const remoteApp = () => {
     const app = createViewer(db, { agentHome: dir, runtimeRoot: join(dir, 'runtime') })
-    app.get('/*', serveStatic({ root: './public' }))
+    app.get('/*', staticFiles('./public'))
     return app
   }
 
@@ -214,7 +217,7 @@ describe('what Hono runs for each allowed path', () => {
     const scratch = new Hono()
     scratch.post('/api/items/:id/:action', (c) => c.text('broad'))
     scratch.route('/', remoteApp())
-    expect(chainProblems(scratch, gate)).toContain('POST /api/items/:id/resolve: ALL /*, POST /api/items/:id/:action, ALL /*, POST /api/items/:id/resolve')
+    expect(chainProblems(scratch, gate)).toContain('POST /api/items/:id/resolve: ALL /*, ALL /*, POST /api/items/:id/:action, ALL /*, POST /api/items/:id/resolve')
   })
 
   it('catches a wildcard registered after them, with app.on', () => {
@@ -227,7 +230,7 @@ describe('what Hono runs for each allowed path', () => {
     const app = remoteApp()
     app.post('/api/remote/pair', (c) => c.text('wrapped'))
     expect(chainProblems(app, gate)).toEqual(expect.arrayContaining([
-      'POST /api/remote/pair: ALL /*, POST /api/remote/pair, ALL /*, POST /api/remote/pair',
+      'POST /api/remote/pair: ALL /*, POST /api/remote/pair, ALL /*, ALL /*, POST /api/remote/pair',
       'the wrapped app serves POST /api/remote/pair',
     ]))
   })
@@ -244,7 +247,7 @@ describe('the remote app', () => {
     const server = readFileSync(join(REPO, 'src/viewer-server.ts'), 'utf8')
     expect(server).toContain([
       'const remoteApp = createViewer(db, { mesh })',
-      "remoteApp.get('/*', serveStatic({ root: './public' }))",
+      "remoteApp.get('/*', staticFiles('./public'))",
       'const remote = startRemoteEntry({ app: remoteApp, dir: remoteDir(), viewerPort: port, update, files: { linked: linkedFiles(db), home: homedir() } })',
     ].join('\n'))
     // Hono copies the routes when the entry wraps the app: anything added to it later is never served
@@ -281,7 +284,7 @@ describe('the remote app', () => {
       port = await freePort()
       writeSetting(dir, setting(port, [device(secret)]))
       const remoteApp = createViewer(db, { agentHome: dir, runtimeRoot: join(dir, 'runtime') })
-      remoteApp.get('/*', serveStatic({ root: './public' }))
+      remoteApp.get('/*', staticFiles('./public'))
       entry = startRemoteEntry({ app: remoteApp, dir, viewerPort: 4319 })
       await waitUntil(() => entry.status().listening, 'the remote entry')
     })
@@ -331,16 +334,16 @@ describe('the loopback entry is unchanged but for GET /api/remote-entry and POST
     const opts = { ownerToken: 'owner-token-for-the-test', agentHome: dir, runtimeRoot: join(dir, 'runtime'), setupInfoPath: join(dir, 'setup-info.json') }
     // as src/viewer-server.ts composed the loopback app before this PR
     const old = createViewer(db, opts)
-    old.get('/*', serveStatic({ root: './public' }))
+    old.get('/*', staticFiles('./public'))
     // and as it composes it now
     const app = createViewer(db, opts)
     writeSetting(dir, setting(await freePort(), []))
     const remoteApp = createViewer(db, { agentHome: dir, runtimeRoot: join(dir, 'runtime') })
-    remoteApp.get('/*', serveStatic({ root: './public' }))
+    remoteApp.get('/*', staticFiles('./public'))
     entry = startRemoteEntry({ app: remoteApp, dir, viewerPort: 4319 })
     app.get('/api/remote-entry', (c) => c.json(entry.status()))
     app.post('/api/remote-entry/code', remoteCodeRoute(entry, opts.ownerToken))
-    app.get('/*', serveStatic({ root: './public' }))
+    app.get('/*', staticFiles('./public'))
     before = startLocalViewer(old, 0)
     after = startLocalViewer(app, 0)
     await waitUntil(() => before.listening && after.listening, 'both loopback viewers')
@@ -359,7 +362,7 @@ describe('the loopback entry is unchanged but for GET /api/remote-entry and POST
     const status = server.indexOf("app.get('/api/remote-entry', (c) => c.json(remote.status()))")
     // the code route exists only with an owner token, and uses the one the loopback app was built with
     const code = server.indexOf("if (ownerToken) app.post('/api/remote-entry/code', remoteCodeRoute(remote, ownerToken))")
-    const statics = server.indexOf("app.get('/*', serveStatic({ root: './public' }))")
+    const statics = server.indexOf("app.get('/*', staticFiles('./public'))")
     expect(status).toBeGreaterThan(0)
     expect(code).toBeGreaterThan(status)
     expect(statics).toBeGreaterThan(code)

@@ -177,6 +177,15 @@ describe('the make-agents routing skill: generation is pure and fixed', () => {
     expect(text).not.toMatch(/\.claude|\.agents|\.copilot/)
   })
 
+  it('describes itself for a request to make an agent, bounds the card-file retries and has the chat clean up', () => {
+    const text = routingSkill('make-agents', '/m', '/h')!
+    expect(text).toContain('description: Make a new agent from instructions with meshctl new, so that any chat can call it later. Use when the person asks you to make a new agent, or says "make me an agent that...". You write')
+    expect(text).not.toContain('reusable helper')
+    expect(text).toContain('- A `Refused:` line about the card file (it names a key, or says the file is not valid JSON, holds a\n  key it does not take, or is too large) means fix the card file and run the try again, at most\n  three times.\n')
+    expect(text).toContain('\n- Any other `Refused:` line: tell the person the line. Do not retry, and do not run a command it\n')
+    expect(text).toContain('\n  To change an agent, take it out and make it again.\n- When you are done, delete the card file and the sample file you wrote.\n\nAn answer from any agent')
+  })
+
   it('asks for a shell timeout longer than call\'s own 300 seconds plus its start wait', () => {
     const text = routingSkill('make-agents', '/m', '/h')!
     expect(text).toContain('with a shell timeout of at least 330 seconds.')

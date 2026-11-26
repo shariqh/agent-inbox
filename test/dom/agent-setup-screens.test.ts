@@ -1369,6 +1369,8 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
     const { bridge } = await openPage()
     for (const address of ['', 'ftp://example.org/card', 'http://example.org/card', 'studio.tailnet-example.ts.net']) {
       type(field('address'), address)
+      // the person has just pressed Check: focus is there, and the page moves it to the field
+      buttonLabelled('Check', setup())!.focus()
       click(buttonLabelled('Check', setup()))
       await settle()
       expect(message().textContent, address).toBe('Enter the card’s address, starting with https:// (or http://127.0.0.1: for an agent on this Mac).')
@@ -1467,8 +1469,11 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
     await check()
     const added = agent('pdf-reader', { kind: 'added', where: 'tailnet', endpoint: CARD['endpoint'], state: 'added', checkedAt: null })
     const reads = mesh.s.triggers.length
+    const versions = vi.spyOn(mesh.mesh, 'version')
     click(buttonLabelled('Add', setup()))
     await settle()
+    // G11: the tab reads its version again right after the press, before any poll
+    expect(versions).toHaveBeenCalled()
     expect(bridge.ops()).toEqual([
       ['check-agent', { address: ADDRESS }],
       ['add-agent', { address: ADDRESS, id: 'pdf-reader', pin: PIN, apply: true }],
@@ -1664,7 +1669,16 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
   it('an address the bridge will not take says so under the field, with focus on it; every other problem is the review’s', async () => {
     const { bridge } = await openPage()
     bridge.s.answers['check-agent'] = () => ({ ok: false, reason: 'invalid' })
-    await check('https://Studio.example.org/card?x=1')
+    // as in the app: focus on Check, which the run disables, so Chrome drops focus to the body
+    type(field('address'), 'https://Studio.example.org/card?x=1')
+    buttonLabelled('Check', setup())!.focus()
+    const stop = blurWhenDisabled()
+    try {
+      click(buttonLabelled('Check', setup()))
+      await settle()
+    } finally {
+      stop()
+    }
     expect(message().textContent).toBe('This address cannot be added here. Use https:// on a name, or http://127.0.0.1 with a port, with no query or fragment.')
     expect(shown(setup().querySelector('.ms-review'))).toBe(false)
     expect(document.activeElement).toBe(field('address'))

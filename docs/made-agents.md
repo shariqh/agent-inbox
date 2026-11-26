@@ -220,7 +220,7 @@ A made agent is a set of instructions that a model server runs on the text it is
 reads text and answers: it has no tools, opens no files and runs no commands. If the person needs
 more than that, say so and stop.
 
-Run each command below directly, as written, with a shell timeout of at least 300 seconds. If
+Run each command below directly, as written, with a shell timeout of at least 330 seconds. If
 `~/.agent-inbox/bin/meshctl` does not exist, tell the person that meshctl is not installed and stop.
 
 ## 1. Write the card file

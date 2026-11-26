@@ -177,6 +177,12 @@ describe('the make-agents routing skill: generation is pure and fixed', () => {
     expect(text).not.toMatch(/\.claude|\.agents|\.copilot/)
   })
 
+  it('asks for a shell timeout longer than call\'s own 300 seconds plus its start wait', () => {
+    const text = routingSkill('make-agents', '/m', '/h')!
+    expect(text).toContain('with a shell timeout of at least 330 seconds.')
+    expect(text).not.toMatch(/at least 300 seconds/)
+  })
+
   it('carries the rules of docs/made-agents.md "The card file" verbatim', () => {
     const text = routingSkill('make-agents', '/m', '/h')!
     const docText = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')

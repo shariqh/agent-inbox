@@ -33,13 +33,13 @@ It is one JSON object with exactly these keys, at most 64 KiB:
 | Key | Rule |
 |---|---|
 | `name` | The agent's id, the same one you give `meshctl new`: 1 to 40 lower-case letters, digits and inner hyphens, not a built-in agent's name, and not ending in `-next`. |
-| `description` | One line, 1 to 200 characters once trimmed, with no control characters. It becomes the card's description, which `meshctl status` and the app show. |
-| `instructions` | 1 to 16384 characters of text. Line breaks and tabs are fine; other control characters are not. This is the agent's whole behaviour. |
+| `description` | One line, 1 to 200 characters once trimmed, with no control characters. It becomes the card's description, which the app shows. |
+| `instructions` | 1 to 16384 characters of text. Line breaks and tabs are fine; other control characters are not. Nothing shaped like a key or a token: they go to the model server on every call. This is the agent's whole behaviour. |
 | `server` | The name of a model server in `servers.json` (`meshctl server list` shows them). |
 | `model` | The model on that server. For a Claude Code server it is `haiku`, `sonnet` or `opus`, and you may leave it out (it is then `sonnet`). For any other server it is required: 1 to 64 letters, digits, `.`, `_`, `:`, `/` or `-`. |
 
-Any other key, or a value of the wrong type, is refused. The refusal names the key and the rule,
-never a value from the file.
+Any other key, a value of the wrong type, or text that is not well-formed Unicode is refused. The
+refusal names the key and the rule, never a value from the file.
 
 ## Try it, add it, call it, remove it
 
@@ -100,9 +100,18 @@ To change a made agent, remove it and make it again.
   use. Remove an agent you no longer need.
 - **`made-agent: the try failed: …`**: the try's one line says why: a busy server (try again), a
   sample shaped like a secret (nothing was sent), a sample over 64 KiB, or a failed model call.
+- **`… did not answer within 240 s: try again later, or with a shorter sample`**: the model server
+  took longer than a try waits. Try again later, or with a shorter sample.
+- **`"instructions" hold something shaped like a secret`**: take the key or token out of the card
+  file's instructions; they would go to the model server with every call.
+- **`another setup is running (it holds the setup lock)`**: `--apply` holds the same lock as
+  `meshctl enable`, so two of them never interleave. Try again when the other one ends.
+- **`another process answers at …: try again`**: another `meshctl new` may have just taken the
+  port. Run the same command again.
 - **`Failed at step 4/5: the agent did not start; see …-agent.log`**: the log's last line says why,
   for example a server whose key cannot be read (`meshctl server check <name>`) or a Claude Code
-  server with no `claude` program. Every step before it was undone, so nothing is left behind.
+  server with no `claude` program. Every step before it was undone. Only that start log is left,
+  for its reason: `meshctl remove <id> --apply` deletes it.
 - **`meshctl call` exits 16 (the card changed)**: a signing key made later for the same id
   (`meshctl key create <id>`) changes the card. Remove the agent and make it again.
 - **`meshctl server remove` is refused**: a made agent uses that server. Remove the agent first.
@@ -113,7 +122,11 @@ To change a made agent, remove it and make it again.
   request and the instructions there.
 - A Claude Code server runs the `claude` program on this Mac, which sends them to Anthropic
   through your Claude sign-in ([Claude Code on this Mac](model-servers.md#claude-code-on-this-mac)).
-  Any other server gets them at its address.
+  The instructions reach the program through a private file (0600, deleted when the call ends),
+  never its command line, where other processes on the Mac could read them. Any other server gets
+  them at its address.
+- The card pin covers the card (the name and the description), not the instructions, the server or
+  the model. `--apply` uses the card file as it is when it runs, so apply the file you tried.
 - Before any model call the text passes the privacy screen's secret check: text holding something
   shaped like a key or a token is refused, and nothing is sent.
 - The system message is one fixed line, then a blank line, then your instructions as written:
@@ -139,7 +152,9 @@ To change a made agent, remove it and make it again.
 ## Where its files live
 
 `<mesh dir>` is `~/.agent-inbox` unless `AGENT_INBOX_MESH_DIR` (or `AGENT_INBOX_DB`) says otherwise.
-Only `meshctl` writes these; each is 0600 in a 0700 folder.
+Each is 0600 in a 0700 folder. `meshctl` writes all of them but the day logs, which the runner
+writes, as it writes into the start log meshctl opens for it; a Claude Code server's calls also run in
+the runner's empty folder `<mesh dir>/mesh/claude-cwd`.
 
 | File | What it holds |
 |---|---|

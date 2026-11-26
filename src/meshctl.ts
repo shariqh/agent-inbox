@@ -94,7 +94,7 @@ import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs
 import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
 import { CHECK_USAGE, publishableRefusal, runCheck } from './mesh-check.js'
-import { SKILL_TARGETS, holdSetupLock, shownDir, skillPlan, skillState } from './mesh-skills.js'
+import { DEFAULT_MESH_DIR, SKILL_TARGETS, holdSetupLock, shownDir, skillPlan, skillState } from './mesh-skills.js'
 import type { SkillTarget } from './mesh-skills.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
@@ -1087,7 +1087,9 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const valid = added.filter((a) => a.read !== 'invalid').length
     // makeAgents is a switch of its own, not an agent: only the value true turns it on
     const makeValue = existing.kind === 'present' ? existing.doc['makeAgents'] : undefined
-    const pieces = [...(port ? ['unslop'] : []), ...(codePort ? ['unslop-code'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(makeValue === true ? ['the make-agents skill'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
+    // the skill serves ~/.agent-inbox alone (skillPlan leaves it out of any other mesh dir), so it is not on elsewhere
+    const makeHere = shownDir(dir, home) === DEFAULT_MESH_DIR
+    const pieces = [...(port ? ['unslop'] : []), ...(codePort ? ['unslop-code'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(makeValue === true && makeHere ? ['the make-agents skill'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
     if (existing.kind === 'missing') out(`Mesh: off. No ${name}.\n`)
     else if (existing.kind === 'refused') out(`Mesh: off. ${name} ${existing.reason}, so it is read as off.\n`)
     else out(pieces ? `Mesh: on. ${name} turns on ${pieces}.\n` : `Mesh: off. ${name} turns on no piece this build reads.\n`)
@@ -1112,6 +1114,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     out(`Request-post: ${rpState}. Token: ${has(rp.token)}; shim ${show(rp.shim)}: ${has(rp.shim)}.\n`)
     if (makeValue === undefined) out('Make-agents skill: off.\n')
     else if (makeValue !== true) out(`Make-agents skill: off (makeAgents in ${name} is not true).\n`)
+    else if (!makeHere) out(`Make-agents skill: off (the mesh dir is not ${DEFAULT_MESH_DIR}).\n`)
     else {
       const state = skillState({ dir, home }, 'make-agents')
       const yes = (host: 'claude' | 'agents'): string => (state.hosts[host] === 'linked' ? 'yes' : 'no')
@@ -1209,7 +1212,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   if (command === 'enable' && makeAgents) {
     if (flags.size || values.size) return usage()
     // the skill's commands run ~/.agent-inbox/bin/meshctl, a shim that sets no mesh dir
-    if (shownDir(dir, home) !== '~/.agent-inbox') return refuse(`the make-agents skill runs ~/.agent-inbox/bin/meshctl, which acts on ~/.agent-inbox, but the mesh dir is ${shownDir(dir, home)}`)
+    if (shownDir(dir, home) !== DEFAULT_MESH_DIR) return refuse(`the make-agents skill runs ~/.agent-inbox/bin/meshctl, which acts on ~/.agent-inbox, but the mesh dir is ${shownDir(dir, home)}`)
     const existing = readMesh(file)
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
     const doc: MeshDocument = existing.kind === 'present' ? existing.doc : { schema: MESH_SCHEMA }

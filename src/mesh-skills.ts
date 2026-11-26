@@ -226,6 +226,9 @@ export interface SkillContext {
   show: (path: string) => string
 }
 
+/** The only mesh dir the make-agents skill serves, as a skill's text names it. */
+export const DEFAULT_MESH_DIR = '~/.agent-inbox'
+
 // the mesh dir goes into a shell command in the skill, so it must be one plain word (a leading ~ is the home folder)
 const PLAIN_PATH = /^(~|~?[A-Za-z0-9._/@+-]+)$/
 
@@ -417,6 +420,12 @@ export function skillPlan(ctx: SkillContext, doc: MeshDocument | undefined, mode
     },
   })
   const all = routingSkills(doc, dir, home)
+  // make-agents runs the shim ~/.agent-inbox/bin/meshctl, so it belongs to that mesh dir alone: a copied or moved mesh.json
+  // elsewhere gets none (its folder and links go like any off skill's), whatever its makeAgents says
+  if (all.has('make-agents') && shownDir(dir, home) !== DEFAULT_MESH_DIR) {
+    all.delete('make-agents')
+    refused.push(`the make-agents skill runs ${DEFAULT_MESH_DIR}/bin/meshctl, so it is not written in ${show(dir)}`)
+  }
   // only a template that names <mesh dir> needs it to be one plain shell word: make-agents names the meshctl shim instead
   const plain = PLAIN_PATH.test(shownDir(dir, home))
   const wanted = new Map([...all].filter(([agent]) => plain || !TEMPLATES[agent]!.includes('<mesh dir>')))

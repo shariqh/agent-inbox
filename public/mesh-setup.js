@@ -591,8 +591,11 @@ export function installMeshSetup(deps) {
     els?.first?.focus({ preventScroll: true })
   }
 
+  // While an operation runs the page stays (its back control is disabled), so the operation's result
+  // lands on the page that started it; true even then, so Escape is still the page's and goes no further.
   function back() {
     if (!page) return false
+    if (busy()) return true
     const left = page
     page = left.back
     els = null
@@ -824,6 +827,7 @@ export function installMeshSetup(deps) {
   function paintPage(root) {
     if (!els || els.root !== root || !root.contains(els.form)) els = build(root)
     const disabled = busy() || Boolean(page.review)
+    setDisabled(root.querySelector('.map-back'), busy())
     for (const el of els.form.querySelectorAll('input, select')) if (!el.classList.contains('ms-model-list')) setDisabled(el, disabled)
     const message = els.form.querySelector('.ms-message')
     setText(message, page.message)
@@ -1292,7 +1296,7 @@ export function installMeshSetup(deps) {
     open: () => page !== null && usable(),
     /** The open set-up page's title for the top bar, or null. */
     title: () => (page ? pageTitle() : null),
-    /** Back from the open set-up page (← and Escape); false when none is open. */
+    /** Back from the open set-up page (← and Escape); false when none is open; nothing while an operation runs. */
     back,
     /**
      * Paints the home's Marketplace and Model servers after "Yours" (null body: neither shows),

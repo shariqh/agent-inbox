@@ -2264,7 +2264,7 @@ body.settings-open .sidebar-shell > :not(#gear) { opacity: .32; }
 .ms-terminal[hidden], .ms-file-name[hidden], .ms-message[hidden], .ms-actions[hidden], .ms-review[hidden], .ms-review [hidden],
 .ms-field [hidden], .ms-field[hidden], .ms-choice[hidden], .ms-market .ma-grid[hidden] { display: none; }
 .ms-line { margin: 8px 0 0; padding: 0 4px; color: var(--app-muted); font-size: 12px; }
-.ms-btn:disabled { cursor: default; opacity: .55; }
+.ms-btn:disabled, #agentSetup .map-back:disabled { cursor: default; opacity: .55; }
 .ms-primary { border-color: var(--app-border-strong); }
 .ms-offer { cursor: default; }
 .ms-offer.ms-openable { cursor: pointer; }

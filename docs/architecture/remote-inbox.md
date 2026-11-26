@@ -203,6 +203,13 @@ socket and check they are refused at step 4 (`test/viewer-remote.test.ts`).
 
 Accepted responses get `Cache-Control: no-store`, the loopback entry's CSP, `X-Frame-Options:
 DENY` and `x-agent-inbox-remote-boundary: tailnet-v1`, and never `x-agent-inbox-local-boundary`.
+The one exception to `no-store` is a file of the page (`public/`): it answers `no-cache` with an
+ETag taken from its content and may be revalidated with `If-None-Match` (`src/viewer-static.ts`).
+
+- `hono/compress` sits after the gate and after the guarded app's own routes (pairing, the update
+  relay, the file route), just before the wrapped app. On a compressed answer a strong ETag becomes
+  `W/"…"`, so both `etagMatches` (`src/viewer.ts`) and the static tag comparison
+  (`src/viewer-static.ts`) compare weakly.
 
 ## What it serves
 

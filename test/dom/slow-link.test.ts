@@ -102,4 +102,73 @@ describe('one round at a time over a slow link', () => {
     expect(row(second)?.textContent).toContain('After the outage')
     expect(badgeCount()).toBe(2)
   })
+
+  it('ends a plain poll of /api/activity that never answers, the same way', async () => {
+    db = freshDb()
+    const first = insertItem(db, { ...AGENT, kind: 'question', title: 'Established' })
+    let stalled = false
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) =>
+        (stalled && isGet(init) && route(input) === '/api/activity' ? new Promise<Response>(() => {}) : next()),
+    })
+    await showInbox()
+    expectConsoleError(/TimeoutError/)
+    stalled = true
+    const second = insertItem(db, { ...AGENT, kind: 'question', title: 'After the outage' })
+
+    await pollTick()
+    await vi.advanceTimersByTimeAsync(STALL_MS - 1_000)
+    expect(status()).toBe('')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(status()).toBe('disconnected')
+    expect(row(first)?.textContent).toContain('Established')
+    expect(row(second)).toBeNull()
+
+    stalled = false
+    await vi.advanceTimersByTimeAsync(STALL_MS)
+    await pollTick()
+    expect(status()).toBe('')
+    expect(row(second)?.textContent).toContain('After the outage')
+  })
+
+  it('ends a snapshot body that delivers one chunk and then nothing, the same way', async () => {
+    db = freshDb()
+    upsertBoard(db, { ...AGENT, title: 'Plan', rows: [{ label: 'Step', status: 'tracked', note: 'the note' }] })
+    const first = insertItem(db, { ...AGENT, kind: 'question', title: 'Established' })
+    let stalled = false
+    await bootApp(db, {
+      interceptFetch: async (input, init, next) => {
+        if (!stalled || !isGet(init) || route(input) !== '/api/boards') return next()
+        const response = await next()
+        if (response.status !== 200) return response
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        // the headers arrive, then one piece of the body and never the rest
+        const body = new ReadableStream<Uint8Array>({ start(out) { out.enqueue(bytes.slice(0, 10)) } })
+        return new Response(body, { status: response.status, headers: response.headers })
+      },
+    })
+    await showInbox()
+    expectConsoleError(/Invalid snapshot JSON: \/api\/boards/)
+    stalled = true
+    // a changed plan list, so the read is a 200 with a body and not a 304
+    upsertBoard(db, { ...AGENT, title: 'Another plan', rows: [{ label: 'Step', status: 'tracked', note: 'the note' }] })
+    const second = insertItem(db, { ...AGENT, kind: 'question', title: 'After the outage' })
+
+    await pollTick()
+    // the round waits for the stalled body, so the page still shows the old frame
+    await vi.advanceTimersByTimeAsync(STALL_MS - 1_000)
+    expect(row(second)).toBeNull()
+    await vi.advanceTimersByTimeAsync(1_000)
+    // the body's read failed at the limit (snapshots.js words it as an invalid body), and the round fails with it
+    expect(status()).toBe('disconnected')
+    expect(row(first)?.textContent).toContain('Established')
+    expect(row(second)).toBeNull()
+
+    // the follow-up round queued behind it stalls the same way; the one after reads
+    stalled = false
+    await vi.advanceTimersByTimeAsync(STALL_MS)
+    await pollTick()
+    expect(status()).toBe('')
+    expect(row(second)?.textContent).toContain('After the outage')
+  })
 })

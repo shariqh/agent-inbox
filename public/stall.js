@@ -70,7 +70,13 @@ export function stallLimited(start) {
         Promise.resolve(response.body?.cancel?.()).catch(() => {})
         return
       }
-      resolve(guardBody(response, stall))
+      try {
+        resolve(guardBody(response, stall))
+      } catch (error) {
+        // an answer the guard cannot wrap must end this read, or the round waits on it forever
+        controller.abort(error)
+        reject(error)
+      }
     }, (error) => {
       clearTimeout(timer)
       reject(error)

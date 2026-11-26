@@ -70,12 +70,29 @@ describe('stallLimited', () => {
 
   it('does not count the time before the body is read', async () => {
     const body = drip()
-    body.push('[1,2,3]')
-    body.end()
     const response = await stallLimited(async () => new Response(body.stream))
     // the round waits for every other read's headers before it reads any body
-    await vi.advanceTimersByTimeAsync(STALL_MS * 3)
-    expect(await response.json()).toEqual([1, 2, 3])
+    await vi.advanceTimersByTimeAsync(STALL_MS * 1.2)
+    const json = response.json()
+    // nothing may be pulled ahead of the read: the clock for the body starts here, not at the headers
+    await vi.advanceTimersByTimeAsync(STALL_MS * 0.3)
+    body.push('[1,2,3]')
+    body.end()
+    expect(await json).toEqual([1, 2, 3])
+  })
+
+  it('rejects, and lets the connection go, when the answer cannot be wrapped', async () => {
+    const body = drip()
+    let signal!: AbortSignal
+    // a readable body with a status the Response constructor refuses
+    const refused = { status: 600, statusText: '', headers: new Headers(), body: body.stream } as unknown as Response
+    const read = stallLimited(async (s) => { signal = s; return refused })
+    const outcome = read.then(() => 'answered', (error: Error) => error.name)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await outcome).toBe('RangeError')
+    expect(signal.aborted).toBe(true)
+    // the header timer is gone too: nothing left to settle the promise a second time
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('passes an answer with no readable body through untouched', async () => {

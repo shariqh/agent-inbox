@@ -369,8 +369,12 @@ function profileRules(dir: string): string | undefined {
 const isRulesLink = (at: Entry): at is { kind: 'link'; to: string; raw: string } => at.kind === 'link' && isAbsolute(at.raw) && basename(at.raw) === 'rules.md'
 
 export interface SkillState {
-  /** The generated SKILL.md: `differs` also covers anything that is not a regular file meshctl could have written. */
-  file: 'present' | 'missing' | 'differs'
+  /**
+   * The generated SKILL.md: `differs` also covers a SKILL.md that is not a regular file. `blocked` means `skills/` or the
+   * agent's folder is a file or a link, which the plan refuses to write through: `blocker` is that path.
+   */
+  file: 'present' | 'missing' | 'differs' | 'blocked'
+  blocker?: string
   /** What each host folder holds under the agent's name: meshctl's own link to the folder, nothing, or something else. */
   hosts: Record<SkillTarget, 'linked' | 'missing' | 'foreign'>
   /** The same for ~/.copilot/skills, where meshctl never links: anything there but a link to the folder blocks one. */
@@ -385,13 +389,17 @@ export interface SkillState {
 export function skillState(ctx: { dir: string; home: string }, agent: string): SkillState {
   const skills = join(ctx.dir, 'skills')
   const folder = join(skills, agent)
-  const text = entry(skills).kind === 'dir' && entry(folder).kind === 'dir' ? readRegular(join(folder, 'SKILL.md')) : entry(skills).kind === 'missing' || entry(folder).kind === 'missing' ? undefined : null
-  const file = text === undefined ? 'missing' : text === routingSkill(agent, ctx.dir, ctx.home) ? 'present' : 'differs'
   const at = (rel: string): 'linked' | 'missing' | 'foreign' => {
     const found = entry(join(ctx.home, rel, agent))
     return found.kind === 'missing' ? 'missing' : found.kind === 'link' && found.to === folder ? 'linked' : 'foreign'
   }
-  return { file, hosts: { claude: at(TARGET_DIRS.claude), agents: at(TARGET_DIRS.agents) }, copilot: at(COPILOT_DIR) === 'foreign' ? 'foreign' : 'missing' }
+  const linked = { hosts: { claude: at(TARGET_DIRS.claude), agents: at(TARGET_DIRS.agents) }, copilot: at(COPILOT_DIR) === 'foreign' ? 'foreign' as const : 'missing' as const }
+  const skillsKind = entry(skills).kind
+  const folderKind = skillsKind === 'dir' ? entry(folder).kind : undefined
+  if (skillsKind === 'other' || skillsKind === 'link') return { file: 'blocked', blocker: skills, ...linked }
+  if (folderKind === 'other' || folderKind === 'link') return { file: 'blocked', blocker: folder, ...linked }
+  const text = folderKind === 'dir' ? readRegular(join(folder, 'SKILL.md')) : undefined
+  return { file: text === undefined ? 'missing' : text === routingSkill(agent, ctx.dir, ctx.home) ? 'present' : 'differs', ...linked }
 }
 
 export interface SkillPlan {

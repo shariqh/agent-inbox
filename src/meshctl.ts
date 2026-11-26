@@ -1118,7 +1118,9 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     else {
       const state = skillState({ dir, home }, 'make-agents')
       const yes = (host: 'claude' | 'agents'): string => (state.hosts[host] === 'linked' ? 'yes' : 'no')
-      out(`Make-agents skill: on. ${show(join(dir, 'skills', 'make-agents', 'SKILL.md'))}: ${state.file}${state.file === 'present' ? '' : ' (meshctl enable --make-agents --apply rewrites it)'}; linked for Claude Code: ${yes('claude')}; for Codex and Copilot CLI: ${yes('agents')}.\n`)
+      // a skills folder or agent folder that is a file or a link is refused by enable, so it is no rewrite to advise
+      const fileWords = state.file === 'blocked' ? `blocked: ${show(state.blocker!)} is not a folder meshctl wrote` : state.file === 'present' ? 'present' : `${state.file} (meshctl enable --make-agents --apply rewrites it)`
+      out(`Make-agents skill: on. ${show(join(dir, 'skills', 'make-agents', 'SKILL.md'))}: ${fileWords}; linked for Claude Code: ${yes('claude')}; for Codex and Copilot CLI: ${yes('agents')}.\n`)
     }
     // a made agent (D6) says so, with its server and model; never its instructions or a path
     const madeWords = (id: string): string => {

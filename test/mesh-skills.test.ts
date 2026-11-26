@@ -1339,12 +1339,23 @@ describe('meshctl status reports the make-agents skill', () => {
     expect(line(v)).toContain('linked for Claude Code: no; for Codex and Copilot CLI: no.')
   })
 
-  it('a skills folder or make-agents folder that is a link counts as differs', () => {
-    const t = inHome('{"schema":1,"makeAgents":true}\n')
-    mkdirSync(join(t.home, 'elsewhere', 'make-agents'), { recursive: true })
-    writeFileSync(join(t.home, 'elsewhere', 'make-agents', 'SKILL.md'), routingSkill('make-agents', t.dir, t.home)!)
-    symlinkSync(join(t.home, 'elsewhere'), join(t.dir, 'skills'))
-    expect(line(t)).toContain(`${t.show(t.file)}: differs ${REWRITES};`)
+  it('says blocked, with what is in the way and no advice to rewrite, when skills or its make-agents folder is a file or a link', () => {
+    const blocked = (t: ReturnType<typeof inHome>, path: string): string =>
+      `Make-agents skill: on. ${t.show(t.file)}: blocked: ${t.show(path)} is not a folder meshctl wrote; linked for Claude Code: no; for Codex and Copilot CLI: no.`
+    const cases: Array<[string, (t: ReturnType<typeof inHome>) => string]> = [
+      ['skills is a file', (t) => { writeFileSync(join(t.dir, 'skills'), 'x'); return join(t.dir, 'skills') }],
+      ['skills is a link', (t) => { mkdirSync(join(t.home, 'elsewhere', 'make-agents'), { recursive: true }); symlinkSync(join(t.home, 'elsewhere'), join(t.dir, 'skills')); return join(t.dir, 'skills') }],
+      ['the folder is a file', (t) => { mkdirSync(join(t.dir, 'skills')); writeFileSync(t.folder, 'x'); return t.folder }],
+      ['the folder is a link', (t) => { mkdirSync(join(t.dir, 'skills')); mkdirSync(join(t.home, 'elsewhere')); symlinkSync(join(t.home, 'elsewhere'), t.folder); return t.folder }],
+    ]
+    for (const [why, make] of cases) {
+      const t = inHome('{"schema":1,"makeAgents":true}\n')
+      const path = make(t)
+      expect(line(t), why).toBe(blocked(t, path))
+      expect(line(t), why).not.toContain('rewrites')
+      // and enable does refuse it, so no advice to run it would be right
+      expect(t.run('enable', '--make-agents', '--apply').code, why).toBe(1)
+    }
   })
 
   it('shows no skill text, only the line, and reads a mesh.json it refuses as off', () => {

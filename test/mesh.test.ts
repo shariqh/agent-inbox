@@ -11,7 +11,7 @@ import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo, LookupFunction } from 'node:net'
 import { dirname, join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh, readCardCopy } from '../src/mesh-config.js'
-import { runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
+import { heldIdRefusal, runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
 import { addSummary, cardSha256, reachOf, tailnetRefusal } from '../src/mesh-add.js'
 import { addedPlace } from '../src/mesh-entry.js'
 import { checkProfile } from '../src/agent-card.js'
@@ -1140,6 +1140,8 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     // the same agent again, under any local id, is that entry: it moves, never doubles
     const again = await t.add(a.url, '--id', 'echo-two', '--token-file', t.tokenFile, '--apply')
     expect(again.err).toBe('Refused: the card declares the agent id that agents.echo holds, so it is that agent: to move echo here, add --move echo (its pin and run records stay). Nothing changed.\n')
+    // the sentence the app's Add an agent page reads the holder from (add step 2, G5)
+    expect(again.err).toBe(`Refused: ${heldIdRefusal('echo', false)}. Nothing changed.\n`)
     // a card that breaks the profile is refused with fixed words
     const bad = await profiledAgent((c) => { c.capabilities.extensions.at(-1).params.keys = [{ ...KEY, d: KEY.x }] })
     expect((await t.add(bad.url, '--id', 'bad', '--token-file', t.tokenFile, '--apply')).err).toBe('Refused: the card has a private profile key. Nothing changed.\n')
@@ -1408,6 +1410,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     const impostor = await signedAgent(K2)
     const r = await t.add(impostor.url, '--token-file', t.tokenFile, '--apply')
     expect(r.err).toBe('Refused: the card declares the agent id that agents.echo holds, but no key agents.echo\'s pinned card lists signed it, so add cannot tell it is that agent. Nothing changed.\n')
+    expect(r.err).toBe(`Refused: ${heldIdRefusal('echo', true)}. Nothing changed.\n`)
     // with --move the pin decides, and the impostor's card (another key list) is another card
     expect((await t.add(impostor.url, '--move', 'echo', '--apply')).err).toContain('Refused: the card at the new URL is not the one you added')
     expect(json(t.dir).agents.echo.endpoint).toBe(`${after.origin}/a2a`)

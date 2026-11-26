@@ -14,6 +14,7 @@ import type Database from 'better-sqlite3'
 import { bootApp, buttonLabelled, click, freshDb, pollTick, settle, type, useDomTest } from './harness.js'
 import { agent, fakeMesh } from './agent-cards-fake.js'
 import meshProcess from '../../electron/mesh-process.cjs'
+import { heldIdRefusal } from '../../src/meshctl.js'
 import { ALL_OFFERED, CARD, CHECK_STEPS, HANDLE, LOCAL_CARD, OFFERED, PIN, blurWhenDisabled, carded, checked, checkedClaude, claudeServer, fakeBridge, olderServer, planned, server } from './agent-setup-fake.js'
 
 useDomTest()
@@ -1558,23 +1559,26 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
     ])
   })
 
-  it('an agent already added: a taken derived id is refused in the command’s words; a move or the same address says so; no summary, no Add, nothing runs', async () => {
+  it('an agent already added says so in one sentence, in all three shapes: Back only, no summary, no Add, no terminal line, nothing runs', async () => {
     const { bridge } = await openPage()
-    const taken = 'the id pdf-reader is already in ~/.agent-inbox/mesh.json, and add never replaces an entry. Nothing changed.'
-    const cases: Array<[Json, string]> = [
-      [carded({ refused: taken }), taken],
-      [carded({ notes: ['Move       this is pdf-reader at a new endpoint (was https://hub.example.ts.net/a2a), signed by a key its pinned card lists.'] }),
-        'This agent is already added as pdf-reader. Moving it to a new address is done in a terminal.'],
-      [carded({ steps: [], notes: [`agents.pdf-reader is already at ${ADDRESS}. Nothing to do.`] }), 'This agent is already added as pdf-reader.'],
+    const cases: Array<[string, Json]> = [
+      // (i) the same card at the address the entry already holds: nothing to do
+      ['the same address', carded({ steps: [], notes: [`agents.pdf-reader is already at ${ADDRESS}. Nothing to do.`] })],
+      // (ii) a signed card of an agent added at another address: the command plans a move
+      ['a move', carded({ notes: ['Move       this is pdf-reader at a new endpoint (was https://hub.example.ts.net/a2a), signed by a key its pinned card lists.'] })],
+      // (iii) the command's refusal for a card that declares an agent id an entry holds, as the command words it
+      ['an unsigned card of an added agent', carded({ refused: `${heldIdRefusal('pdf-reader', false)}. Nothing changed.` })],
+      ['a card signed by another key', carded({ refused: `${heldIdRefusal('pdf-reader', true)}. Nothing changed.` })],
     ]
-    for (const [answer, words] of cases) {
+    for (const [label, answer] of cases) {
       bridge.s.answers['check-agent'] = () => answer
       if (!field('address')!.value) type(field('address'), ADDRESS)
       click(buttonLabelled('Check', setup()))
       await settle()
       const review = setup().querySelector<HTMLElement>('.ms-review')!
-      expect(review.querySelector('.ms-refused')?.textContent, words).toBe(words)
-      expect(shown(summary()), words).toBe(false)
+      expect(review.querySelector('.ms-refused')?.textContent, label).toBe('This agent is already added as pdf-reader.')
+      expect(shown(summary()), label).toBe(false)
+      expect(shown(review.querySelector('.ms-for-terminal')), label).toBe(false)
       expect([...review.querySelectorAll<HTMLButtonElement>('.ms-actions button')].filter(shown).map((b) => b.textContent)).toEqual(['Back'])
       expect(document.activeElement).toBe(buttonLabelled('Back', review))
       // Add is hidden; even a forced press of it runs nothing
@@ -1583,7 +1587,61 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
       click(buttonLabelled('Back', review))
       await settle()
     }
-    expect(bridge.ops().map(([op]) => op)).toEqual(['check-agent', 'check-agent', 'check-agent'])
+    expect(bridge.ops().map(([op]) => op)).toEqual(['check-agent', 'check-agent', 'check-agent', 'check-agent'])
+  })
+
+  it('reads the holder from the command’s own sentence, built by the command’s own code', async () => {
+    const { bridge } = await openPage()
+    for (const holder of ['echo', 'a', 'my--agent', 'x'.repeat(40)]) {
+      for (const signed of [false, true]) {
+        bridge.s.answers['check-agent'] = () => carded({ refused: `${heldIdRefusal(holder, signed)}. Nothing changed.` })
+        if (!field('address')!.value) type(field('address'), ADDRESS)
+        click(buttonLabelled('Check', setup()))
+        await settle()
+        expect(setup().querySelector('.ms-refused')?.textContent, `${holder} ${signed}`).toBe(`This agent is already added as ${holder}.`)
+        click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+        await settle()
+      }
+    }
+  })
+
+  it('a refusal that only looks like it, or a taken derived id, shows the command’s words as they are', async () => {
+    const { bridge } = await openPage()
+    const verbatim = [
+      'the id pdf-reader is already in ~/.agent-inbox/mesh.json, and add never replaces an entry. Nothing changed.',
+      'the card declares the agent id that agents.Bad_ID holds, so it is that agent: to move it here, add --move it. Nothing changed.',
+      'note: the card declares the agent id that agents.echo holds, so it is that agent. Nothing changed.',
+    ]
+    for (const words of verbatim) {
+      bridge.s.answers['check-agent'] = () => carded({ refused: words })
+      if (!field('address')!.value) type(field('address'), ADDRESS)
+      click(buttonLabelled('Check', setup()))
+      await settle()
+      expect(setup().querySelector('.ms-refused')?.textContent).toBe(words)
+      click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+      await settle()
+    }
+  })
+
+  it('the terminal line goes by where the words came from: never under the page’s own sentence, even for an id holding --', async () => {
+    const { bridge } = await openPage()
+    const terminalLine = () => setup().querySelector<HTMLElement>('.ms-for-terminal')!
+    const cases: Array<[Json, string, boolean]> = [
+      [carded({ card: { ...CARD, id: 'my--agent' }, steps: [], notes: ['Nothing to do.'] }), 'This agent is already added as my--agent.', false],
+      [carded({ card: { ...CARD, id: 'my--agent' }, notes: ['Move       this is my--agent at a new endpoint.'] }), 'This agent is already added as my--agent.', false],
+      [carded({ refused: `${heldIdRefusal('my--agent', false)}. Nothing changed.` }), 'This agent is already added as my--agent.', false],
+      [carded({ card: { ...CARD, id: undefined }, refused: 'the card’s name makes no usable id: pass --id <id>. Nothing changed.' }), 'the card’s name makes no usable id: pass --id <id>. Nothing changed.', true],
+    ]
+    for (const [answer, words, terminal] of cases) {
+      bridge.s.answers['check-agent'] = () => answer
+      if (!field('address')!.value) type(field('address'), ADDRESS)
+      click(buttonLabelled('Check', setup()))
+      await settle()
+      expect(setup().querySelector('.ms-refused')?.textContent).toBe(words)
+      expect(shown(terminalLine()), words).toBe(terminal)
+      click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
+      await settle()
+    }
   })
 
   it('a refusal naming an option the page does not have gets one quiet line pointing to a terminal; no other refusal does', async () => {

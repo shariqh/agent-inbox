@@ -78,6 +78,22 @@ const REACH_WORDS = {
   public: 'On the internet. What you send it leaves this Mac.',
 }
 const quoted = (text) => `“${text}”`
+// add's refusal for a card that declares the agent id an entry holds (the command's heldIdRefusal):
+// the agent is already added, as that entry's id
+const HELD = /^the card declares the agent id that agents\.([a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?) holds,/
+const alreadyAdded = (id) => ({ refused: `This agent is already added as ${id}.` })
+
+/**
+ * A refusal for Add an agent's review: an agent that is already added has the page's one sentence;
+ * any other refusal shows its words, with the terminal line only when the command's own words name
+ * an option (`--id`, `--move`) the page does not have.
+ */
+function addRefusal(answer, words) {
+  const command = typeof answer?.refused === 'string' && answer.refused === words
+  const holder = command ? HELD.exec(words)?.[1] : undefined
+  if (holder) return alreadyAdded(holder)
+  return { refused: words, terminal: command && words.includes('--') }
+}
 const SERVER_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
 const MODEL_NAME = /^[A-Za-z0-9._:/-]{1,64}$/
 // the server list's last entry; no server name can start with a space
@@ -872,8 +888,8 @@ export function installMeshSetup(deps) {
       const adding = page.kind === 'address'
       if (adding) {
         paintCard(review.querySelector('.ms-card'), refused ? null : page.review.card)
-        // a refusal that names an option the page does not have (`--id`, `--move`) is a terminal's
-        setHidden(review.querySelector('.ms-for-terminal'), !refused.includes('--'))
+        // the command's refusal that names an option the page does not have (`--id`, `--move`) is a terminal's
+        setHidden(review.querySelector('.ms-for-terminal'), page.review.terminal !== true)
       } else setHidden(review.querySelector('.ms-review-title'), Boolean(refused))
       for (const [selector, lines] of [['.ms-steps', refused || adding ? [] : summary()], ['.ms-exact-steps', refused ? [] : [...page.review.steps, ...page.review.notes]]]) {
         const list = review.querySelector(selector)
@@ -1071,14 +1087,13 @@ export function installMeshSetup(deps) {
       if (words === '') return
       const card = answer?.card
       if (words !== null || !card || typeof card.id !== 'string') {
-        page.review = { refused: words ?? reasonText('output') }
+        page.review = addRefusal(answer, words ?? reasonText('output'))
         return
       }
       const steps = strings(answer.steps)
       const notes = strings(answer.notes)
-      // already added: at this very address (nothing to do), or elsewhere (a signed move, a terminal's job)
-      if (!steps.length) page.review = { refused: `This agent is already added as ${card.id}.` }
-      else if (notes.length) page.review = { refused: `This agent is already added as ${card.id}. Moving it to a new address is done in a terminal.` }
+      // already added: at this very address (nothing to do), or elsewhere (a signed move)
+      if (!steps.length || notes.length) page.review = alreadyAdded(card.id)
       else {
         page.review = { card, steps, notes }
         page.checked = { address, token: values.token, id: card.id, pin: card.pin }
@@ -1096,10 +1111,11 @@ export function installMeshSetup(deps) {
     const mine = page
     let done = false
     await act('apply', async () => {
-      const words = problem(await call('add-agent', { address, ...(token === undefined ? {} : { token }), id, pin, apply: true }))
+      const answer = await call('add-agent', { address, ...(token === undefined ? {} : { token }), id, pin, apply: true })
+      const words = problem(answer)
       if (page !== mine) return
       if (words === null) done = true
-      else if (words) page.review = { refused: words }
+      else if (words) page.review = addRefusal(answer, words)
     })
     if (!done) {
       if (page === mine) settleFocus(() => els?.form.querySelector('.ms-review-back'))

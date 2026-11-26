@@ -1510,18 +1510,22 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   `enable --unslop`. Only the value `true` is on, `parseMesh` already keeps an unknown top-level
   key (no schema bump), and `routingSkills` lists it after unslop and unslop-code. The text names the
   shim, `~/.agent-inbox/bin/meshctl`, never `<mesh dir>`, and that shim acts on `~/.agent-inbox`
-  alone, so `PLAIN_PATH` applies only to a template that contains `<mesh dir>` (a mesh dir that is
-  not one plain shell word still blocks unslop's, with the note's rest reading `no routing skill that
-  names <mesh dir> is written`) and `enable --make-agents` refuses any other mesh dir
-  (`disable` never does). A skill that cannot be written is a **refusal, not a note**: for
+  unless `AGENT_INBOX_MESH_DIR` or `AGENT_INBOX_DB` is set where the chat runs, so `PLAIN_PATH`
+  applies only to a template that contains `<mesh dir>`, `enable --make-agents` refuses any other
+  mesh dir (`disable` never does), and `skillPlan` leaves make-agents out of every mesh dir that
+  does not show as `~/.agent-inbox` (a copied or moved `mesh.json` with `makeAgents: true`): one
+  fixed note, its folder and meshctl's links removed like an off skill's, and `status` says
+  `off (the mesh dir is not ~/.agent-inbox)`. A skill that cannot be written is a **refusal, not a note**: for
   the other agents a blocked folder is a note because the enable's main effect is its agent, but
   here the skill is the whole effect, so `enable --make-agents` detects the plan having left
   `make-agents` out and exits 1 before any step, writing no `mesh.json`; only make-agents' own line
   becomes the refusal, other agents' lines stay notes. `skillState` (the one new export) reads the
-  skill file (`present`, `missing` or `differs`) and the three host folders, read only, for `status`
+  skill file (`present`, `missing`, `differs`, or `blocked` when `skills/` or the folder is a file
+  or a link, which `status` words without advising a rewrite) and the three host folders, read only, for `status`
   and for the `Next: meshctl skills link --apply …` hint a successful `--apply` prints. Folders,
   backups, links and the lock follow the rules above unchanged; a removal names it `(the make-agents
-  skill is off)`. Its `call` line uses a `<` redirection, the one place a template does, since
+  skill is off)`, and `disable --make-agents` removes the folder and links first and the switch last,
+  so a failure in the middle leaves the switch on with the skill present. Its `call` line uses a `<` redirection, the one place a template does, since
   `meshctl call` takes its text no other way.
 - **The `rules.md` link (#584).** When `<mesh dir>/mesh/wrappers/unslop.json` has an absolute
   `skill` whose folder holds a regular `rules.md` (read through links; a profile naming the

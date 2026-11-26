@@ -206,6 +206,11 @@ describe('the make-agents routing skill: generation is pure and fixed', () => {
   })
 
   it('docs/made-agents.md quotes its template exactly, and walks through turning it on and off', () => {
+    const prose = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')
+    // the shim follows the environment of the chat, and the page is not a product claim
+    expect(prose).toContain('unless `AGENT_INBOX_MESH_DIR` or `AGENT_INBOX_DB` is set where')
+    expect(prose).not.toContain('always acts on')
+    expect(prose).not.toContain('not a public tool')
     const doc = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')
     const section = doc.slice(doc.indexOf('## Let chats make agents: the routing skill'))
     expect(section.startsWith('## Let chats make agents: the routing skill')).toBe(true)

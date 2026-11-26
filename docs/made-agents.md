@@ -122,14 +122,17 @@ A chat does not know `meshctl new` exists until it is told. `meshctl enable --ma
 fixed routing skill, a short instruction file a chat reads, that teaches it to make an agent for you
 safely: it writes the card file, tries it on a sample, shows you the card and the answer, and runs
 `--apply` only after you say yes in the chat. It starts no process, needs no model server of its own
-and adds no screen. It is a meshctl feature, not a public tool.
+and adds no screen.
 
 The switch is `"makeAgents": true` at the top of `mesh.json`. It is not an `agents` entry, so
 `meshctl status` and the app never count it as an agent. Only the value `true` turns it on.
 
 The skill runs `~/.agent-inbox/bin/meshctl`, the small launcher script (the shim) the installer writes
-there. That shim always acts on `~/.agent-inbox`, so `enable --make-agents` is refused when the mesh
-dir is anywhere else. Turning it off does not need the default mesh dir.
+there. That shim acts on `~/.agent-inbox` unless `AGENT_INBOX_MESH_DIR` or `AGENT_INBOX_DB` is set where
+the chat runs. So `enable --make-agents` is refused when the mesh dir is anywhere else, and a `mesh.json`
+in another mesh dir (copied by hand, or left behind when the mesh dir moved) gets no skill: `meshctl status`
+says `Make-agents skill: off (the mesh dir is not ~/.agent-inbox).` Turning it off does not need the
+default mesh dir.
 
 1. **Preview.** This changes nothing.
 
@@ -174,8 +177,9 @@ dir is anywhere else. Turning it off does not need the default mesh dir.
    meshctl disable --make-agents --apply
    ```
 
-   This removes `makeAgents` from `mesh.json` (deleting the file when it was the only setting, with a
-   backup), the skill's folder, and meshctl's own links to it. Agents already made stay: take one out
+   This removes the skill's folder and meshctl's own links to it first, and `makeAgents` from `mesh.json`
+   last (deleting the file when it was the only setting, with a backup), so a failure in the middle
+   leaves the switch on with the skill still there, which agree. Agents already made stay: take one out
    with `meshctl remove <id> --apply`. When it was never on, it says `The make-agents skill is already
    off. Nothing to do.` and creates nothing. `meshctl disable` for the whole mesh removes it too.
 
@@ -189,8 +193,8 @@ a second check beside your yes in the chat. The skill never runs `--apply` on it
   the mesh dir is …`**: the mesh dir is another folder (`AGENT_INBOX_MESH_DIR` or `AGENT_INBOX_DB` says
   so). Nothing was changed. Unset them, or do without the skill.
 - **`Refused: … is not a folder holding a SKILL.md meshctl wrote, so the make-agents routing skill is
-  not written`**: a file or link sits where meshctl's folder goes. Nothing was changed, and `mesh.json`
-  was not written. Move that entry away (for example under `~/.agent-inbox/backups`) and run the
+  not written`**: a file or link sits where meshctl's folder goes (`meshctl status` shows it as
+  `blocked: … is not a folder meshctl wrote`). Nothing was changed, and `mesh.json` was not written. Move that entry away (for example under `~/.agent-inbox/backups`) and run the
   command again.
 - **`meshctl skills link` says `… is a skill meshctl did not make, so it links nothing for make-agents:
   two make-agents skills would compete`**: a skill of that name is already in `~/.claude/skills`,

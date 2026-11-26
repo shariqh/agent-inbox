@@ -91,8 +91,9 @@ Never send it files that hold secrets or customer material; it skips a file in w
 `
 
 // docs/made-agents.md quotes this text, and test/mesh-skills.test.ts fails when the two differ. It names no
-// <mesh dir>: its commands run the meshctl shim ~/.agent-inbox/bin/meshctl, which acts on ~/.agent-inbox only
-// (meshctl enable --make-agents refuses any other mesh dir).
+// <mesh dir>: its commands run the meshctl shim ~/.agent-inbox/bin/meshctl, which acts on ~/.agent-inbox unless
+// AGENT_INBOX_MESH_DIR or AGENT_INBOX_DB is set where the chat runs (meshctl enable --make-agents refuses any other
+// mesh dir, and skillPlan leaves the skill out of one).
 const MAKE_AGENTS_SKILL = `---
 name: make-agents
 description: Make a new agent from instructions with meshctl new, so that any chat can call it later. Use when the person asks you to make a new agent, or says "make me an agent that...". You write a small card file, try it on a sample, and add the agent only after the person says yes.

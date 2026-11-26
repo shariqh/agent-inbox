@@ -17,8 +17,11 @@ let db: Database.Database | null = null
 afterEach(() => { db?.close(); db = null; vi.unstubAllGlobals() })
 
 const AGENT = { project: 'alpha', stream: 'main', agent: 'copilot' } as const
+// The active plans are read as their tags (slow links, step 2); a plan is read by id only after
+// the round's reads have answered, and only when its tag changed, so a round with no plan makes
+// exactly these nine reads.
 const POLL_READS = [
-  '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary',
+  '/api/activity', '/api/activity/history', '/api/boards/archived/summary', '/api/boards/tags',
   '/api/issues', '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
 ]
 const route = (input: RequestInfo | URL): string => String(input).split('?')[0]!
@@ -181,7 +184,7 @@ describe('a viewer restart inside one tick (issue #161)', () => {
     const reload = stubReload()
     db = freshDb()
     const viewer = await bootTagged(db)
-    viewer.tag((path) => (path === '/api/boards' ? 'restarted-viewer' : 'original-viewer'))
+    viewer.tag((path) => (path === '/api/boards/tags' ? 'restarted-viewer' : 'original-viewer'))
     await pollTick()
     expect(reload).toHaveBeenCalledTimes(1)
   })

@@ -6,7 +6,7 @@
 // attention surfaces read the same with it drawn.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { insertItem, recordActivityCall, setActivityPlace, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
+import { getBoard, insertItem, recordActivityCall, setActivityPlace, touchActivity, upsertActivity, upsertBoard } from '../../src/store.js'
 import { advanceClock, badgeCount, bootApp, click, freshDb, pollTick, rows, settle, showInbox, tabCount, useDomTest } from './harness.js'
 import { closeProject } from '../../src/store.js'
 
@@ -54,10 +54,14 @@ async function surfaces() {
 
 // What every boot of seed() makes and shows, as it did before the view existed
 // (each test checks itself against these, so any one runs alone with -t). The
-// boot reads, then one poll tick's nine reads.
-const POLL = ['/api/items', '/api/boards', '/api/boards/archived/summary', '/api/activity',
+// boot reads, then one poll tick's nine reads. The active plans are read as their
+// tags (slow links, step 2): the first round then reads seed()'s one plan by id,
+// after its nine reads have answered, and the next round, nothing having changed,
+// reads no plan.
+const POLL = ['/api/items', '/api/boards/tags', '/api/boards/archived/summary', '/api/activity',
   '/api/activity/history?since_ms=1781949600000', '/api/projects/closed', '/api/links', '/api/issues', '/api/messages']
-const BOOT_REQUESTS = ['/api/version', '/api/setup', ...POLL, ...POLL]
+const bootRequests = (d: Database.Database) =>
+  ['/api/version', '/api/setup', ...POLL, `/api/boards/plans?ids=${getBoard(d, 'agent-inbox', 'Mesh metrics')!.id}`, ...POLL]
 const SURFACES = {
   title: '(3) Agent Inbox',
   badge: 3,
@@ -79,7 +83,7 @@ describe('the Agents home (#454)', () => {
     await bootApp(db, { interceptFetch: async (input, _init, next) => { requests.push(route(input)); return next() } })
     await pollTick()
     await settle()
-    expect(requests).toEqual(BOOT_REQUESTS)
+    expect(requests).toEqual(bootRequests(db))
     expect(document.getElementById('mesh-settings')).toBeNull()
 
     // the lanes and their lens are gone (#454): the Agents home is the Dashboard's one list of sessions

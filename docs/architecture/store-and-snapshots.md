@@ -3,11 +3,12 @@ paths:
   - "src/store.ts"
   - "src/viewer.ts"
   - "public/snapshots.js"
+  - "public/plans-reader.js"
   - "public/closed-history.js"
   - "public/boards.js"
   - "electron/conditional-read.cjs"
   - "test/fixtures/snapshot-triggers.txt"
-applyTo: "src/store.ts,src/viewer.ts,public/snapshots.js,public/closed-history.js,public/boards.js,electron/conditional-read.cjs,test/fixtures/snapshot-triggers.txt"
+applyTo: "src/store.ts,src/viewer.ts,public/snapshots.js,public/plans-reader.js,public/closed-history.js,public/boards.js,electron/conditional-read.cjs,test/fixtures/snapshot-triggers.txt"
 ---
 
 # Store and conditional snapshots
@@ -59,6 +60,19 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   `/api/boards/archived/plans` rule (1 to 50 plan ids, else 400). It is
   `no-store` with no ETag and nothing retained. Both are on the remote entry's
   allowlist beside `/api/boards`; they return nothing `/api/boards` does not.
+  The page reads them through `public/plans-reader.js` (`createPlansReader`)
+  where the poll read `/api/boards`: the tags through `readSnapshot` (their
+  headers and status are the read's, so the boot decision is unchanged), then,
+  in `json()`, only the ids not held at their tag, 10 to a request, one request
+  after another, each through `readSnapshot` too. Each request's plans are kept
+  as soon as it finishes, so after a failed request the next round asks only for
+  what is still missing; a plans answer with another `x-inbox-boot` than the tags
+  fails the read. The list is assembled in the tags' order from the held plans
+  (an id still not held is left out until the next round), frozen, and
+  remembered with its tags: equal tags (a 304 included) return the very same
+  array, and an unchanged plan keeps its object, so the idle check still
+  compares by identity. A 404 on the tags reads `/api/boards` as before, for
+  that round.
 - A write rebuilds only the snapshots it can change (#297): each snapshot's token
   is the schema cookie plus the versions of the store domains its bytes are built
   from (`SNAPSHOT_SOURCES` in `src/viewer.ts` over `SNAPSHOT_DOMAINS` in
@@ -191,7 +205,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   load's cache entry; older completions cannot overwrite a newer validator/body.
   A query string selects one representation of its route; the reader retains only
   each route's newest one and reuses it only for the exact URL that fetched it.
-  Only `/api/activity/history` and `/api/boards/archived/plans` (#373) take a query
+  Only `/api/activity/history`, `/api/boards/archived/plans` (#373),
+  `/api/boards/plans` (slow links, step 2) and `/api/mesh/agents/runs` take a query
   in the reader: any other (such as the dock watcher's `?scope=attention`) is
   refused, so it can never share or evict the page's slot, and
   `/api/items/history` is a path of its own (#184).

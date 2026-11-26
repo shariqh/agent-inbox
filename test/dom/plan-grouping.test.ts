@@ -59,7 +59,8 @@ async function boot(d: Database.Database): Promise<{ set(mode: Mode): void }> {
   let mode: Mode = 'graph'
   await bootApp(d, {
     interceptFetch: async (input, _init, next) => {
-      if (route(input) === '/api/boards') lastPoll = Date.now()
+      // a round reads the active plans' tags first (slow links, step 2)
+      if (route(input) === '/api/boards/tags') lastPoll = Date.now()
       if (route(input) === '/api/issues') {
         if (mode === '404') return new Response('<!doctype html><title>Not found</title>', { status: 404 })
         if (mode === 'offline') throw new TypeError('issues offline')

@@ -19,6 +19,11 @@ const boards = (value) => Array.isArray(value) && value.every((board) =>
   strings(board, ['id', 'title', 'project', 'agent'])
   && Array.isArray(board.rows) && board.rows.every((row) => strings(row, ['id', 'label', 'status']))
   && record(board.progress) && ['done', 'countable', 'fraction'].every((key) => Number.isFinite(board.progress[key])))
+// Slow links, step 2: each active plan's id and tag, and the plans a page asked for by id, each
+// with the tag of its bytes.
+const planTags = (value) => record(value) && Array.isArray(value.plans) && value.plans.every((entry) => strings(entry, ['id', 'tag']))
+const taggedPlans = (value) => record(value) && Array.isArray(value.plans)
+  && value.plans.every((entry) => strings(entry, ['tag'])) && boards(value.plans.map((entry) => entry.plan))
 // Issue #299: every archived plan in brief, each with the outcomes it omits and,
 // when it omits any, the newest stamp among them.
 const archivedSummary = (value) => record(value) && boards(value.plans)
@@ -56,6 +61,8 @@ const validators = new Map([
   ['/api/items', items],
   ['/api/items/history', history],
   ['/api/boards', boards],
+  ['/api/boards/tags', planTags],
+  ['/api/boards/plans', taggedPlans],
   ['/api/boards/archived', boards],
   ['/api/boards/archived/summary', archivedSummary],
   // Issue #373: the lingering archived plans, whole, named by `?ids=`
@@ -69,12 +76,13 @@ const validators = new Map([
   ['/api/mesh/agents/runs', meshRuns],
 ])
 // The only routes whose query string selects one of their own representations:
-// the activity history window (#185), the lingering archived plans (#373) and one
-// agent's run history (`?name=`, cards view V5 §5.7).
+// the activity history window (#185), the lingering archived plans (#373), the
+// active plans named by id (slow links, step 2) and one agent's run history
+// (`?name=`, cards view V5 §5.7).
 // Anywhere else a query names a different representation, such as the dock
 // watcher's `/api/items?scope=attention`, which must never enter (and so never
 // share or evict) the slot of the route it shares a path with.
-const QUERY_ROUTES = new Set(['/api/activity/history', '/api/boards/archived/plans', '/api/mesh/agents/runs'])
+const QUERY_ROUTES = new Set(['/api/activity/history', '/api/boards/archived/plans', '/api/boards/plans', '/api/mesh/agents/runs'])
 
 const HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 const HISTORY_STEP_MS = 60 * 60 * 1000

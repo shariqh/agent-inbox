@@ -82,6 +82,7 @@ import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
 import { isReservedProject } from '/reserved-projects.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
+import { createPlansReader } from '/plans-reader.js'
 import { stallLimited } from '/stall.js'
 import { knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 import { DRAFTS_KEY, draftEntry, draftExpired, draftKey, mergeDrafts, readDrafts } from '/drafts.js'
@@ -125,6 +126,8 @@ function resetPaging() { shown = { ...PAGE } }
 let lastData = null
 // every poll read ends when it stalls (public/stall.js); snapshots.js stays a pure reader
 const readSnapshot = createSnapshotReader((url, init) => stallLimited((signal) => fetch(url, { ...init, signal })))
+// the active plans list, read as tags and then only the plans that changed (slow links, step 2)
+const readPlans = createPlansReader(readSnapshot)
 let dashboardRangeMs = 24 * 60 * 60 * 1000
 let renderedTheme = document.documentElement.dataset.theme ?? 'light'
 function syncThemeChoices(preference) {
@@ -1068,7 +1071,7 @@ async function load() {
       archivedRead, lingerSettled, messagesRead, launchesRead, meshRead, runsRead,
     ] = await Promise.allSettled([
       readSnapshot('/api/items').then(marked),
-      readSnapshot('/api/boards').then(marked),
+      readPlans().then(marked),
       // Archived plans in brief (#299): what every surface but the archived
       // ones reads. The complete list is the last read, while one needs it.
       readSnapshot('/api/boards/archived/summary').then(marked),

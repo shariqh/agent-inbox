@@ -171,7 +171,8 @@ function pointer(el: Element | null, type: 'pointerdown' | 'pointerup'): void {
 const pressKey = (key: string) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
 
 // The boot reads, then one poll tick's nine reads (test/dom/agents-home.test.ts's BOOT_REQUESTS).
-const POLL = ['/api/items', '/api/boards', '/api/boards/archived/summary', '/api/activity',
+// The active plans are read as their tags (slow links, step 2); with no plan, no plan is read by id.
+const POLL = ['/api/items', '/api/boards/tags', '/api/boards/archived/summary', '/api/activity',
   '/api/activity/history?since_ms=1781949600000', '/api/projects/closed', '/api/links', '/api/issues', '/api/messages']
 const BOOT_REQUESTS = ['/api/version', '/api/setup', ...POLL, ...POLL]
 

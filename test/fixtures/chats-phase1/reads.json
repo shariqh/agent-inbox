@@ -1,7 +1,7 @@
 [
  "/api/setup",
  "/api/items",
- "/api/boards",
+ "/api/boards/tags",
  "/api/boards/archived/summary",
  "/api/activity",
  "/api/activity/history?since_ms=1781949600000",

@@ -143,6 +143,76 @@ describe('generation is pure: entries in, fixed text out', () => {
   })
 })
 
+describe('the make-agents routing skill: generation is pure and fixed', () => {
+  const doc = (makeAgents: unknown) => ({
+    schema: 1,
+    makeAgents,
+    agents: { unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } },
+    description: HOSTILE,
+  })
+
+  it('is on by makeAgents: true alone, after unslop and unslop-code, and its text is pinned', async () => {
+    const skills = routingSkills(doc(true), '/Users/someone/.agent-inbox', '/Users/someone')
+    expect([...skills.keys()]).toEqual(['unslop', 'unslop-code', 'make-agents'])
+    expect([...routingSkills({ schema: 1, makeAgents: true }, '/m', '/h').keys()]).toEqual(['make-agents'])
+    const text = skills.get('make-agents')!
+    expect(text).toBe(routingSkill('make-agents', '/Users/someone/.agent-inbox', '/Users/someone'))
+    await expect(text).toMatchFileSnapshot('./fixtures/routing-skills/make-agents.SKILL.md')
+  })
+
+  it('is off for any value of makeAgents other than true, and with no mesh.json', () => {
+    for (const value of [false, 'true', 1, null, [], {}, undefined]) {
+      expect([...routingSkills({ schema: 1, makeAgents: value }, '/m', '/h').keys()], JSON.stringify(value)).toEqual([])
+    }
+    expect(routingSkills(undefined, '/m', '/h').size).toBe(0)
+  })
+
+  it('holds no <mesh dir>, no host path but the meshctl shim, and nothing from the mesh.json', () => {
+    const text = routingSkills(doc(true), '/Users/someone/.agent-inbox', '/Users/someone').get('make-agents')!
+    expect(text).not.toMatch(/IGNORE|evil|<mesh dir>|\/Users\/someone/)
+    // the same text whatever the mesh dir and home folder are
+    expect(routingSkill('make-agents', '/srv/mesh', '/home/x')).toBe(text)
+    const paths = text.match(/~\/[A-Za-z0-9._/-]+/g) ?? []
+    expect(new Set(paths)).toEqual(new Set(['~/.agent-inbox/bin/meshctl']))
+    expect(text).not.toMatch(/\.claude|\.agents|\.copilot/)
+  })
+
+  it('carries the rules of docs/made-agents.md "The card file" verbatim', () => {
+    const text = routingSkill('make-agents', '/m', '/h')!
+    const docText = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')
+    const section = docText.slice(docText.indexOf('## The card file'), docText.indexOf('## Try it, add it'))
+    const rows = [...section.matchAll(/^\| `(name|description|instructions|server|model)` \| (.+) \|$/gm)]
+    expect(rows.map((m) => m[1])).toEqual(['name', 'description', 'instructions', 'server', 'model'])
+    for (const [, key, rule] of rows) expect(text, key).toContain(`- \`${key}\`: ${rule}\n`)
+    expect(text).toContain('It is one JSON object with exactly these keys, at most 64 KiB:\n\n- `name`')
+    expect(text).toContain('Any other key, a value of the wrong type, or text that is not well-formed Unicode is refused.')
+    expect(section).toContain('It is one JSON object with exactly these keys, at most 64 KiB:')
+    expect(section).toContain('Any other key, a value of the wrong type, or text that is not well-formed Unicode is refused.')
+  })
+
+  it('is written in a mesh dir that is not one plain shell word, since it names no mesh dir; the others are not, and the note says so', () => {
+    const t = setup()
+    const spaced = join(t.dir, 'my mesh')
+    mkdirSync(spaced)
+    writeFileSync(meshFile(spaced), JSON.stringify(doc(true)))
+    const err: string[] = []
+    const r = runMeshctl(['skills', 'link'], { env: { AGENT_INBOX_MESH_DIR: spaced }, home: t.home, out: () => {}, err: (text) => { err.push(text) } })
+    expect(r).toBe(1)
+    expect(err.join('')).toContain('cannot be written into a skill\'s command: no routing skill that names <mesh dir> is written')
+    expect(err.join('')).not.toContain('no routing skill is written')
+    // the plan still holds make-agents alone
+    const apply = runMeshctl(['skills', 'link', '--apply'], { env: { AGENT_INBOX_MESH_DIR: spaced }, home: t.home, out: () => {}, err: () => {} })
+    expect(apply).toBe(1)
+    expect(readdirSync(join(spaced, 'skills'))).toEqual(['make-agents'])
+    expect(readFileSync(join(spaced, 'skills', 'make-agents', 'SKILL.md'), 'utf8')).toBe(routingSkill('make-agents', spaced, t.home))
+    // without make-agents the old note stands
+    writeFileSync(meshFile(spaced), ON)
+    const old: string[] = []
+    runMeshctl(['skills', 'link'], { env: { AGENT_INBOX_MESH_DIR: spaced }, home: t.home, out: () => {}, err: (text) => { old.push(text) } })
+    expect(old.join('')).toContain('cannot be written into a skill\'s command: no routing skill is written')
+  })
+})
+
 describe('enable and disable keep <mesh dir>/skills in line with mesh.json', () => {
   it('enable --unslop writes the skill (never in a dry run) and touches no HOME folder', () => {
     const t = setup()

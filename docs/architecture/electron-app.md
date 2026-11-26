@@ -141,12 +141,14 @@ writer of the mesh folder, with all of its own checks.
   `address` is `http://127.0.0.1:<port>` or `https://` on a lower-case DNS name of at most 253
   characters whose last label starts with a letter, with an optional plain path (no `.` or `..`
   segment, percent sign, query or fragment), a port 1-65535 and never 80 on loopback or 443 on a
-  name, that parses as a URL (a malformed punycode label such as `xn--a` does not; the 253-character
-  limit is measured on the parsed host), and at most 2048 characters in all; an `id` is `^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$` and
+  name, that the platform's URL parser accepts (add asks the same parser; some platforms reject a
+  malformed punycode label such as `xn--a`, others accept it; the 253-character limit is measured
+  on the parsed host), and at most 2048 characters in all; an `id` is `^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$` and
   not a built-in agent's name; a `pin` is 64 lower-case hex characters; a `token` handle goes only
   with a loopback `address`, else the request is `invalid`. Tests run tables of addresses and ids
   through main's rules and add's own and require the same answer for each row (the 2048 cap is
-  tested on its own, as add has none); add refuses an address its URL parser rejects, as main does. `meshctl` applies its own stricter rules
+  tested on its own, as add has none); add refuses an address the platform's URL parser rejects,
+  as main does, and the rows a parser may decide either way are run under a parser of each kind. `meshctl` applies its own stricter rules
   after. `check-agent` and `add-agent` make the command fetch the card (a `*.ts.net` address also
   asks Tailscale for this Mac's tailnet), inside the same 30 second limit.
 - **Answers.** The `--json` output is parsed and rebuilt field by field: a plan or apply is

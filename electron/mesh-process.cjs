@@ -201,8 +201,9 @@ function isUrl(value) {
 
 /**
  * An added agent's card address (or its endpoint), by add's own rule: a loopback port is 1-65535
- * and never 80, a name's port never 443, the address parses as a URL (a malformed punycode label
- * does not) and its parsed host is at most 253 characters; plus this bridge's own cap of 2048.
+ * and never 80, a name's port never 443, the platform's URL parser accepts it (add asks the same
+ * parser; some platforms reject a malformed punycode label) and its parsed host is at most 253
+ * characters; plus this bridge's own cap of 2048.
  */
 function isPlace(value) {
   if (typeof value !== 'string' || value.length > URL_MAX) return false

@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import meshProcess from '../electron/mesh-process.cjs'
 import { addedPlace, idRefusal } from '../src/mesh-entry.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
+import { underEachParser } from './url-parsers.js'
 
 const { createFileHandles, createMeshBridge, meshAnswer, meshArgv, meshDirOf, meshEnv, readShim, registerMeshIpc, runMeshctl } = meshProcess
 const require = createRequire(import.meta.url)
@@ -281,13 +282,31 @@ describe('meshArgv: each fixed operation maps to exactly one argv', () => {
     'https://example.org/a?b=c', 'https://example.org/a#x', 'https://example.org/./a', 'https://example.org/../a', 'https://example.org/a/..', 'https://example.org/a/.',
     'https://example.org//a', 'https://example.org/a%20b', 'https://user@example.org', 'https://user:pass@example.org', 'ftp://example.org', ' https://example.org',
     'https://example.org/ a', 'https://example.org/\n', '', 'https://example.org.', 'https://ex_ample.org', 'HTTPS://example.org', '-https://example.org', 'https://example.org/é',
-    // punycode: a valid label is a name like any other; a malformed one is one the URL parser rejects
+    // punycode: a valid label is a name like any other; whether a malformed one parses is the
+    // platform parser's choice, and each row is compared with add's answer on this platform
     'https://xn--bcher-kva.example/a', 'https://xn--a.example/x', 'https://studio.xn--zz.ts.net/card', 'https://xn--.example',
   ])('an address is accepted exactly where add’s own rule accepts it: %s', (address) => {
     expect(address.length).toBeLessThan(2048)
     // addedPlace refuses, never throws: a host or port its URL parse rejects is outside the rule too
     const accepted = !('refused' in addedPlace(address))
     expect(argv('check-agent', { address }), address).toEqual(accepted ? { argv: ['add', address, '--json'], kind: 'add' } : { reason: 'invalid' })
+  })
+
+  // a malformed punycode label is the platform parser's choice: the bridge and add ask the same parser
+  it('agrees with add’s rule on addresses a URL parser may reject, under this platform’s parser and one of each kind', async () => {
+    const rows = ['https://xn--a.example/x', 'https://studio.xn--zz.ts.net/card', 'https://xn--bcher-kva.example/a', 'http://127.0.0.1:65536/card', 'https://studio.example:70000/x']
+    const seen = new Set<string>()
+    await underEachParser((parser) => {
+      for (const address of rows) {
+        const accepted = !('refused' in addedPlace(address))
+        seen.add(`${address} ${accepted}`)
+        expect(argv('check-agent', { address }), `${parser} ${address}`).toEqual(accepted ? { argv: ['add', address, '--json'], kind: 'add' } : { reason: 'invalid' })
+      }
+    })
+    // both answers were met for the malformed labels; a port past 65535 is refused under every parser
+    expect(seen).toContain('https://xn--a.example/x true')
+    expect(seen).toContain('https://xn--a.example/x false')
+    expect(seen).not.toContain('https://studio.example:70000/x true')
   })
 
   it('caps an address at 2048 characters of its own, which add’s rule does not', () => {

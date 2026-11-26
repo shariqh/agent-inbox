@@ -12,6 +12,7 @@ import type { AddressInfo, LookupFunction } from 'node:net'
 import { dirname, join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh, readCardCopy } from '../src/mesh-config.js'
 import { heldIdRefusal, runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
+import { underEachParser } from './url-parsers.js'
 import { addSummary, cardSha256, reachOf, tailnetRefusal } from '../src/mesh-add.js'
 import { addedPlace } from '../src/mesh-entry.js'
 import { checkProfile } from '../src/agent-card.js'
@@ -949,18 +950,32 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1}\n')
   })
 
-  // add step 2, G2: a host the URL parser cannot read (a malformed punycode label, a port past 65535)
-  // is refused by the rule's own words, never a crash with no output
-  it('refuses a card URL whose host or port the URL parser rejects, with the rule’s words, and writes nothing', async () => {
-    for (const url of ['https://xn--a.example/x', 'https://studio.xn--zz.ts.net/card', 'http://127.0.0.1:65536/card', 'https://example.org:99999/card']) {
-      expect(addedPlace(url), url).toEqual({ refused: 'rule' })
-    }
-    expect(addedPlace('https://xn--bcher-kva.example/a')).toMatchObject({ host: 'xn--bcher-kva.example', loopback: false })
+  // add step 2, G2: whether the URL parser accepts a malformed punycode label is the platform's choice
+  // (this Mac's Node rejects https://xn--a.example/, a Linux build accepts it), so this asserts only
+  // what holds everywhere, under this platform's parser and under one of each kind
+  it('never throws on a card URL: one the URL parser rejects is refused by the rule, one it accepts gets the rule’s answer', async () => {
+    const urls = ['https://xn--a.example/x', 'https://studio.xn--zz.ts.net/card', 'https://xn--bcher-kva.example/a', 'http://127.0.0.1:65536/card', 'https://studio.example:70000/x']
+    await underEachParser((parser) => {
+      // each stand-in answers as it should, so both paths below run on any platform
+      if (parser === 'rejecting') expect(URL.canParse('https://xn--a.example/x')).toBe(false)
+      if (parser === 'accepting') expect([URL.canParse('https://xn--a.example/x'), URL.canParse('https://studio.example:70000/x')]).toEqual([true, true])
+      for (const url of urls) {
+        const label = `${parser} ${url}`
+        let place: ReturnType<typeof addedPlace> | undefined
+        expect(() => { place = addedPlace(url) }, label).not.toThrow()
+        // a port past 65535 is refused by every parser and, were one to accept it, by the rule's own port check
+        const port = /:(\d+)\//.exec(url.slice(url.indexOf('//') + 2))?.[1]
+        if (!URL.canParse(url) || Number(port) > 65535) expect(place, label).toEqual({ refused: 'rule' })
+        else expect(place, label).toMatchObject({ url, loopback: url.startsWith('http://127.0.0.1:'), host: new URL(url).hostname })
+      }
+    })
+    // the refusal path, the same on every platform: the WHATWG URL rules reject a port past 65535
+    expect(URL.canParse('https://studio.example:70000/x')).toBe(false)
     const t = setup()
     const RULE = 'the card URL must be http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>] on a DNS name: never an IP address other than 127.0.0.1, localhost, plain http to another host, a written-out port 80 or 443, a user, a query or a fragment. Nothing changed.'
-    const r = await t.add('https://xn--a.example/x', '--json')
+    const r = await t.add('https://studio.example:70000/x', '--json')
     expect([r.code, JSON.parse(r.out)]).toEqual([1, { applied: false, steps: [], refused: RULE }])
-    const text = await t.add('https://xn--a.example/x', '--apply')
+    const text = await t.add('https://studio.example:70000/x', '--apply')
     expect([text.code, text.err]).toEqual([1, `Refused: ${RULE}\n`])
     expect(t.io.asked).toBe(0)
     expect(existsSync(meshFile(t.dir))).toBe(false)

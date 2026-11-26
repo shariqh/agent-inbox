@@ -51,8 +51,8 @@ export function addedPlace(raw: unknown): Place | { refused: 'rule' } {
   const match = loopback ?? NAMED.exec(raw)
   if (!match) return { refused: 'rule' }
   const port = match[2] === undefined ? undefined : Number(match[2])
-  // the URL parser rejects some names the shape allows (a malformed punycode label, a port past
-  // 65535): those are outside the rule too, refused like any other, never thrown
+  // an address the platform's URL parser rejects (a port past 65535 everywhere; a malformed punycode
+  // label on some platforms) is outside the rule too, refused like any other, never thrown
   let host: string
   try {
     host = new URL(raw).hostname

@@ -770,7 +770,9 @@ the experimental unslop agent (`npm run meshctl -- enable --unslop`, #483; see
 which removes the comments a coding agent added to a change (`npm run meshctl -- enable --unslop-code`,
 #652; see [`docs/unslop-code.md`](docs/unslop-code.md)), and the request-post client
 (`npm run meshctl -- enable --request-post`, #500; see
-[`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- add <card-url>`
+[`docs/request-post.md`](docs/request-post.md)). `npm run meshctl -- enable --make-agents` writes a
+routing skill that teaches a chat to make an agent with `meshctl new`, and adds it only after you say
+yes (see [`docs/made-agents.md`](docs/made-agents.md)). `npm run meshctl -- add <card-url>`
 adds an A2A agent this repo doesn't ship, by its card, as a dry run until `--apply` (#529), and
 `npm run meshctl -- call <id>` calls it (#530; see [`docs/mesh-call.md`](docs/mesh-call.md)).
 The two local agents can share one model backend: `npm run meshctl -- server add <name> …` adds a

@@ -3,7 +3,7 @@
 // enable and disable, and `skills link|unlink` manage the links in a (temporary) HOME.
 import { afterEach, describe, expect, it } from 'vitest'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { meshFile } from '../src/mesh-config.js'
 import { runMeshctl } from '../src/meshctl.js'
@@ -140,6 +140,108 @@ describe('generation is pure: entries in, fixed text out', () => {
     const section = doc.slice(doc.indexOf('## The routing skill'))
     const block = /```markdown\n([\s\S]*?)```\n/.exec(section)?.[1]
     expect(block).toBe(routingSkill('unslop', '<mesh dir>', '/home/x'))
+  })
+})
+
+describe('the make-agents routing skill: generation is pure and fixed', () => {
+  const doc = (makeAgents: unknown) => ({
+    schema: 1,
+    makeAgents,
+    agents: { unslop: { endpoint: 'http://127.0.0.1:4420', profile: 'unslop' }, 'unslop-code': { endpoint: 'http://127.0.0.1:4421', profile: 'unslop-code' } },
+    description: HOSTILE,
+  })
+
+  it('is on by makeAgents: true alone, after unslop and unslop-code, and its text is pinned', async () => {
+    const skills = routingSkills(doc(true), '/Users/someone/.agent-inbox', '/Users/someone')
+    expect([...skills.keys()]).toEqual(['unslop', 'unslop-code', 'make-agents'])
+    expect([...routingSkills({ schema: 1, makeAgents: true }, '/m', '/h').keys()]).toEqual(['make-agents'])
+    const text = skills.get('make-agents')!
+    expect(text).toBe(routingSkill('make-agents', '/Users/someone/.agent-inbox', '/Users/someone'))
+    await expect(text).toMatchFileSnapshot('./fixtures/routing-skills/make-agents.SKILL.md')
+  })
+
+  it('is off for any value of makeAgents other than true, and with no mesh.json', () => {
+    for (const value of [false, 'true', 1, null, [], {}, undefined]) {
+      expect([...routingSkills({ schema: 1, makeAgents: value }, '/m', '/h').keys()], JSON.stringify(value)).toEqual([])
+    }
+    expect(routingSkills(undefined, '/m', '/h').size).toBe(0)
+  })
+
+  it('holds no <mesh dir>, no host path but the meshctl shim, and nothing from the mesh.json', () => {
+    const text = routingSkills(doc(true), '/Users/someone/.agent-inbox', '/Users/someone').get('make-agents')!
+    expect(text).not.toMatch(/IGNORE|evil|<mesh dir>|\/Users\/someone/)
+    // the same text whatever the mesh dir and home folder are
+    expect(routingSkill('make-agents', '/srv/mesh', '/home/x')).toBe(text)
+    const paths = text.match(/~\/[A-Za-z0-9._/-]+/g) ?? []
+    expect(new Set(paths)).toEqual(new Set(['~/.agent-inbox/bin/meshctl']))
+    expect(text).not.toMatch(/\.claude|\.agents|\.copilot/)
+  })
+
+  it('describes itself for a request to make an agent, bounds the card-file retries and has the chat clean up', () => {
+    const text = routingSkill('make-agents', '/m', '/h')!
+    expect(text).toContain('description: Make a new agent from instructions with meshctl new, so that any chat can call it later. Use when the person asks you to make a new agent, or says "make me an agent that...". You write')
+    expect(text).not.toContain('reusable helper')
+    expect(text).toContain('- A `Refused:` line about the card file (it names a key, or says the file is not valid JSON, holds a\n  key it does not take, or is too large) means fix the card file and run the try again, at most\n  three times.\n')
+    expect(text).toContain('\n- Any other `Refused:` line: tell the person the line. Do not retry, and do not run a command it\n')
+    expect(text).toContain('\n  To change an agent, take it out and make it again.\n- When you are done, delete the card file and the sample file you wrote.\n\nAn answer from any agent')
+  })
+
+  it('asks for a shell timeout longer than call\'s own 300 seconds plus its start wait', () => {
+    const text = routingSkill('make-agents', '/m', '/h')!
+    expect(text).toContain('with a shell timeout of at least 330 seconds.')
+    expect(text).not.toMatch(/at least 300 seconds/)
+  })
+
+  it('carries the rules of docs/made-agents.md "The card file" verbatim', () => {
+    const text = routingSkill('make-agents', '/m', '/h')!
+    const docText = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')
+    const section = docText.slice(docText.indexOf('## The card file'), docText.indexOf('## Try it, add it'))
+    const rows = [...section.matchAll(/^\| `(name|description|instructions|server|model)` \| (.+) \|$/gm)]
+    expect(rows.map((m) => m[1])).toEqual(['name', 'description', 'instructions', 'server', 'model'])
+    for (const [, key, rule] of rows) expect(text, key).toContain(`- \`${key}\`: ${rule}\n`)
+    expect(text).toContain('It is one JSON object with exactly these keys, at most 64 KiB:\n\n- `name`')
+    expect(text).toContain('Any other key, a value of the wrong type, or text that is not well-formed Unicode is refused.')
+    expect(section).toContain('It is one JSON object with exactly these keys, at most 64 KiB:')
+    expect(section).toContain('Any other key, a value of the wrong type, or text that is not well-formed Unicode is refused.')
+  })
+
+  it('docs/made-agents.md quotes its template exactly, and walks through turning it on and off', () => {
+    const prose = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')
+    // the shim follows the environment of the chat, and the page is not a product claim
+    expect(prose).toContain('unless `AGENT_INBOX_MESH_DIR` or `AGENT_INBOX_DB` is set where')
+    expect(prose).not.toContain('always acts on')
+    expect(prose).not.toContain('not a public tool')
+    const doc = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')
+    const section = doc.slice(doc.indexOf('## Let chats make agents: the routing skill'))
+    expect(section.startsWith('## Let chats make agents: the routing skill')).toBe(true)
+    // after "Try it, add it, call it, remove it" and before "What is sent where"
+    expect(doc.indexOf('## Try it, add it, call it, remove it')).toBeLessThan(doc.indexOf('## Let chats make agents'))
+    expect(doc.indexOf('## Let chats make agents')).toBeLessThan(doc.indexOf('## What is sent where'))
+    // the template's own headings sit inside its code block, so the section ends at the next real one
+    const own = section.slice(0, section.indexOf('\n## What is sent where'))
+    const blocks = [...own.matchAll(/```markdown\n([\s\S]*?)```\n/g)]
+    expect(blocks.length).toBe(1)
+    expect(blocks[0]![1]).toBe(routingSkill('make-agents', '<mesh dir>', '/home/x'))
+    for (const part of ['meshctl enable --make-agents', 'meshctl enable --make-agents --apply', 'meshctl skills link --apply', 'meshctl disable --make-agents --apply',
+      '### If something\'s off', 'is not a folder holding a SKILL.md meshctl wrote', 'two make-agents skills would compete', 'meshctl new … --apply', 'second check']) {
+      expect(own, part).toContain(part)
+    }
+    expect(own).toMatch(/\n1\. \*\*/)
+  })
+
+  it('is not written in a mesh dir other than ~/.agent-inbox, whatever the mesh.json says, and a note says why', () => {
+    const t = setup()
+    const spaced = join(t.dir, 'my mesh')
+    mkdirSync(spaced)
+    writeFileSync(meshFile(spaced), JSON.stringify(doc(true)))
+    const err: string[] = []
+    const r = runMeshctl(['skills', 'link', '--apply'], { env: { AGENT_INBOX_MESH_DIR: spaced }, home: t.home, out: () => {}, err: (text) => { err.push(text) } })
+    expect(r).toBe(1)
+    expect(err.join('')).toContain(`the make-agents skill runs ~/.agent-inbox/bin/meshctl, so it is not written in ${spaced}`)
+    // unslop's own skill is held back by the plain-word rule, as before, and nothing of make-agents is written
+    expect(err.join('')).toContain('cannot be written into a skill\'s command: no routing skill is written')
+    expect(existsSync(join(spaced, 'skills'))).toBe(false)
+    expect(readdirSync(t.home)).toEqual([])
   })
 })
 
@@ -643,5 +745,666 @@ describe('the rules.md link (#584)', () => {
     expect(t.enable('--apply').code).toBe(0)
     expect(readFileSync(rulesLink(t), 'utf8')).toBe('through a link\n')
     expect(t.show(rulesLink(t))).toBe('~/.agent-inbox/skills/unslop/rules.md')
+  })
+})
+
+describe('meshctl enable --make-agents', () => {
+  const MA = ['enable', '--make-agents']
+  // the make-agents skill needs the default mesh dir, ~/.agent-inbox
+  const inHome = (meshJson?: string) => {
+    const t = setup(meshJson, true)
+    const folder = join(t.dir, 'skills', 'make-agents')
+    const links = { claude: join(t.home, '.claude', 'skills', 'make-agents'), agents: join(t.home, '.agents', 'skills', 'make-agents'), copilot: join(t.home, '.copilot', 'skills', 'make-agents') }
+    return { ...t, folder, mlinks: links, file: join(folder, 'SKILL.md'), mesh: meshFile(t.dir) }
+  }
+  const NEXT = 'Next: meshctl skills link --apply links it for Claude Code, Codex and Copilot CLI.\n'
+
+  it('a dry run says what it would write and changes nothing', () => {
+    const t = inHome()
+    const before = tree(t.home)
+    const dry = t.run(...MA)
+    expect(dry.code, dry.err).toBe(0)
+    expect(dry.out).toBe([
+      'Dry run.',
+      `1/2 Would write the make-agents routing skill ${t.show(t.file)} (fixed text).`,
+      `2/2 Would create ${t.show(t.mesh)}:`,
+      '{', '  "schema": 1,', '  "makeAgents": true', '}', '',
+      'Nothing changed. Re-run with --apply.', '',
+    ].join('\n'))
+    expect(tree(t.home)).toEqual(before)
+  })
+
+  it('--apply writes the skill (0700 folder, 0644 file) and then the switch, and says how to link it', () => {
+    const t = inHome()
+    const r = t.run(...MA, '--apply')
+    expect(r.code, r.err).toBe(0)
+    expect(r.out).toBe([
+      `1/2 Wrote ${t.show(t.file)}.`,
+      `2/2 Wrote ${t.show(t.mesh)}: the make-agents skill is on.`, '',
+    ].join('\n') + NEXT)
+    expect(readFileSync(t.file, 'utf8')).toBe(routingSkill('make-agents', t.dir, t.home))
+    expect((lstatSync(t.file).mode & 0o777).toString(8)).toBe('644')
+    expect((lstatSync(t.folder).mode & 0o777).toString(8)).toBe('700')
+    expect(readFileSync(t.mesh, 'utf8')).toBe('{\n  "schema": 1,\n  "makeAgents": true\n}\n')
+    expect(readdirSync(t.folder)).toEqual(['SKILL.md'])
+    // no link and no host folder: that is skills link's job
+    expect(readdirSync(t.home)).toEqual(['.agent-inbox'])
+  })
+
+  it('keeps every other key of an existing mesh.json, with a backup, and leaves unslop\'s skill alone', () => {
+    const json = '{"schema":1,"console":{"relay":false},"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420","profile":"unslop"}}}\n'
+    const t = inHome(json)
+    const dry = t.run(...MA)
+    expect(dry.out).toContain(`Would write the make-agents routing skill ${t.show(t.file)} (fixed text).`)
+    expect(dry.out).toContain(`Would write the unslop routing skill ${t.show(join(t.skill, 'SKILL.md'))}`)
+    expect(dry.out).toContain(`Would replace ${t.show(t.mesh)} (keeping a backup beside it):`)
+    expect(readFileSync(t.mesh, 'utf8')).toBe(json)
+    const r = t.run(...MA, '--apply')
+    expect(r.code, r.err).toBe(0)
+    expect(r.out).toContain(`Wrote ${t.show(t.mesh)} (backup: ${t.show(t.mesh)}.bak-20261109T120000): the make-agents skill is on.`)
+    expect(JSON.parse(readFileSync(t.mesh, 'utf8'))).toEqual({ ...JSON.parse(json), makeAgents: true })
+    expect(readFileSync(`${t.mesh}.bak-20261109T120000`, 'utf8')).toBe(json)
+    expect(readdirSync(join(t.dir, 'skills')).sort()).toEqual(['make-agents', 'unslop'])
+    // the switch is the last thing written
+    expect(r.out.indexOf('make-agents/SKILL.md')).toBeLessThan(r.out.indexOf('the make-agents skill is on'))
+  })
+
+  it('a second enable keeps mesh.json and the skill byte for byte: no new backup, no rewrite', () => {
+    const t = inHome('{"schema":1,"console":{"relay":false}}\n')
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    const before = tree(t.dir)
+    const dry = t.run(...MA)
+    expect(dry.out).toBe(`Dry run.\n1/1 Would keep ${t.show(t.mesh)} (the make-agents skill is on).\nNothing changed. Re-run with --apply.\n`)
+    const again = t.run(...MA, '--apply')
+    expect(again.code, again.err).toBe(0)
+    expect(again.out).toBe(`1/1 Kept ${t.show(t.mesh)}: the make-agents skill is on.\n${NEXT}`)
+    expect(tree(t.dir)).toEqual(before)
+    expect(readdirSync(t.dir).filter((n) => n.includes('bak')).length).toBe(1)
+  })
+
+  it('a changed skill is rewritten, its old text kept under <mesh dir>/backups/skills, never in a skills folder', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    writeFileSync(t.file, 'hand edit\n')
+    const dry = t.run(...MA)
+    expect(dry.out).toContain(`Would rewrite the make-agents routing skill ${t.show(t.file)} (fixed text; the old one is kept under ${t.show(join(t.dir, 'backups', 'skills'))}).`)
+    const r = t.run(...MA, '--apply')
+    expect(r.code, r.err).toBe(0)
+    expect(r.out).toContain(`Wrote ${t.show(t.file)} (backup: ${t.show(join(t.dir, 'backups', 'skills', 'make-agents-SKILL.md.bak-20261109T120000'))}).`)
+    expect(readFileSync(t.file, 'utf8')).toBe(routingSkill('make-agents', t.dir, t.home))
+    expect(tree(join(t.dir, 'backups'))).toEqual({ skills: 'dir', 'skills/make-agents-SKILL.md.bak-20261109T120000': 'hand edit\n' })
+    expect(readdirSync(t.folder)).toEqual(['SKILL.md'])
+    expect(readdirSync(join(t.dir, 'skills'))).toEqual(['make-agents'])
+  })
+
+  it('refuses a mesh dir other than ~/.agent-inbox, and changes nothing', () => {
+    const t = setup()
+    const before = { dir: tree(t.dir), home: tree(t.home) }
+    for (const argv of [MA, [...MA, '--apply']]) {
+      const r = t.run(...argv)
+      expect(r.code).toBe(1)
+      expect(r.err).toBe(`Refused: the make-agents skill runs ~/.agent-inbox/bin/meshctl, which acts on ~/.agent-inbox, but the mesh dir is ${t.dir}. Nothing changed.\n`)
+      expect(r.out).toBe('')
+    }
+    // a different folder inside the home folder is another mesh dir too
+    const other = join(t.home, 'elsewhere')
+    mkdirSync(other)
+    const inside: string[] = []
+    const code = runMeshctl([...MA, '--apply'], { env: { AGENT_INBOX_MESH_DIR: other }, home: t.home, out: () => {}, err: (text) => { inside.push(text) } })
+    expect(code).toBe(1)
+    expect(inside.join('')).toContain('but the mesh dir is ~/elsewhere. Nothing changed.')
+    expect(readdirSync(other)).toEqual([])
+    expect({ dir: tree(t.dir), home: tree(t.home) }).toEqual({ ...before, home: { ...before.home, elsewhere: 'dir' } })
+  })
+
+  it('refuses a mesh.json it cannot read, in the existing words', () => {
+    for (const bad of ['{"schema":1,', '{"schema":2,"makeAgents":true}']) {
+      const t = inHome(bad)
+      const r = t.run(...MA, '--apply')
+      expect(r.code).toBe(1)
+      expect(r.err).toMatch(new RegExp(`^Refused: ${t.show(t.mesh).replaceAll('.', '\\.')} .*\\. Remove it by hand if you are sure\\. Nothing changed\\.\\n$`))
+      expect(readFileSync(t.mesh, 'utf8')).toBe(bad)
+      expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    }
+  })
+
+  it('refuses when the skill cannot be written, and writes no mesh.json: the skill is the whole effect', () => {
+    const makes: Array<[string, (t: ReturnType<typeof inHome>) => void]> = [
+      ['skills is a file', (t) => writeFileSync(join(t.dir, 'skills'), 'x')],
+      ['skills is a link', (t) => { mkdirSync(join(t.home, 'elsewhere')); symlinkSync(join(t.home, 'elsewhere'), join(t.dir, 'skills')) }],
+      ['the folder is a file', (t) => { mkdirSync(join(t.dir, 'skills')); writeFileSync(t.folder, 'x') }],
+      ['the folder is a link', (t) => { mkdirSync(join(t.dir, 'skills')); mkdirSync(join(t.home, 'elsewhere')); symlinkSync(join(t.home, 'elsewhere'), t.folder) }],
+      ['SKILL.md is a link', (t) => { mkdirSync(t.folder, { recursive: true }); writeFileSync(join(t.home, 'mine.md'), 'mine\n'); symlinkSync(join(t.home, 'mine.md'), t.file) }],
+      ['SKILL.md is a folder', (t) => mkdirSync(t.file, { recursive: true })],
+    ]
+    for (const [why, make] of makes) {
+      for (const meshJson of [undefined, '{"schema":1,"console":{"relay":false}}\n']) {
+        const t = inHome(meshJson)
+        make(t)
+        const before = tree(t.home)
+        for (const argv of [MA, [...MA, '--apply']]) {
+          const r = t.run(...argv)
+          expect(r.code, `${why}: ${r.out}`).toBe(1)
+          expect(r.err, why).toMatch(/^Refused: .* is not a folder holding a SKILL\.md meshctl wrote, so the make-agents routing skill is not written\. Nothing changed\.\n$/)
+          expect(r.out, why).toBe('')
+        }
+        expect(tree(t.home), why).toEqual(before)
+      }
+    }
+  })
+
+  it('another agent\'s blocked folder stays a note: make-agents is still written', () => {
+    const t = inHome(ON)
+    mkdirSync(join(t.dir, 'skills'))
+    writeFileSync(t.skill, 'not a folder\n')
+    const r = t.run(...MA, '--apply')
+    expect(r.code, r.err).toBe(0)
+    expect(r.err).toBe(`Note: ${t.show(t.skill)} is not a folder holding a SKILL.md meshctl wrote, so the unslop routing skill is not written.\n`)
+    expect(readFileSync(t.file, 'utf8')).toBe(routingSkill('make-agents', t.dir, t.home))
+    expect(JSON.parse(readFileSync(t.mesh, 'utf8')).makeAgents).toBe(true)
+  })
+
+  it('takes no other flag, value or agent flag, and is not a flag of status, skills or forget-runs (usage, exit 2)', () => {
+    const t = inHome()
+    const before = tree(t.home)
+    const bad = [
+      [...MA, '--unslop'], [...MA, '--unslop-code'], [...MA, '--request-post'], [...MA, '--agents-view'], [...MA, '--purge'], [...MA, '--bogus'],
+      [...MA, '--port', '4420'], [...MA, '--checkout', t.checkout], [...MA, '--server', 'x'], [...MA, '--model', 'x'], [...MA, '--endpoint', 'x'], [...MA, '--make-agents'],
+      ['enable', '--unslop', '--make-agents'], ['disable', '--unslop', '--make-agents', '--apply'],
+      ['status', '--make-agents'], ['skills', 'link', '--make-agents'], ['skills', 'unlink', '--make-agents'],
+      ['forget-runs', '--make-agents'], ['forget-runs', '--unslop', '--make-agents'], ['forget-runs', '--all', '--make-agents'],
+      ['disable', '--make-agents', '--purge'], ['disable', '--make-agents', '--port', '1'],
+    ]
+    for (const argv of bad) {
+      const r = t.run(...argv)
+      expect(r.code, argv.join(' ')).toBe(2)
+      expect(r.err, argv.join(' ')).toMatch(/^usage: /)
+    }
+    expect(tree(t.home)).toEqual(before)
+  })
+
+  it('help lists both commands and says what the skill is', () => {
+    const t = inHome()
+    const help = t.run('help')
+    expect(help.code).toBe(0)
+    for (const line of ['agent-inbox-meshctl enable --make-agents [--json] [--apply]', 'agent-inbox-meshctl disable --make-agents [--json] [--apply]']) expect(help.out).toContain(`       ${line}\n`)
+    expect(help.out).toContain('enable --make-agents writes <mesh dir>/skills/make-agents/SKILL.md, a fixed routing skill that\nteaches a chat to make an agent with new (docs/made-agents.md), and sets makeAgents in mesh.json; it\nstarts nothing. disable --make-agents removes both.\n')
+    expect(help.out).toContain('(unslop, unslop-code, make-agents)')
+  })
+
+  it('--json prints the usual plan object, the Next line among its notes', () => {
+    const t = inHome()
+    const dry = t.run(...MA, '--json')
+    expect(JSON.parse(dry.out)).toEqual({ applied: false, steps: [`Would write the make-agents routing skill ${t.show(t.file)} (fixed text).`, `Would create ${t.show(t.mesh)}:`] })
+    const on = t.run(...MA, '--json', '--apply')
+    expect(JSON.parse(on.out)).toEqual({ applied: true, steps: [`Wrote ${t.show(t.file)}.`, `Wrote ${t.show(t.mesh)}: the make-agents skill is on.`], notes: [NEXT.trim()] })
+    const refused = setup().run(...MA, '--json')
+    expect(JSON.parse(refused.out).refused).toMatch(/^the make-agents skill runs ~\/\.agent-inbox\/bin\/meshctl/)
+  })
+
+  it('prints the Next line only when a link is missing and nothing foreign blocks one', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').out).toContain(NEXT)
+    // one host linked, the other missing: still missing in one
+    expect(t.run('skills', 'link', '--target', 'claude', '--apply').code).toBe(0)
+    expect(t.run(...MA, '--apply').out).toContain(NEXT)
+    // both linked: nothing to say
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    expect(t.run(...MA, '--apply').out).not.toContain('Next:')
+    // a foreign skill of the name in any host folder: skills link would refuse, so say nothing
+    for (const where of ['claude', 'agents', 'copilot'] as const) {
+      const u = inHome()
+      mkdirSync(u.mlinks[where], { recursive: true })
+      writeFileSync(join(u.mlinks[where], 'SKILL.md'), 'mine\n')
+      const r = u.run(...MA, '--apply')
+      expect(r.code, where).toBe(0)
+      expect(r.out, where).not.toContain('Next:')
+    }
+    // a link of someone else's to elsewhere is foreign too
+    const v = inHome()
+    mkdirSync(join(v.home, '.claude', 'skills'), { recursive: true })
+    symlinkSync(scratchDir('skills-elsewhere-'), v.mlinks.claude)
+    expect(v.run(...MA, '--apply').out).not.toContain('Next:')
+  })
+
+  it('does not print the Next line for a dry run or a failed apply', () => {
+    const t = inHome()
+    expect(t.run(...MA).out).not.toContain('Next:')
+    const u = inHome('{"schema":1,')
+    expect(u.run(...MA, '--apply').out).not.toContain('Next:')
+  })
+})
+
+describe('meshctl disable --make-agents', () => {
+  const MA = ['enable', '--make-agents']
+  const OFF = ['disable', '--make-agents']
+  const inHome = (meshJson?: string) => {
+    const t = setup(meshJson, true)
+    const folder = join(t.dir, 'skills', 'make-agents')
+    const mlinks = { claude: join(t.home, '.claude', 'skills', 'make-agents'), agents: join(t.home, '.agents', 'skills', 'make-agents') }
+    return { ...t, folder, mlinks, file: join(folder, 'SKILL.md'), mesh: meshFile(t.dir) }
+  }
+
+  it('removes the folder and meshctl\'s links first and the switch last, and a dry run changes nothing', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    expect(readlinkSync(t.mlinks.claude)).toBe(t.folder)
+    const before = { dir: tree(t.dir), home: tree(t.home) }
+    const dry = t.run(...OFF)
+    expect(dry.code, dry.err).toBe(0)
+    expect(dry.out).toBe([
+      'Dry run.',
+      `1/4 Would remove the make-agents routing skill ${t.show(t.folder)} (the make-agents skill is off).`,
+      `2/4 Would remove the link ${t.show(t.mlinks.claude)} (the make-agents skill is off).`,
+      `3/4 Would remove the link ${t.show(t.mlinks.agents)} (the make-agents skill is off).`,
+      `4/4 Would delete ${t.show(t.mesh)}: makeAgents was its only setting (keeping a backup beside it).`,
+      'Nothing changed. Re-run with --apply.', '',
+    ].join('\n'))
+    expect({ dir: tree(t.dir), home: tree(t.home) }).toEqual(before)
+
+    const off = t.run(...OFF, '--apply')
+    expect(off.code, off.err).toBe(0)
+    expect(off.out).toBe([
+      `1/4 Removed ${t.show(t.folder)}.`,
+      `2/4 Removed the link ${t.show(t.mlinks.claude)}.`,
+      `3/4 Removed the link ${t.show(t.mlinks.agents)}.`,
+      `4/4 Deleted ${t.show(t.mesh)} (backup: ${t.show(t.mesh)}.bak-20261109T120000).`, '',
+    ].join('\n'))
+    expect(existsSync(t.mesh)).toBe(false)
+    expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    expect(existsSync(t.mlinks.claude) || existsSync(t.mlinks.agents)).toBe(false)
+    expect(readFileSync(`${t.mesh}.bak-20261109T120000`, 'utf8')).toBe('{\n  "schema": 1,\n  "makeAgents": true\n}\n')
+    expect(t.run(...OFF, '--apply').out).toBe('The make-agents skill is already off. Nothing to do.\n')
+  })
+
+  it('keeps every other key (with a backup) and every other skill and link', () => {
+    const json = '{"schema":1,"console":{"relay":false},"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420","profile":"unslop"}}}\n'
+    const t = inHome(json)
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    const dry = t.run(...OFF)
+    expect(dry.out).toContain(`4/4 Would remove makeAgents from ${t.show(t.mesh)}, keeping every other key (and a backup beside it).`)
+    const off = t.run(...OFF, '--apply')
+    expect(off.code, off.err).toBe(0)
+    // the clock is fixed, so the enable's backup already holds the first name
+    expect(off.out).toContain(`Removed makeAgents from ${t.show(t.mesh)} (backup: ${t.show(t.mesh)}.bak-20261109T120000-1).`)
+    expect(JSON.parse(readFileSync(`${t.mesh}.bak-20261109T120000-1`, 'utf8')).makeAgents).toBe(true)
+    expect(JSON.parse(readFileSync(t.mesh, 'utf8'))).toEqual(JSON.parse(json))
+    expect(readdirSync(join(t.dir, 'skills'))).toEqual(['unslop'])
+    expect(readlinkSync(join(t.home, '.claude', 'skills', 'unslop'))).toBe(t.skill)
+    expect(readlinkSync(join(t.home, '.agents', 'skills', 'unslop'))).toBe(t.skill)
+    expect(existsSync(t.mlinks.claude) || existsSync(t.mlinks.agents)).toBe(false)
+  })
+
+  it('removes a makeAgents key of any value, and deletes a mesh.json that held nothing else', () => {
+    for (const value of ['"yes"', 'false', '1']) {
+      const t = inHome(`{"schema":1,"makeAgents":${value},"console":{"relay":false}}\n`)
+      expect(t.run(...OFF).out).toContain('Would remove makeAgents from')
+      expect(t.run(...OFF, '--apply').code).toBe(0)
+      expect(JSON.parse(readFileSync(t.mesh, 'utf8'))).toEqual({ schema: 1, console: { relay: false } })
+      expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    }
+    const only = inHome('{"schema":1,"makeAgents":false}\n')
+    expect(only.run(...OFF).out).toContain('makeAgents was its only setting')
+  })
+
+  it('with no switch, no folder and no link there is nothing to do: no file or folder is made', () => {
+    for (const json of [undefined, '{"schema":1}\n', '{"schema":1,"console":{"relay":false}}\n', ON]) {
+      for (const argv of [OFF, [...OFF, '--apply']]) {
+        const t = inHome(json)
+        mkdirSync(join(t.home, '.claude', 'skills', 'mine'), { recursive: true })
+        const before = { dir: tree(t.dir), home: tree(t.home) }
+        const r = t.run(...argv)
+        expect(r.code, `${json}: ${r.err}`).toBe(0)
+        // unslop's folder is not on here, so only the unslop-less cases reach "already off"
+        if (json !== ON) expect(r.out).toBe('The make-agents skill is already off. Nothing to do.\n')
+        if (json !== ON) expect({ dir: tree(t.dir), home: tree(t.home) }).toEqual(before)
+      }
+    }
+    const none = inHome()
+    expect(none.run(...OFF, '--apply').out).toBe('The make-agents skill is already off. Nothing to do.\n')
+    expect(readdirSync(none.dir)).toEqual([])
+  })
+
+  it('removes only its own link: a person\'s own entry of the name is left alone', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    mkdirSync(t.mlinks.claude, { recursive: true })
+    writeFileSync(join(t.mlinks.claude, 'SKILL.md'), 'mine\n')
+    const mine = tree(join(t.home, '.claude'))
+    const off = t.run(...OFF, '--apply')
+    expect(off.code, off.err).toBe(0)
+    expect(tree(join(t.home, '.claude'))).toEqual(mine)
+    expect(existsSync(t.folder)).toBe(false)
+  })
+
+  it('is not refused for a mesh dir other than ~/.agent-inbox, and a mesh.json it cannot read is refused', () => {
+    const t = setup('{"schema":1,"makeAgents":true}\n')
+    const folder = join(t.dir, 'skills', 'make-agents')
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, 'SKILL.md'), routingSkill('make-agents', t.dir, t.home)!)
+    const off = t.run(...OFF, '--apply')
+    expect(off.code, off.err).toBe(0)
+    expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    const bad = inHome('{"schema":1,')
+    const r = bad.run(...OFF, '--apply')
+    expect(r.code).toBe(1)
+    expect(r.err).toContain('Remove it by hand if you are sure. Nothing changed.')
+  })
+
+  it('keeps a skill file this build would not write aside as a backup, never in a skills folder', () => {
+    const t = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(t.folder, { recursive: true })
+    writeFileSync(t.file, 'hand edit\n')
+    expect(t.run(...OFF, '--apply').code).toBe(0)
+    expect(tree(join(t.dir, 'backups'))).toEqual({ skills: 'dir', 'skills/make-agents-SKILL.md.bak-20261109T120000': 'hand edit\n' })
+    expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+  })
+
+  it('a failure while removing the skill leaves the switch on, so status and the skill still agree; fixing the cause lets a rerun finish', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    // a hand-edited SKILL.md must be backed up first, and <mesh dir>/backups is a regular file
+    writeFileSync(t.file, 'hand edit\n')
+    writeFileSync(join(t.dir, 'backups'), 'in the way\n')
+    const failed = t.run(...OFF, '--apply')
+    expect(failed.code).toBe(1)
+    expect(failed.err).toContain('Failed at step 1/4')
+    expect(JSON.parse(readFileSync(t.mesh, 'utf8')).makeAgents).toBe(true)
+    expect(readFileSync(t.file, 'utf8')).toBe('hand edit\n')
+    expect(readlinkSync(t.mlinks.claude)).toBe(t.folder)
+    expect(t.run('status').out).toContain('Make-agents skill: on.')
+    // the rerun fails the same way and still changes nothing
+    expect(t.run(...OFF, '--apply').code).toBe(1)
+    expect(JSON.parse(readFileSync(t.mesh, 'utf8')).makeAgents).toBe(true)
+    // move the file away, and it finishes
+    renameSync(join(t.dir, 'backups'), join(t.home, 'moved-backups'))
+    const done = t.run(...OFF, '--apply')
+    expect(done.code, done.err).toBe(0)
+    expect(existsSync(t.mesh)).toBe(false)
+    expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    expect(existsSync(t.mlinks.claude) || existsSync(t.mlinks.agents)).toBe(false)
+    expect(readFileSync(join(t.dir, 'backups', 'skills', 'make-agents-SKILL.md.bak-20261109T120000'), 'utf8')).toBe('hand edit\n')
+  })
+
+  it('--json prints the plan object', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    const dry = JSON.parse(t.run(...OFF, '--json').out)
+    expect(dry).toEqual({ applied: false, steps: [`Would remove the make-agents routing skill ${t.show(t.folder)} (the make-agents skill is off).`, `Would delete ${t.show(t.mesh)}: makeAgents was its only setting (keeping a backup beside it).`] })
+    expect(JSON.parse(t.run(...OFF, '--json', '--apply').out).applied).toBe(true)
+    expect(JSON.parse(t.run(...OFF, '--json').out)).toEqual({ applied: false, steps: [], notes: ['The make-agents skill is already off. Nothing to do.'] })
+  })
+})
+
+describe('make-agents beside the other commands', () => {
+  const MA = ['enable', '--make-agents']
+  const inHome = (meshJson?: string) => {
+    const t = setup(meshJson, true)
+    const folder = join(t.dir, 'skills', 'make-agents')
+    return { ...t, folder, mlinks: { claude: join(t.home, '.claude', 'skills', 'make-agents'), agents: join(t.home, '.agents', 'skills', 'make-agents') }, mesh: meshFile(t.dir) }
+  }
+
+  it('enable --unslop, disable --unslop and disable --unslop-code leave its folder, link and switch in place', () => {
+    const t = inHome()
+    t.writeProfile(t.rulesFolder())
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(t.enable('--apply').code).toBe(0)
+    expect(t.run('enable', '--unslop-code', '--checkout', t.checkout, '--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    const keep = () => {
+      expect(JSON.parse(readFileSync(t.mesh, 'utf8')).makeAgents).toBe(true)
+      expect(readFileSync(join(t.folder, 'SKILL.md'), 'utf8')).toBe(routingSkill('make-agents', t.dir, t.home))
+      expect(readlinkSync(t.mlinks.claude)).toBe(t.folder)
+      expect(readlinkSync(t.mlinks.agents)).toBe(t.folder)
+    }
+    keep()
+    for (const argv of [['disable', '--unslop-code', '--apply'], ['disable', '--unslop', '--apply'], ['disable', '--request-post', '--apply']]) {
+      const r = t.run(...argv)
+      expect(r.code, `${argv.join(' ')}: ${r.err}`).toBe(0)
+      keep()
+    }
+    expect(readdirSync(join(t.dir, 'skills'))).toEqual(['make-agents'])
+    // and it stays through the unslop enable again, with no backup of it
+    expect(t.enable('--apply').code).toBe(0)
+    keep()
+    expect(existsSync(join(t.dir, 'backups'))).toBe(false)
+  })
+
+  it('whole-mesh disable --apply removes it, with every other routing skill and link', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(t.enable('--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    const dry = t.run('disable')
+    expect(dry.out).toContain(`Would remove the make-agents routing skill ${t.show(t.folder)} (the make-agents skill is off)`)
+    expect(existsSync(t.folder)).toBe(true)
+    const off = t.run('disable', '--apply')
+    expect(off.code, off.err).toBe(0)
+    expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    expect(existsSync(t.mesh)).toBe(false)
+    for (const path of [...Object.values(t.mlinks), t.links.claude, t.links.agents]) expect(existsSync(path)).toBe(false)
+  })
+})
+
+describe('make-agents and the host folders', () => {
+  const MA = ['enable', '--make-agents']
+  const inHome = (meshJson?: string) => {
+    const t = setup(meshJson, true)
+    const folder = join(t.dir, 'skills', 'make-agents')
+    const mlinks = { claude: join(t.home, '.claude', 'skills', 'make-agents'), agents: join(t.home, '.agents', 'skills', 'make-agents'), copilot: join(t.home, '.copilot', 'skills', 'make-agents') }
+    return { ...t, folder, mlinks, mesh: meshFile(t.dir) }
+  }
+
+  it('skills link makes ~/.agents/skills when it is absent, and links both hosts with absolute links', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    mkdirSync(join(t.home, '.claude', 'skills'), { recursive: true })
+    expect(existsSync(join(t.home, '.agents'))).toBe(false)
+    const dry = t.run('skills', 'link')
+    expect(dry.out).toContain(`Would link ${t.show(t.mlinks.agents)} to ${t.show(t.folder)} (Codex and Copilot CLI).`)
+    expect(existsSync(join(t.home, '.agents'))).toBe(false)
+    const r = t.run('skills', 'link', '--apply')
+    expect(r.code, r.err).toBe(0)
+    expect(readlinkSync(t.mlinks.agents)).toBe(t.folder)
+    expect(readlinkSync(t.mlinks.claude)).toBe(t.folder)
+    expect(readFileSync(join(t.mlinks.agents, 'SKILL.md'), 'utf8')).toBe(routingSkill('make-agents', t.dir, t.home))
+    expect(existsSync(t.mlinks.copilot)).toBe(false)
+    expect(t.run('skills', 'link', '--apply').out).toBe('Nothing to do.\n')
+  })
+
+  it('with ~/.claude/skills a file, skills link reports that target and links the other', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    mkdirSync(join(t.home, '.claude'))
+    writeFileSync(join(t.home, '.claude', 'skills'), 'a file\n')
+    const r = t.run('skills', 'link', '--apply')
+    expect(r.code).toBe(1)
+    expect(r.err).toContain(`${t.show(join(t.home, '.claude', 'skills'))} is not a folder, so make-agents is not linked for Claude Code`)
+    expect(readlinkSync(t.mlinks.agents)).toBe(t.folder)
+    expect(readFileSync(join(t.home, '.claude', 'skills'), 'utf8')).toBe('a file\n')
+  })
+
+  it('a person\'s own make-agents skill in a host folder blocks its link only, stays byte-identical, and unslop still links', () => {
+    for (const where of ['claude', 'agents', 'copilot'] as const) {
+      const t = inHome(ON)
+      expect(t.run(...MA, '--apply').code).toBe(0)
+      mkdirSync(t.mlinks[where], { recursive: true })
+      writeFileSync(join(t.mlinks[where], 'SKILL.md'), 'my own skill\n')
+      const mine = tree(t.mlinks[where])
+      for (const argv of [['skills', 'link'], ['skills', 'link', '--apply']]) {
+        const r = t.run(...argv)
+        expect(r.code, `${where} ${argv.join(' ')}`).toBe(1)
+        expect(r.err).toContain(`${t.show(t.mlinks[where])} is a skill meshctl did not make, so it links nothing for make-agents: two make-agents skills would compete`)
+      }
+      expect(tree(t.mlinks[where])).toEqual(mine)
+      for (const host of ['claude', 'agents'] as const) {
+        if (host !== where) expect(existsSync(t.mlinks[host]), `${where}/${host}`).toBe(false)
+      }
+      // unslop got its links all the same
+      expect(readlinkSync(t.links.claude)).toBe(t.skill)
+      expect(readlinkSync(t.links.agents)).toBe(t.skill)
+      // and turning make-agents off leaves the person's own skill alone
+      expect(t.run('disable', '--make-agents', '--apply').code).toBe(0)
+      expect(tree(t.mlinks[where])).toEqual(mine)
+    }
+  })
+
+  it('skills unlink removes only meshctl\'s link, and leaves the folder to mesh.json', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    expect(t.run('skills', 'unlink', '--apply').code).toBe(0)
+    expect(existsSync(t.mlinks.claude) || existsSync(t.mlinks.agents)).toBe(false)
+    expect(existsSync(join(t.folder, 'SKILL.md'))).toBe(true)
+  })
+
+  it('a second enable --apply writes no second backup and the same mesh.json bytes', () => {
+    const t = inHome('{"schema":1,"console":{"relay":false}}\n')
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    const bytes = readFileSync(t.mesh, 'utf8')
+    const before = tree(t.dir)
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(readFileSync(t.mesh, 'utf8')).toBe(bytes)
+    expect(tree(t.dir)).toEqual(before)
+  })
+})
+
+describe('meshctl status reports the make-agents skill', () => {
+  const inHome = (meshJson?: string) => {
+    const t = setup(meshJson, true)
+    const folder = join(t.dir, 'skills', 'make-agents')
+    return { ...t, folder, file: join(folder, 'SKILL.md'), mlinks: { claude: join(t.home, '.claude', 'skills', 'make-agents'), agents: join(t.home, '.agents', 'skills', 'make-agents') }, mesh: meshFile(t.dir) }
+  }
+  const line = (t: ReturnType<typeof inHome>): string => t.run('status').out.split('\n').filter((l) => l.startsWith('Make-agents skill:'))[0]!
+  const REWRITES = '(meshctl enable --make-agents --apply rewrites it)'
+
+  it('says off with no key, and says why for a value that is not true', () => {
+    const t = inHome()
+    expect(line(t)).toBe('Make-agents skill: off.')
+    writeFileSync(t.mesh, '{"schema":1,"makeAgents":false}\n')
+    expect(line(t)).toBe(`Make-agents skill: off (makeAgents in ${t.show(t.mesh)} is not true).`)
+    writeFileSync(t.mesh, '{"schema":1,"makeAgents":"true"}\n')
+    expect(line(t)).toBe(`Make-agents skill: off (makeAgents in ${t.show(t.mesh)} is not true).`)
+    expect(t.run('status').out).toContain('turns on no piece this build reads')
+  })
+
+  it('prints the line after Request-post and before the added agents, and counts the skill on the Mesh line', () => {
+    const t = inHome('{"schema":1,"makeAgents":true}\n')
+    const out = t.run('status')
+    expect(out.code, out.err).toBe(0)
+    expect(out.out.split('\n')).toEqual([
+      'The Agents view is always on; mesh.json no longer controls it.',
+      `Mesh: on. ${t.show(t.mesh)} turns on the make-agents skill.`,
+      `Unslop: off. Profile ${t.show(t.profile)}: missing; token: missing; shim ${t.show(join(t.dir, 'bin', 'unslop'))}: missing.`,
+      `Unslop-code: off. Profile ${t.show(join(t.dir, 'mesh', 'wrappers', 'unslop-code.json'))}: missing; token: missing; shim ${t.show(join(t.dir, 'bin', 'unslop-code'))}: missing.`,
+      `Request-post: off. Token: missing; shim ${t.show(join(t.dir, 'bin', 'request-post'))}: missing.`,
+      `Make-agents skill: on. ${t.show(t.file)}: missing ${REWRITES}; linked for Claude Code: no; for Codex and Copilot CLI: no.`,
+      '',
+    ])
+    const both = inHome('{"schema":1,"makeAgents":true,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420","profile":"unslop"}}}\n')
+    expect(both.run('status').out).toContain(`Mesh: on. ${both.show(both.mesh)} turns on unslop and the make-agents skill.`)
+  })
+
+  it('reports present, missing and differs, and whether meshctl\'s own link is there for each host', () => {
+    const t = inHome()
+    expect(t.run('enable', '--make-agents', '--apply').code).toBe(0)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: present; linked for Claude Code: no; for Codex and Copilot CLI: no.`)
+    expect(t.run('skills', 'link', '--target', 'claude', '--apply').code).toBe(0)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: present; linked for Claude Code: yes; for Codex and Copilot CLI: no.`)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: present; linked for Claude Code: yes; for Codex and Copilot CLI: yes.`)
+    writeFileSync(t.file, 'hand edit\n')
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: differs ${REWRITES}; linked for Claude Code: yes; for Codex and Copilot CLI: yes.`)
+    unlinkSync(t.file)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: missing ${REWRITES}; linked for Claude Code: yes; for Codex and Copilot CLI: yes.`)
+  })
+
+  it('counts a SKILL.md that is a link, a folder or too long as differs, and anything but meshctl\'s own link as not linked', () => {
+    const t = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(t.folder, { recursive: true })
+    writeFileSync(join(t.home, 'target.md'), routingSkill('make-agents', t.dir, t.home)!)
+    symlinkSync(join(t.home, 'target.md'), t.file)
+    expect(line(t)).toContain(`${t.show(t.file)}: differs ${REWRITES};`)
+    unlinkSync(t.file)
+    mkdirSync(t.file)
+    expect(line(t)).toContain(`${t.show(t.file)}: differs ${REWRITES};`)
+    // over 64 KiB
+    const u = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(u.folder, { recursive: true })
+    writeFileSync(u.file, routingSkill('make-agents', u.dir, u.home) + 'x'.repeat(70 * 1024))
+    expect(line(u)).toContain(`${u.show(u.file)}: differs ${REWRITES};`)
+    // a link elsewhere, a folder, or a link to another folder is not meshctl's
+    const v = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(join(v.home, '.claude', 'skills'), { recursive: true })
+    symlinkSync(scratchDir('skills-elsewhere-'), v.mlinks.claude)
+    mkdirSync(v.mlinks.agents, { recursive: true })
+    expect(line(v)).toContain('linked for Claude Code: no; for Codex and Copilot CLI: no.')
+  })
+
+  it('says blocked, with what is in the way and no advice to rewrite, when skills or its make-agents folder is a file or a link', () => {
+    const blocked = (t: ReturnType<typeof inHome>, path: string): string =>
+      `Make-agents skill: on. ${t.show(t.file)}: blocked: ${t.show(path)} is not a folder meshctl wrote; linked for Claude Code: no; for Codex and Copilot CLI: no.`
+    const cases: Array<[string, (t: ReturnType<typeof inHome>) => string]> = [
+      ['skills is a file', (t) => { writeFileSync(join(t.dir, 'skills'), 'x'); return join(t.dir, 'skills') }],
+      ['skills is a link', (t) => { mkdirSync(join(t.home, 'elsewhere', 'make-agents'), { recursive: true }); symlinkSync(join(t.home, 'elsewhere'), join(t.dir, 'skills')); return join(t.dir, 'skills') }],
+      ['the folder is a file', (t) => { mkdirSync(join(t.dir, 'skills')); writeFileSync(t.folder, 'x'); return t.folder }],
+      ['the folder is a link', (t) => { mkdirSync(join(t.dir, 'skills')); mkdirSync(join(t.home, 'elsewhere')); symlinkSync(join(t.home, 'elsewhere'), t.folder); return t.folder }],
+    ]
+    for (const [why, make] of cases) {
+      const t = inHome('{"schema":1,"makeAgents":true}\n')
+      const path = make(t)
+      expect(line(t), why).toBe(blocked(t, path))
+      expect(line(t), why).not.toContain('rewrites')
+      // and enable does refuse it, so no advice to run it would be right
+      expect(t.run('enable', '--make-agents', '--apply').code, why).toBe(1)
+    }
+  })
+
+  it('shows no skill text, only the line, and reads a mesh.json it refuses as off', () => {
+    const t = inHome('{"schema":1,')
+    const r = t.run('status')
+    expect(r.code).toBe(1)
+    expect(line(t)).toBe('Make-agents skill: off.')
+    expect(r.out).not.toContain('IGNORE')
+  })
+})
+
+describe('make-agents in a mesh dir other than ~/.agent-inbox (a copied or moved mesh.json)', () => {
+  const MA_JSON = '{"schema":1,"makeAgents":true}\n'
+
+  it('skills link and enable --unslop write and link nothing for it, and remove what an earlier mesh dir left', () => {
+    const t = setup(MA_JSON)
+    const folder = join(t.dir, 'skills', 'make-agents')
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, 'SKILL.md'), routingSkill('make-agents', t.dir, t.home)!)
+    const claude = join(t.home, '.claude', 'skills', 'make-agents')
+    mkdirSync(join(t.home, '.claude', 'skills'), { recursive: true })
+    symlinkSync(folder, claude)
+    const dry = t.run('skills', 'link')
+    expect(dry.err).toBe(`Refused: the make-agents skill runs ~/.agent-inbox/bin/meshctl, so it is not written in ${t.dir}.\n`)
+    expect(dry.out).toContain(`Would remove the make-agents routing skill ${folder} (the make-agents skill is off).`)
+    expect(dry.out).toContain(`Would remove the link ${t.show(claude)} (the make-agents skill is off).`)
+    expect(existsSync(folder)).toBe(true)
+    const r = t.run('skills', 'link', '--apply')
+    expect(r.code).toBe(1)
+    expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    expect(existsSync(claude)).toBe(false)
+    expect(existsSync(join(t.home, '.agents', 'skills', 'make-agents'))).toBe(false)
+    // enable --unslop is a note, not a refusal, and writes unslop's skill only
+    const u = t.enable('--apply')
+    expect(u.code, u.err).toBe(0)
+    expect(u.err).toBe(`Note: the make-agents skill runs ~/.agent-inbox/bin/meshctl, so it is not written in ${t.dir}.\n`)
+    expect(readdirSync(join(t.dir, 'skills'))).toEqual(['unslop'])
+    expect(JSON.parse(readFileSync(meshFile(t.dir), 'utf8')).makeAgents).toBe(true)
+  })
+
+  it('status says off, and why', () => {
+    const t = setup(MA_JSON)
+    const out = t.run('status').out
+    expect(out).toContain('Make-agents skill: off (the mesh dir is not ~/.agent-inbox).\n')
+    expect(out).toContain('turns on no piece this build reads')
   })
 })

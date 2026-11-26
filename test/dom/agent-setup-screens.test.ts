@@ -1587,7 +1587,7 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
     bridge.s.answers['check-agent'] = () => carded({ card: { ...CARD, id: undefined }, refused: 'the card’s name makes no usable id: pass --id <id>. Nothing changed.' })
     await check()
     expect(setup().querySelector('.ms-refused')?.textContent).toBe('the card’s name makes no usable id: pass --id <id>. Nothing changed.')
-    expect(terminalLine().textContent).toBe('That option is for a terminal. See docs/mesh-call.md.')
+    expect(terminalLine().textContent).toBe('That option is for a terminal. Add this agent there instead.')
     expect(shown(terminalLine())).toBe(true)
     click(buttonLabelled('Back', setup().querySelector('.ms-review')!))
     await settle()

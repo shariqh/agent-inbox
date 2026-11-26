@@ -199,7 +199,8 @@ function isUrl(value) {
 
 /**
  * An added agent's card address (or its endpoint), by add's own rule: a loopback port is 1-65535
- * and never 80, a name's port never 443; plus this bridge's own cap of 2048 characters.
+ * and never 80, a name's port never 443, the address parses as a URL (a malformed punycode label
+ * does not) and its parsed host is at most 253 characters; plus this bridge's own cap of 2048.
  */
 function isPlace(value) {
   if (typeof value !== 'string' || value.length > URL_MAX) return false
@@ -208,7 +209,13 @@ function isPlace(value) {
   if (!loopback && !named) return false
   const port = loopback ? loopback[1] : named[2]
   if (port !== undefined && (Number(port) > 65535 || Number(port) === (loopback ? 80 : 443))) return false
-  return loopback !== null || named[1].length <= 253
+  let host
+  try {
+    host = new URL(value).hostname
+  } catch {
+    return false
+  }
+  return host.length <= 253
 }
 
 const isAgentId = (value) => typeof value === 'string' && AGENT_ID.test(value) && !BUILT_IN_AGENTS.has(value)

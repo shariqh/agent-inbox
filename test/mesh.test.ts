@@ -949,6 +949,23 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1}\n')
   })
 
+  // add step 2, G2: a host the URL parser cannot read (a malformed punycode label, a port past 65535)
+  // is refused by the rule's own words, never a crash with no output
+  it('refuses a card URL whose host or port the URL parser rejects, with the rule’s words, and writes nothing', async () => {
+    for (const url of ['https://xn--a.example/x', 'https://studio.xn--zz.ts.net/card', 'http://127.0.0.1:65536/card', 'https://example.org:99999/card']) {
+      expect(addedPlace(url), url).toEqual({ refused: 'rule' })
+    }
+    expect(addedPlace('https://xn--bcher-kva.example/a')).toMatchObject({ host: 'xn--bcher-kva.example', loopback: false })
+    const t = setup()
+    const RULE = 'the card URL must be http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>] on a DNS name: never an IP address other than 127.0.0.1, localhost, plain http to another host, a written-out port 80 or 443, a user, a query or a fragment. Nothing changed.'
+    const r = await t.add('https://xn--a.example/x', '--json')
+    expect([r.code, JSON.parse(r.out)]).toEqual([1, { applied: false, steps: [], refused: RULE }])
+    const text = await t.add('https://xn--a.example/x', '--apply')
+    expect([text.code, text.err]).toEqual([1, `Refused: ${RULE}\n`])
+    expect(t.io.asked).toBe(0)
+    expect(existsSync(meshFile(t.dir))).toBe(false)
+  })
+
   it('refuses a card URL outside the endpoint rule before it opens any connection', async () => {
     const a = await agent()
     const t = setup()

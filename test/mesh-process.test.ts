@@ -281,13 +281,12 @@ describe('meshArgv: each fixed operation maps to exactly one argv', () => {
     'https://example.org/a?b=c', 'https://example.org/a#x', 'https://example.org/./a', 'https://example.org/../a', 'https://example.org/a/..', 'https://example.org/a/.',
     'https://example.org//a', 'https://example.org/a%20b', 'https://user@example.org', 'https://user:pass@example.org', 'ftp://example.org', ' https://example.org',
     'https://example.org/ a', 'https://example.org/\n', '', 'https://example.org.', 'https://ex_ample.org', 'HTTPS://example.org', '-https://example.org', 'https://example.org/é',
+    // punycode: a valid label is a name like any other; a malformed one is one the URL parser rejects
+    'https://xn--bcher-kva.example/a', 'https://xn--a.example/x', 'https://studio.xn--zz.ts.net/card', 'https://xn--.example',
   ])('an address is accepted exactly where add’s own rule accepts it: %s', (address) => {
     expect(address.length).toBeLessThan(2048)
-    // a port past 65535 makes addedPlace's own URL parse throw: the command never accepts it either
-    let accepted = false
-    try {
-      accepted = !('refused' in addedPlace(address))
-    } catch { /* not accepted */ }
+    // addedPlace refuses, never throws: a host or port its URL parse rejects is outside the rule too
+    const accepted = !('refused' in addedPlace(address))
     expect(argv('check-agent', { address }), address).toEqual(accepted ? { argv: ['add', address, '--json'], kind: 'add' } : { reason: 'invalid' })
   })
 

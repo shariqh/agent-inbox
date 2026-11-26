@@ -135,7 +135,8 @@ describe('meshctl', () => {
       `Mesh: off. No ${meshFile(dir)}.`,
       `Unslop: off. Profile ${dir}/mesh/wrappers/unslop.json: missing; token: missing; shim ${dir}/bin/unslop: missing.`,
       `Unslop-code: off. Profile ${dir}/mesh/wrappers/unslop-code.json: missing; token: missing; shim ${dir}/bin/unslop-code: missing.`,
-      `Request-post: off. Token: missing; shim ${dir}/bin/request-post: missing.`, '',
+      `Request-post: off. Token: missing; shim ${dir}/bin/request-post: missing.`,
+      'Make-agents skill: off.', '',
     ].join('\n'))
     writeFileSync(meshFile(dir), '{"schema":1,"agentsView":true}\n')
     expect(ctl(['status'], dir).out).toContain('turns on no piece this build reads')

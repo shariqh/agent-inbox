@@ -1085,7 +1085,9 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
       return read === undefined ? [] : [{ id, read }]
     })
     const valid = added.filter((a) => a.read !== 'invalid').length
-    const pieces = [...(port ? ['unslop'] : []), ...(codePort ? ['unslop-code'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
+    // makeAgents is a switch of its own, not an agent: only the value true turns it on
+    const makeValue = existing.kind === 'present' ? existing.doc['makeAgents'] : undefined
+    const pieces = [...(port ? ['unslop'] : []), ...(codePort ? ['unslop-code'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(makeValue === true ? ['the make-agents skill'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
     if (existing.kind === 'missing') out(`Mesh: off. No ${name}.\n`)
     else if (existing.kind === 'refused') out(`Mesh: off. ${name} ${existing.reason}, so it is read as off.\n`)
     else out(pieces ? `Mesh: on. ${name} turns on ${pieces}.\n` : `Mesh: off. ${name} turns on no piece this build reads.\n`)
@@ -1108,6 +1110,13 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const rp = requestPostPaths(dir)
     const rpState = rpEndpoint ? `on at ${rpEndpoint}` : rpEntry === undefined ? 'off' : `off (agents.request-post.endpoint is not ${ENDPOINT_RULE})`
     out(`Request-post: ${rpState}. Token: ${has(rp.token)}; shim ${show(rp.shim)}: ${has(rp.shim)}.\n`)
+    if (makeValue === undefined) out('Make-agents skill: off.\n')
+    else if (makeValue !== true) out(`Make-agents skill: off (makeAgents in ${name} is not true).\n`)
+    else {
+      const state = skillState({ dir, home }, 'make-agents')
+      const yes = (host: 'claude' | 'agents'): string => (state.hosts[host] === 'linked' ? 'yes' : 'no')
+      out(`Make-agents skill: on. ${show(join(dir, 'skills', 'make-agents', 'SKILL.md'))}: ${state.file}${state.file === 'present' ? '' : ' (meshctl enable --make-agents --apply rewrites it)'}; linked for Claude Code: ${yes('claude')}; for Codex and Copilot CLI: ${yes('agents')}.\n`)
+    }
     // a made agent (D6) says so, with its server and model; never its instructions or a path
     const madeWords = (id: string): string => {
       const made = madePaths(dir, id)

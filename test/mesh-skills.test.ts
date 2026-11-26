@@ -1203,3 +1203,92 @@ describe('make-agents and the host folders', () => {
     expect(tree(t.dir)).toEqual(before)
   })
 })
+
+describe('meshctl status reports the make-agents skill', () => {
+  const inHome = (meshJson?: string) => {
+    const t = setup(meshJson, true)
+    const folder = join(t.dir, 'skills', 'make-agents')
+    return { ...t, folder, file: join(folder, 'SKILL.md'), mlinks: { claude: join(t.home, '.claude', 'skills', 'make-agents'), agents: join(t.home, '.agents', 'skills', 'make-agents') }, mesh: meshFile(t.dir) }
+  }
+  const line = (t: ReturnType<typeof inHome>): string => t.run('status').out.split('\n').filter((l) => l.startsWith('Make-agents skill:'))[0]!
+  const REWRITES = '(meshctl enable --make-agents --apply rewrites it)'
+
+  it('says off with no key, and says why for a value that is not true', () => {
+    const t = inHome()
+    expect(line(t)).toBe('Make-agents skill: off.')
+    writeFileSync(t.mesh, '{"schema":1,"makeAgents":false}\n')
+    expect(line(t)).toBe(`Make-agents skill: off (makeAgents in ${t.show(t.mesh)} is not true).`)
+    writeFileSync(t.mesh, '{"schema":1,"makeAgents":"true"}\n')
+    expect(line(t)).toBe(`Make-agents skill: off (makeAgents in ${t.show(t.mesh)} is not true).`)
+    expect(t.run('status').out).toContain('turns on no piece this build reads')
+  })
+
+  it('prints the line after Request-post and before the added agents, and counts the skill on the Mesh line', () => {
+    const t = inHome('{"schema":1,"makeAgents":true}\n')
+    const out = t.run('status')
+    expect(out.code, out.err).toBe(0)
+    expect(out.out.split('\n')).toEqual([
+      'The Agents view is always on; mesh.json no longer controls it.',
+      `Mesh: on. ${t.show(t.mesh)} turns on the make-agents skill.`,
+      `Unslop: off. Profile ${t.show(t.profile)}: missing; token: missing; shim ${t.show(join(t.dir, 'bin', 'unslop'))}: missing.`,
+      `Unslop-code: off. Profile ${t.show(join(t.dir, 'mesh', 'wrappers', 'unslop-code.json'))}: missing; token: missing; shim ${t.show(join(t.dir, 'bin', 'unslop-code'))}: missing.`,
+      `Request-post: off. Token: missing; shim ${t.show(join(t.dir, 'bin', 'request-post'))}: missing.`,
+      `Make-agents skill: on. ${t.show(t.file)}: missing ${REWRITES}; linked for Claude Code: no; for Codex and Copilot CLI: no.`,
+      '',
+    ])
+    const both = inHome('{"schema":1,"makeAgents":true,"agents":{"unslop":{"endpoint":"http://127.0.0.1:4420","profile":"unslop"}}}\n')
+    expect(both.run('status').out).toContain(`Mesh: on. ${both.show(both.mesh)} turns on unslop and the make-agents skill.`)
+  })
+
+  it('reports present, missing and differs, and whether meshctl\'s own link is there for each host', () => {
+    const t = inHome()
+    expect(t.run('enable', '--make-agents', '--apply').code).toBe(0)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: present; linked for Claude Code: no; for Codex and Copilot CLI: no.`)
+    expect(t.run('skills', 'link', '--target', 'claude', '--apply').code).toBe(0)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: present; linked for Claude Code: yes; for Codex and Copilot CLI: no.`)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: present; linked for Claude Code: yes; for Codex and Copilot CLI: yes.`)
+    writeFileSync(t.file, 'hand edit\n')
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: differs ${REWRITES}; linked for Claude Code: yes; for Codex and Copilot CLI: yes.`)
+    unlinkSync(t.file)
+    expect(line(t)).toBe(`Make-agents skill: on. ${t.show(t.file)}: missing ${REWRITES}; linked for Claude Code: yes; for Codex and Copilot CLI: yes.`)
+  })
+
+  it('counts a SKILL.md that is a link, a folder or too long as differs, and anything but meshctl\'s own link as not linked', () => {
+    const t = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(t.folder, { recursive: true })
+    writeFileSync(join(t.home, 'target.md'), routingSkill('make-agents', t.dir, t.home)!)
+    symlinkSync(join(t.home, 'target.md'), t.file)
+    expect(line(t)).toContain(`${t.show(t.file)}: differs ${REWRITES};`)
+    unlinkSync(t.file)
+    mkdirSync(t.file)
+    expect(line(t)).toContain(`${t.show(t.file)}: differs ${REWRITES};`)
+    // over 64 KiB
+    const u = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(u.folder, { recursive: true })
+    writeFileSync(u.file, routingSkill('make-agents', u.dir, u.home) + 'x'.repeat(70 * 1024))
+    expect(line(u)).toContain(`${u.show(u.file)}: differs ${REWRITES};`)
+    // a link elsewhere, a folder, or a link to another folder is not meshctl's
+    const v = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(join(v.home, '.claude', 'skills'), { recursive: true })
+    symlinkSync(scratchDir('skills-elsewhere-'), v.mlinks.claude)
+    mkdirSync(v.mlinks.agents, { recursive: true })
+    expect(line(v)).toContain('linked for Claude Code: no; for Codex and Copilot CLI: no.')
+  })
+
+  it('a skills folder or make-agents folder that is a link counts as differs', () => {
+    const t = inHome('{"schema":1,"makeAgents":true}\n')
+    mkdirSync(join(t.home, 'elsewhere', 'make-agents'), { recursive: true })
+    writeFileSync(join(t.home, 'elsewhere', 'make-agents', 'SKILL.md'), routingSkill('make-agents', t.dir, t.home)!)
+    symlinkSync(join(t.home, 'elsewhere'), join(t.dir, 'skills'))
+    expect(line(t)).toContain(`${t.show(t.file)}: differs ${REWRITES};`)
+  })
+
+  it('shows no skill text, only the line, and reads a mesh.json it refuses as off', () => {
+    const t = inHome('{"schema":1,')
+    const r = t.run('status')
+    expect(r.code).toBe(1)
+    expect(line(t)).toBe('Make-agents skill: off.')
+    expect(r.out).not.toContain('IGNORE')
+  })
+})

@@ -910,6 +910,15 @@ describe('meshctl enable --make-agents', () => {
     expect(tree(t.home)).toEqual(before)
   })
 
+  it('help lists both commands and says what the skill is', () => {
+    const t = inHome()
+    const help = t.run('help')
+    expect(help.code).toBe(0)
+    for (const line of ['agent-inbox-meshctl enable --make-agents [--json] [--apply]', 'agent-inbox-meshctl disable --make-agents [--json] [--apply]']) expect(help.out).toContain(`       ${line}\n`)
+    expect(help.out).toContain('enable --make-agents writes <mesh dir>/skills/make-agents/SKILL.md, a fixed routing skill that\nteaches a chat to make an agent with new (docs/made-agents.md), and sets makeAgents in mesh.json; it\nstarts nothing. disable --make-agents removes both.\n')
+    expect(help.out).toContain('(unslop, unslop-code, make-agents)')
+  })
+
   it('--json prints the usual plan object, the Next line among its notes', () => {
     const t = inHome()
     const dry = t.run(...MA, '--json')

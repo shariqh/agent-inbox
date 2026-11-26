@@ -20,6 +20,8 @@
 // (#513, src/mesh-skills.ts): a routing SKILL.md for each agent that is on and has a template,
 // none for an agent that is off, and none of meshctl's links to a folder it removes. `skills link`
 // and `skills unlink` add and remove those links for Claude Code, Codex and Copilot CLI.
+// `enable --make-agents` writes one more fixed routing skill, make-agents, which teaches a chat to make an
+// agent with `new`; its switch is a top-level `makeAgents: true` in mesh.json, not an `agents` entry.
 //
 //   meshctl enable --agents-view [--apply]   says the Agents view is always on
 //   meshctl enable --unslop [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--json] [--apply]
@@ -29,6 +31,8 @@
 //   meshctl enable --unslop-code [--port <n>] [--checkout <path>] [--server <name>] [--model <name>] [--json] [--apply]
 //   meshctl disable --unslop-code [--purge] [--apply]
 //   meshctl disable --request-post [--purge] [--apply]
+//   meshctl enable --make-agents [--json] [--apply]
+//   meshctl disable --make-agents [--json] [--apply]
 //   meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
 //                                            add an A2A agent this repo doesn't ship (#529)
 //   meshctl add <card-url> --move <id> [--token-file <path>] [--expect-pin <sha256>] [--json] [--apply]
@@ -90,7 +94,7 @@ import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs
 import type { RunCollector } from './mesh-runs.js'
 import { CALL_USAGE, runCall } from './mesh-call.js'
 import { CHECK_USAGE, publishableRefusal, runCheck } from './mesh-check.js'
-import { SKILL_TARGETS, holdSetupLock, skillPlan } from './mesh-skills.js'
+import { DEFAULT_MESH_DIR, SKILL_TARGETS, holdSetupLock, shownDir, skillPlan, skillState } from './mesh-skills.js'
 import type { SkillTarget } from './mesh-skills.js'
 import { REQUEST_POST_USAGE, runRequestPost } from './request-post-client.js'
 import type { RequestPostIo } from './request-post-client.js'
@@ -115,6 +119,8 @@ const USAGE = `usage: agent-inbox-meshctl status
        agent-inbox-meshctl disable --unslop-code [--purge] [--apply]
        agent-inbox-meshctl enable --request-post --endpoint <url> --token-file <path> [--apply]
        agent-inbox-meshctl disable --request-post [--purge] [--apply]
+       agent-inbox-meshctl enable --make-agents [--json] [--apply]
+       agent-inbox-meshctl disable --make-agents [--json] [--apply]
        agent-inbox-meshctl add <card-url> [--id <id>] [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
        agent-inbox-meshctl add <card-url> --move <id> [--token-file <path>] [--key-thumbprint <t>] [--expect-pin <sha256>] [--json] [--apply]
        agent-inbox-meshctl remove <id> [--json] [--apply]
@@ -150,6 +156,9 @@ entry uses is refused). Its profile takes baseUrl and apiKey from the unslop pro
 one is readable. unslop-code is what <mesh dir>/bin/unslop-code runs inside a git repository: it
 sends the JavaScript and TypeScript files a change touched and prints the patch (docs/unslop-code.md).
 disable --unslop-code keeps its profile, logs, budget and run records unless --purge.
+enable --make-agents writes <mesh dir>/skills/make-agents/SKILL.md, a fixed routing skill that
+teaches a chat to make an agent with new (docs/made-agents.md), and sets makeAgents in mesh.json; it
+starts nothing. disable --make-agents removes both.
 A model server is a backend added once, by name, to <mesh dir>/mesh/servers.json: its address and
 key source (a file, a command or an environment variable; never the key). enable --unslop and
 --unslop-code --server <name> make the profile name it (its baseUrl and apiKey go, every other key
@@ -206,7 +215,7 @@ Each client run appends a record without text to <mesh dir>/mesh/runs/, kept 30 
 forget-runs deletes an agent's records now (--id <id> an added agent's, --all every agent's);
 remove deletes an added agent's with its entry. Every enable and disable deletes expired ones.
 Every enable and disable writes <mesh dir>/skills/<agent>/SKILL.md, the fixed routing skill, for
-each agent that is on and has one (unslop, unslop-code), and removes the folders and links of agents that are off.
+each agent that is on and has one (unslop, unslop-code, make-agents), and removes the folders and links of agents that are off.
 skills link makes ~/.claude/skills/<agent> (Claude Code) and ~/.agents/skills/<agent> (Codex,
 Copilot CLI) links to those folders; skills unlink removes only links that point into
 <mesh dir>/skills/. Neither replaces a folder or link it did not make: a skill of the same name
@@ -725,8 +734,10 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     if (flags.size || [...values.keys()].some((key) => key !== '--id') || (all ? picked.length : picked.length !== 1) || (id !== undefined && idRefusal(id))) return usage()
     return forgetRuns(resolve(meshDir(env, home)), all ? 'all' : picked, apply, now().getTime(), out, err)
   }
+  // after forget-runs, which has its own flags: --make-agents is not one of them
+  const makeAgents = flags.delete('--make-agents')
   // one agent flag per command
-  if (Number(unslop) + Number(requestPost) + Number(unslopCode) > 1) return usage()
+  if (Number(unslop) + Number(requestPost) + Number(unslopCode) + Number(makeAgents) > 1) return usage()
   const only = (...names: string[]): boolean => [...values.keys()].every((key) => names.includes(key))
 
   const dir = resolve(meshDir(env, home))
@@ -1042,7 +1053,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
 
   if (command === 'skills') {
     const sub = rest[0]
-    if ((sub !== 'link' && sub !== 'unlink') || !flags.delete(sub) || flags.size || !only('--target') || unslop || requestPost || unslopCode) return usage()
+    if ((sub !== 'link' && sub !== 'unlink') || !flags.delete(sub) || flags.size || !only('--target') || unslop || requestPost || unslopCode || makeAgents) return usage()
     const target = values.get('--target') ?? 'all'
     if (target !== 'all' && !SKILL_TARGETS.includes(target as SkillTarget)) return usage()
     const targets = target === 'all' ? SKILL_TARGETS : [target as SkillTarget]
@@ -1059,7 +1070,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
   }
 
   if (command === 'status') {
-    if (flags.size || values.size || apply || unslop || requestPost || unslopCode) return usage()
+    if (flags.size || values.size || apply || unslop || requestPost || unslopCode || makeAgents) return usage()
     out(`${ALWAYS_ON}\n`)
     const existing = readMesh(file)
     const agents = existing.kind === 'present' ? objectOf(existing.doc['agents']) : undefined
@@ -1074,7 +1085,11 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
       return read === undefined ? [] : [{ id, read }]
     })
     const valid = added.filter((a) => a.read !== 'invalid').length
-    const pieces = [...(port ? ['unslop'] : []), ...(codePort ? ['unslop-code'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
+    // makeAgents is a switch of its own, not an agent: only the value true turns it on
+    const makeValue = existing.kind === 'present' ? existing.doc['makeAgents'] : undefined
+    // the skill serves ~/.agent-inbox alone (skillPlan leaves it out of any other mesh dir), so it is not on elsewhere
+    const makeHere = shownDir(dir, home) === DEFAULT_MESH_DIR
+    const pieces = [...(port ? ['unslop'] : []), ...(codePort ? ['unslop-code'] : []), ...(rpEndpoint ? ['request-post'] : []), ...(makeValue === true && makeHere ? ['the make-agents skill'] : []), ...(valid ? [plural(valid, 'added agent')] : [])].join(' and ')
     if (existing.kind === 'missing') out(`Mesh: off. No ${name}.\n`)
     else if (existing.kind === 'refused') out(`Mesh: off. ${name} ${existing.reason}, so it is read as off.\n`)
     else out(pieces ? `Mesh: on. ${name} turns on ${pieces}.\n` : `Mesh: off. ${name} turns on no piece this build reads.\n`)
@@ -1097,6 +1112,16 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     const rp = requestPostPaths(dir)
     const rpState = rpEndpoint ? `on at ${rpEndpoint}` : rpEntry === undefined ? 'off' : `off (agents.request-post.endpoint is not ${ENDPOINT_RULE})`
     out(`Request-post: ${rpState}. Token: ${has(rp.token)}; shim ${show(rp.shim)}: ${has(rp.shim)}.\n`)
+    if (makeValue === undefined) out('Make-agents skill: off.\n')
+    else if (makeValue !== true) out(`Make-agents skill: off (makeAgents in ${name} is not true).\n`)
+    else if (!makeHere) out(`Make-agents skill: off (the mesh dir is not ${DEFAULT_MESH_DIR}).\n`)
+    else {
+      const state = skillState({ dir, home }, 'make-agents')
+      const yes = (host: 'claude' | 'agents'): string => (state.hosts[host] === 'linked' ? 'yes' : 'no')
+      // a skills folder or agent folder that is a file or a link is refused by enable, so it is no rewrite to advise
+      const fileWords = state.file === 'blocked' ? `blocked: ${show(state.blocker!)} is not a folder meshctl wrote` : state.file === 'present' ? 'present' : `${state.file} (meshctl enable --make-agents --apply rewrites it)`
+      out(`Make-agents skill: on. ${show(join(dir, 'skills', 'make-agents', 'SKILL.md'))}: ${fileWords}; linked for Claude Code: ${yes('claude')}; for Codex and Copilot CLI: ${yes('agents')}.\n`)
+    }
     // a made agent (D6) says so, with its server and model; never its instructions or a path
     const madeWords = (id: string): string => {
       const made = madePaths(dir, id)
@@ -1183,7 +1208,71 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     return runSteps(steps, apply, out, err, 'Steps before it are done; nothing after it ran.', plan)
   }
 
-  if (command === 'enable' && !unslop && !requestPost && !unslopCode) {
+  // ── make-agents (the routing skill that teaches a chat to make an agent with `new`) ──
+  // Its switch is a top-level `makeAgents: true`, never an `agents` entry: the app and `status` count every
+  // `agents` key as an agent, and routingSkills() reads this key from the mesh.json a command leaves.
+  if (command === 'enable' && makeAgents) {
+    if (flags.size || values.size) return usage()
+    // the skill's commands run ~/.agent-inbox/bin/meshctl, a shim that sets no mesh dir
+    if (shownDir(dir, home) !== DEFAULT_MESH_DIR) return refuse(`the make-agents skill runs ~/.agent-inbox/bin/meshctl, which acts on ~/.agent-inbox, but the mesh dir is ${shownDir(dir, home)}`)
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const doc: MeshDocument = existing.kind === 'present' ? existing.doc : { schema: MESH_SCHEMA }
+    const next: MeshDocument = { ...doc, makeAgents: true }
+    const current = existing.kind === 'present' && doc['makeAgents'] === true
+    // here the skill is the whole effect, so a skill that cannot be written refuses the command; another agent's stays a note
+    const skills = skillPlan(skillCtx, next)
+    const blocked = skills.refused.find((words) => words.endsWith('so the make-agents routing skill is not written'))
+    for (const words of skills.refused) if (words !== blocked) err(`Note: ${words}.\n`)
+    if (!skills.agents.includes('make-agents')) return refuse(blocked ?? 'the make-agents routing skill cannot be written')
+    const json = `${JSON.stringify(next, null, 2)}\n`
+    const last: Step = current ? { dry: `Would keep ${name} (the make-agents skill is on).`, run: () => `Kept ${name}: the make-agents skill is on.` } : {
+      dry: `Would ${existing.kind === 'present' ? 'replace' : 'create'} ${name}${existing.kind === 'present' ? ' (keeping a backup beside it)' : ''}:\n${json}`,
+      run: () => `Wrote ${name}${writeMesh(next, existing.kind === 'present')}: the make-agents skill is on.`,
+    }
+    // the routing skill goes before the switch, which stays the last thing written
+    const code = run([...skills.steps, last], `Steps before it are done; ${name} was not changed.`)
+    if (apply && code === 0) {
+      // skills link would link it: say so when a link is missing and nothing of that name blocks one
+      const state = skillState({ dir, home }, 'make-agents')
+      const hosts = Object.values(state.hosts)
+      if (hosts.includes('missing') && !hosts.includes('foreign') && state.copilot !== 'foreign') out('Next: meshctl skills link --apply links it for Claude Code, Codex and Copilot CLI.\n')
+    }
+    return code
+  }
+
+  if (command === 'disable' && makeAgents) {
+    if (flags.size || values.size) return usage()
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const present = existing.kind === 'present' && Object.hasOwn(existing.doc, 'makeAgents')
+    let next: MeshDocument | undefined
+    // the switch goes last, like enable's: a failure in the middle leaves it on with the skill still there, which agree
+    const drop: Step[] = []
+    if (existing.kind === 'present') {
+      const { makeAgents: _gone, ...others } = existing.doc
+      next = present ? (Object.keys(others).length === 1 ? undefined : others) : existing.doc
+      if (present) {
+        drop.push(next === undefined
+          ? {
+              dry: `Would delete ${name}: makeAgents was its only setting (keeping a backup beside it).`,
+              run: () => { const backup = writeBackup(file, now()); unlinkSync(file); return `Deleted ${name} (backup: ${show(backup)}).` },
+            }
+          : {
+              dry: `Would remove makeAgents from ${name}, keeping every other key (and a backup beside it).`,
+              run: () => `Removed makeAgents from ${name}${writeMesh(others, true)}.`,
+            })
+      }
+    }
+    const steps = [...withSkills([], next), ...drop]
+    if (!steps.length) {
+      out('The make-agents skill is already off. Nothing to do.\n')
+      return 0
+    }
+    return run(steps, 'Steps before it are done; nothing after it ran.')
+  }
+
+  if (command === 'enable' && !unslop && !requestPost && !unslopCode && !makeAgents) {
     if (!flags.delete('--agents-view') || flags.size || values.size) return usage()
     out(`${ALWAYS_ON} Nothing written.\n`)
     return 0
@@ -1384,7 +1473,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     return run(steps, 'Steps before it are done; nothing after it ran.')
   }
 
-  if (command === 'enable') {
+  if (command === 'enable' && !makeAgents) {
     if (flags.size || !only('--port', '--checkout', '--server', '--model')) return usage()
     const portText = values.get('--port') ?? String(UNSLOP_PORT)
     const port = /^\d{1,5}$/.test(portText) ? loopbackPort(`http://127.0.0.1:${portText}`) : undefined
@@ -1485,7 +1574,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     return run(steps, 'Steps before it are done; nothing after it ran.')
   }
 
-  if (command === 'disable') {
+  if (command === 'disable' && !makeAgents) {
     if (flags.size || values.size) return usage()
     const existing = readMesh(file)
     if (existing.kind === 'refused') {

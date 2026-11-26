@@ -371,7 +371,7 @@ describe('older history for a longer ribbon range (#392)', () => {
     reads.length = 0
     await pollTick()
     expect(new Set(reads)).toEqual(new Set([
-      '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
+      '/api/activity', '/api/activity/history', '/api/boards/tags', '/api/boards/archived/summary', '/api/issues',
       '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ]))
     expect(reads).toHaveLength(9)
@@ -597,9 +597,12 @@ describe('attention parity and the budget with the ribbon (#305)', () => {
     await pollTick()
     expect(ribbonLanes()).toEqual(['alpha', 'beta'])
     expect(await surfaces()).toEqual(before)
+    // The poll reads the active plans as their tags and, no plan having changed, reads none by id
+    // (slow links, step 2). `/api/boards` is surfaces()'s own dock read (`?scope=attention`), which
+    // the poll's whole-list read used to share a path with.
     expect([...reads].sort()).toEqual([
-      '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
-      '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
+      '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/boards/tags',
+      '/api/issues', '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ])
   })
 

@@ -148,6 +148,7 @@ describe('attention with and without relationship data (#103 PR3)', () => {
 
     // a page with neither: the bodies an older viewer and an older hub would serve
     let strip = true
+    let strippedPlans = 0
     const rewrite = async (response: Response, change: (body: never) => unknown) => {
       const headers = new Headers(response.headers)
       headers.delete('etag')
@@ -170,9 +171,26 @@ describe('attention with and without relationship data (#103 PR3)', () => {
           return rewrite(response, (body: Array<{ rows: Array<Record<string, unknown>> }>) =>
             body.map((board) => ({ ...board, rows: board.rows.map(({ waits_on: _waits, ...row }) => row) })))
         }
+        // Slow links, step 2: the page reads the plans as their tags, then the plans by id. A plan
+        // without waits_on is other bytes, so the stand-in gives it another tag in both reads.
+        if (route(input) === '/api/boards/tags') {
+          return rewrite(response, (body: { plans: Array<{ id: string; tag: string }> }) => ({
+            plans: body.plans.map((entry) => ({ ...entry, tag: `${entry.tag}-stripped` })),
+          }))
+        }
+        if (route(input) === '/api/boards/plans') {
+          strippedPlans += 1
+          return rewrite(response, (body: { plans: Array<{ tag: string; plan: { rows: Array<Record<string, unknown>> } }> }) => ({
+            plans: body.plans.map(({ tag, plan }) => ({
+              tag: `${tag}-stripped`, plan: { ...plan, rows: plan.rows.map(({ waits_on: _waits, ...row }) => row) },
+            })),
+          }))
+        }
         return response
       },
     })
+    // the page read its plans without waits_on
+    expect(strippedPlans).toBeGreaterThan(0)
     for (const grouping of [false, true]) {
       strip = true
       await pollTick()

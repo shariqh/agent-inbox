@@ -72,7 +72,7 @@ describe('REMOTE_ROUTES', () => {
     const items = ['resolve', 'acknowledge', 'dismiss', 'annotate', 'reply', 'snooze', 'stop-waiting', 'later'].map((a) => `POST /api/items/:id/${a}`)
     const rows = ['annotate', 'snooze', 'stop-waiting', 'later', 'handled'].map((a) => `POST /api/boards/:id/rows/:rowId/${a}`)
     expect(REMOTE_ROUTES.map((r) => key(r.method, r.path)).sort()).toEqual([
-      ...['/api/items', '/api/items/history', '/api/boards', '/api/boards/archived', '/api/boards/archived/summary',
+      ...['/api/items', '/api/items/history', '/api/boards', '/api/boards/tags', '/api/boards/plans', '/api/boards/archived', '/api/boards/archived/summary',
         '/api/boards/archived/plans', '/api/activity', '/api/activity/history', '/api/version', '/api/links', '/api/issues',
         '/api/messages', '/api/projects/closed', '/api/chats', '/api/mesh/agents', '/api/mesh/agents/runs'].map((p) => `GET ${p}`),
       ...items,
@@ -298,6 +298,19 @@ describe('the remote app', () => {
       expect(response.status).toBe(403)
     })
 
+    // slow links, step 2: the plans list's two pieces go through the gate as /api/boards does
+    it.each(['/api/boards', '/api/boards/tags', '/api/boards/plans?ids=x'])('serves GET %s to a paired device and refuses it without one', async (target) => {
+      const paired = await rawRequest(port, { target, headers: deviceHeaders(secret) })
+      expect(paired.status).toBe(200)
+      expect(paired.headers['x-agent-inbox-remote-boundary']).toBe('tailnet-v1')
+      const before = entry.status().refused.device
+      const unpaired = await rawRequest(port, { target, headers: deviceHeaders(newSecret()) })
+      expect(unpaired.status).toBe(403)
+      expect(entry.status().refused.device).toBe(before + 1)
+      const none = await rawRequest(port, { target, headers: deviceHeaders(secret).filter(([name]) => name !== 'X-Agent-Inbox-Device') })
+      expect(none.status).toBe(403)
+    })
+
     it('refuses POST /api/remote-entry/code with a paired device and the owner header', async () => {
       const before = entry.status().refused.route
       const response = await rawRequest(port, { method: 'POST', target: '/api/remote-entry/code', headers: deviceHeaders(secret, [['Origin', ORIGIN], ['X-Agent-Inbox-Owner', 'owner-token-for-the-test']]), body: '{}' })
@@ -307,7 +320,7 @@ describe('the remote app', () => {
     })
 
     it.each(REMOTE_ROUTES.filter((r) => r.method === 'GET').map((r) => r.path))('serves GET %s past the gate', async (path) => {
-      const target = path === '/api/mesh/agents/runs' ? `${path}?name=unslop` : path === '/api/boards/archived/plans' ? `${path}?ids=x` : path
+      const target = path === '/api/mesh/agents/runs' ? `${path}?name=unslop` : path.endsWith('/plans') ? `${path}?ids=x` : path
       const response = await rawRequest(port, { target, headers: deviceHeaders(secret) })
       expect(response.status, response.body.slice(0, 200)).toBeLessThan(500)
       expect(response.status).not.toBe(403)

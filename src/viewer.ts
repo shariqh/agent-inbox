@@ -660,6 +660,8 @@ export const SNAPSHOT_SOURCES = {
   'attention-items': ['items'],
   'history-items': ['items'],
   boards: ['boards', 'board_rows'],
+  // slow links, step 2: each active plan's tag, over the same reads as `boards`
+  'boards-tags': ['boards', 'board_rows'],
   'attention-boards': ['boards', 'board_rows'],
   'archived-boards': ['boards', 'board_rows'],
   // listArchivedSummary: archived plans and every one of their rows (#299)
@@ -699,12 +701,20 @@ const MAX_LINGERING_PLANS = 50
 const LAUNCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const PLAN_ID = /^[A-Za-z0-9_-]{1,64}$/
 
-// The ids /api/boards/archived/plans names: 1 to MAX_LINGERING_PLANS plan ids,
-// comma-separated. null = invalid, refused before any store call.
+// The ids /api/boards/archived/plans (and /api/boards/plans) names: 1 to
+// MAX_LINGERING_PLANS plan ids, comma-separated. null = invalid, refused before
+// any store call.
 function lingeringPlanIds(value: string | undefined): string[] | null {
   const ids = value?.split(',') ?? []
   if (!ids.length || ids.length > MAX_LINGERING_PLANS || !ids.every((id) => PLAN_ID.test(id))) return null
   return ids
+}
+
+// Slow links, step 2: a plan's tag is taken from the bytes it has inside /api/boards (one element
+// of that array, serialized alone), so equal bytes share a tag and any change to the plan or its
+// rows moves it. 22 base64url characters of SHA-256 (132 bits).
+function planTag(plan: object): string {
+  return createHash('sha256').update(JSON.stringify(plan)).digest('base64url').slice(0, 22)
 }
 
 const LAUNCH_EVENTS_MAX = 256 * 1024
@@ -1385,6 +1395,25 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
   // evict the other; any other query string keeps the full response.
   const attentionBoards = conditionalSnapshot(db, 'attention-boards', () => listBoardsWithBlockedRows(db))
   app.get('/api/boards', (c, next) => (c.req.query('scope') === 'attention' ? attentionBoards : allBoards)(c, next))
+
+  // Slow links, step 2: the page reads the whole list only in pieces. `/tags` names each active
+  // plan, in the list's order, with a tag of its bytes (its own conditional snapshot), and
+  // `/plans?ids=` returns the plans the page does not hold at their current tag, each exactly as
+  // the list carries it, with that tag. `ids` follows the rule of /api/boards/archived/plans. The
+  // page never revalidates `/plans`, so it carries no ETag and nothing is retained.
+  app.get('/api/boards/tags', conditionalSnapshot(db, 'boards-tags', () => ({
+    plans: listBoards(db).map((plan) => ({ id: plan.id, tag: planTag(plan) })),
+  })))
+  app.get('/api/boards/plans', (c) => {
+    const ids = lingeringPlanIds(c.req.query('ids'))
+    if (!ids) return c.json({ ok: false, error: `ids must be 1-${MAX_LINGERING_PLANS} comma-separated plan ids` }, 400)
+    c.header('Cache-Control', 'no-store')
+    const wanted = new Set(ids)
+    // one snapshot: a plan's own fields and its rows come from the same commit
+    const plans = db.transaction(() => listBoards(db))()
+      .filter((plan) => wanted.has(plan.id)).map((plan) => ({ tag: planTag(plan), plan }))
+    return c.body(JSON.stringify({ plans }), 200, { 'Content-Type': 'application/json' })
+  })
 
   // Issue #299: the complete archived plans, every row with all of its
   // background, read only while a surface needs them (the archived fold, a plan

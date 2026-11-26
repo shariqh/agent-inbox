@@ -3,11 +3,12 @@ paths:
   - "src/store.ts"
   - "src/viewer.ts"
   - "public/snapshots.js"
+  - "public/plans-reader.js"
   - "public/closed-history.js"
   - "public/boards.js"
   - "electron/conditional-read.cjs"
   - "test/fixtures/snapshot-triggers.txt"
-applyTo: "src/store.ts,src/viewer.ts,public/snapshots.js,public/closed-history.js,public/boards.js,electron/conditional-read.cjs,test/fixtures/snapshot-triggers.txt"
+applyTo: "src/store.ts,src/viewer.ts,public/snapshots.js,public/plans-reader.js,public/closed-history.js,public/boards.js,electron/conditional-read.cjs,test/fixtures/snapshot-triggers.txt"
 ---
 
 # Store and conditional snapshots
@@ -45,8 +46,34 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185). The
   lingering plans' read `/api/boards/archived/plans?ids=…` (#373) is built the
-  same way (fresh bytes, tag over bytes plus ids, never retained), and these two
-  are the only routes whose query the browser reader accepts.
+  same way (fresh bytes, tag over bytes plus ids, never retained). The browser
+  reader accepts a query on a short list of routes only, given under "Invariants
+  in detail" below.
+- **The plans list in pieces (slow links, step 2).** `GET /api/boards/tags` is
+  its own conditional snapshot (`boards-tags`, over the same domains as `boards`):
+  `{ plans: [{ id, tag }] }`, one entry per active plan in exactly the order
+  `/api/boards` lists them, where `tag` is the first 22 characters of the
+  base64url SHA-256 of that plan's bytes inside the list (`planTag`: equal bytes,
+  equal tag; any change to the plan or one of its rows, an answer included, moves
+  it). `GET /api/boards/plans?ids=…` returns `{ plans: [{ tag, plan }] }` for the
+  named active plans, in the list's order, each exactly as `/api/boards` carries
+  it; an id naming no active plan is left out, and `ids` follows the
+  `/api/boards/archived/plans` rule (1 to 50 plan ids, else 400). It is
+  `no-store` with no ETag and nothing retained. Both are on the remote entry's
+  allowlist beside `/api/boards`; they return nothing `/api/boards` does not.
+  The page reads them through `public/plans-reader.js` (`createPlansReader`)
+  where the poll read `/api/boards`: the tags through `readSnapshot` (their
+  headers and status are the read's, so the boot decision is unchanged), then,
+  in `json()`, only the ids not held at their tag, 10 to a request, one request
+  after another, each through `readSnapshot` too. Each request's plans are kept
+  as soon as it finishes, so after a failed request the next round asks only for
+  what is still missing; a plans answer with another `x-inbox-boot` than the tags
+  fails the read. The list is assembled in the tags' order from the held plans
+  (an id still not held is left out until the next round), frozen, and
+  remembered with its tags: equal tags (a 304 included) return the very same
+  array, and an unchanged plan keeps its object, so the idle check still
+  compares by identity. A 404 on the tags reads `/api/boards` as before, for
+  that round.
 - A write rebuilds only the snapshots it can change (#297): each snapshot's token
   is the schema cookie plus the versions of the store domains its bytes are built
   from (`SNAPSHOT_SOURCES` in `src/viewer.ts` over `SNAPSHOT_DOMAINS` in
@@ -141,7 +168,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   message on every poll rebuilds nothing, and `/api/launches` (issue #412 step 3,
   `driven-sessions.md`), the eleventh: every running and parked launch and the 50 newest
   ended ones, launch facts only (no prompt, process ids or ACP session id, and no
-  clock-derived state), over the whole-table `launches` domain. Its per-launch reads
+  clock-derived state), over the whole-table `launches` domain, and `/api/boards/tags`
+  (slow links, step 2), the twelfth: each active plan's id and tag, over the same
+  domains as `/api/boards`. Its per-launch reads
   (`/api/launches/:id`, which adds whether the driver's lease is fresh, and
   `/api/launches/:id/prompt`) are fresh. `launch_asks` is read by no snapshot. Any other query string
   keeps the default items or boards response. The dock watcher reads its two
@@ -179,7 +208,8 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   load's cache entry; older completions cannot overwrite a newer validator/body.
   A query string selects one representation of its route; the reader retains only
   each route's newest one and reuses it only for the exact URL that fetched it.
-  Only `/api/activity/history` and `/api/boards/archived/plans` (#373) take a query
+  Only `/api/activity/history`, `/api/boards/archived/plans` (#373),
+  `/api/boards/plans` (slow links, step 2) and `/api/mesh/agents/runs` take a query
   in the reader: any other (such as the dock watcher's `?scope=attention`) is
   refused, so it can never share or evict the page's slot, and
   `/api/items/history` is a path of its own (#184).

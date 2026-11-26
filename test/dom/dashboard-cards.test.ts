@@ -464,10 +464,12 @@ describe('attention parity with the cards present (#304, #454)', () => {
     expect(asks.map((entry) => entry.kind === 'item' && entry.item.id)).toEqual([asked])
     expect(laneIds()).toEqual([asked])
     expect(card('asker')!.querySelector('.sc-asking')?.textContent).toBe('Asking you · 1')
-    // No new poll reads.
+    // No new poll reads. The poll reads the active plans as their tags, and this round changed one
+    // plan, so it also reads that plan by id (slow links, step 2). `/api/boards` is surfaces()'s own
+    // dock read (`?scope=attention`), which the poll's whole-list read used to share a path with.
     expect([...reads].sort()).toEqual([
-      '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/issues',
-      '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
+      '/api/activity', '/api/activity/history', '/api/boards', '/api/boards/archived/summary', '/api/boards/plans', '/api/boards/tags',
+      '/api/issues', '/api/items', '/api/links', '/api/messages', '/api/projects/closed',
     ])
   })
 })

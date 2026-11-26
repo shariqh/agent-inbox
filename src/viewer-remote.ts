@@ -283,7 +283,8 @@ export function remoteSettingCache(
 export const REMOTE_ROUTES: ReadonlyArray<{ method: 'GET' | 'POST'; path: string }> = [
   ...[
     '/api/items', '/api/items/history',
-    '/api/boards', '/api/boards/archived', '/api/boards/archived/summary', '/api/boards/archived/plans',
+    '/api/boards', '/api/boards/tags', '/api/boards/plans',
+    '/api/boards/archived', '/api/boards/archived/summary', '/api/boards/archived/plans',
     '/api/activity', '/api/activity/history', '/api/version', '/api/links', '/api/issues', '/api/messages',
     '/api/projects/closed', '/api/chats', '/api/mesh/agents', '/api/mesh/agents/runs',
   ].map((path) => ({ method: 'GET' as const, path })),

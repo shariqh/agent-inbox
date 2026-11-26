@@ -1,5 +1,6 @@
 // A fake claude program for the tests (Claude Code as a model server): a Node script named
-// `claude` in a scratch folder that records its argv, cwd, environment, stdin and pid, then
+// `claude` in a scratch folder that records its argv, cwd, environment, stdin and pid (and the text and
+// mode of the file --system-prompt-file names, read while it runs), then
 // behaves as `<folder>/behaviour.json` says. The real claude is never run. Its environment is the
 // agent's allow-list, so it reads its behaviour from that file, never from a variable.
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -23,7 +24,7 @@ export type Behaviour = {
   /** print this many bytes of x */
   flood?: number
 }
-export type Seen = { argv: string[]; cwd: string; env: Record<string, string>; stdin: string; pid: number }
+export type Seen = { argv: string[]; cwd: string; env: Record<string, string>; stdin: string; pid: number; systemPrompt?: string; systemPromptMode?: number }
 
 const SCRIPT = `
 const fs = require('node:fs'), path = require('node:path')
@@ -34,7 +35,10 @@ const record = (stdin) => {
   const seenFile = path.join(dir, 'seen.json')
   const seen = fs.existsSync(seenFile) ? JSON.parse(fs.readFileSync(seenFile, 'utf8')) : []
   before = seen.length
-  seen.push({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, stdin, pid: process.pid })
+  const at = process.argv.indexOf('--system-prompt-file')
+  const file = at >= 0 ? process.argv[at + 1] : undefined
+  const prompt = file && fs.existsSync(file) ? { systemPrompt: fs.readFileSync(file, 'utf8'), systemPromptMode: fs.statSync(file).mode & 0o777 } : {}
+  seen.push({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env, stdin, pid: process.pid, ...prompt })
   // written whole, then renamed, so a test never reads half of it
   fs.writeFileSync(seenFile + '.tmp', JSON.stringify(seen))
   fs.renameSync(seenFile + '.tmp', seenFile)

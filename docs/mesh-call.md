@@ -46,7 +46,11 @@ printf '…' | npm run --silent meshctl -- call my-agent --skill web-search --js
    as `add` did; otherwise 14. An entry on a public name (`"public": true`, below) skips this
    check and gets the address check in step 4 instead.
 3. Reads the token copy `add` made (a 0600 file you own). A loopback agent must have one.
-4. Fetches the card fresh from the URL you added: no redirect, no proxy, 64 KiB, 5 s.
+4. Fetches the card fresh from the URL you added: no redirect, no proxy, 64 KiB, 5 s. When
+   nothing answers and the agent is one `meshctl new` made, `call` starts it first from its start
+   profile and waits up to 10 seconds (`<id>: starting the agent` on stderr;
+   [docs/made-agents.md](made-agents.md)). Any other added agent is never started: nothing
+   answering is 15.
    - **Loopback (D17):** the card request carries an `A2A-Mesh-Challenge` nonce, and the agent
      must answer with `A2A-Mesh-Proof` (below). Until it does, neither the token nor the request
      is sent; a process squatting on the port gets only the nonce (14).
@@ -402,7 +406,7 @@ matches.
 | 12 | Busy: HTTP 429 or 503, or a `REJECTED` task whose data part says `code: 12` | the request |
 | 13 | Failed: `FAILED` or `CANCELED`, the deadline (the task is cancelled), the agent asked for input or authorization (cancelled), a JSON-RPC error, an HTTP error without a task, a lost connection, a result over 1 MiB, or a report it cannot write | the request |
 | 14 | Off or not trusted: no entry `add` wrote, a broken entry, a tailnet name not on this Mac's tailnet, a missing or non-private token copy, a loopback agent that did not prove it holds the token, or an agent that refused the token (HTTP 401 or 403) | nothing, but on a refused token the request |
-| 15 | Unavailable: nothing answers, the card request failed (DNS, a public name that resolves to an address that is not public, TLS, timeout, a redirect, not a JSON card of at most 64 KiB) or the card no longer passes `add`'s card rule | nothing |
+| 15 | Unavailable: nothing answers (or a made agent did not start), the card request failed (DNS, a public name that resolves to an address that is not public, TLS, timeout, a redirect, not a JSON card of at most 64 KiB) or the card no longer passes `add`'s card rule | nothing |
 | 16 | The card changed since you added the agent; accept it again (above) | nothing |
 | 4 | Usage: arguments, a `--report` that is a symlink or not a regular file, a terminal on stdin | nothing |
 

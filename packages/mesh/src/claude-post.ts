@@ -3,11 +3,15 @@
 // an HTTP request. It takes the OpenAI-style body the callers already build (requestBody), reads
 // the model and the first system and user messages from it, and ignores the URL, the headers,
 // max_tokens, sampling and chat_template_kwargs. The program runs without a shell, asynchronously,
-// in an empty folder, with an allow-listed environment (so no ANTHROPIC_* variable reaches it: it
+// in an empty folder, with the system message in a 0600 file there (never on the command line, where
+// other processes could read it) that is deleted when the call ends, with an allow-listed environment (so no ANTHROPIC_* variable reaches it: it
 // runs on the person's Claude sign-in or not at all), the user text on stdin. Its one JSON object
 // is mapped to the HttpReply `classify` reads, so the callers need no change. Its error sentence,
 // its stderr and its path are never forwarded, logged or printed.
 import { spawn as nodeSpawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { closeSync, constants, openSync, unlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { ChildProcess } from 'node:child_process'
 import { transportError } from './backend.js'
 import type { HttpReply, Post } from './backend.js'
@@ -93,12 +97,33 @@ export function claudePost(options: ClaudePostOptions): Post {
     const asked = request(body)
     if (!asked) return reject(transportError('invalid'))
     if (signal?.aborted) return reject(transportError('aborted'))
-    const argv = ['-p', '--safe-mode', '--tools', '', '--system-prompt', asked.system, '--model', asked.model, '--no-session-persistence', '--output-format', 'json']
+    // the system message by a new private file in the call's own folder, removed whatever the outcome
+    const promptFile = join(options.cwd, `system-${randomBytes(8).toString('hex')}.txt`)
+    let fd: number | undefined
+    try {
+      fd = openSync(promptFile, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+      writeFileSync(fd, asked.system)
+      closeSync(fd)
+    } catch {
+      if (fd !== undefined) {
+        try { closeSync(fd) } catch { /* closed */ }
+        try { unlinkSync(promptFile) } catch { /* gone */ }
+      }
+      return reject(transportError('unreachable'))
+    }
+    let removed = false
+    const removePrompt = (): void => {
+      if (removed) return
+      removed = true
+      try { unlinkSync(promptFile) } catch { /* gone */ }
+    }
+    const argv = ['-p', '--safe-mode', '--tools', '', '--system-prompt-file', promptFile, '--model', asked.model, '--no-session-persistence', '--output-format', 'json']
     const started = performance.now()
     let child: ChildProcess
     try {
       child = spawn(options.program, argv, { cwd: options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false })
     } catch {
+      removePrompt()
       return reject(transportError('unreachable'))
     }
     let settled = false
@@ -108,6 +133,7 @@ export function claudePost(options: ClaudePostOptions): Post {
     const finish = (error?: Error, value?: HttpReply): void => {
       if (settled) return
       settled = true
+      removePrompt()
       clearTimeout(deadline)
       signal?.removeEventListener('abort', onAbort)
       if (error) reject(error)

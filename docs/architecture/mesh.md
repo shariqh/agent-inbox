@@ -8,6 +8,7 @@ paths:
   - "src/mesh-identity.ts"
   - "src/request-post-client.ts"
   - "src/mesh-call.ts"
+  - "src/mesh-made.ts"
   - "src/mesh-check.ts"
   - "src/agent-card.ts"
   - "src/mesh-agents.ts"
@@ -18,7 +19,7 @@ paths:
   - "public/mesh-agent-page.js"
   - "public/mesh-runs-tab.js"
   - "packages/mesh/src/**/*.ts"
-applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/mesh-entry.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/mesh-check.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,src/mesh-skills.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
+applyTo: "src/mesh-config.ts,src/meshctl.ts,src/mesh-add.ts,src/mesh-entry.ts,src/unslop-client.ts,src/mesh-identity.ts,src/request-post-client.ts,src/mesh-call.ts,src/mesh-made.ts,src/mesh-check.ts,src/agent-card.ts,src/mesh-agents.ts,src/mesh-runs.ts,src/mesh-skills.ts,public/agents-home.js,public/mesh-section.js,public/mesh-agent-page.js,public/mesh-runs-tab.js,packages/mesh/src/**/*.ts"
 ---
 
 # Agent mesh (M1)
@@ -1263,7 +1264,8 @@ entry runs `runAdd` (`runMeshctl` alone answers `add` with the usage and 4).
 `agent-result.ts`, `mesh-add.ts`, `mesh-config.ts` and `mesh-identity.ts`, imported only by
 meshctl's async entry (`runMeshctl` alone answers with its usage and 4). It never spawns (the
 tailnet suffix comes in as `CallIo.tailnet`, meshctl's `tailscale status` reader), never reads a
-terminal and never uses a proxy. User page and the one exit table: [`docs/mesh-call.md`](../mesh-call.md)
+terminal and never uses a proxy. One agent is started for it: when nothing answers a made agent
+(below), `CallIo.made`, which meshctl's entry fills in, starts the runner from its start profile. User page and the one exit table: [`docs/mesh-call.md`](../mesh-call.md)
 (0, 11-16, 4; the numbers match unslop's and request-post's where the meaning matches, and 16 is
 a changed card).
 
@@ -1594,9 +1596,10 @@ app shows it through the bridge (`docs/architecture/electron-app.md`).
   or others; the first found decides) and makes `mesh/claude-cwd` (0700). `claudePost` is then the
   run functions' `post`, with the placeholder base URL `http://127.0.0.1:9/claude-code` and no key,
   so `runUnslop` and `runCodeSlop` are unchanged. It reads the model and the first system and user
-  messages of the request body, spawns `claude -p --safe-mode --tools "" --system-prompt <system>
-  --model <m> --no-session-persistence --output-format json` asynchronously without a shell, the
-  user text on stdin, in `mesh/claude-cwd`, with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+  messages of the request body, spawns `claude -p --safe-mode --tools "" --system-prompt-file <file>
+  --model <m> --no-session-persistence --output-format json` asynchronously without a shell (the system
+  message in `<file>`, a new 0600 `system-<hex>.txt` in the call's folder, deleted when the call ends
+  whatever the outcome, so it is never on a command line), the user text on stdin, in `mesh/claude-cwd`, with only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
   `TMPDIR`, `LANG` and `LC_ALL`; one call has at most the task's time left, capped at 120 s
   (`SIGTERM`, then `SIGKILL` after 2 s: transport `deadline`), the abort signal kills it the same
   way (`aborted`), stdout over 1 MiB is `too-large`, stderr is dropped. `is_error: false` with a
@@ -1639,3 +1642,49 @@ app shows it through the bridge (`docs/architecture/electron-app.md`).
   whether it is signed in.
   Only the key's kind is shown. An address is printed by `server list`, `server check`, `status`
   and the `server add|set` that was given it; `enable --server` names keys, not values.
+
+## Made agents (agents a chat makes, step 1)
+
+A made agent is its instructions run on a model server: no program is generated. A chat writes a
+card file (`name`, `description`, `instructions`, `server`, `model`); `meshctl new` makes the agent
+from it. User page: [`docs/made-agents.md`](../made-agents.md).
+
+- **To the rest of the mesh it is an added agent.** Its `mesh.json` entry is the one `add` writes
+  for its loopback card address, so call's pin and identity proof, run records (kind `added`), the
+  viewer's added card and `remove` work unchanged, and no closed list of built-in names changes.
+  Two private files make it startable: the description `<mesh dir>/mesh/agents/<id>.json`
+  (`{ schema: 1, name, description, instructions, server, model }`) and the start profile
+  `<mesh dir>/mesh/wrappers/<id>.json` (`{ made: true, port, start }`), both 0600 in 0700 folders,
+  written atomically by meshctl only.
+- **The card file rule is held twice**: `src/mesh-made.ts` (meshctl) and
+  `packages/mesh/src/made-card.ts` (the runner), with the shared cases in
+  `test/fixtures/made-agents/cases.json` run against both. A refusal names the key and the rule,
+  never a value; an unknown key is named only when it is a plain lower-case word.
+- **One runner**, `packages/mesh/src/made-agent.ts` (`dist/made-agent.js --id <id>`), on the agent
+  kit: its card from the description (`made on this Mac`, profile id
+  `agent-inbox.invalid/made/<id>`, one skill `run` with model egress to an operator-chosen host,
+  residency `caller-host`, unsigned unless `keys/<id>.jwk` exists), one model call per task through
+  backend.ts's `post` and `classify` (or `claudePost`; one task at a time on a Claude Code server),
+  the system message a fixed line then the instructions, the secret screen first, a body limit of
+  six times 64 KiB plus the request (`bodyMax`), and the built-ins' gate copied (entry naming its
+  port, token, server entry, 30 idle minutes via the kit's `idleMs()`). It takes its port from the
+  start profile, so it serves before its entry exists, and stops at the first tick when the entry
+  never appears. `--card` prints the card with no network; `--try` makes one call and writes
+  nothing under the mesh folder (a Claude Code call runs in a temporary folder it removes).
+- **`new`** (`runNew`, async like `add`): refusals first, the lowest free port from 4430 to 4499
+  that no entry names and nothing listens on, the runner's `--card` for add's summary and the pin,
+  then five steps. Steps 1 to 3 write; step 4 starts the runner with unslop's `startAgent` (now
+  taking any id and its own fix words, and returning `stop()`) and waits up to 10 s for the
+  identity proof; step 5 awaits `addAgent` in-process with `--expect-pin`. A failed step undoes
+  the ones before it (the runner stopped, the files and add's card copy removed).
+- **`call`** stays spawn-free: meshctl's entry puts `made` in `CallIo`, which starts the runner
+  from a `made: true` profile naming the entry's port when nothing answers (10 s wait, the
+  built-ins' wording). Any other added agent is never started.
+- **`remove`** also deletes the start profile, the description and the logs
+  (`<id>-agent.log`, `<id>-<date>.log`), also with no entry (a `new` that was killed);
+  **`status`** says "made here, on the server <s> with the model <m>"; **`serverUsers`** counts a
+  made agent while its entry exists, so `server remove` is blocked by it.
+- **Root tests** use `test/fixtures/made-agents/fake-runner.mjs` through `--checkout` (the root
+  suite has no packages/mesh build); `packages/mesh/test/made-agent.test.ts` runs the real runner,
+  and with root meshctl end to end.
+

@@ -310,7 +310,11 @@ export function fetchCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSea
 export async function fetchAddedCard(place: Place, timeoutMs = DEADLINE_MS, seams: FetchSeams = {}): Promise<AddedCard> {
   const got = await fetchCard(place, timeoutMs, seams)
   if ('failed' in got) return { reason: `the card URL ${fetchWords(got)}` }
-  const card = got.card
+  return checkedCard(got.card)
+}
+
+/** fetchAddedCard's checks on a card in hand: `meshctl new` runs them on the card its runner prints (made agents D3). */
+export function checkedCard(card: Json): AddedCard {
   const why = checkAddedCard(card)
   if (why) return { reason: `the card has ${why}` }
   if (tooDeep(card)) return { reason: 'the card URL sent a card nested more than 32 deep' }

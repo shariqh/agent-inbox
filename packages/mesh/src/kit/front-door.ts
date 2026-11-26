@@ -1,7 +1,7 @@
 // The front door every kit agent serves A2A behind (web search design §3.2; docs/agent-kit.md):
 // node:http on 127.0.0.1, every refusal ours, then `@a2a-js/sdk`'s JsonRpcTransportHandler over
 // its DefaultRequestHandler. Any Origin, a Host other than 127.0.0.1:<port>, a missing or wrong
-// bearer token, an A2A-Version other than 1.0 or 1.0.<n>, a body over 16 KiB or one not received
+// bearer token, an A2A-Version other than 1.0 or 1.0.<n>, a body over 16 KiB (or the agent's own `bodyMax`) or one not received
 // within 10 s (checked every second), never reach the SDK, and at most 16 connections are open at
 // once. The JSON-RPC request is rebuilt from an allowlist in camelCase: any other key, at any
 // level and in either spelling, is refused with -32602 and any other method with -32601, so the SDK's
@@ -22,7 +22,8 @@ import { ConfigError } from '../files.js'
 import { CARD_PATH, MESH_PROOF_LABEL, proofHeaders } from './identity.js'
 import { OwnedTaskStore } from './task-store.js'
 
-const BODY_MAX = 16 * 1024
+/** The default body limit; an agent that takes longer texts passes its own `bodyMax`. */
+export const BODY_MAX = 16 * 1024
 const METHODS = ['SendMessage', 'SendStreamingMessage', 'GetTask', 'CancelTask']
 export const MAX_CONNECTIONS = 16
 
@@ -79,6 +80,8 @@ export type FrontDoorOptions = {
   proofLabel?: string
   /** The error for a method other than the four served: JSON-RPC's -32601 (the default, which `meshctl check` expects), or -32602 as for any other refusal. */
   unknownMethod?: -32601 | -32602
+  /** The largest request body in bytes, JSON escapes included: 16 KiB (BODY_MAX) when not given. */
+  bodyMax?: number
 }
 export type FrontDoor = { port: number; url: string; idleMs(): number; close(): Promise<void> }
 
@@ -86,6 +89,7 @@ export async function startFrontDoor(o: FrontDoorOptions): Promise<FrontDoor> {
   const now = o.now ?? Date.now
   const spec = o.request ?? { extensions: [], metadata: {} }
   const label = o.proofLabel ?? MESH_PROOF_LABEL
+  const bodyMax = o.bodyMax ?? BODY_MAX
   const keys = o.tokens.map((t) => Buffer.from(t))
   let lastActivity = now()
   let host = ''
@@ -106,7 +110,7 @@ export async function startFrontDoor(o: FrontDoorOptions): Promise<FrontDoor> {
     let size = 0
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
-      if (size > BODY_MAX) resolve(undefined)
+      if (size > bodyMax) resolve(undefined)
       else chunks.push(chunk)
     })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
@@ -122,7 +126,7 @@ export async function startFrontDoor(o: FrontDoorOptions): Promise<FrontDoor> {
     const who = owner(req.headers.authorization)
     if (who < 0) return reply(res, 401, { error: 'token' }, { 'www-authenticate': 'Bearer' })
     lastActivity = now()
-    if (Number(req.headers['content-length'] ?? 0) > BODY_MAX) return reply(res, 413, { error: 'too large' }, { connection: 'close' })
+    if (Number(req.headers['content-length'] ?? 0) > bodyMax) return reply(res, 413, { error: 'too large' }, { connection: 'close' })
     const body = await readBody(req)
     if (res.destroyed || res.headersSent) return
     if (body === undefined) return reply(res, 413, { error: 'too large' }, { connection: 'close' })

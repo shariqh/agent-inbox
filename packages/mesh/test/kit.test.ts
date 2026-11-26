@@ -17,13 +17,15 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { echo, echoCard, main } from '../src/examples/echo/agent.js'
 import { ConfigError } from '../src/files.js'
-import { CARD_PATH, MESH_PROOF_LABEL, proof, rebuildRequest, startKitAgent } from '../src/kit/index.js'
+import { CARD_PATH, MESH_PROOF_LABEL, createExecutor, proof, rebuildRequest, startFrontDoor, startKitAgent } from '../src/kit/index.js'
+import type { Run } from '../src/kit/index.js'
 
 type Json = Record<string, any>
 const TOKEN = 'k9'.repeat(20)
 const HOOKS = fileURLToPath(new URL('./ts-hooks.mjs', import.meta.url))
 const ECHO = fileURLToPath(new URL('../src/examples/echo/agent.ts', import.meta.url))
 const CANARY_CHILD = fileURLToPath(new URL('./kit-canary-child.ts', import.meta.url))
+const LIMITS_CHILD = fileURLToPath(new URL('./kit-limits-child.ts', import.meta.url))
 // meshctl's key command and check, loaded at run time: they are outside this package's rootDir
 const ROOT = (name: string): string => fileURLToPath(new URL(`../../../src/${name}`, import.meta.url))
 
@@ -159,6 +161,42 @@ describe('the example agent (#539)', () => {
     expect((rebuildRequest(send('hi', { metadata: {} }), spec) as Json).params.message.metadata).toBeUndefined()
     expect(rebuildRequest(send('hi', { metadata: { '': {} } }), spec)).toBeUndefined()
   })
+
+  it('the front door refuses a body over 16 KiB by default; bodyMax lets 64 KiB of text through, escapes included (made agents D2)', async () => {
+    const run: Run = async (input) => ({ state: 'completed', text: String(input.length) })
+    const text = '\u0001\n'.repeat(32 * 1024)
+    for (const bodyMax of [undefined, 400 * 1024]) {
+      const executor = createExecutor(run, () => {}, { artifact: 'echo' })
+      const door = await startFrontDoor({ port: 0, tokens: [TOKEN], card: (url) => echoCard(url, []), executor, busy: () => executor.open() > 0, ...(bodyMax === undefined ? {} : { bodyMax }) })
+      cleanups.push(() => door.close())
+      const small = await post(door.url, send('x'.repeat(8 * 1024)))
+      expect(small.json.result.task.artifacts[0].parts[0].text).toBe(String(8 * 1024))
+      const res = await fetch(door.url, { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'a2a-version': '1.0', 'content-type': 'application/json' }, body: JSON.stringify(send(text)) })
+      if (bodyMax === undefined) expect(res.status).toBe(413)
+      else expect(((await res.json()) as Json).result.task.artifacts[0].parts[0].text).toBe(String(text.length))
+    }
+  })
+
+  it('startKitAgent takes bodyMax and reports idleMs(): the time since the last request, 0 while a task runs', async () => {
+    const c = spawnTs(LIMITS_CHILD, [], { AGENT_INBOX_MESH_DIR: scratch(), KIT_TOKEN: TOKEN, KIT_BODY_MAX: String(400 * 1024) })
+    const url = await listening(c, 'kit')
+    const idle = async (): Promise<number> => {
+      const before = c.stderr().length
+      c.child.kill('SIGUSR2')
+      await vi.waitFor(() => expect(c.stderr().slice(before)).toMatch(/idle \d+\n/))
+      return Number(/idle (\d+)/.exec(c.stderr().slice(before))![1])
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(await idle()).toBeGreaterThanOrEqual(350)
+    const big = 'y'.repeat(64 * 1024)
+    expect((await post(url, send(big))).json.result.task.artifacts[0].parts[0].text).toBe(String(big.length))
+    expect(await idle()).toBeLessThan(350)
+    // while a task is open idleMs() is 0, however long it runs (T7)
+    const held = post(url, send('hold'))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(await idle()).toBe(0)
+    expect((await held).json.result.task.artifacts[0].parts[0].text).toBe('4')
+  }, 30_000)
 
   it('refuses a usage error with 4 before it guards any output', async () => {
     const out: string[] = []

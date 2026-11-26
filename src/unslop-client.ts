@@ -95,17 +95,21 @@ export async function getCard(link: MeshLink): Promise<Card> {
   }
 }
 
-/** Starts the agent's profile's `start` argv, detached and without a shell; a string says why not. */
-export function startAgent(dir: string, io: Pick<UnslopIo, 'env' | 'spawn'>, agent: 'unslop' | 'unslop-code' = 'unslop'): { exited: () => boolean; log: string } | string {
+/**
+ * Starts the agent's profile's `start` argv, detached and without a shell; a string says why not,
+ * ending with `fix`. Shared with unslop-code's client and with meshctl's made agents (`agent` is then
+ * the made agent's id, and `fix` its own words); `stop()` sends the started process SIGTERM.
+ */
+export function startAgent(dir: string, io: Pick<UnslopIo, 'env' | 'spawn'>, agent = 'unslop', fix = `run meshctl enable --${agent}`): { exited: () => boolean; log: string; stop: () => void } | string {
   const profile = join(dir, 'mesh', 'wrappers', `${agent}.json`)
   let start: unknown
   try {
     start = obj(JSON.parse(readPrivate(profile))).start
   } catch {
-    return `${profile} must be a JSON file owned by you with mode 0600: run meshctl enable --${agent}`
+    return `${profile} must be a JSON file owned by you with mode 0600: ${fix}`
   }
   if (!Array.isArray(start) || !start.length || !start.every((a) => typeof a === 'string' && !/[\x00-\x1f\x7f]/.test(a)) || !isAbsolute(start[0])) {
-    return `the profile's "start" must be a list of arguments, the first an absolute path: run meshctl enable --${agent}`
+    return `the profile's "start" must be a list of arguments, the first an absolute path: ${fix}`
   }
   const logs = join(dir, 'mesh', 'logs')
   const log = join(logs, `${agent}-agent.log`)
@@ -117,6 +121,7 @@ export function startAgent(dir: string, io: Pick<UnslopIo, 'env' | 'spawn'>, age
     return `cannot write ${log}`
   }
   let exited = false
+  let stop = (): void => {}
   try {
     const child = (io.spawn ?? nodeSpawn)(start[0] as string, start.slice(1) as string[], {
       detached: true, stdio: ['ignore', fd, fd], cwd: dir, env: { ...io.env, AGENT_INBOX_MESH_DIR: dir },
@@ -124,10 +129,11 @@ export function startAgent(dir: string, io: Pick<UnslopIo, 'env' | 'spawn'>, age
     child.on('error', () => { exited = true })
     child.on('exit', () => { exited = true })
     child.unref()
+    stop = () => { if (!exited) child.kill('SIGTERM') }
   } finally {
     closeSync(fd)
   }
-  return { exited: () => exited, log }
+  return { exited: () => exited, log, stop }
 }
 
 type Outcome = { state?: string; data?: Json; text?: string }

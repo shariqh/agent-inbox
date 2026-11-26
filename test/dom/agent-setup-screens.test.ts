@@ -1505,6 +1505,11 @@ describe('adding an agent by its card address (add step 2, D3 and D4)', () => {
       Skills: `“<script>alert(1)</script>”, “${'x'.repeat(162)}”`,
     })
     expect(setup().querySelector('img, script, a, [href], [src], [style], [onerror]')).toBeNull()
+    // no attribute anywhere under the summary is made from card text
+    const texts = ['<img src=x onerror=alert(1)>', '“quoted” "and"', long, 'Example</a>', '<script>alert(1)</script>']
+    for (const el of [summary(), ...summary().querySelectorAll('*')]) {
+      for (const attr of el.attributes) for (const text of texts) expect(attr.value, `${el.tagName} ${attr.name}`).not.toContain(text)
+    }
     const css = readFileSync(resolve(import.meta.dirname, '..', '..', 'public', 'style.css'), 'utf8')
     const mine = css.slice(css.indexOf('agent setup in the app (step 2b)'), css.indexOf('/* Run history (cards view V5d)'))
     // every part of the summary wraps anywhere: nothing scrolls sideways at 400 px

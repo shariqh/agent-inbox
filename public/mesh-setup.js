@@ -795,6 +795,7 @@ export function installMeshSetup(deps) {
   }
 
   // The checked card's summary box: its title, its labelled rows and the quiet line, filled by paintCard
+  const cardKeys = new WeakMap()
   function cardBox() {
     const box = make('div', 'ms-card')
     box.append(make('p', 'ms-card-title'), make('dl', 'ms-facts'), make('p', 'ms-hint ms-card-note', CARD_NOTE))
@@ -807,9 +808,10 @@ export function installMeshSetup(deps) {
     setText(box.querySelector('.ms-card-title'), typeof card.name === 'string' && card.name ? quoted(card.name) : 'No name given')
     const rows = cardFacts(card)
     const list = box.querySelector('.ms-facts')
+    // the rows' last key is kept here, never in an attribute: no attribute is made from card text
     const key = JSON.stringify(rows)
-    if (list.dataset.key === key) return
-    list.dataset.key = key
+    if (cardKeys.get(list) === key) return
+    cardKeys.set(list, key)
     list.replaceChildren(...rows.flatMap(([term, text]) => [make('dt', '', term), make('dd', '', text)]))
   }
 

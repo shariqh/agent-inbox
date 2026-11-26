@@ -453,6 +453,8 @@ const MESH_CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model
 const MESH_REACHES = new Set(['loopback', 'tailnet', 'public'])
 const MESH_AGENT_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
 const MESH_PIN = /^[0-9a-f]{64}$/
+// card text holds no control or format character (Unicode Cf), as main requires
+const MESH_CARD_UNSAFE = /[\x00-\x1f\x7f-\x9f\p{Cf}]/u
 const MESH_HANDLE = /^[0-9a-f]{32}$/
 const MESH_VALUE_MAX = 2048
 const meshFailed = (reason = 'failed') => ({ ok: false, reason })
@@ -519,13 +521,13 @@ function meshCheck(value) {
 // card text: a string cut to its cap; an absent field stays absent, anything else fails the card
 function meshCardText(out, raw, key, max) {
   if (raw[key] === undefined) return true
-  if (typeof raw[key] !== 'string') return false
+  if (typeof raw[key] !== 'string' || MESH_CARD_UNSAFE.test(raw[key])) return false
   out[key] = meshCut(raw[key], max)
   return true
 }
 
 function meshSkill(raw) {
-  if (!isPlainObject(raw) || typeof raw.id !== 'string') return null
+  if (!isPlainObject(raw) || typeof raw.id !== 'string' || MESH_CARD_UNSAFE.test(raw.id)) return null
   const out = { id: meshCut(raw.id, 162) }
   return meshCardText(out, raw, 'name', 162) && meshCardText(out, raw, 'description', 402) ? out : null
 }

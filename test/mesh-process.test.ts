@@ -444,6 +444,10 @@ describe('meshAnswer: meshctl’s JSON rebuilt field by field', () => {
     ['a line break in the description', { description: 'Reads\nPDFs' }],
     ['a C1 control in the publisher', { publisher: 'Example\u0085Labs' }],
     ['a control in a skill', { skills: [{ id: 'read', description: 'one\u0000' }] }],
+    // format characters (Unicode Cf) are refused as control characters are
+    ['a right-to-left override in the name', { name: 'pdf\u202Ereader' }],
+    ['a zero-width space in a skill', { skills: [{ id: 'read', name: 're\u200Bad' }] }],
+    ['a byte order mark in the publisher', { publisher: '\uFEFFExample Labs' }],
     ['a skill with no id', { skills: [{ name: 'read' }] }],
     ['a skill that is text', { skills: ['read'] }],
     ['skills that are not a list', { skills: 'read' }],
@@ -1002,6 +1006,33 @@ describe('agentInboxMesh: the page’s bridge', () => {
     expect(await run('check-agent', { ok: true, applied: false, steps: [] })).toEqual({ ok: false, reason: 'failed' })
     // removing is a plan: any card is dropped
     expect(await run('remove-agent', { ok: true, applied: false, steps: ['Would remove hub.'], card })).toEqual({ ok: true, applied: false, steps: ['Would remove hub.'] })
+  })
+
+  // G9: the preload's card rules are main's, beyond the reach words: each row through both shapers
+  it('rejects and cuts a card exactly as main does', async () => {
+    const card = {
+      id: 'pdf-reader', name: 'pdf-reader', description: 'Reads a PDF.', publisher: 'Example Labs', reach: 'loopback',
+      endpoint: 'http://127.0.0.1:9000/a2a', signed: true, keysNew: true, skills: [{ id: 'read', name: 'read' }], pin: PIN,
+    }
+    const rows: Array<[string, Record<string, unknown>]> = [
+      ['a valid card', {}],
+      ['an id outside the rule', { id: 'PDF reader' }],
+      ['an id with a capital', { id: 'Pdf' }],
+      ['an endpoint past the 2048 cap', { endpoint: `http://127.0.0.1:9000/${'a'.repeat(2030)}` }],
+      ['keysNew that is not a boolean', { keysNew: 1 }],
+      ['a control character in the name', { name: 'pdf\u0007' }],
+      ['a format character in the description', { description: 'Reads\u202E a PDF.' }],
+      ['a format character in a skill', { skills: [{ id: 're\u200Bad' }] }],
+      ['a name cut inside a surrogate pair', { name: `${'p'.repeat(161)}😀` }],
+      ['a skill description cut inside a surrogate pair', { skills: [{ id: 'read', description: `${'d'.repeat(401)}😀` }] }],
+    ]
+    for (const [label, over] of rows) {
+      const raw = { applied: false, steps: ['Would keep the card.'], card: { ...card, ...over } }
+      const main = meshAnswer('add', JSON.stringify(raw), 0) as Record<string, unknown>
+      const preload = await loadPreload(() => ({ ok: true, ...raw })).mesh.run('check-agent', { address: 'http://127.0.0.1:9000/card' }) as Record<string, unknown>
+      if (main['ok'] === false) expect([label, main, preload]).toEqual([label, { ok: false, reason: 'output' }, { ok: false, reason: 'failed' }])
+      else expect([label, preload]).toEqual([label, main])
+    }
   })
 
   it('answers failed for a rejected call or an unexpected shape, and passes on only its own refusal words', async () => {

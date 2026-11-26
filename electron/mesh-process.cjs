@@ -57,6 +57,8 @@ const SERVER_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
 const MODEL_NAME = /^[A-Za-z0-9._:/-]{1,64}$/
 const HANDLE = /^[0-9a-f]{32}$/
 const CONTROL = /[\x00-\x1f\x7f-\x9f]/
+// card text: a control character, or a format character (Unicode Cf, such as U+202E or U+200B)
+const CARD_UNSAFE = /[\x00-\x1f\x7f-\x9f\p{Cf}]/u
 const MODEL_AGENTS = new Set(['unslop', 'unslop-code'])
 const DISABLE_AGENTS = new Set(['unslop', 'unslop-code', 'request-post'])
 const KEY_KINDS = new Set(['file', 'command', 'env', 'none'])
@@ -391,9 +393,9 @@ function checkAnswer(parsed, code) {
   return out
 }
 
-// Card text: a string with no control character, cut; null when it is not one. The command has
-// already cleaned it, so a control character means the output is not what it prints.
-const cardText = (value, max) => (typeof value === 'string' && !CONTROL.test(value) ? cut(value, max) : null)
+// Card text: a string with no control or format character, cut; null when it is not one. The
+// command has already cleaned it, so such a character means the output is not what it prints.
+const cardText = (value, max) => (typeof value === 'string' && !CARD_UNSAFE.test(value) ? cut(value, max) : null)
 
 function cardSkill(raw) {
   if (!isPlainObject(raw)) return null

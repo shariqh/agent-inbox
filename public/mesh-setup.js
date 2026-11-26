@@ -78,6 +78,8 @@ const REACH_WORDS = {
   public: 'On the internet. What you send it leaves this Mac.',
 }
 const quoted = (text) => `“${text}”`
+// how long an agent just removed stays out of the grid while the viewer's data still names it
+const REMOVED_MS = 15_000
 // add's refusal for a card that declares the agent id an entry holds (the command's heldIdRefusal):
 // the agent is already added, as that entry's id
 const HELD = /^the card declares the agent id that agents\.([a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?) holds,/
@@ -194,7 +196,9 @@ export function installMeshSetup(deps) {
   let removing = null
   // agents just removed, by key, until the tab's data stops naming them: the viewer re-reads
   // mesh.json at most every 5 seconds, so its next answers can still name an agent that is gone
-  const removed = new Set()
+  // The removal time is kept beside each key: a key is forgotten once the data stops naming it, when
+  // the app adds that id again, or 15 seconds after its Remove, whichever comes first
+  const removed = new Map()
   // the open set-up page, or null; the agent page's foot
   let page = null
   const foot = { agent: null, added: false, asking: false, message: '' }
@@ -1130,6 +1134,8 @@ export function installMeshSetup(deps) {
     }
     page = null
     els = null
+    // an id removed moments ago and added again shows at once, though the viewer may never have dropped it
+    removed.delete(`mesh.json:${id}`)
     // the app never checks an added agent: its page says it was added until the tab's next read names it
     deps.added(id)
     deps.reload()
@@ -1261,7 +1267,7 @@ export function installMeshSetup(deps) {
       }
       done = true
     })
-    if (done) removed.add(`mesh.json:${id}`)
+    if (done) removed.set(`mesh.json:${id}`, Date.now())
     // the outcome is this agent's: another agent's page opened meanwhile only reads the tab again
     if (foot.agent !== id || !foot.added) {
       deps.reload()
@@ -1368,15 +1374,16 @@ export function installMeshSetup(deps) {
       if (agentPage) paintFoot(agentPage, agent)
     },
     /**
-     * The tab's agents input without an agent just removed, until the data stops naming it (then it
-     * is forgotten, so an agent added again shows).
+     * The tab's agents input without an agent just removed, until the data stops naming it, the app
+     * adds it again, or 15 seconds pass (then it is forgotten, so an agent added again shows).
      * @template T @param {T} input @returns {T}
      */
     visible(input) {
       const agents = input?.body?.agents
       if (!removed.size || !Array.isArray(agents)) return input
       const named = new Set(agents.map((row) => String(row?.key)))
-      for (const key of removed) if (!named.has(key)) removed.delete(key)
+      const now = Date.now()
+      for (const [key, at] of removed) if (!named.has(key) || now - at >= REMOVED_MS) removed.delete(key)
       if (!removed.size) return input
       return { ...input, body: { ...input.body, agents: agents.filter((row) => !removed.has(String(row?.key))) } }
     },

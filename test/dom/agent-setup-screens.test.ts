@@ -2020,6 +2020,49 @@ describe('an added agent’s page: Remove (add step 2, D5)', () => {
     expect(card('pdf-reader')).toBeDefined()
   })
 
+  // H1: a removed key is forgotten when the app adds that id again, and at most 15 seconds after its Remove
+  it('an agent removed then added again in the app shows at once, though the viewer named it throughout', async () => {
+    const { bridge } = await openAdded()
+    click(buttonLabelled('Remove', actions()))
+    await settle()
+    click(buttonLabelled('Remove', ask()))
+    await settle()
+    expect(card('pdf-reader')).toBeUndefined()
+    // the viewer's data still names pdf-reader, before, during and after the Add
+    click(buttonLabelled('Add by address', document.querySelector('.ms-market .ma-head')!))
+    await settle()
+    type(field('address'), 'https://studio.tailnet-example.ts.net/pdf/.well-known/agent-card.json')
+    click(buttonLabelled('Check', setup()))
+    await settle()
+    click(buttonLabelled('Add', setup()))
+    await settle()
+    expect(bridge.ops().map(([op]) => op)).toEqual(['remove-agent', 'remove-agent', 'check-agent', 'add-agent'])
+    click(agentPage().querySelector('.map-back'))
+    await settle()
+    expect(card('pdf-reader')).toBeDefined()
+  })
+
+  it('a removed agent the viewer still names after 15 seconds shows again at the next paint', async () => {
+    const { mesh } = await openAdded()
+    click(buttonLabelled('Remove', actions()))
+    await settle()
+    click(buttonLabelled('Remove', ask()))
+    await settle()
+    expect(card('pdf-reader')).toBeUndefined()
+    // a changed read paints the tab (an idle tick keeps the frame): the data still names pdf-reader
+    const repaint = async (reason: string) => {
+      mesh.s.body = { on: true, agents: [added(), on('unslop-code', { reason })], others: 0, available: [OFFERED['unslop']!] }
+      await pollTick()
+    }
+    for (let i = 0; i < 3; i++) await pollTick()
+    await repaint('twelve seconds on')
+    expect(card('pdf-reader')).toBeUndefined()
+    await pollTick()
+    await repaint('eighteen seconds on')
+    // past 15 seconds: forgotten, whatever the data says (added again in a terminal, say)
+    expect(card('pdf-reader')).toBeDefined()
+  })
+
   // G4: the outcome goes to the agent that was removed, never to the page open when it settles
   it.each([
     ['works', undefined],

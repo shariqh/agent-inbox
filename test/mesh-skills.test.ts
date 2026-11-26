@@ -3,7 +3,7 @@
 // enable and disable, and `skills link|unlink` manage the links in a (temporary) HOME.
 import { afterEach, describe, expect, it } from 'vitest'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { meshFile } from '../src/mesh-config.js'
 import { runMeshctl } from '../src/meshctl.js'
@@ -972,7 +972,7 @@ describe('meshctl disable --make-agents', () => {
     return { ...t, folder, mlinks, file: join(folder, 'SKILL.md'), mesh: meshFile(t.dir) }
   }
 
-  it('removes the switch, the folder and meshctl\'s links, in that order, and a dry run changes nothing', () => {
+  it('removes the folder and meshctl\'s links first and the switch last, and a dry run changes nothing', () => {
     const t = inHome()
     expect(t.run(...MA, '--apply').code).toBe(0)
     expect(t.run('skills', 'link', '--apply').code).toBe(0)
@@ -982,10 +982,10 @@ describe('meshctl disable --make-agents', () => {
     expect(dry.code, dry.err).toBe(0)
     expect(dry.out).toBe([
       'Dry run.',
-      `1/4 Would delete ${t.show(t.mesh)}: makeAgents was its only setting (keeping a backup beside it).`,
-      `2/4 Would remove the make-agents routing skill ${t.show(t.folder)} (the make-agents skill is off).`,
-      `3/4 Would remove the link ${t.show(t.mlinks.claude)} (the make-agents skill is off).`,
-      `4/4 Would remove the link ${t.show(t.mlinks.agents)} (the make-agents skill is off).`,
+      `1/4 Would remove the make-agents routing skill ${t.show(t.folder)} (the make-agents skill is off).`,
+      `2/4 Would remove the link ${t.show(t.mlinks.claude)} (the make-agents skill is off).`,
+      `3/4 Would remove the link ${t.show(t.mlinks.agents)} (the make-agents skill is off).`,
+      `4/4 Would delete ${t.show(t.mesh)}: makeAgents was its only setting (keeping a backup beside it).`,
       'Nothing changed. Re-run with --apply.', '',
     ].join('\n'))
     expect({ dir: tree(t.dir), home: tree(t.home) }).toEqual(before)
@@ -993,10 +993,10 @@ describe('meshctl disable --make-agents', () => {
     const off = t.run(...OFF, '--apply')
     expect(off.code, off.err).toBe(0)
     expect(off.out).toBe([
-      `1/4 Deleted ${t.show(t.mesh)} (backup: ${t.show(t.mesh)}.bak-20261109T120000).`,
-      `2/4 Removed ${t.show(t.folder)}.`,
-      `3/4 Removed the link ${t.show(t.mlinks.claude)}.`,
-      `4/4 Removed the link ${t.show(t.mlinks.agents)}.`, '',
+      `1/4 Removed ${t.show(t.folder)}.`,
+      `2/4 Removed the link ${t.show(t.mlinks.claude)}.`,
+      `3/4 Removed the link ${t.show(t.mlinks.agents)}.`,
+      `4/4 Deleted ${t.show(t.mesh)} (backup: ${t.show(t.mesh)}.bak-20261109T120000).`, '',
     ].join('\n'))
     expect(existsSync(t.mesh)).toBe(false)
     expect(existsSync(join(t.dir, 'skills'))).toBe(false)
@@ -1011,7 +1011,7 @@ describe('meshctl disable --make-agents', () => {
     expect(t.run(...MA, '--apply').code).toBe(0)
     expect(t.run('skills', 'link', '--apply').code).toBe(0)
     const dry = t.run(...OFF)
-    expect(dry.out).toContain(`1/4 Would remove makeAgents from ${t.show(t.mesh)}, keeping every other key (and a backup beside it).`)
+    expect(dry.out).toContain(`4/4 Would remove makeAgents from ${t.show(t.mesh)}, keeping every other key (and a backup beside it).`)
     const off = t.run(...OFF, '--apply')
     expect(off.code, off.err).toBe(0)
     // the clock is fixed, so the enable's backup already holds the first name
@@ -1089,11 +1089,38 @@ describe('meshctl disable --make-agents', () => {
     expect(existsSync(join(t.dir, 'skills'))).toBe(false)
   })
 
+  it('a failure while removing the skill leaves the switch on, so status and the skill still agree; fixing the cause lets a rerun finish', () => {
+    const t = inHome()
+    expect(t.run(...MA, '--apply').code).toBe(0)
+    expect(t.run('skills', 'link', '--apply').code).toBe(0)
+    // a hand-edited SKILL.md must be backed up first, and <mesh dir>/backups is a regular file
+    writeFileSync(t.file, 'hand edit\n')
+    writeFileSync(join(t.dir, 'backups'), 'in the way\n')
+    const failed = t.run(...OFF, '--apply')
+    expect(failed.code).toBe(1)
+    expect(failed.err).toContain('Failed at step 1/4')
+    expect(JSON.parse(readFileSync(t.mesh, 'utf8')).makeAgents).toBe(true)
+    expect(readFileSync(t.file, 'utf8')).toBe('hand edit\n')
+    expect(readlinkSync(t.mlinks.claude)).toBe(t.folder)
+    expect(t.run('status').out).toContain('Make-agents skill: on.')
+    // the rerun fails the same way and still changes nothing
+    expect(t.run(...OFF, '--apply').code).toBe(1)
+    expect(JSON.parse(readFileSync(t.mesh, 'utf8')).makeAgents).toBe(true)
+    // move the file away, and it finishes
+    renameSync(join(t.dir, 'backups'), join(t.home, 'moved-backups'))
+    const done = t.run(...OFF, '--apply')
+    expect(done.code, done.err).toBe(0)
+    expect(existsSync(t.mesh)).toBe(false)
+    expect(existsSync(join(t.dir, 'skills'))).toBe(false)
+    expect(existsSync(t.mlinks.claude) || existsSync(t.mlinks.agents)).toBe(false)
+    expect(readFileSync(join(t.dir, 'backups', 'skills', 'make-agents-SKILL.md.bak-20261109T120000'), 'utf8')).toBe('hand edit\n')
+  })
+
   it('--json prints the plan object', () => {
     const t = inHome()
     expect(t.run(...MA, '--apply').code).toBe(0)
     const dry = JSON.parse(t.run(...OFF, '--json').out)
-    expect(dry).toEqual({ applied: false, steps: [`Would delete ${t.show(t.mesh)}: makeAgents was its only setting (keeping a backup beside it).`, `Would remove the make-agents routing skill ${t.show(t.folder)} (the make-agents skill is off).`] })
+    expect(dry).toEqual({ applied: false, steps: [`Would remove the make-agents routing skill ${t.show(t.folder)} (the make-agents skill is off).`, `Would delete ${t.show(t.mesh)}: makeAgents was its only setting (keeping a backup beside it).`] })
     expect(JSON.parse(t.run(...OFF, '--json', '--apply').out).applied).toBe(true)
     expect(JSON.parse(t.run(...OFF, '--json').out)).toEqual({ applied: false, steps: [], notes: ['The make-agents skill is already off. Nothing to do.'] })
   })

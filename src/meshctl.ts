@@ -1242,12 +1242,13 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
     const present = existing.kind === 'present' && Object.hasOwn(existing.doc, 'makeAgents')
     let next: MeshDocument | undefined
-    const steps: Step[] = []
+    // the switch goes last, like enable's: a failure in the middle leaves it on with the skill still there, which agree
+    const drop: Step[] = []
     if (existing.kind === 'present') {
       const { makeAgents: _gone, ...others } = existing.doc
       next = present ? (Object.keys(others).length === 1 ? undefined : others) : existing.doc
       if (present) {
-        steps.push(next === undefined
+        drop.push(next === undefined
           ? {
               dry: `Would delete ${name}: makeAgents was its only setting (keeping a backup beside it).`,
               run: () => { const backup = writeBackup(file, now()); unlinkSync(file); return `Deleted ${name} (backup: ${show(backup)}).` },
@@ -1258,7 +1259,7 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
             })
       }
     }
-    steps.push(...withSkills([], next))
+    const steps = [...withSkills([], next), ...drop]
     if (!steps.length) {
       out('The make-agents skill is already off. Nothing to do.\n')
       return 0

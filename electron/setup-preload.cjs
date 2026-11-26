@@ -438,6 +438,9 @@ const MESH_OPERATIONS = Object.freeze({
   'enable-model-agent': ['agent', 'server', 'model', 'apply'],
   'enable-request-post': ['endpoint', 'token', 'apply'],
   disable: ['agent', 'apply'],
+  'check-agent': ['address', 'token'],
+  'add-agent': ['address', 'id', 'pin', 'apply', 'token'],
+  'remove-agent': ['id', 'apply'],
 })
 const MESH_REASONS = new Set([
   'unavailable', 'invalid', 'handle', 'busy', 'setup', 'updating', 'quitting',
@@ -447,6 +450,11 @@ const MESH_REASONS = new Set([
 const MESH_KEYS = new Set(['file', 'command', 'env', 'none'])
 const MESH_SERVER_KINDS = new Set(['http', 'claude-code'])
 const MESH_CHECK_FAILURES = new Set(['unreachable', 'unauthorized', 'not-a-model-server', 'timeout', 'key', 'no-program', 'signed-out'])
+const MESH_REACHES = new Set(['loopback', 'tailnet', 'public'])
+const MESH_AGENT_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
+const MESH_PIN = /^[0-9a-f]{64}$/
+// card text holds no control or format character (Unicode Cf), as main requires
+const MESH_CARD_UNSAFE = /[\x00-\x1f\x7f-\x9f\p{Cf}]/u
 const MESH_HANDLE = /^[0-9a-f]{32}$/
 const MESH_VALUE_MAX = 2048
 const meshFailed = (reason = 'failed') => ({ ok: false, reason })
@@ -510,10 +518,55 @@ function meshCheck(value) {
   return out
 }
 
+// card text: a string cut to its cap; an absent field stays absent, anything else fails the card
+function meshCardText(out, raw, key, max) {
+  if (raw[key] === undefined) return true
+  if (typeof raw[key] !== 'string' || MESH_CARD_UNSAFE.test(raw[key])) return false
+  out[key] = meshCut(raw[key], max)
+  return true
+}
+
+function meshSkill(raw) {
+  if (!isPlainObject(raw) || typeof raw.id !== 'string' || MESH_CARD_UNSAFE.test(raw.id)) return null
+  const out = { id: meshCut(raw.id, 162) }
+  return meshCardText(out, raw, 'name', 162) && meshCardText(out, raw, 'description', 402) ? out : null
+}
+
+function meshCard(raw) {
+  if (!isPlainObject(raw)) return null
+  const out = {}
+  if (raw.id !== undefined) {
+    if (typeof raw.id !== 'string' || !MESH_AGENT_ID.test(raw.id)) return null
+    out.id = raw.id
+  }
+  for (const [key, max] of [['name', 162], ['description', 602], ['version', 162], ['publisher', 162]]) if (!meshCardText(out, raw, key, max)) return null
+  if (!MESH_REACHES.has(raw.reach) || typeof raw.endpoint !== 'string' || raw.endpoint.length > MESH_VALUE_MAX) return null
+  if (typeof raw.signed !== 'boolean' || (raw.keysNew !== undefined && typeof raw.keysNew !== 'boolean')) return null
+  if (!Array.isArray(raw.skills) || typeof raw.pin !== 'string' || !MESH_PIN.test(raw.pin)) return null
+  const skills = raw.skills.slice(0, 16).map(meshSkill)
+  if (skills.includes(null)) return null
+  Object.assign(out, { reach: raw.reach, endpoint: raw.endpoint, signed: raw.signed })
+  if (raw.keysNew !== undefined) out.keysNew = raw.keysNew
+  return Object.assign(out, { skills, pin: raw.pin })
+}
+
+// an add's plan and its card: a plan with no refusal carries a card with an id
+function meshAdd(value) {
+  const plan = meshPlan(value)
+  if (plan === null) return null
+  if (value.card === undefined) return plan.refused === undefined ? null : plan
+  const card = meshCard(value.card)
+  if (card === null || (plan.refused === undefined && card.id === undefined)) return null
+  plan.card = card
+  return plan
+}
+
+const MESH_ANSWERS = { servers: meshServers, 'check-server': meshCheck, 'check-agent': meshAdd, 'add-agent': meshAdd }
+
 function meshAnswer(operation, value) {
   if (!isPlainObject(value)) return meshFailed()
   if (value.ok === false && typeof value.reason === 'string') return meshFailed(MESH_REASONS.has(value.reason) ? value.reason : 'failed')
-  const rebuilt = operation === 'servers' ? meshServers(value) : operation === 'check-server' ? meshCheck(value) : meshPlan(value)
+  const rebuilt = (Object.hasOwn(MESH_ANSWERS, operation) ? MESH_ANSWERS[operation] : meshPlan)(value)
   return rebuilt ?? meshFailed()
 }
 

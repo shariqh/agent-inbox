@@ -284,6 +284,20 @@ Mac's tailnet:
 {"applied":false,"steps":["Would keep the card as ~/.agent-inbox/mesh/cards/echo-agent.json (0600) for the app to show.","Would create ~/.agent-inbox/mesh.json:"],"card":{"id":"echo-agent","name":"Echo Agent","description":"Echoes one text.","version":"1.0.0","publisher":"Example Org","reach":"tailnet","endpoint":"https://echo.tailnet-example.ts.net/a2a","signed":true,"keysNew":true,"skills":[{"id":"echo","name":"echo","description":"Echo one text."}],"pin":"f55799f06b5b4117d471de6f7c40cd931bd3bd6aaf93672b071d911d9debd0b3"}}
 ```
 
+## In the app
+
+The desktop app's Agent cards tab adds an agent the same way, through this command. In the
+Marketplace, **Add by address** opens a page with the card's address. **Check** runs the dry run
+(`add <card-url> --json`): it fetches the card once and sends the agent nothing. The page shows
+what the card says, with every bit of card text in quotes as plain text. **Add** then runs
+`add <card-url> --id <the id shown> --expect-pin <the pin the check returned> --json --apply`, so it adds
+exactly the card that was checked; a card that changed in between is refused, and nothing is
+written. An added agent's page has **Remove** (`remove <id> --json`, then with `--apply`).
+
+The app asks for a token file only for an agent on this Mac (an `http://127.0.0.1:` address), in
+the file dialog. A remote agent that needs a token, a move (`--move`) and a chosen `--id` are done
+in a terminal.
+
 ## Checking a card before anyone adds it: `meshctl check`
 
 `meshctl check` tells whoever writes an agent whether `meshctl add` will accept it, and whether

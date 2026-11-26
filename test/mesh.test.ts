@@ -11,7 +11,8 @@ import type { IncomingHttpHeaders, Server } from 'node:http'
 import type { AddressInfo, LookupFunction } from 'node:net'
 import { dirname, join } from 'node:path'
 import { MESH_FILE_MAX, meshDir, meshFile, parseMesh, readCardCopy } from '../src/mesh-config.js'
-import { runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
+import { heldIdRefusal, runAdd, runCheckCommand, runMeshctl, suffixFrom } from '../src/meshctl.js'
+import { underEachParser } from './url-parsers.js'
 import { addSummary, cardSha256, reachOf, tailnetRefusal } from '../src/mesh-add.js'
 import { addedPlace } from '../src/mesh-entry.js'
 import { checkProfile } from '../src/agent-card.js'
@@ -950,6 +951,37 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     expect(readFileSync(meshFile(t.dir), 'utf8')).toBe('{"schema":1}\n')
   })
 
+  // add step 2, G2: whether the URL parser accepts a malformed punycode label is the platform's choice
+  // (this Mac's Node rejects https://xn--a.example/, a Linux build accepts it), so this asserts only
+  // what holds everywhere, under this platform's parser and under one of each kind
+  it('never throws on a card URL: one the URL parser rejects is refused by the rule, one it accepts gets the rule’s answer', async () => {
+    const urls = ['https://xn--a.example/x', 'https://studio.xn--zz.ts.net/card', 'https://xn--bcher-kva.example/a', 'http://127.0.0.1:65536/card', 'https://studio.example:70000/x']
+    await underEachParser((parser) => {
+      // each stand-in answers as it should, so both paths below run on any platform
+      if (parser === 'rejecting') expect(URL.canParse('https://xn--a.example/x')).toBe(false)
+      if (parser === 'accepting') expect([URL.canParse('https://xn--a.example/x'), URL.canParse('https://studio.example:70000/x')]).toEqual([true, true])
+      for (const url of urls) {
+        const label = `${parser} ${url}`
+        let place: ReturnType<typeof addedPlace> | undefined
+        expect(() => { place = addedPlace(url) }, label).not.toThrow()
+        // a port past 65535 is refused by every parser and, were one to accept it, by the rule's own port check
+        const port = /:(\d+)\//.exec(url.slice(url.indexOf('//') + 2))?.[1]
+        if (!URL.canParse(url) || Number(port) > 65535) expect(place, label).toEqual({ refused: 'rule' })
+        else expect(place, label).toMatchObject({ url, loopback: url.startsWith('http://127.0.0.1:'), host: new URL(url).hostname })
+      }
+    })
+    // the refusal path, the same on every platform: the WHATWG URL rules reject a port past 65535
+    expect(URL.canParse('https://studio.example:70000/x')).toBe(false)
+    const t = setup()
+    const RULE = 'the card URL must be http://127.0.0.1:<port>[/<path>] or https://<name>[:<port>][/<path>] on a DNS name: never an IP address other than 127.0.0.1, localhost, plain http to another host, a written-out port 80 or 443, a user, a query or a fragment. Nothing changed.'
+    const r = await t.add('https://studio.example:70000/x', '--json')
+    expect([r.code, JSON.parse(r.out)]).toEqual([1, { applied: false, steps: [], refused: RULE }])
+    const text = await t.add('https://studio.example:70000/x', '--apply')
+    expect([text.code, text.err]).toEqual([1, `Refused: ${RULE}\n`])
+    expect(t.io.asked).toBe(0)
+    expect(existsSync(meshFile(t.dir))).toBe(false)
+  })
+
   it('refuses a card URL outside the endpoint rule before it opens any connection', async () => {
     const a = await agent()
     const t = setup()
@@ -1124,6 +1156,8 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     // the same agent again, under any local id, is that entry: it moves, never doubles
     const again = await t.add(a.url, '--id', 'echo-two', '--token-file', t.tokenFile, '--apply')
     expect(again.err).toBe('Refused: the card declares the agent id that agents.echo holds, so it is that agent: to move echo here, add --move echo (its pin and run records stay). Nothing changed.\n')
+    // the sentence the app's Add an agent page reads the holder from (add step 2, G5)
+    expect(again.err).toBe(`Refused: ${heldIdRefusal('echo', false)}. Nothing changed.\n`)
     // a card that breaks the profile is refused with fixed words
     const bad = await profiledAgent((c) => { c.capabilities.extensions.at(-1).params.keys = [{ ...KEY, d: KEY.x }] })
     expect((await t.add(bad.url, '--id', 'bad', '--token-file', t.tokenFile, '--apply')).err).toBe('Refused: the card has a private profile key. Nothing changed.\n')
@@ -1392,6 +1426,7 @@ describe('meshctl add and remove (#529, mesh design §6.7, D13–D17, §8.8)', (
     const impostor = await signedAgent(K2)
     const r = await t.add(impostor.url, '--token-file', t.tokenFile, '--apply')
     expect(r.err).toBe('Refused: the card declares the agent id that agents.echo holds, but no key agents.echo\'s pinned card lists signed it, so add cannot tell it is that agent. Nothing changed.\n')
+    expect(r.err).toBe(`Refused: ${heldIdRefusal('echo', true)}. Nothing changed.\n`)
     // with --move the pin decides, and the impostor's card (another key list) is another card
     expect((await t.add(impostor.url, '--move', 'echo', '--apply')).err).toContain('Refused: the card at the new URL is not the one you added')
     expect(json(t.dir).agents.echo.endpoint).toBe(`${after.origin}/a2a`)

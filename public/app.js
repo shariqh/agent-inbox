@@ -861,6 +861,8 @@ const meshSetup = installMeshSetup({
     reloadAndPaint()
   },
   turnedOn: (name) => openMeshAgent(`mesh.json:${name}`, name, { focus: true, pending: true }),
+  // an agent added by its card address: its page, saying it was added until the next read names it
+  added: (id) => openMeshAgent(`mesh.json:${id}`, id, { focus: true, pending: 'added' }),
   // an agent just turned on is checked once, as the agent page's Refresh checks it
   check: (name) => { meshRefresh(name) },
   toTop: scrollPageToTop,
@@ -933,13 +935,15 @@ function paintAgentCards() {
   // with no agent on, an app that can set one up shows the home with "No agent is on yet." (D1, D2)
   const body = lastData?.mesh?.body
   const input = meshWanted() && body?.on === true ? lastData.mesh : meshSetup.usable() ? (body ? lastData.mesh : { body: { on: false, agents: [] }, stale: false }) : null
-  meshAgents.paint(home, input, Date.now(), meshAgentPage.current()?.key ?? null)
+  // an agent just removed leaves the grid at once, though the viewer's next answers may still name it
+  meshAgents.paint(home, meshSetup.visible(input), Date.now(), meshAgentPage.current()?.key ?? null)
   setHidden(document.getElementById('agentCardsOff'), meshShown())
   // the page, from the same body, whether or not mesh is still on (it then says the agent left)
   meshAgentPage.paint(lastData?.mesh ?? null, Date.now(), lastData?.runs ?? null)
   const current = meshAgentPage.current()
-  const agent = current && body?.on === true && Array.isArray(body.agents) ? body.agents.find((a) => String(a.key) === current.key && a.kind !== 'added') : null
-  meshSetup.paint({ body: input?.body ?? null, agent: agent ? { name: String(agent.name) } : null })
+  const agent = current && body?.on === true && Array.isArray(body.agents) ? body.agents.find((a) => String(a.key) === current.key) : null
+  // an added agent's foot offers Remove, a built-in's Change server and Turn off
+  meshSetup.paint({ body: input?.body ?? null, agent: agent ? (agent.kind === 'added' ? { name: String(agent.name), added: true } : { name: String(agent.name) }) : null })
   if (activeTab === 'cards' && !document.getElementById('cards').hidden) paintPageHeading('cards')
 }
 // A card's press, a deep link: the agent's page in the Agent cards tab, painted at once from the

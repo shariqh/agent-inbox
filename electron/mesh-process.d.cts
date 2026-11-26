@@ -14,8 +14,24 @@ export type MeshServers = {
 }
 export type MeshCheckFailure = 'unreachable' | 'unauthorized' | 'not-a-model-server' | 'timeout' | 'key' | 'no-program' | 'signed-out'
 export type MeshCheck = { ok: boolean; reachable: boolean; failure?: MeshCheckFailure; models: string[]; skipped: number; refused?: string; kind?: MeshServerKind }
-export type MeshAnswer = MeshPlan | MeshServers | MeshCheck | MeshFailure
-export type MeshKind = 'plan' | 'servers' | 'check'
+export type MeshReach = 'loopback' | 'tailnet' | 'public'
+/** add's card summary: every string but `endpoint` and `pin` is card text, unverified */
+export type MeshCard = {
+  id?: string
+  name?: string
+  description?: string
+  version?: string
+  publisher?: string
+  reach: MeshReach
+  endpoint: string
+  signed: boolean
+  keysNew?: boolean
+  skills: Array<{ id: string; name?: string; description?: string }>
+  pin: string
+}
+export type MeshAdd = MeshPlan & { card?: MeshCard }
+export type MeshAnswer = MeshPlan | MeshAdd | MeshServers | MeshCheck | MeshFailure
+export type MeshKind = 'plan' | 'servers' | 'check' | 'add'
 export type MeshAvailability = { available: true } | { available: false; reason: MeshReason }
 export type MeshChosen = { ok: true; handle: string; name: string } | MeshFailure
 
@@ -24,6 +40,7 @@ export const REASONS: ReadonlySet<string>
 export const KEY_KINDS: ReadonlySet<string>
 export const SERVER_KINDS: ReadonlySet<string>
 export const CHECK_FAILURES: ReadonlySet<string>
+export const REACHES: ReadonlySet<string>
 
 export function meshDirOf(env: Record<string, string | undefined>, home: string): { dir: string } | { reason: 'environment' }
 export function meshEnv(env: Record<string, string | undefined>): Record<string, string>

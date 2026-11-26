@@ -57,6 +57,31 @@ export const checkedClaude = (failure?: string, { models = CLAUDE_MODELS, kind =
     ...(failure === undefined ? {} : { failure }), models: failure === undefined ? models : [], skipped: 0,
   }), failure === undefined ? 0 : 1) as Json
 
+/** An agent's card as add's `--json` card summary prints it (docs/mesh-call.md): the drawing's made-up agent. */
+export const PIN = 'f55799f06b5b4117d471de6f7c40cd931bd3bd6aaf93672b071d911d9debd0b3'
+export const CARD: Json = {
+  id: 'pdf-reader', name: 'pdf-reader', description: 'Reads a PDF and answers questions about it.', version: '1.0.0', publisher: 'Example Labs',
+  reach: 'tailnet', endpoint: 'https://studio.tailnet-example.ts.net/pdf/a2a', signed: true, keysNew: true,
+  skills: [{ id: 'read', name: 'read', description: 'Reads one PDF.' }, { id: 'ask', name: 'ask' }], pin: PIN,
+}
+// the same agent on this Mac: an unsigned card at a loopback endpoint
+export const LOCAL_CARD: Json = { ...CARD, reach: 'loopback', endpoint: 'http://127.0.0.1:9000/a2a', signed: false, keysNew: undefined }
+export const CHECK_STEPS = [
+  'Would keep the card as ~/.agent-inbox/mesh/cards/pdf-reader.json (0600) for the app to show.',
+  'Would replace ~/.agent-inbox/mesh.json (keeping a backup beside it):',
+]
+
+/**
+ * An add's answer (check-agent, add-agent), shaped by the real bridge (`meshAnswer('add', …)`) from
+ * the command's own JSON and exit code: `{ applied, steps, refused?, notes?, card? }`. A refusal
+ * exits 1; `card: null` leaves the card out, as a refusal before the card is pinned does.
+ */
+export const carded = ({ card = CARD, steps, notes, refused, applied = false }: { card?: Json | null; steps?: string[]; notes?: string[]; refused?: string; applied?: boolean } = {}): Json =>
+  meshProcess.meshAnswer('add', JSON.stringify({
+    applied, steps: steps ?? (refused !== undefined ? [] : applied ? ['Kept the card.', 'Wrote mesh.json: pdf-reader is added.'] : CHECK_STEPS),
+    ...(refused === undefined ? {} : { refused }), ...(notes === undefined ? {} : { notes }), ...(card === null ? {} : { card }),
+  }), refused === undefined ? 0 : 1) as Json
+
 export function fakeBridge(init: { available?: Json; servers?: Json[]; inline?: string[] } = {}) {
   const s = {
     available: init.available ?? { available: true },
@@ -82,6 +107,12 @@ export function fakeBridge(init: { available?: Json; servers?: Json[]; inline?: 
       if (answer) return answer(values)
       if (operation === 'servers') return listed(s.servers, s.inline)
       if (operation === 'check-server') return checked()
+      // an agent by its address: the card the address names (one on this Mac for a loopback address)
+      if (operation === 'check-agent' || operation === 'add-agent') {
+        const card = String(values['address']).startsWith('http://127.0.0.1:') ? LOCAL_CARD : CARD
+        return operation === 'check-agent' ? carded({ card })
+          : carded({ card, applied: true, notes: [`This --apply is your approval for ${String(values['id'])} (D14).`] })
+      }
       return planned(values['apply'] === true)
     },
     chooseFile: async (purpose: string) => {

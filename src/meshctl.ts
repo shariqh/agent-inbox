@@ -1640,6 +1640,17 @@ function forgetRuns(dir: string, picked: string[] | 'all', apply: boolean, now: 
   return failed ? 1 : 0
 }
 
+/**
+ * add's refusal for a card that declares the agent id an entry holds, with no key that entry pinned
+ * among its signers (`signed`: some other key signed it). The app's Add an agent page reads the
+ * holder from its opening words to say the agent is already added (add step 2, G5).
+ */
+export function heldIdRefusal(holder: string, signed: boolean): string {
+  return signed
+    ? `the card declares the agent id that agents.${holder} holds, but no key agents.${holder}'s pinned card lists signed it, so add cannot tell it is that agent`
+    : `the card declares the agent id that agents.${holder} holds, so it is that agent: to move ${holder} here, add --move ${holder} (its pin and run records stay)`
+}
+
 const TAILSCALE = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']
 
 /** The MagicDNS suffix in `tailscale status --json` output, only while the backend runs and logged in. */
@@ -1827,9 +1838,7 @@ async function addAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
     if (holder !== undefined) {
       return refuse(endorsed
         ? `the card is agents.${holder}'s agent, signed by a key its pinned card lists: to move ${holder} here, add it without --id`
-        : signedBy.length
-          ? `the card declares the agent id that agents.${holder} holds, but no key agents.${holder}'s pinned card lists signed it, so add cannot tell it is that agent`
-          : `the card declares the agent id that agents.${holder} holds, so it is that agent: to move ${holder} here, add --move ${holder} (its pin and run records stay)`)
+        : heldIdRefusal(holder, signedBy.length > 0))
     }
     const picked = id ?? idFromName(card['name'])
     if (picked === undefined) return refuse('the card\'s name makes no usable id: pass --id <id>')

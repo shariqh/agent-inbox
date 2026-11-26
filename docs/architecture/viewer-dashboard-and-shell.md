@@ -376,9 +376,11 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   the drawn built-ins `mesh.json` does not name (from `mesh.json` alone, on and off), and the read
   runs while the bridge is usable even with the mesh off, so with no agent on **Yours** says "No
   agent is on yet." in place of the grid. After Yours come **Marketplace** (while a drawn
-  built-in is off: the same `ma-grid` cards, a `<div class="ma-card ms-offer">` each, with its
-  `blurb`, what it needs and **Set up**, or unslop's line that it is set up in a terminal; without
-  the bridge no button and one line, "Set these up in the app on the Mac that runs your agents.")
+  built-in is off, and with the bridge always, even with every built-in on: **Add by address** at
+  its head, then the same `ma-grid` cards, a `<div class="ma-card ms-offer">` each, with its
+  `blurb`, what it needs and **Set up**, or unslop's line that it is set up in a terminal, the grid
+  hidden when none is offered; without the bridge no button and one line, "Set these up in the app
+  on the Mac that runs your agents.")
   and, with the bridge only, **Model servers**: one row per server from `run('servers', {})` (asked
   on entering the tab, on Yours's Refresh and after every operation that changed something, never
   by a poll) with **Check** and **Remove** (asked in place, the row grows), a row per inline agent
@@ -388,10 +390,17 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   (`add-server`), making an agent's settings a server (`adopt-server`), and an agent's form
   (`enable-model-agent` with a server list ending in "Add a server…" and a model list from
   `check-server`, a text field when the server cannot be asked; `enable-request-post` with an
-  address and a token file). Every writing operation runs with `apply: false` first; the form's
-  **Check** shows the dry run's steps as text under "Turning it on will", then **Turn on**; a
-  refusal's own words replace them. An agent's page that is on has a foot with **Turn off**
-  (asked in place, then `disable`) and, for unslop and unslop-code, **Change server**. Files are
+  address and a token file), and **Add an agent** (add step 2: a card address, and a token file
+  only for an `http://127.0.0.1:` address; **Check** runs `check-agent`, which fetches the card once
+  and writes nothing, and shows a summary of the card in which all card text is quoted plain text,
+  then **Add** runs `add-agent` with the checked id and pin, so a card that changed in between is
+  refused; an agent already added, at this address or another, is said so with Back only; after
+  Add the new agent's page opens and says it was added). Every writing operation runs with
+  `apply: false` first; the form's **Check** shows the dry run's steps as text under "Turning it
+  on will", then **Turn on**; a refusal's own words replace them. An agent's page that is on has a
+  foot with **Turn off** (asked in place, then `disable`) and, for unslop and unslop-code, **Change
+  server**; an added agent's page has a foot with **Remove** only (asked in place, then
+  `remove-agent` dry and applied, its run records going too). Files are
   picked by `chooseFile()`, which answers a handle and a base name; the handle goes back to main and
   is never drawn. The bridge's failure reasons have fixed sentences in the module. The open page,
   its values, the row asking "Remove?" and the running operation are the module's state, joined to

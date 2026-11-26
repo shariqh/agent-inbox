@@ -478,7 +478,7 @@ export function skillPlan(ctx: SkillContext, doc: MeshDocument | undefined, mode
       if (entry(folder).kind !== 'dir') continue
       const file = join(folder, 'SKILL.md')
       steps.push({
-        dry: `Would remove the ${agent} routing skill ${show(folder)} (the agent is off).`,
+        dry: `Would remove the ${agent} routing skill ${show(folder)} (${agent === 'make-agents' ? 'the make-agents skill' : 'the agent'} is off).`,
         run: () => {
           // meshctl's rules.md link goes with its folder; any other file there stays
           const rulesLink = join(folder, 'rules.md')
@@ -519,7 +519,7 @@ export function skillPlan(ctx: SkillContext, doc: MeshDocument | undefined, mode
       const agent = at.kind === 'link' ? ours(at.to) : undefined
       if (agent === undefined) continue
       if (unlinkTargets.has(target)) steps.push(removeLink(path, 'meshctl skills unlink'))
-      else if (!wanted.has(agent) || agent !== name) steps.push(removeLink(path, 'its agent is off'))
+      else if (!wanted.has(agent) || agent !== name) steps.push(removeLink(path, agent === 'make-agents' && !wanted.has(agent) ? 'the make-agents skill is off' : 'its agent is off'))
     }
   }
 

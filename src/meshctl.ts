@@ -1227,6 +1227,36 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
     return code
   }
 
+  if (command === 'disable' && makeAgents) {
+    if (flags.size || values.size) return usage()
+    const existing = readMesh(file)
+    if (existing.kind === 'refused') return refuse(`${name} ${existing.reason}. Remove it by hand if you are sure`)
+    const present = existing.kind === 'present' && Object.hasOwn(existing.doc, 'makeAgents')
+    let next: MeshDocument | undefined
+    const steps: Step[] = []
+    if (existing.kind === 'present') {
+      const { makeAgents: _gone, ...others } = existing.doc
+      next = present ? (Object.keys(others).length === 1 ? undefined : others) : existing.doc
+      if (present) {
+        steps.push(next === undefined
+          ? {
+              dry: `Would delete ${name}: makeAgents was its only setting (keeping a backup beside it).`,
+              run: () => { const backup = writeBackup(file, now()); unlinkSync(file); return `Deleted ${name} (backup: ${show(backup)}).` },
+            }
+          : {
+              dry: `Would remove makeAgents from ${name}, keeping every other key (and a backup beside it).`,
+              run: () => `Removed makeAgents from ${name}${writeMesh(others, true)}.`,
+            })
+      }
+    }
+    steps.push(...withSkills([], next))
+    if (!steps.length) {
+      out('The make-agents skill is already off. Nothing to do.\n')
+      return 0
+    }
+    return run(steps, 'Steps before it are done; nothing after it ran.')
+  }
+
   if (command === 'enable' && !unslop && !requestPost && !unslopCode && !makeAgents) {
     if (!flags.delete('--agents-view') || flags.size || values.size) return usage()
     out(`${ALWAYS_ON} Nothing written.\n`)

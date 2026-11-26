@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3'
 import { closeProject, getBoard, insertItem, listSourceLinks, upsertBoard, upsertSourceLink } from '../../src/store.js'
 import { PREVIEW_TTL_MS } from '../../public/source.js'
 import {
-  answerInput, bootApp, click, freshDb, pollTick, row, settle, showInbox, type, useDomTest,
+  answerInput, bootApp, click, expectConsoleError, freshDb, pollTick, row, settle, showInbox, type, useDomTest,
 } from './harness.js'
 
 useDomTest()
@@ -167,6 +167,8 @@ describe('preview links in actual approval cards', () => {
   })
 
   it('expires existing preview anchors even when subsequent polls never complete', async () => {
+    // a poll read that never answers ends after 30 s (public/stall.js) and fails its round, logged
+    expectConsoleError(/TimeoutError/)
     db = freshDb()
     const id = insertItem(db, {
       project: 'p', agent: 'copilot', stream: 'feature', repo: 'o/n',

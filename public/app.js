@@ -82,6 +82,7 @@ import { createThemeController } from '/theme.js'
 import { createMotionController } from '/motion.js'
 import { isReservedProject } from '/reserved-projects.js'
 import { activityHistoryUrl, createSnapshotReader } from '/snapshots.js'
+import { stallLimited } from '/stall.js'
 import { knownOutcomes, mergeClosedHistory, olderHistory } from '/closed-history.js'
 import { DRAFTS_KEY, draftEntry, draftExpired, draftKey, mergeDrafts, readDrafts } from '/drafts.js'
 
@@ -122,7 +123,8 @@ let shown = { ...PAGE }
 function resetPaging() { shown = { ...PAGE } }
 
 let lastData = null
-const readSnapshot = createSnapshotReader((url, init) => fetch(url, init))
+// every poll read ends when it stalls (public/stall.js); snapshots.js stays a pure reader
+const readSnapshot = createSnapshotReader((url, init) => stallLimited((signal) => fetch(url, { ...init, signal })))
 let dashboardRangeMs = 24 * 60 * 60 * 1000
 let renderedTheme = document.documentElement.dataset.theme ?? 'light'
 function syncThemeChoices(preference) {
@@ -1015,7 +1017,24 @@ function launchesReadFailed(read, launches) {
   return read && !Array.isArray(launches)
 }
 
+// One round at a time (slow links, step 1). A call while a round runs starts no read: it shares
+// the ONE follow-up round queued to start when the running one ends, so a caller awaiting load()
+// after its own write still gets data read after its call, and the poll's period becomes
+// max(3 s, one round). A new round every 3 s over a slow link never finished, and each one asked
+// for every body again.
+let loadRunning = null
+let loadQueued = null
+function queueLoad() {
+  const next = () => {
+    loadQueued = null
+    return load()
+  }
+  loadQueued ??= loadRunning.then(next)
+  return loadQueued
+}
+
 async function load() {
+  if (loadRunning) return queueLoad()
   if (reloadRequested) return false
   const generation = ++loadGeneration
   // Issue #161: the reads are independent, so the tick starts them together and
@@ -1040,6 +1059,9 @@ async function load() {
   const wantLaunches = launchesOn()
   const runsUrl = meshRunsUrl()
   const runsKey = meshAgentPage.current()?.key ?? null
+  // this round is the running one from here to its finally; nothing above awaits, so no call can come between
+  let endRound
+  loadRunning = new Promise((resolve) => { endRound = resolve })
   try {
     const [
       items, boardsRead, summaryRead, activityRead, historyRead, closedRead, linksRead, issuesRead, closedHistoryRead,
@@ -1050,13 +1072,13 @@ async function load() {
       // Archived plans in brief (#299): what every surface but the archived
       // ones reads. The complete list is the last read, while one needs it.
       readSnapshot('/api/boards/archived/summary').then(marked),
-      fetch('/api/activity').then(marked),
+      stallLimited((signal) => fetch('/api/activity', { signal })).then(marked),
       readSnapshot(historyUrl).then(marked),
       // Projects the human closed (issue #32). Defensive on purpose: a viewer that
       // predates this route answers 404 with HTML, a bare .json() would throw into
       // the catch below, and the WHOLE page would read 'disconnected'. An unknown
       // closed set must mean "suppress nothing", never a dead page.
-      fetch('/api/projects/closed').then(marked)
+      stallLimited((signal) => fetch('/api/projects/closed', { signal })).then(marked)
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
       // Cached PR state (issue #30): a conditional snapshot (#288) whose body is
@@ -1267,6 +1289,8 @@ async function load() {
     document.getElementById('status').textContent = 'disconnected'
     return false
   } finally {
+    loadRunning = null
+    endRound()
     invalidatePreviewLinks()
   }
 }

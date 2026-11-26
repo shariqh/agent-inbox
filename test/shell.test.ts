@@ -242,7 +242,8 @@ describe('closed projects (issue #32)', () => {
     expect(body).toContain('/api/projects/closed')
     // an older viewer answers 404 with HTML; a bare .json() would throw into
     // load()'s catch and turn the whole page 'disconnected'
-    expect(body).toMatch(/fetch\('\/api\/projects\/closed'\)[\s\S]*?r\.ok[\s\S]*?\.catch\(/)
+    // (the read carries the stall limit's signal, slow links step 1)
+    expect(body).toMatch(/fetch\('\/api\/projects\/closed', \{ signal \}\)[\s\S]*?r\.ok[\s\S]*?\.catch\(/)
     expect(body).toMatch(/lastData = \{[^}]*closed/)
   })
 

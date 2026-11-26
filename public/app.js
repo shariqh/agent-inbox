@@ -935,7 +935,8 @@ function paintAgentCards() {
   // with no agent on, an app that can set one up shows the home with "No agent is on yet." (D1, D2)
   const body = lastData?.mesh?.body
   const input = meshWanted() && body?.on === true ? lastData.mesh : meshSetup.usable() ? (body ? lastData.mesh : { body: { on: false, agents: [] }, stale: false }) : null
-  meshAgents.paint(home, input, Date.now(), meshAgentPage.current()?.key ?? null)
+  // an agent just removed leaves the grid at once, though the viewer's next answers may still name it
+  meshAgents.paint(home, meshSetup.visible(input), Date.now(), meshAgentPage.current()?.key ?? null)
   setHidden(document.getElementById('agentCardsOff'), meshShown())
   // the page, from the same body, whether or not mesh is still on (it then says the agent left)
   meshAgentPage.paint(lastData?.mesh ?? null, Date.now(), lastData?.runs ?? null)

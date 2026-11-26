@@ -1959,7 +1959,7 @@ describe('an added agent’s page: Remove (add step 2, D5)', () => {
     expect(bridge.ops()).toEqual([])
   })
 
-  it('Remove runs remove-agent dry then applied, then back to the grid with focus on the tab’s heading, and the tab reads again', async () => {
+  it('Remove runs remove-agent dry then applied, then back to the grid with focus on the tab’s heading, and the tab reads again at once', async () => {
     const { bridge, mesh } = await openAdded()
     click(buttonLabelled('Remove', actions()))
     await settle()
@@ -1969,14 +1969,75 @@ describe('an added agent’s page: Remove (add step 2, D5)', () => {
     expect(buttonLabelled('Removing…', ask())!.disabled).toBe(true)
     expect(buttonLabelled('Cancel', ask())!.disabled).toBe(true)
     mesh.s.body = { on: true, agents: [on('unslop-code')], others: 0, available: [OFFERED['unslop']!] }
+    const versions = vi.spyOn(mesh.mesh, 'version')
+    const bodies = vi.spyOn(mesh.mesh, 'body')
     release()
     await settle()
     expect(bridge.ops()).toEqual([['remove-agent', { id: 'pdf-reader', apply: false }], ['remove-agent', { id: 'pdf-reader', apply: true }]])
     expect(shown(agentPage())).toBe(false)
     expect(shown(home())).toBe(true)
     expect(document.activeElement).toBe(title())
+    // G11: the tab's version and agents are read right after the press, before any poll
+    expect(versions).toHaveBeenCalled()
+    expect(bodies).toHaveBeenCalled()
+    expect(card('pdf-reader')).toBeUndefined()
+  })
+
+  // G10: the viewer re-reads mesh.json at most every 5 s, so its next answers can still name the agent
+  it('the removed agent leaves the list at once, while the viewer still names it, and comes back only if it is added again', async () => {
+    const { bridge, mesh } = await openAdded()
+    click(buttonLabelled('Remove', actions()))
+    await settle()
+    click(buttonLabelled('Remove', ask()))
+    await settle()
+    expect(bridge.ops().map(([op]) => op)).toEqual(['remove-agent', 'remove-agent'])
+    // the viewer's answer still names it
+    expect((mesh.s.body as { agents: Json[] }).agents.map((a) => a['name'])).toContain('pdf-reader')
+    expect(card('pdf-reader')).toBeUndefined()
+    expect(card('unslop-code')).toBeDefined()
     await pollTick()
     expect(card('pdf-reader')).toBeUndefined()
+    // the viewer catches up, then the agent is added again: it shows
+    mesh.s.body = { on: true, agents: [on('unslop-code')], others: 0, available: [OFFERED['unslop']!] }
+    await pollTick()
+    expect(card('pdf-reader')).toBeUndefined()
+    mesh.s.body = { on: true, agents: [added(), on('unslop-code')], others: 0, available: [OFFERED['unslop']!] }
+    await pollTick()
+    expect(card('pdf-reader')).toBeDefined()
+  })
+
+  // G4: the outcome goes to the agent that was removed, never to the page open when it settles
+  it.each([
+    ['works', undefined],
+    ['is refused', 'agents.pdf-reader was not written by add. Nothing changed.'],
+  ] as const)('a Remove that %s while another agent’s page is open leaves that page and its foot alone', async (_label, refused) => {
+    const { bridge, mesh } = await boot({ agents: [added(), added('echo'), on('unslop-code')], available: [OFFERED['unslop']!], bridge: {} })
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await enter()
+    if (refused) bridge.s.answers['remove-agent'] = (values) => values['apply'] === true
+      ? meshProcess.meshAnswer('plan', JSON.stringify({ applied: false, steps: [], refused }), 1) as Json : planned(false)
+    click(card('pdf-reader'))
+    await settle()
+    click(buttonLabelled('Remove', actions()))
+    await settle()
+    const release = bridge.hold()
+    click(buttonLabelled('Remove', ask()))
+    await settle()
+    click(agentPage().querySelector('.map-back'))
+    await settle()
+    click(card('echo'))
+    await settle()
+    expect(title().textContent).toBe('echo')
+    const versions = vi.spyOn(mesh.mesh, 'version')
+    release()
+    await settle()
+    expect(bridge.ops()).toEqual([['remove-agent', { id: 'pdf-reader', apply: false }], ['remove-agent', { id: 'pdf-reader', apply: true }]])
+    expect(shown(agentPage())).toBe(true)
+    expect(title().textContent).toBe('echo')
+    expect(shown(foot().querySelector('.ms-message'))).toBe(false)
+    expect(shown(ask())).toBe(false)
+    // only the tab's re-read
+    expect(versions).toHaveBeenCalled()
   })
 
   it('a refusal shows its words in the foot with focus on Remove, and the agent stays', async () => {

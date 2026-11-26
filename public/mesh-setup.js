@@ -192,6 +192,9 @@ export function installMeshSetup(deps) {
   // the "still use this server" line a Remove press wrote into a row's note, to take it away once no agent uses it
   const usedNotes = new Map()
   let removing = null
+  // agents just removed, by key, until the tab's data stops naming them: the viewer re-reads
+  // mesh.json at most every 5 seconds, so its next answers can still name an agent that is gone
+  const removed = new Set()
   // the open set-up page, or null; the agent page's foot
   let page = null
   const foot = { agent: null, added: false, asking: false, message: '' }
@@ -1248,21 +1251,29 @@ export function installMeshSetup(deps) {
   // An added agent's Remove (D5): remove's dry run, then the real one; an id no longer there counts as removed
   async function removeAgent(id) {
     let done = false
+    let words = ''
     await act('remove-agent', async () => {
       for (const apply of [false, true]) {
-        const words = problem(await call('remove-agent', { id, apply }))
-        if (words === null) continue
-        foot.asking = false
-        foot.message = words
+        const said = problem(await call('remove-agent', { id, apply }))
+        if (said === null) continue
+        words = said
         return
       }
       done = true
     })
-    if (!done) {
-      settleFocus(() => footEl?.querySelector('.ms-remove-agent'))
+    if (done) removed.add(`mesh.json:${id}`)
+    // the outcome is this agent's: another agent's page opened meanwhile only reads the tab again
+    if (foot.agent !== id || !foot.added) {
+      deps.reload()
       return
     }
     foot.asking = false
+    if (!done) {
+      foot.message = words
+      changed()
+      settleFocus(() => footEl?.querySelector('.ms-remove-agent'))
+      return
+    }
     foot.message = ''
     deps.turnedOff()
     deps.reload()
@@ -1355,6 +1366,19 @@ export function installMeshSetup(deps) {
       }
       const agentPage = deps.agentPage()
       if (agentPage) paintFoot(agentPage, agent)
+    },
+    /**
+     * The tab's agents input without an agent just removed, until the data stops naming it (then it
+     * is forgotten, so an agent added again shows).
+     * @template T @param {T} input @returns {T}
+     */
+    visible(input) {
+      const agents = input?.body?.agents
+      if (!removed.size || !Array.isArray(agents)) return input
+      const named = new Set(agents.map((row) => String(row?.key)))
+      for (const key of removed) if (!named.has(key)) removed.delete(key)
+      if (!removed.size) return input
+      return { ...input, body: { ...input.body, agents: agents.filter((row) => !removed.has(String(row?.key))) } }
     },
     /** The window-local state, for frameInputs(). */
     state: () => version,

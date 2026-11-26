@@ -43,5 +43,7 @@ export function installMeshSetup(deps: {
   title(): string | null
   back(): boolean
   paint(input: { body: any; agent: { name: string; added?: boolean } | null }): void
+  /** the tab's agents input without an agent just removed, until the data stops naming it */
+  visible<T>(input: T): T
   state(): number
 }

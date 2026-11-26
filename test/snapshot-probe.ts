@@ -18,6 +18,7 @@ export const SNAPSHOT_ROUTES = {
   'attention-items': '/api/items?scope=attention',
   'history-items': '/api/items/history',
   boards: '/api/boards',
+  'boards-tags': '/api/boards/tags',
   'attention-boards': '/api/boards?scope=attention',
   'archived-boards': '/api/boards/archived',
   'archived-summary': '/api/boards/archived/summary',

@@ -32,7 +32,7 @@ type Domain = keyof typeof SNAPSHOT_DOMAINS
 type Hub = Database.Database
 const DOMAINS: Record<Domain, { table: string; columns?: readonly string[]; restamped?: readonly string[] }> = SNAPSHOT_DOMAINS
 const ITEMS: Snapshot[] = ['items', 'attention-items', 'history-items']
-const PLANS: Snapshot[] = ['boards', 'attention-boards', 'archived-boards', 'archived-summary']
+const PLANS: Snapshot[] = ['boards', 'boards-tags', 'attention-boards', 'archived-boards', 'archived-summary']
 
 // Tables no snapshot reads, and why. Writes to them must never move a snapshot.
 const UNREAD: Record<string, string> = {

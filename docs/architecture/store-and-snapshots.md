@@ -47,6 +47,18 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   lingering plans' read `/api/boards/archived/plans?ids=…` (#373) is built the
   same way (fresh bytes, tag over bytes plus ids, never retained), and these two
   are the only routes whose query the browser reader accepts.
+- **The plans list in pieces (slow links, step 2).** `GET /api/boards/tags` is
+  its own conditional snapshot (`boards-tags`, over the same domains as `boards`):
+  `{ plans: [{ id, tag }] }`, one entry per active plan in exactly the order
+  `/api/boards` lists them, where `tag` is the first 22 characters of the
+  base64url SHA-256 of that plan's bytes inside the list (`planTag`: equal bytes,
+  equal tag; any change to the plan or one of its rows, an answer included, moves
+  it). `GET /api/boards/plans?ids=…` returns `{ plans: [{ tag, plan }] }` for the
+  named active plans, in the list's order, each exactly as `/api/boards` carries
+  it; an id naming no active plan is left out, and `ids` follows the
+  `/api/boards/archived/plans` rule (1 to 50 plan ids, else 400). It is
+  `no-store` with no ETag and nothing retained. Both are on the remote entry's
+  allowlist beside `/api/boards`; they return nothing `/api/boards` does not.
 - A write rebuilds only the snapshots it can change (#297): each snapshot's token
   is the schema cookie plus the versions of the store domains its bytes are built
   from (`SNAPSHOT_SOURCES` in `src/viewer.ts` over `SNAPSHOT_DOMAINS` in

@@ -7,9 +7,10 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -529,5 +530,90 @@ describe('made end to end: meshctl new, call and remove with the real runner (D3
       expect(readdirSync(t.dir, { recursive: true }).map(String)).not.toContain(gone)
     }
     expect(t.fake.bodies).toEqual([])
+  }, 60_000)
+
+  /** Every file under `dir` (relative path to its text). */
+  const texts = (dir: string): Map<string, string> => new Map(readdirSync(dir, { recursive: true }).map(String)
+    .filter((f) => { try { return lstatSync(join(dir, f)).isFile() } catch { return false } })
+    .map((f) => [f, readFileSync(join(dir, f), 'latin1')]))
+
+  it('a canary in the instructions and the caller token reach no output of any command and no file but their own (T2)', async () => {
+    const t = await setup()
+    // a second server whose key cannot be read, for a failed --apply
+    privateFile(join(t.dir, 'mesh', 'servers.json'), JSON.stringify({ schema: 1, servers: { box: { baseUrl: t.fake.url }, nokey: { baseUrl: t.fake.url, apiKey: { env: 'MADE_TEST_KEY_THAT_IS_NOT_SET' } } } }))
+    const canary = `CANARYINSTR${randomBytes(6).toString('hex')}`
+    const card = t.card({ ...EXAMPLE, instructions: `${INSTRUCTIONS} ${canary}`, server: 'box', model: 'chat-long' })
+    const outputs: string[] = []
+    const keep = <R extends { out: string; err: string }>(r: R): R => { outputs.push(r.out, r.err); return r }
+    const sample = privateFile(join(t.home, 'notes.txt'), 'Sam sends the notes.')
+    expect(keep(await t.newAgent([ID, '--from', card, '--try', sample])).code).toBe(0)
+    expect(keep(await t.newAgent([ID, '--from', card, '--json'])).code).toBe(0)
+    expect(keep(await t.newAgent([ID, '--from', card, '--apply'])).code).toBe(0)
+    const token = readFileSync(join(t.dir, 'mesh', 'tokens', ID), 'utf8').trim()
+    expect(keep(await t.call('Sam sends the notes.')).code).toBe(0)
+    const other = 'other-agent'
+    const otherCard = privateFile(join(t.home, 'other.json'), JSON.stringify({ ...EXAMPLE, name: other, instructions: `${INSTRUCTIONS} ${canary}`, server: 'nokey', model: 'chat-long' }))
+    expect(keep(await t.newAgent([other, '--from', otherCard, '--apply'])).code).toBe(1)
+    expect(keep(t.ctl('status')).code).toBe(0)
+    // the canary went to the model server, as it must
+    expect(t.fake.bodies.some((b) => JSON.stringify(b.messages).includes(canary))).toBe(true)
+    const allowed = (path: string, value: string): boolean => (value === canary ? path === join('mesh', 'agents', `${ID}.json`) : path === join('mesh', 'tokens', ID))
+    for (const value of [canary, token]) {
+      for (const [path, text] of texts(t.dir)) if (!allowed(path, value)) expect(text.includes(value), `${path} holds ${value === canary ? 'the instructions canary' : 'the token'}`).toBe(false)
+    }
+    expect(keep(t.ctl('remove', ID, '--apply')).code).toBe(0)
+    expect(keep(t.ctl('remove', other, '--apply')).code).toBe(0)
+    for (const value of [canary, token]) {
+      for (const text of outputs) expect(text.includes(value)).toBe(false)
+      for (const [path, text] of texts(t.dir)) expect(text.includes(value), path).toBe(false)
+    }
+  }, 120_000)
+
+  it('instructions shaped like a secret are refused in the dry run: nothing is written and the value is in no output (F7)', async () => {
+    const t = await setup()
+    const secret = 'ghp_CANARYabcdefghijklmnopqrstuvwxyz0123'
+    const before = [...texts(t.dir).keys()]
+    const r = await t.newAgent([ID, '--from', t.card({ ...EXAMPLE, instructions: `Use ${secret} when asked.`, server: 'box', model: 'chat-long' })])
+    expect([r.code, r.out]).toEqual([1, ''])
+    expect(r.err).toBe('Refused: the runner could not print the card (made-agent: "instructions" hold something shaped like a secret (a key or a token): take it out of the card file). Nothing changed.\n')
+    expect(r.err).not.toContain('CANARY')
+    expect([...texts(t.dir).keys()]).toEqual(before)
+  }, 60_000)
+
+  it('a plain TCP listener on the chosen port: the runner cannot listen, every step is undone and its log says why (T3)', async () => {
+    let done = false
+    for (let attempt = 0; attempt < 3 && !done; attempt++) {
+      const t = await setup()
+      const id = `held-${attempt}`
+      const making = t.newAgent([id, '--from', t.card({ ...EXAMPLE, name: id, server: 'box', model: 'chat-long' }), '--apply'])
+      const profile = join(t.dir, 'mesh', 'wrappers', `${id}.json`)
+      await vi.waitFor(() => expect(existsSync(profile)).toBe(true), { timeout: 20_000, interval: 5 })
+      const port = (JSON.parse(readFileSync(profile, 'utf8')) as { port: number }).port
+      const listener = createNetServer((socket) => socket.destroy())
+      const held = await new Promise<boolean>((resolve) => listener.once('error', () => resolve(false)).listen(port, '127.0.0.1', () => resolve(true)))
+      cleanups.push(() => new Promise<void>((resolve) => { listener.close(() => resolve()) }))
+      const r = await making
+      if (!held) continue
+      done = true
+      expect(r.code).toBe(1)
+      expect(r.err).toMatch(new RegExp(`^Failed at step 4/5: the agent did not start; see .*${id}-agent\\.log\\. Every step before it was undone`))
+      expect(readFileSync(join(t.dir, 'mesh', 'logs', `${id}-agent.log`), 'utf8')).toContain(`made-agent: cannot listen on 127.0.0.1:${port} (EADDRINUSE)`)
+      expect([...texts(t.dir).keys()].filter((f) => f.includes(id))).toEqual([join('mesh', 'logs', `${id}-agent.log`)])
+    }
+    expect(done, 'the runner bound the port before the listener three times').toBe(true)
+  }, 120_000)
+
+  it('a signing key made after the agent changes its card: call exits 16 and says to remove and make it again (T5)', async () => {
+    const t = await setup()
+    expect((await t.newAgent([ID, '--from', t.card(), '--apply'])).code).toBe(0)
+    expect((await t.call('notes')).code).toBe(0)
+    expect(t.ctl('key', 'create', ID, '--apply').code).toBe(0)
+    // stop the running runner, so the next call starts one that signs with the new key
+    for (const pid of readFileSync(join(t.home, 'pids'), 'utf8').split('\n').filter(Boolean).map(Number)) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
+    const port = (JSON.parse(readFileSync(join(t.dir, 'mesh', 'wrappers', `${ID}.json`), 'utf8')) as { port: number }).port
+    await vi.waitFor(async () => expect(await new Promise((resolve) => { const s = createNetServer(); s.once('error', () => resolve(false)).listen(port, '127.0.0.1', () => s.close(() => resolve(true))) })).toBe(true), { timeout: 10_000 })
+    const r = await t.call('notes')
+    expect([r.code, r.out]).toEqual([16, ''])
+    expect(r.err).toContain(`${ID} is a made agent: meshctl remove ${ID} --apply, then make it again with meshctl new`)
   }, 60_000)
 })

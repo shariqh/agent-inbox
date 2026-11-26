@@ -46,8 +46,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   of its freshly computed bytes plus the window and project that selected them;
   never validate it with store tokens or cache it server-side (#185). The
   lingering plans' read `/api/boards/archived/plans?ids=…` (#373) is built the
-  same way (fresh bytes, tag over bytes plus ids, never retained), and these two
-  are the only routes whose query the browser reader accepts.
+  same way (fresh bytes, tag over bytes plus ids, never retained). The browser
+  reader accepts a query on a short list of routes only, given under "Invariants
+  in detail" below.
 - **The plans list in pieces (slow links, step 2).** `GET /api/boards/tags` is
   its own conditional snapshot (`boards-tags`, over the same domains as `boards`):
   `{ plans: [{ id, tag }] }`, one entry per active plan in exactly the order
@@ -167,7 +168,9 @@ Moved out of `CLAUDE.md` and `.github/copilot-instructions.md` by #379, nearly v
   message on every poll rebuilds nothing, and `/api/launches` (issue #412 step 3,
   `driven-sessions.md`), the eleventh: every running and parked launch and the 50 newest
   ended ones, launch facts only (no prompt, process ids or ACP session id, and no
-  clock-derived state), over the whole-table `launches` domain. Its per-launch reads
+  clock-derived state), over the whole-table `launches` domain, and `/api/boards/tags`
+  (slow links, step 2), the twelfth: each active plan's id and tag, over the same
+  domains as `/api/boards`. Its per-launch reads
   (`/api/launches/:id`, which adds whether the driver's lease is fresh, and
   `/api/launches/:id/prompt`) are fresh. `launch_asks` is read by no snapshot. Any other query string
   keeps the default items or boards response. The dock watcher reads its two

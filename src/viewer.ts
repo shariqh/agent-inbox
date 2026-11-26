@@ -1409,7 +1409,9 @@ export function createViewer(db: Database.Database, opts: ViewerOpts = {}): Hono
     if (!ids) return c.json({ ok: false, error: `ids must be 1-${MAX_LINGERING_PLANS} comma-separated plan ids` }, 400)
     c.header('Cache-Control', 'no-store')
     const wanted = new Set(ids)
-    const plans = listBoards(db).filter((plan) => wanted.has(plan.id)).map((plan) => ({ tag: planTag(plan), plan }))
+    // one snapshot: a plan's own fields and its rows come from the same commit
+    const plans = db.transaction(() => listBoards(db))()
+      .filter((plan) => wanted.has(plan.id)).map((plan) => ({ tag: planTag(plan), plan }))
     return c.body(JSON.stringify({ plans }), 200, { 'Content-Type': 'application/json' })
   })
 

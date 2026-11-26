@@ -22,6 +22,7 @@ function hub(initial: Plan[]) {
     plansBoot: null as string | null,
     tagsStatus: 200,
     failPlans: null as ((url: string) => boolean) | null,
+    leaveOut: new Set<string>(),
     asked: [] as string[],
   }
   const respond = (body: unknown, extra: Record<string, string> = {}, status = 200) =>
@@ -39,7 +40,7 @@ function hub(initial: Plan[]) {
     if (path === '/api/boards/plans') {
       if (state.failPlans?.(url)) throw new TypeError('plans offline')
       const ids = new Set(new URLSearchParams(query).get('ids')!.split(','))
-      const body = { plans: state.plans.filter((p) => ids.has(p.id)).map((p) => ({ tag: tagOf(p), plan: p })) }
+      const body = { plans: state.plans.filter((p) => ids.has(p.id) && !state.leaveOut.has(p.id)).map((p) => ({ tag: tagOf(p), plan: p })) }
       return respond(body, state.plansBoot ? { 'x-inbox-boot': state.plansBoot } : {})
     }
     if (path === '/api/boards') return respond(state.plans, { etag: `"boards-${tagOf(state.plans)}"` })
@@ -157,5 +158,36 @@ describe('createPlansReader', () => {
     const back = await readAll(read)
     expect(state.asked).toEqual(['/api/boards/tags', '/api/boards/plans?ids=p0,p1'])
     expect(back.plans).toEqual(state.plans)
+  })
+
+  it('leaves out a plan the tags name but the plans answer does not; the next round asks for it again, and a round without it asks for nothing', async () => {
+    const { state, read } = hub(ids(3).map((id) => plan(id)))
+    state.leaveOut.add('p1')
+    const first = await readAll(read)
+    expect(plansAsked(state.asked)).toEqual(['p0,p1,p2'])
+    expect(first.plans.map((p) => p.id)).toEqual(['p0', 'p2'])
+
+    state.asked.length = 0
+    const second = await readAll(read)
+    expect(plansAsked(state.asked)).toEqual(['p1'])
+    expect(second.plans.map((p) => p.id)).toEqual(['p0', 'p2'])
+
+    state.plans = state.plans.filter((p) => p.id !== 'p1')
+    state.asked.length = 0
+    const third = await readAll(read)
+    expect(plansAsked(state.asked)).toEqual([])
+    expect(third.plans.map((p) => p.id)).toEqual(['p0', 'p2'])
+  })
+
+  it('does not assemble the old copy of a plan held at an older tag when the answer for its new tag leaves it out', async () => {
+    const { state, read } = hub(ids(3).map((id) => plan(id)))
+    const first = await readAll(read)
+    expect(first.plans.map((p) => p.id)).toEqual(['p0', 'p1', 'p2'])
+    state.plans = state.plans.map((p) => (p.id === 'p1' ? plan('p1', 'Renamed') : p))
+    state.leaveOut.add('p1')
+    state.asked.length = 0
+    const second = await readAll(read)
+    expect(plansAsked(state.asked)).toEqual(['p1'])
+    expect(second.plans.map((p) => p.id)).toEqual(['p0', 'p2'])
   })
 })

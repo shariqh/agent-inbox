@@ -1499,6 +1499,30 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   skill with the brief guidance (`docs/request-post.md`). Agents added with `meshctl add` get none
   yet (a follow-up: a template that calls `meshctl call <id>` through a shim, with the id as the
   only substitution).
+- **make-agents, a skill with no agent.** The third template teaches a chat to make an agent with
+  `meshctl new` (`docs/made-agents.md` quotes it; its test and fixture sit beside the other two).
+  Its switch is a top-level `"makeAgents": true` in `mesh.json`, written by `meshctl enable
+  --make-agents` and removed by `disable --make-agents`. It cannot be an `agents` entry: the app
+  (`src/mesh-agents.ts`) and `meshctl status` count every `agents` key as an agent, and the shared
+  runner reads `agents.*` only. It has to live in `mesh.json` because `routingSkills(doc, …)` decides
+  which folders exist from the file a command leaves (every `enable`, `disable` and `skills link`
+  removes a folder it does not want), so any other switch would be undone by the next
+  `enable --unslop`. Only the value `true` is on, `parseMesh` already keeps an unknown top-level
+  key (no schema bump), and `routingSkills` lists it after unslop and unslop-code. The text names the
+  shim, `~/.agent-inbox/bin/meshctl`, never `<mesh dir>`, and that shim acts on `~/.agent-inbox`
+  alone, so `PLAIN_PATH` applies only to a template that contains `<mesh dir>` (a mesh dir that is
+  not one plain shell word still blocks unslop's, with the note's rest reading `no routing skill that
+  names <mesh dir> is written`) and `enable --make-agents` refuses any other mesh dir
+  (`disable` never does). A skill that cannot be written is a **refusal, not a note**: for
+  the other agents a blocked folder is a note because the enable's main effect is its agent, but
+  here the skill is the whole effect, so `enable --make-agents` detects the plan having left
+  `make-agents` out and exits 1 before any step, writing no `mesh.json`; only make-agents' own line
+  becomes the refusal, other agents' lines stay notes. `skillState` (the one new export) reads the
+  skill file (`present`, `missing` or `differs`) and the three host folders, read only, for `status`
+  and for the `Next: meshctl skills link --apply …` hint a successful `--apply` prints. Folders,
+  backups, links and the lock follow the rules above unchanged; a removal names it `(the make-agents
+  skill is off)`. Its `call` line uses a `<` redirection, the one place a template does, since
+  `meshctl call` takes its text no other way.
 - **The `rules.md` link (#584).** When `<mesh dir>/mesh/wrappers/unslop.json` has an absolute
   `skill` whose folder holds a regular `rules.md` (read through links; a profile naming the
   generated folder itself, by path or through a link such as `~/.claude/skills/unslop`, is ignored), the plan makes `<mesh dir>/skills/unslop/rules.md` a
@@ -1549,7 +1573,11 @@ core, `./mesh-config.js`; meshctl only) writes and links them.
   backup, link and unlink in a temporary `HOME` (dry runs change nothing, a foreign folder or link
   in each of the three folders is reported and blocks the agent, ours dangling is removed, a
   foreign dangling one is not), the shared lock both ways, and the off tests (no `mesh.json` or no
-  agent on: no folder, no link; `disable --apply` removes every folder and link meshctl made).
+  agent on: no folder, no link; `disable --apply` removes every folder and link meshctl made), and
+  for make-agents: the pinned text and its drift against `docs/made-agents.md`, `enable` and
+  `disable --make-agents` (dry run, backup, refusals, the `Next:` hint, `--json`, usage errors), the
+  `status` line, the other enables and disables leaving it alone, and a person's own skill of the
+  name blocking its link in each host folder.
   `test/prstate.test.ts` and `test/mesh.test.ts` keep the module out of the stdio graph, the
   viewer, `public/` and `electron/`, and pin its imports.
 

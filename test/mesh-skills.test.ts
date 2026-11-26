@@ -190,6 +190,25 @@ describe('the make-agents routing skill: generation is pure and fixed', () => {
     expect(section).toContain('Any other key, a value of the wrong type, or text that is not well-formed Unicode is refused.')
   })
 
+  it('docs/made-agents.md quotes its template exactly, and walks through turning it on and off', () => {
+    const doc = readFileSync(join(REPO, 'docs', 'made-agents.md'), 'utf8')
+    const section = doc.slice(doc.indexOf('## Let chats make agents: the routing skill'))
+    expect(section.startsWith('## Let chats make agents: the routing skill')).toBe(true)
+    // after "Try it, add it, call it, remove it" and before "What is sent where"
+    expect(doc.indexOf('## Try it, add it, call it, remove it')).toBeLessThan(doc.indexOf('## Let chats make agents'))
+    expect(doc.indexOf('## Let chats make agents')).toBeLessThan(doc.indexOf('## What is sent where'))
+    // the template's own headings sit inside its code block, so the section ends at the next real one
+    const own = section.slice(0, section.indexOf('\n## What is sent where'))
+    const blocks = [...own.matchAll(/```markdown\n([\s\S]*?)```\n/g)]
+    expect(blocks.length).toBe(1)
+    expect(blocks[0]![1]).toBe(routingSkill('make-agents', '<mesh dir>', '/home/x'))
+    for (const part of ['meshctl enable --make-agents', 'meshctl enable --make-agents --apply', 'meshctl skills link --apply', 'meshctl disable --make-agents --apply',
+      '### If something\'s off', 'is not a folder holding a SKILL.md meshctl wrote', 'two make-agents skills would compete', 'meshctl new … --apply', 'second check']) {
+      expect(own, part).toContain(part)
+    }
+    expect(own).toMatch(/\n1\. \*\*/)
+  })
+
   it('is written in a mesh dir that is not one plain shell word, since it names no mesh dir; the others are not, and the note says so', () => {
     const t = setup()
     const spaced = join(t.dir, 'my mesh')

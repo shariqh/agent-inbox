@@ -7,7 +7,13 @@ import { copyFileSync, chmodSync, mkdirSync, readFileSync, readdirSync, statSync
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Readable } from 'node:stream'
-import { runClient, runMeshctl, runNew } from '../src/meshctl.js'
+import { createHmac } from 'node:crypto'
+import { createServer } from 'node:http'
+import type { Server } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
+import type { AddressInfo } from 'node:net'
+import { runAdd, runClient, runMeshctl, runNew } from '../src/meshctl.js'
+import { holdSetupLock } from '../src/mesh-skills.js'
 import { removeScratchDirs, scratchDir } from './scratch.js'
 
 const REPO = new URL('..', import.meta.url).pathname
@@ -21,7 +27,9 @@ const meshes: string[] = []
 const runners = (dir: string): number[] => { try { return readdirSync(join(dir, 'fake-pids')).map((f) => Number(f.split('-').at(-1))) } catch { return [] } }
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
 
-afterEach(() => {
+const servers: Array<{ close: (done: () => void) => unknown }> = []
+afterEach(async () => {
+  for (const s of servers.splice(0)) await new Promise<void>((done) => { s.close(() => done()) })
   for (const dir of meshes.splice(0)) for (const pid of runners(dir)) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
   removeScratchDirs()
 })
@@ -246,7 +254,7 @@ describe('meshctl new --apply (D3)', () => {
   it('a runner that cannot start, another process on the port, or a card that differs from the one shown: every step is undone and the refusal says what happened', async () => {
     for (const [mode, step, words] of [
       ['no-listen', 4, /^Failed at step 4\/5: the agent did not start; see .*mesh\/logs\/action-items-agent\.log\. Every step before it was undone/],
-      ['unproven', 4, /^Failed at step 4\/5: another process answers at http:\/\/127\.0\.0\.1:\d+\/: it did not prove it holds action-items's token\. Every step before it was undone/],
+      ['unproven', 4, /^Failed at step 4\/5: another process answers at http:\/\/127\.0\.0\.1:\d+\/: it did not prove it holds action-items's token \(another meshctl new may have just taken the port: try again\)\. Every step before it was undone/],
       ['other-card', 5, /^Failed at step 5\/5: add refused it: the card is not the one that was checked \(its pin differs\): check it again\. Every step before it was undone/],
     ] as const) {
       const t = setup()
@@ -395,4 +403,137 @@ describe('status and the model servers see made agents (D6)', () => {
     expect(t.ctl('remove', ID, '--apply').code).toBe(0)
     expect(t.ctl('server', 'remove', 'box', '--apply').code).toBe(0)
   }, 30_000)
+})
+
+/** A plain loopback agent (what `meshctl add` takes): its card with the identity proof for `token`, and one answer. */
+async function plainAgent(token: string, name = 'plain'): Promise<number> {
+  let port = 0
+  const server: Server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      if (req.method === 'GET') {
+        const nonce = req.headers['a2a-mesh-challenge']
+        const proof = typeof nonce === 'string' ? { 'a2a-mesh-proof': createHmac('sha256', token).update(`a2a-mesh/v1\n${nonce}`).digest('base64url') } : {}
+        return void res.writeHead(200, { 'content-type': 'application/json', ...proof }).end(JSON.stringify({
+          name, description: 'A plain agent.', version: '1.0.0', supportedInterfaces: [{ url: `http://127.0.0.1:${port}/`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+          capabilities: { streaming: false }, defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain'], skills: [{ id: 'echo', name: 'echo', description: 'Echoes.', tags: ['test'] }],
+          securitySchemes: { bearer: { httpAuthSecurityScheme: { scheme: 'Bearer' } } }, securityRequirements: [{ schemes: { bearer: { list: ['call'] } } }],
+        }))
+      }
+      if (req.headers.authorization !== `Bearer ${token}`) return void res.writeHead(401).end()
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { message: { messageId: 'p1', role: 'ROLE_AGENT', parts: [{ text: `plain answer from ${name}` }] } } }))
+    })
+  })
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  servers.push(server)
+  port = (server.address() as AddressInfo).port
+  return port
+}
+
+describe('the review round: new --apply\'s undo, the lock, remove, ports (F1, F2, F5, F9, T3, T4, T6)', () => {
+  it('an undo removes only what this run wrote: an agent added under the same id meanwhile keeps its token copy, card copy and entry, and call finds its token (F1)', async () => {
+    const t = setup()
+    const otherToken = 'o8'.repeat(20)
+    const tokenFile = privateFile(join(t.home, 'other.token'), `${otherToken}\n`)
+    const port = await plainAgent(otherToken)
+    const making = t.make([ID, '--from', t.card(), '--apply'], { FAKE_RUNNER: 'slow-fail' })
+    // while new waits in step 4, an add takes the id
+    expect(await waitFor(() => runners(t.dir).filter(alive).length === 1)).toBe(true)
+    const said: string[] = []
+    const added = await runAdd([`http://127.0.0.1:${port}/.well-known/agent-card.json`, '--id', ID, '--token-file', tokenFile, '--apply'], { env: { AGENT_INBOX_MESH_DIR: t.dir }, home: t.home, out: (x) => said.push(x), err: (x) => said.push(x) })
+    expect(added, said.join('')).toBe(0)
+    const r = await making
+    expect(r.code).toBe(1)
+    expect(r.err).toMatch(/^Failed at step 4\/5: the agent did not start; see .*action-items-agent\.log\. Every step before it was undone .*, and only its start log .*action-items-agent\.log is left \(meshctl remove action-items --apply deletes it\)\.\n$/)
+    expect(readFileSync(join(t.dir, 'mesh', 'tokens', ID), 'utf8')).toBe(`${otherToken}\n`)
+    expect(JSON.parse(readFileSync(join(t.dir, 'mesh', 'cards', `${ID}.json`), 'utf8')).name).toBe('plain')
+    expect(JSON.parse(readFileSync(join(t.dir, 'mesh.json'), 'utf8')).agents[ID].endpoint).toBe(`http://127.0.0.1:${port}/`)
+    // the files only new wrote are gone
+    expect(files(t.dir)).not.toContain(join('mesh', 'agents', `${ID}.json`))
+    expect(files(t.dir)).not.toContain(join('mesh', 'wrappers', `${ID}.json`))
+    const answer = await t.call(ID)
+    expect([answer.code, answer.err]).toEqual([0, ''])
+    expect(answer.out).toContain('plain answer from plain')
+  }, 30_000)
+
+  it('--apply holds the setup lock for its whole run: while another setup holds it, new is refused and writes nothing', async () => {
+    const t = setup()
+    const lock = holdSetupLock({}, t.home)
+    if ('refused' in lock) throw new Error(lock.refused)
+    try {
+      const r = await t.make([ID, '--from', t.card(), '--apply'])
+      expect([r.code, r.err]).toEqual([1, 'Refused: another setup is running (it holds the setup lock): try again when it ends. Nothing changed.\n'])
+      expect(files(t.dir)).toEqual(['mesh', 'mesh/servers.json'])
+    } finally {
+      lock.release()
+    }
+    expect((await t.make([ID, '--from', t.card(), '--apply'])).code).toBe(0)
+  }, 30_000)
+
+  it('a failed --apply keeps the start log, and remove lists and deletes it with nothing else left (F2)', async () => {
+    const t = setup()
+    const r = await t.make([ID, '--from', t.card(), '--apply'], { FAKE_RUNNER: 'no-listen' })
+    expect(r.code).toBe(1)
+    expect(r.err).toContain(`only its start log ${t.dir}/mesh/logs/action-items-agent.log is left (meshctl remove action-items --apply deletes it)`)
+    expect(files(t.dir)).toContain(join('mesh', 'logs', `${ID}-agent.log`))
+    const dry = t.ctl('remove', ID)
+    expect(dry.out).toBe(`Dry run.\n1/1 Would delete the log ${t.dir}/mesh/logs/action-items-agent.log.\nNothing changed. Re-run with --apply.\n`)
+    expect(t.ctl('remove', ID, '--apply').code).toBe(0)
+    expect(files(t.dir).filter((f) => f.includes(ID) && !f.startsWith('fake-pids'))).toEqual([])
+  }, 30_000)
+
+  it('a write that fails in steps 1 to 3 undoes the steps before it (T3)', async () => {
+    const t = setup()
+    writeFileSync(join(t.dir, 'mesh', 'wrappers'), 'a file where the folder should be')
+    const r = await t.make([ID, '--from', t.card(), '--apply'])
+    expect([r.code, r.err]).toEqual([1, 'Failed at step 3/5: it could not be done. Every step before it was undone (the agent stopped, the files this run wrote removed), so nothing changed.\n'])
+    expect(r.out).toContain('2/5 Wrote')
+    expect(files(t.dir)).toEqual(['mesh', 'mesh/agents', 'mesh/servers.json', 'mesh/tokens', 'mesh/wrappers'])
+    expect(readFileSync(join(t.dir, 'mesh', 'wrappers'), 'utf8')).toBe('a file where the folder should be')
+  })
+
+  it('a card file over 64 KiB is refused by its size (F5)', async () => {
+    const t = setup()
+    const r = await t.make([ID, '--from', privateFile(join(t.home, 'big.json'), `{"name":"${'x'.repeat(70 * 1024)}"}`)])
+    expect([r.code, r.err]).toEqual([1, 'Refused: the card file is larger than 64 KiB. Nothing changed.\n'])
+  })
+
+  it('the port is the lowest from 4430 that no entry names and nothing listens on; with none left new is refused (T4)', async () => {
+    const t = setup()
+    writeFileSync(join(t.dir, 'mesh.json'), JSON.stringify({ schema: 1, agents: { taken: { endpoint: 'http://127.0.0.1:4430' } } }))
+    const listener = createNetServer()
+    await new Promise<void>((done, fail) => listener.once('error', fail).listen(4431, '127.0.0.1', () => done()))
+    servers.push(listener)
+    const r = await t.make([ID, '--from', t.card()])
+    expect(r.out).toContain('Endpoint   http://127.0.0.1:4432/')
+    writeFileSync(join(t.dir, 'mesh.json'), JSON.stringify({ schema: 1, agents: Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`a${i}`, { endpoint: `http://127.0.0.1:${4430 + i}` }])) }))
+    expect((await t.make([ID, '--from', t.card()])).err).toBe('Refused: no port from 4430 to 4499 is free: every one is a mesh.json endpoint or taken. Nothing changed.\n')
+  })
+
+  it('remove of one made agent leaves a second (its id a prefix of the first) and a plain added agent alone (T6)', async () => {
+    const t = setup()
+    const long = `${ID}-x`
+    expect((await t.make([ID, '--from', t.card(), '--apply'])).code).toBe(0)
+    expect((await t.make([long, '--from', t.card({ ...EXAMPLE, name: long }), '--apply'])).code).toBe(0)
+    const plainToken = 'p5'.repeat(20)
+    const port = await plainAgent(plainToken)
+    expect(await runAdd([`http://127.0.0.1:${port}/.well-known/agent-card.json`, '--id', 'action', '--token-file', privateFile(join(t.home, 'p.token'), `${plainToken}\n`), '--apply'], { env: { AGENT_INBOX_MESH_DIR: t.dir }, home: t.home, out: () => {}, err: () => {} })).toBe(0)
+    // a profile with no "made": true is not a made agent's
+    privateFile(join(t.dir, 'mesh', 'wrappers', 'action.json'), '{"start":["/bin/false"]}')
+    for (const id of [ID, long]) privateFile(join(t.dir, 'mesh', 'logs', `${id}-2026-11-25.log`), '{}\n')
+    const before = files(t.dir).filter((f) => !f.includes('.bak-'))
+    expect(t.ctl('remove', ID, '--apply').code).toBe(0)
+    const kept = files(t.dir).filter((f) => !f.includes('.bak-'))
+    expect(before.filter((f) => !kept.includes(f)).sort()).toEqual([
+      'mesh/agents/action-items.json', 'mesh/cards/action-items.json', 'mesh/logs/action-items-2026-11-25.log', 'mesh/logs/action-items-agent.log',
+      'mesh/tokens/action-items', 'mesh/wrappers/action-items.json',
+    ])
+    expect(Object.keys(JSON.parse(readFileSync(join(t.dir, 'mesh.json'), 'utf8')).agents).sort()).toEqual(['action', long])
+    // the plain agent's remove leaves its non-made profile alone
+    expect(t.ctl('remove', 'action', '--apply').code).toBe(0)
+    expect(files(t.dir)).toContain(join('mesh', 'wrappers', 'action.json'))
+    expect(files(t.dir)).toContain(join('mesh', 'agents', `${long}.json`))
+  }, 60_000)
 })

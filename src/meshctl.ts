@@ -83,7 +83,7 @@ import { addSummary, cardEndpoint, cardSha256, cardSummary, checkedCard, fetchAd
 import { BUILT_IN_AGENTS, addedEntry, addedPlace, idFromName, idRefusal } from './mesh-entry.js'
 import { THUMBPRINT } from './card-signature.js'
 import { frameResult } from './agent-result.js'
-import { madeDescription, madeLog, madePaths, madeProfile, parseMadeCard, serverKinds } from './mesh-made.js'
+import { CARD_FILE_MAX, madeDescription, madeLog, madePaths, madeProfile, parseMadeCard, serverKinds } from './mesh-made.js'
 import { meshLink } from './mesh-identity.js'
 import { KEY_USAGE, runKey } from './mesh-keys.js'
 import { appendRun, pruneRuns, runAgents, runFiles, tidyRuns } from './mesh-runs.js'
@@ -1159,22 +1159,23 @@ function meshctl(argv: string[], io: MeshctlIo, plan?: Plan): number {
         run: () => { removeCardCopy(dir, id); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(cardCopy)}.` },
       })
     }
-    // a made agent's own files (agents a chat makes, D5): its start profile, description and logs;
-    // its runner learns at its next gate tick, the entry being gone
+    // a made agent's own files (agents a chat makes, D5): its start profile and description; its
+    // runner learns at its next gate tick, the entry being gone. Its logs (the exact names a made
+    // agent's runner writes) go whenever they exist, so a failed new's start log can be deleted too
     const made = madePaths(dir, id)
+    const remove = (path: string, dry: string): void => {
+      if (exists(path)) steps.push({ dry, run: () => { unlinkSync(path); removeIfEmpty(join(path, '..')); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(path)}.` } })
+    }
     if (exists(made.description) || (exists(made.profile) && madeProfile(dir, id) !== 'missing')) {
-      const logs = join(dir, 'mesh', 'logs')
-      let logFiles: string[] = []
-      try {
-        if (lstatSync(logs).isDirectory()) logFiles = readdirSync(logs).filter((entry) => madeLog(id).test(entry)).sort()
-      } catch { /* no logs */ }
-      const remove = (path: string, dry: string): void => {
-        if (exists(path)) steps.push({ dry, run: () => { unlinkSync(path); removeIfEmpty(join(path, '..')); removeIfEmpty(join(dir, 'mesh')); return `Deleted ${show(path)}.` } })
-      }
       remove(made.profile, `Would delete the start profile ${show(made.profile)}; a running ${id} stops within a minute.`)
       remove(made.description, `Would delete the description ${show(made.description)}.`)
-      for (const log of logFiles) remove(join(logs, log), `Would delete the log ${show(join(logs, log))}.`)
     }
+    const logs = join(dir, 'mesh', 'logs')
+    let logFiles: string[] = []
+    try {
+      if (lstatSync(logs).isDirectory()) logFiles = readdirSync(logs).filter((entry) => madeLog(id).test(entry)).sort()
+    } catch { /* no logs */ }
+    for (const log of logFiles) remove(join(logs, log), `Would delete the log ${show(join(logs, log))}.`)
     if (!steps.length) {
       out(`${id} is not in ${name}. Nothing to do.\n`)
       return 0
@@ -1931,7 +1932,10 @@ async function newAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
   const cardFile = resolve(from)
   let text: string
   try {
-    if (!lstatSync(cardFile).isFile()) throw new Error('not a file')
+    const stat = lstatSync(cardFile)
+    if (!stat.isFile()) throw new Error('not a file')
+    // the size first: a file over the cap is never read
+    if (stat.size > CARD_FILE_MAX) return refuse('the card file is larger than 64 KiB')
     text = readFileSync(cardFile, 'utf8')
   } catch {
     return refuse('the card file cannot be read: pass a regular file')
@@ -1987,20 +1991,31 @@ async function newAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
   const token = join(tokens, id)
   const start = [node, runner, '--id', id]
   // what this run wrote and started, undone in reverse when a later step fails: a made agent is
-  // never left half made (files a killed new left are replaced here, and remove deletes them)
-  const written: string[] = []
+  // never left half made (files a killed new left are replaced here, and remove deletes them). A
+  // file is removed only while it still holds what this run wrote, so an agent another command
+  // wrote under the same id meanwhile (an add --id, say) keeps its files
+  const written: Array<{ path: string; text: string }> = []
   let started: { stop: () => void } | undefined
+  let adding = false
   const write = (path: string, text: string): void => {
     mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 })
     writeAtomic(path, text, 0o600)
-    written.push(path)
+    written.push({ path, text })
   }
   const undo = (): void => {
     started?.stop()
-    // add's card copy, when add stopped after it
-    try { removeCardCopy(dir, id) } catch { /* none */ }
-    for (const path of written.reverse()) {
-      try { unlinkSync(path) } catch { /* gone */ }
+    // add's card copy: only when this run's add ran and no entry holds the id
+    if (adding) {
+      const now = readMesh(file)
+      const listed = now.kind === 'present' ? objectOf(now.doc['agents']) : undefined
+      if (now.kind !== 'refused' && !(listed && Object.hasOwn(listed, id))) {
+        try { removeCardCopy(dir, id) } catch { /* none */ }
+      }
+    }
+    for (const { path, text } of written.reverse()) {
+      try {
+        if (readPrivate(path) === text) unlinkSync(path)
+      } catch { /* gone, or not ours any more */ }
     }
   }
   let secret = ''
@@ -2030,7 +2045,7 @@ async function newAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
             const got = await getCard(link)
             if (got.kind === 'ok') return `Started ${id} at ${endpoint}: it proved it holds its token.`
             // an answer without the proof is another process on the port
-            if (got.kind === 'unproven') throw new StepFailure(`another process answers at ${endpoint}: it did not prove it holds ${id}'s token`)
+            if (got.kind === 'unproven') throw new StepFailure(`another process answers at ${endpoint}: it did not prove it holds ${id}'s token (another meshctl new may have just taken the port: try again)`)
             if (gone) break
             await new Promise((done) => setTimeout(done, 200))
           }
@@ -2044,6 +2059,7 @@ async function newAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
       dry: `Would add it as meshctl add ${cardUrl} --id ${id} --token-file ${show(token)} --expect-pin ${pin} does: the token copy, the card copy and agents.${id} in ${name}.`,
       // add's own code path, with the pin the dry run showed: the card added is the card shown
       run: async () => {
+        adding = true
         const added: Plan = { steps: [], notes: [] }
         const said: string[] = []
         const code = await addAgent([cardUrl, '--id', id, '--token-file', token, '--expect-pin', pin, '--apply'], { ...io, out: () => {}, err: (text) => said.push(text) }, added)
@@ -2053,17 +2069,27 @@ async function newAgent(args: string[], io: MeshctlIo, plan?: Plan, parsed?: { a
     },
   ]
   if (!apply) return runSteps(steps.map((step) => ({ dry: step.dry, run: () => '' })), false, out, err, '', plan)
-  const n = steps.length
-  for (const [i, step] of steps.entries()) {
-    try {
-      const line = await step.run()
-      if (plan) plan.steps.push(firstLine(line))
-      else out(`${i + 1}/${n} ${line}\n`)
-    } catch (error) {
-      undo()
-      err(`Failed at step ${i + 1}/${n}: ${error instanceof StepFailure ? error.message : 'it could not be done'}. Every step before it was undone (the agent stopped, the files this run wrote removed), so nothing changed.\n`)
-      return 1
+  // the setup lock (enable's, scripts/setup-lock.sh) for the whole --apply: two news, or a new and
+  // an enable, never interleave; add takes no lock, so the in-process add below cannot wait on it
+  const lock = holdSetupLock(env, home)
+  if ('refused' in lock) return refuse(lock.refused)
+  try {
+    const n = steps.length
+    for (const [i, step] of steps.entries()) {
+      try {
+        const line = await step.run()
+        if (plan) plan.steps.push(firstLine(line))
+        else out(`${i + 1}/${n} ${line}\n`)
+      } catch (error) {
+        undo()
+        // the runner's start log stays, for the reason it holds
+        const left = started ? `, and only its start log ${show(paths.log)} is left (meshctl remove ${id} --apply deletes it)` : ', so nothing changed'
+        err(`Failed at step ${i + 1}/${n}: ${error instanceof StepFailure ? error.message : 'it could not be done'}. Every step before it was undone (the agent stopped, the files this run wrote removed)${left}.\n`)
+        return 1
+      }
     }
+  } finally {
+    lock.release()
   }
   out(`This --apply is your approval for ${id} (D14). meshctl call ${id} < request calls it; meshctl remove ${id} --apply takes it out.\n`)
   return 0

@@ -4,7 +4,7 @@
 // core only: --card prints a card of the same shape, --try prints a fixed answer, and --id serves
 // the card with the identity proof and answers SendMessage, reading the same files the real one
 // reads. FAKE_RUNNER (in the environment it inherits) bends it: `card-fail`, `try-fail`,
-// `no-listen`, `other-card`, `unproven` (it answers without the identity proof, as another process on the port would). It records its pid under <mesh dir>/fake-pids/ so a test can stop it,
+// `no-listen`, `slow-fail` (it exits 1 after 2 s, listening on nothing), `other-card`, `unproven` (it answers without the identity proof, as another process on the port would). It records its pid under <mesh dir>/fake-pids/ so a test can stop it,
 // and it stops once its mesh.json entry, seen once, is gone or names another port, or its start
 // profile is gone.
 import { createHmac } from 'node:crypto'
@@ -49,10 +49,12 @@ if (args[0] === '--card') {
   const id = flag('--id')
   mkdirSync(join(dir, 'fake-pids'), { recursive: true })
   writeFileSync(join(dir, 'fake-pids', `${id}-${process.pid}`), String(process.pid))
-  if (mode === 'no-listen') {
+  if (mode === 'slow-fail') setTimeout(() => process.exit(1), 2000)
+  else if (mode === 'no-listen') {
     process.stderr.write('made-agent: the server box is not in mesh/servers.json, or it cannot be read: meshctl server list\n')
     process.exit(1)
   }
+  if (mode === 'slow-fail') await new Promise(() => {})
   const description = JSON.parse(readFileSync(join(dir, 'mesh', 'agents', `${id}.json`), 'utf8'))
   const token = readFileSync(join(dir, 'mesh', 'tokens', id), 'utf8').trim()
   const port = JSON.parse(readFileSync(join(dir, 'mesh', 'wrappers', `${id}.json`), 'utf8')).port
